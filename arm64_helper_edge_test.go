@@ -269,6 +269,12 @@ func TestARM64ArithmeticCoverage(t *testing.T) {
 	if got, err := c.condValue("HI"); err != nil || got == "" {
 		t.Fatalf("condValue(HI) = (%q, %v)", got, err)
 	}
+	if got, err := c.condValue("MI"); err != nil || got == "" {
+		t.Fatalf("condValue(MI) = (%q, %v)", got, err)
+	}
+	if got, err := c.condValue("PL"); err != nil || got == "" {
+		t.Fatalf("condValue(PL) = (%q, %v)", got, err)
+	}
 	if _, err := (&arm64Ctx{}).condValue("EQ"); err == nil {
 		t.Fatalf("condValue without flags unexpectedly succeeded")
 	}
@@ -482,6 +488,8 @@ func TestARM64DataVectorAndBranchCoverage(t *testing.T) {
 		{Op: "BLE", Args: []Operand{arm64IdentOp("done")}, Raw: "BLE done"},
 		{Op: "BCC", Args: []Operand{arm64IdentOp("done")}, Raw: "BCC done"},
 		{Op: "BCS", Args: []Operand{arm64IdentOp("done")}, Raw: "BCS done"},
+		{Op: "BMI", Args: []Operand{arm64IdentOp("done")}, Raw: "BMI done"},
+		{Op: "BPL", Args: []Operand{arm64IdentOp("done")}, Raw: "BPL done"},
 		{Op: "CBZ", Args: []Operand{arm64RegOp("R2"), arm64IdentOp("done")}, Raw: "CBZ R2, done"},
 		{Op: "CBNZ", Args: []Operand{arm64RegOp("R3"), arm64MemOp(PC, 4)}, Raw: "CBNZ R3, 4(PC)"},
 		{Op: "TBZ", Args: []Operand{arm64ImmOp(1), arm64RegOp("R4"), arm64IdentOp("done")}, Raw: "TBZ $1, R4, done"},

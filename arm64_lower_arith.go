@@ -346,6 +346,23 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		}
 		return true, false, nil
 
+	case "TST":
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("arm64 TST expects 2 operands: %q", ins.Raw)
+		}
+		a, err := c.eval64(ins.Args[0], false)
+		if err != nil {
+			return true, false, err
+		}
+		bval, err := c.eval64(ins.Args[1], false)
+		if err != nil {
+			return true, false, err
+		}
+		res := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", res, bval, a)
+		c.setFlagsLogic("%" + res)
+		return true, false, nil
+
 	case "ANDSW":
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {
 			return true, false, fmt.Errorf("arm64 ANDSW expects 2 or 3 operands: %q", ins.Raw)
