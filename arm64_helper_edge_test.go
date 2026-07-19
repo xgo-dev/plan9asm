@@ -32,6 +32,51 @@ func arm64MemOp(base Reg, off int64) Operand {
 }
 func arm64RegListOp(regs ...Reg) Operand { return Operand{Kind: OpRegList, RegList: regs} }
 
+func TestARM64FPVectorPairValidation(t *testing.T) {
+	if idx, ok := arm64ParseFReg("F31"); !ok || idx != 31 {
+		t.Fatalf("arm64ParseFReg(F31) = (%d, %v)", idx, ok)
+	}
+	for _, r := range []Reg{"R0", "F32", "Fbad"} {
+		if _, ok := arm64ParseFReg(r); ok {
+			t.Fatalf("arm64ParseFReg(%s) unexpectedly succeeded", r)
+		}
+	}
+
+	c, _ := newARM64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.vecerrors", Ret: Void}, nil)
+	if ok, _, err := c.lowerVec("FLDPQ", false, Instr{Raw: "FLDPQ"}); !ok || err == nil {
+		t.Fatalf("invalid FLDPQ = (%v, %v)", ok, err)
+	}
+	if ok, _, err := c.lowerVec("FLDPQ", false, Instr{
+		Raw:  "FLDPQ (BAD), (F0, F1)",
+		Args: []Operand{arm64MemOp("BAD", 0), arm64RegListOp("F0", "F1")},
+	}); !ok || err == nil {
+		t.Fatalf("FLDPQ with bad base = (%v, %v)", ok, err)
+	}
+	if ok, _, err := c.lowerVec("FLDPQ", false, Instr{
+		Raw:  "FLDPQ (R1), (R0, R1)",
+		Args: []Operand{arm64MemOp("R1", 0), arm64RegListOp("R0", "R1")},
+	}); !ok || err == nil {
+		t.Fatalf("FLDPQ with GPR pair = (%v, %v)", ok, err)
+	}
+	if ok, _, err := c.lowerVec("FLDPQ", false, Instr{
+		Raw:  "FLDPQ (R1), (F0, F1)",
+		Args: []Operand{arm64MemOp("R1", 0), arm64RegListOp("F0", "F1")},
+	}); !ok || err == nil {
+		t.Fatalf("FLDPQ without vector slots = (%v, %v)", ok, err)
+	}
+
+	for _, ins := range []Instr{
+		{Raw: "VMOVI"},
+		{Raw: "VMOVI $256, V0.B16", Args: []Operand{arm64ImmOp(256), arm64RegOp("V0.B16")}},
+		{Raw: "VMOVI $1, V0.D2", Args: []Operand{arm64ImmOp(1), arm64RegOp("V0.D2")}},
+		{Raw: "VMOVI $1, V0.B8", Args: []Operand{arm64ImmOp(1), arm64RegOp("V0.B8")}},
+	} {
+		if ok, _, err := c.lowerVec("VMOVI", false, ins); !ok || err == nil {
+			t.Fatalf("invalid %q = (%v, %v)", ins.Raw, ok, err)
+		}
+	}
+}
+
 func mustLowerARM64(t *testing.T, kind string, ins Instr, ok bool, err error) {
 	t.Helper()
 	if err != nil {

@@ -102,7 +102,9 @@ func TestTranslateARM64FLDPQ(t *testing.T) {
 TEXT pairload(SB),NOSPLIT,$0-0
 	MOVD $4096, R1
 	FLDPQ (R1), (F0, F1)
+	FLDPQ.P 32(R1), (F0, F1)
 	VMOVI $7, V2.B16
+	VMOVI $3, V3.B8
 	RET
 `
 	file, err := Parse(ArchARM64, src)
@@ -119,7 +121,7 @@ TEXT pairload(SB),NOSPLIT,$0-0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(ll, "load <16 x i8>") != 2 || !strings.Contains(ll, "store <16 x i8>") || !strings.Contains(ll, "i8 7") {
+	if strings.Count(ll, "load <16 x i8>") != 4 || !strings.Contains(ll, "store <16 x i8>") || !strings.Contains(ll, "i8 7") || !strings.Contains(ll, "i8 3") {
 		t.Fatalf("FLDPQ/VMOVI did not lower as expected:\n%s", ll)
 	}
 }
