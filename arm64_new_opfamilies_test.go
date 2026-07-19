@@ -3,7 +3,128 @@
 
 package plan9asm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestTranslateARM64BranchMinus(t *testing.T) {
+	src := `
+TEXT branchminus(SB),NOSPLIT,$0-0
+loop:
+	SUBS $32, R2
+	BMI complete
+	SUBS $32, R2
+	BPL loop
+complete:
+	RET
+`
+	file, err := Parse(ArchARM64, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ll, err := Translate(file, Options{
+		TargetTriple: "aarch64-unknown-linux-gnu",
+		Sigs: map[string]FuncSig{
+			"branchminus": {Name: "branchminus", Ret: Void},
+		},
+		Goarch: "arm64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ll, "br i1") {
+		t.Fatalf("BMI did not lower to a conditional branch:\n%s", ll)
+	}
+}
+
+func TestTranslateARM64RawFlagWords(t *testing.T) {
+	src := `
+TEXT rawflags(SB),NOSPLIT,$0-0
+	MOVD $2, R0
+	WORD $0xea00001f // TST X0, X0
+	BEQ done
+loop:
+	WORD $0xf1000400 // SUBS X0, X0, #1
+	BNE loop
+done:
+	RET
+`
+	file, err := Parse(ArchARM64, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ll, err := Translate(file, Options{
+		TargetTriple: "aarch64-unknown-linux-gnu",
+		Sigs: map[string]FuncSig{
+			"rawflags": {Name: "rawflags", Ret: Void},
+		},
+		Goarch: "arm64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ll, "sub i64") || strings.Count(ll, "br i1") != 2 {
+		t.Fatalf("raw TST/SUBS flag words did not lower as expected:\n%s", ll)
+	}
+}
+
+func TestTranslateARM64TST(t *testing.T) {
+	src := `
+TEXT testflags(SB),NOSPLIT,$0-0
+	MOVD $1, R0
+	TST R0, R0
+	BEQ done
+done:
+	RET
+`
+	file, err := Parse(ArchARM64, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ll, err := Translate(file, Options{
+		TargetTriple: "aarch64-unknown-linux-gnu",
+		Sigs: map[string]FuncSig{
+			"testflags": {Name: "testflags", Ret: Void},
+		},
+		Goarch: "arm64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ll, "and i64") || !strings.Contains(ll, "br i1") {
+		t.Fatalf("TST did not lower to flags and a conditional branch:\n%s", ll)
+	}
+}
+
+func TestTranslateARM64FLDPQ(t *testing.T) {
+	src := `
+TEXT pairload(SB),NOSPLIT,$0-0
+	MOVD $4096, R1
+	FLDPQ (R1), (F0, F1)
+	FLDPQ.P 32(R1), (F0, F1)
+	VMOVI $7, V2.B16
+	VMOVI $3, V3.B8
+	RET
+`
+	file, err := Parse(ArchARM64, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ll, err := Translate(file, Options{
+		TargetTriple: "aarch64-unknown-linux-gnu",
+		Sigs: map[string]FuncSig{
+			"pairload": {Name: "pairload", Ret: Void},
+		},
+		Goarch: "arm64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(ll, "load <16 x i8>") != 4 || !strings.Contains(ll, "store <16 x i8>") || !strings.Contains(ll, "i8 7") || !strings.Contains(ll, "i8 3") {
+		t.Fatalf("FLDPQ/VMOVI did not lower as expected:\n%s", ll)
+	}
+}
 
 func TestTranslateARM64SHA3Families(t *testing.T) {
 	src := `

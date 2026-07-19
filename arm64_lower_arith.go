@@ -346,6 +346,23 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		}
 		return true, false, nil
 
+	case "TST":
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("arm64 TST expects 2 operands: %q", ins.Raw)
+		}
+		a, err := c.eval64(ins.Args[0], false)
+		if err != nil {
+			return true, false, err
+		}
+		bval, err := c.eval64(ins.Args[1], false)
+		if err != nil {
+			return true, false, err
+		}
+		res := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", res, bval, a)
+		c.setFlagsLogic("%" + res)
+		return true, false, nil
+
 	case "ANDSW":
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {
 			return true, false, fmt.Errorf("arm64 ANDSW expects 2 or 3 operands: %q", ins.Raw)
@@ -796,10 +813,10 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		}
 		return true, false, c.storeReg(dstReg, "%"+t)
 
-	case "LSLW":
-		// LSLW shift, dstReg  or  LSLW shift, srcReg, dstReg
+	case "LSLW", "LSRW":
+		// LSLW/LSRW shift, dstReg  or  LSLW/LSRW shift, srcReg, dstReg
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {
-			return true, false, fmt.Errorf("arm64 LSLW expects 2 or 3 operands: %q", ins.Raw)
+			return true, false, fmt.Errorf("arm64 %s expects 2 or 3 operands: %q", op, ins.Raw)
 		}
 		var srcReg Reg
 		var dstReg Reg
@@ -807,13 +824,13 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		if len(ins.Args) == 2 {
 			sh = ins.Args[0]
 			if ins.Args[1].Kind != OpReg {
-				return true, false, fmt.Errorf("arm64 LSLW expects shift, dstReg: %q", ins.Raw)
+				return true, false, fmt.Errorf("arm64 %s expects shift, dstReg: %q", op, ins.Raw)
 			}
 			srcReg, dstReg = ins.Args[1].Reg, ins.Args[1].Reg
 		} else {
 			sh = ins.Args[0]
 			if ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-				return true, false, fmt.Errorf("arm64 LSLW expects shift, srcReg, dstReg: %q", ins.Raw)
+				return true, false, fmt.Errorf("arm64 %s expects shift, srcReg, dstReg: %q", op, ins.Raw)
 			}
 			srcReg, dstReg = ins.Args[1].Reg, ins.Args[2].Reg
 		}
@@ -838,10 +855,14 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, 31\n", m, st)
 			sh32 = "%" + m
 		default:
-			return true, false, fmt.Errorf("arm64 LSLW unsupported shift operand: %q", ins.Raw)
+			return true, false, fmt.Errorf("arm64 %s unsupported shift operand: %q", op, ins.Raw)
 		}
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i32 %%%s, %s\n", t, src32, sh32)
+		if op == "LSLW" {
+			fmt.Fprintf(c.b, "  %%%s = shl i32 %%%s, %s\n", t, src32, sh32)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = lshr i32 %%%s, %s\n", t, src32, sh32)
+		}
 		z := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, t)
 		return true, false, c.storeReg(dstReg, "%"+z)

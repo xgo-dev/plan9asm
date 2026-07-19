@@ -90,7 +90,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 		emitBr(tgt)
 		return true, true, nil
 
-	case "BEQ", "BNE", "BLO", "BLT", "BHI", "BHS", "BLS", "BGE", "BGT", "BLE", "BCC", "BCS":
+	case "BEQ", "BNE", "BLO", "BLT", "BHI", "BHS", "BLS", "BGE", "BGT", "BLE", "BCC", "BCS", "BMI", "BPL":
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("arm64 %s expects label: %q", op, ins.Raw)
 		}
@@ -140,6 +140,10 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 			cond = "GT"
 		case "BLE":
 			cond = "LE"
+		case "BMI":
+			cond = "MI"
+		case "BPL":
+			cond = "PL"
 		}
 		if err := emitCondBr(cond, tgt, fall); err != nil {
 			return true, false, err
@@ -301,6 +305,7 @@ func (c *arm64Ctx) callSym(symOp Operand) error {
 		// Default for external runtime helpers not discovered in this asm file.
 		csig = FuncSig{Name: callee, Ret: Void}
 	}
+	callee = funcSigSymbol(callee, csig)
 	args := make([]string, 0, len(csig.Args))
 	regCursor := 0
 	for i := 0; i < len(csig.Args); i++ {
@@ -375,6 +380,7 @@ func (c *arm64Ctx) tailCallAndRet(symOp Operand) error {
 		csig = c.sig
 		csig.Name = callee
 	}
+	callee = funcSigSymbol(callee, csig)
 
 	args := make([]string, 0, len(csig.Args))
 	regCursor := 0

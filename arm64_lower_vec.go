@@ -44,6 +44,68 @@ func arm64ParseVRegLane(r Reg) (kind byte, lane int, ok bool) {
 // We model V0..V31 as <16 x i8>.
 func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
+	case "FLDPQ":
+		if len(ins.Args) != 2 || ins.Args[0].Kind != OpMem || ins.Args[1].Kind != OpRegList || len(ins.Args[1].RegList) != 2 {
+			return true, false, fmt.Errorf("arm64 FLDPQ expects mem, (Freg,Freg): %q", ins.Raw)
+		}
+		mem := ins.Args[0].Mem
+		addr, base, inc, err := c.addrI64(mem, postInc)
+		if err != nil {
+			return true, false, err
+		}
+		for i, f := range ins.Args[1].RegList {
+			idx, ok := arm64ParseFReg(f)
+			if !ok {
+				return true, false, fmt.Errorf("arm64 FLDPQ expects FP register pair: %q", ins.Raw)
+			}
+			loadAddr := addr
+			if i != 0 {
+				next := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = add i64 %s, 16\n", next, addr)
+				loadAddr = "%" + next
+			}
+			ptr := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, loadAddr)
+			value := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %%%s, align 1\n", value, ptr)
+			if err := c.storeVReg(Reg(fmt.Sprintf("V%d", idx)), "%"+value); err != nil {
+				return true, false, err
+			}
+		}
+		if postInc {
+			if err := c.updatePostInc(base, inc); err != nil {
+				return true, false, err
+			}
+		}
+		return true, false, nil
+
+	case "VMOVI":
+		if len(ins.Args) != 2 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("arm64 VMOVI expects $imm, Vreg.B8/B16: %q", ins.Raw)
+		}
+		imm := ins.Args[0].Imm
+		if imm < 0 || imm > 255 {
+			return true, false, fmt.Errorf("arm64 VMOVI byte immediate out of range: %q", ins.Raw)
+		}
+		dst := strings.ToUpper(string(ins.Args[1].Reg))
+		activeLanes := 16
+		switch {
+		case strings.Contains(dst, ".B8"):
+			activeLanes = 8
+		case strings.Contains(dst, ".B16"):
+		default:
+			return true, false, fmt.Errorf("arm64 VMOVI unsupported vector arrangement: %q", ins.Raw)
+		}
+		elems := make([]string, 16)
+		for i := range elems {
+			value := int64(0)
+			if i < activeLanes {
+				value = imm
+			}
+			elems[i] = fmt.Sprintf("i8 %d", value)
+		}
+		return true, false, c.storeVReg(ins.Args[1].Reg, "<"+strings.Join(elems, ", ")+">")
+
 	case "AESE", "AESD", "AESMC", "AESIMC",
 		"SHA1C", "SHA1H", "SHA1M", "SHA1P", "SHA1SU0", "SHA1SU1",
 		"SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1",

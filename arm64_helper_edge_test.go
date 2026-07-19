@@ -32,6 +32,51 @@ func arm64MemOp(base Reg, off int64) Operand {
 }
 func arm64RegListOp(regs ...Reg) Operand { return Operand{Kind: OpRegList, RegList: regs} }
 
+func TestARM64FPVectorPairValidation(t *testing.T) {
+	if idx, ok := arm64ParseFReg("F31"); !ok || idx != 31 {
+		t.Fatalf("arm64ParseFReg(F31) = (%d, %v)", idx, ok)
+	}
+	for _, r := range []Reg{"R0", "F32", "Fbad"} {
+		if _, ok := arm64ParseFReg(r); ok {
+			t.Fatalf("arm64ParseFReg(%s) unexpectedly succeeded", r)
+		}
+	}
+
+	c, _ := newARM64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.vecerrors", Ret: Void}, nil)
+	if ok, _, err := c.lowerVec("FLDPQ", false, Instr{Raw: "FLDPQ"}); !ok || err == nil {
+		t.Fatalf("invalid FLDPQ = (%v, %v)", ok, err)
+	}
+	if ok, _, err := c.lowerVec("FLDPQ", false, Instr{
+		Raw:  "FLDPQ (BAD), (F0, F1)",
+		Args: []Operand{arm64MemOp("BAD", 0), arm64RegListOp("F0", "F1")},
+	}); !ok || err == nil {
+		t.Fatalf("FLDPQ with bad base = (%v, %v)", ok, err)
+	}
+	if ok, _, err := c.lowerVec("FLDPQ", false, Instr{
+		Raw:  "FLDPQ (R1), (R0, R1)",
+		Args: []Operand{arm64MemOp("R1", 0), arm64RegListOp("R0", "R1")},
+	}); !ok || err == nil {
+		t.Fatalf("FLDPQ with GPR pair = (%v, %v)", ok, err)
+	}
+	if ok, _, err := c.lowerVec("FLDPQ", false, Instr{
+		Raw:  "FLDPQ (R1), (F0, F1)",
+		Args: []Operand{arm64MemOp("R1", 0), arm64RegListOp("F0", "F1")},
+	}); !ok || err == nil {
+		t.Fatalf("FLDPQ without vector slots = (%v, %v)", ok, err)
+	}
+
+	for _, ins := range []Instr{
+		{Raw: "VMOVI"},
+		{Raw: "VMOVI $256, V0.B16", Args: []Operand{arm64ImmOp(256), arm64RegOp("V0.B16")}},
+		{Raw: "VMOVI $1, V0.D2", Args: []Operand{arm64ImmOp(1), arm64RegOp("V0.D2")}},
+		{Raw: "VMOVI $1, V0.B8", Args: []Operand{arm64ImmOp(1), arm64RegOp("V0.B8")}},
+	} {
+		if ok, _, err := c.lowerVec("VMOVI", false, ins); !ok || err == nil {
+			t.Fatalf("invalid %q = (%v, %v)", ins.Raw, ok, err)
+		}
+	}
+}
+
 func mustLowerARM64(t *testing.T, kind string, ins Instr, ok bool, err error) {
 	t.Helper()
 	if err != nil {
@@ -244,6 +289,7 @@ func TestARM64ArithmeticCoverage(t *testing.T) {
 		{Op: "LSL", Args: []Operand{arm64ImmOp(3), arm64RegOp("R6"), arm64RegOp("R7")}, Raw: "LSL $3, R6, R7"},
 		{Op: "LSR", Args: []Operand{arm64RegOp("R0"), arm64RegOp("R7"), arm64RegOp("R8")}, Raw: "LSR R0, R7, R8"},
 		{Op: "LSLW", Args: []Operand{arm64RegOp("R1"), arm64RegOp("R8"), arm64RegOp("R9")}, Raw: "LSLW R1, R8, R9"},
+		{Op: "LSRW", Args: []Operand{arm64ImmOp(2), arm64RegOp("R9"), arm64RegOp("R10")}, Raw: "LSRW $2, R9, R10"},
 		{Op: "ASR", Args: []Operand{arm64ImmOp(2), arm64RegOp("R9"), arm64RegOp("R10")}, Raw: "ASR $2, R9, R10"},
 		{Op: "UDIV", Args: []Operand{arm64RegOp("R2"), arm64RegOp("R10"), arm64RegOp("R0")}, Raw: "UDIV R2, R10, R0"},
 		{Op: "EXTR", Args: []Operand{arm64ImmOp(9), arm64RegOp("R0"), arm64RegOp("R1"), arm64RegOp("R2")}, Raw: "EXTR $9, R0, R1, R2"},
@@ -268,6 +314,12 @@ func TestARM64ArithmeticCoverage(t *testing.T) {
 	if got, err := c.condValue("HI"); err != nil || got == "" {
 		t.Fatalf("condValue(HI) = (%q, %v)", got, err)
 	}
+	if got, err := c.condValue("MI"); err != nil || got == "" {
+		t.Fatalf("condValue(MI) = (%q, %v)", got, err)
+	}
+	if got, err := c.condValue("PL"); err != nil || got == "" {
+		t.Fatalf("condValue(PL) = (%q, %v)", got, err)
+	}
 	if _, err := (&arm64Ctx{}).condValue("EQ"); err == nil {
 		t.Fatalf("condValue without flags unexpectedly succeeded")
 	}
@@ -286,6 +338,7 @@ func TestARM64ArithmeticCoverage(t *testing.T) {
 		`asm sideeffect "mrs $0, TPIDR_EL0"`,
 		`asm sideeffect "msr S3_3_C4_C2_5, $0"`,
 		"lshr i64",
+		"lshr i32",
 		"shl i64",
 		"ashr i64",
 		"udiv i64",
@@ -480,6 +533,8 @@ func TestARM64DataVectorAndBranchCoverage(t *testing.T) {
 		{Op: "BLE", Args: []Operand{arm64IdentOp("done")}, Raw: "BLE done"},
 		{Op: "BCC", Args: []Operand{arm64IdentOp("done")}, Raw: "BCC done"},
 		{Op: "BCS", Args: []Operand{arm64IdentOp("done")}, Raw: "BCS done"},
+		{Op: "BMI", Args: []Operand{arm64IdentOp("done")}, Raw: "BMI done"},
+		{Op: "BPL", Args: []Operand{arm64IdentOp("done")}, Raw: "BPL done"},
 		{Op: "CBZ", Args: []Operand{arm64RegOp("R2"), arm64IdentOp("done")}, Raw: "CBZ R2, done"},
 		{Op: "CBNZ", Args: []Operand{arm64RegOp("R3"), arm64MemOp(PC, 4)}, Raw: "CBNZ R3, 4(PC)"},
 		{Op: "TBZ", Args: []Operand{arm64ImmOp(1), arm64RegOp("R4"), arm64IdentOp("done")}, Raw: "TBZ $1, R4, done"},

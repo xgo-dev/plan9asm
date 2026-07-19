@@ -265,6 +265,7 @@ func (c *amd64Ctx) callSym(symOp Operand) error {
 		// a known no-op runtime scheduler hook above.
 		return fmt.Errorf("amd64 call missing signature for %q", callee)
 	}
+	callee = funcSigSymbol(callee, csig)
 
 	args := make([]string, 0, len(csig.Args))
 	for i := 0; i < len(csig.Args); i++ {
@@ -350,6 +351,7 @@ func (c *amd64Ctx) tailCallAndRet(symOp Operand) error {
 		csig = c.sig
 		csig.Name = callee
 	}
+	callee = funcSigSymbol(callee, csig)
 
 	args := make([]string, 0, len(csig.Args))
 	for i := 0; i < len(csig.Args); i++ {

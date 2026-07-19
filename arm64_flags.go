@@ -157,6 +157,10 @@ func (c *arm64Ctx) condValue(cond string) (string, error) {
 		return and(not(z), eq(n, v)), nil
 	case "LE":
 		return or(z, xor(n, v)), nil
+	case "MI":
+		return n, nil
+	case "PL":
+		return not(n), nil
 	default:
 		return "", fmt.Errorf("arm64: unsupported condition %q", cond)
 	}

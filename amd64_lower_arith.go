@@ -1495,6 +1495,40 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, rot)
 		return true, false, c.storeReg(dst, "%"+z)
 
+	case "NOTB":
+		// NOT does not modify flags. For a register operand, only the selected
+		// low byte is changed and the remaining register bits are preserved.
+		if len(ins.Args) != 1 {
+			return true, false, fmt.Errorf("amd64 NOTB expects one operand: %q", ins.Raw)
+		}
+		switch ins.Args[0].Kind {
+		case OpReg:
+			r := ins.Args[0].Reg
+			v64, err := c.loadReg(r)
+			if err != nil {
+				return true, false, err
+			}
+			v8 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", v8, v64)
+			not := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i8 %%%s, -1\n", not, v8)
+			return true, false, c.storeRegSized(r, I8, "%"+not)
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[0].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			load := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s, align 1\n", load, p)
+			not := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i8 %%%s, -1\n", not, load)
+			fmt.Fprintf(c.b, "  store i8 %%%s, ptr %s, align 1\n", not, p)
+			return true, false, nil
+		default:
+			return true, false, fmt.Errorf("amd64 NOTB expects reg or mem: %q", ins.Raw)
+		}
+
 	case "NOTL":
 		// 32-bit bitwise NOT, result zero-extended to 64-bit.
 		if len(ins.Args) != 1 || ins.Args[0].Kind != OpReg {

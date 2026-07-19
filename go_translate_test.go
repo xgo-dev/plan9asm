@@ -82,6 +82,40 @@ TEXT indexbytebody<>(SB),NOSPLIT,$0
 	}
 }
 
+func TestTranslateGoModule_UsesManualSigExternalName(t *testing.T) {
+	pkg := mustGoPackage(t, "test/pkg", `package testpkg
+func Call()
+`)
+	asm := []byte(`TEXT ·Call(SB),NOSPLIT,$0-0
+	CALL runtime·memmove(SB)
+	RET
+`)
+
+	for _, goarch := range []string{"amd64", "arm64"} {
+		t.Run(goarch, func(t *testing.T) {
+			tr, err := TranslateGoModule(pkg, asm, GoModuleOptions{
+				FileName:   "call_" + goarch + ".s",
+				GOARCH:     goarch,
+				ResolveSym: testResolveSym("test/pkg"),
+				ManualSig: func(resolved string) (FuncSig, bool) {
+					if resolved != "runtime.memmove" {
+						return FuncSig{}, false
+					}
+					return FuncSig{Name: "memmove", Args: []LLVMType{Ptr, Ptr, I64}, Ret: Ptr}, true
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tr.Module.Dispose()
+			ir := tr.Module.String()
+			if !strings.Contains(ir, "@memmove") || strings.Contains(ir, "runtime.memmove") {
+				t.Fatalf("manual external name not applied:\n%s", ir)
+			}
+		})
+	}
+}
+
 func mustGoPackage(t *testing.T, pkgPath, src string) GoPackage {
 	t.Helper()
 	fset := token.NewFileSet()
