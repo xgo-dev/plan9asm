@@ -163,3 +163,31 @@ RET
 		t.Fatalf("second expanded op=%s, want %s", file.Funcs[0].Instrs[2].Op, Op("ADDL"))
 	}
 }
+
+func TestParseZeroArgFunctionLikeMacroCall(t *testing.T) {
+	src := `
+#define CHECK() \
+	CMP R1, R2 \
+	BGT corrupt
+TEXT ·FnMacro(SB),NOSPLIT,$0
+CHECK()
+corrupt:
+RET
+`
+	file, err := Parse(ArchARM64, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Funcs) != 1 {
+		t.Fatalf("Funcs=%d, want 1", len(file.Funcs))
+	}
+	var branchTarget string
+	for _, ins := range file.Funcs[0].Instrs {
+		if ins.Op == Op("BGT") && len(ins.Args) == 1 {
+			branchTarget = ins.Args[0].Ident
+		}
+	}
+	if branchTarget != "corrupt" {
+		t.Fatalf("BGT target=%q, want %q", branchTarget, "corrupt")
+	}
+}

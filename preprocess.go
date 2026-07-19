@@ -304,7 +304,7 @@ func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, d
 	}
 	for _, name := range macroNames {
 		m := macros[name]
-		if len(m.params) == 0 {
+		if m.params == nil {
 			continue
 		}
 		args, ok := parseMacroCall(trimLine, name, len(m.params))
@@ -319,7 +319,7 @@ func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, d
 		}
 		return out
 	}
-	if m, ok := macros[trimLine]; ok && len(m.params) == 0 {
+	if m, ok := macros[trimLine]; ok && m.params == nil {
 		chunks := strings.Split(m.body, "\n")
 		out := make([]string, 0, len(chunks))
 		for _, ch := range chunks {
@@ -332,7 +332,7 @@ func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, d
 	inlineChanged := false
 	for _, name := range macroNames {
 		m := macros[name]
-		if len(m.params) == 0 {
+		if m.params == nil {
 			continue
 		}
 		nl, changed := expandInlineMacroCalls(line, name, m)
@@ -351,7 +351,7 @@ func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, d
 	// Expand immediate macro refs in-place: $NAME -> $<body>.
 	for _, name := range macroNames {
 		m := macros[name]
-		if len(m.params) != 0 {
+		if m.params != nil {
 			continue
 		}
 		body := strings.TrimSpace(m.body)
@@ -377,7 +377,7 @@ func expandIdentMacros(line string, macros map[string]ppMacro, macroNames []stri
 	changed := false
 	for _, name := range macroNames {
 		m := macros[name]
-		if len(m.params) != 0 {
+		if m.params != nil {
 			continue
 		}
 		body := strings.TrimSpace(m.body)
@@ -463,7 +463,7 @@ func replaceMacroIdents(expr string, macros map[string]ppMacro) string {
 				j++
 			}
 			name := expr[i:j]
-			if m, ok := macros[name]; ok && len(m.params) == 0 && strings.TrimSpace(m.body) != "" {
+			if m, ok := macros[name]; ok && m.params == nil && strings.TrimSpace(m.body) != "" {
 				out.WriteString(strings.TrimSpace(m.body))
 			} else {
 				out.WriteString(name)
@@ -499,6 +499,9 @@ func parseMacroDefine(rest string) (name string, params []string, body string, e
 	}
 	name = rest[:i]
 	if i < len(rest) && rest[i] == '(' {
+		// Keep an empty non-nil slice for function-like macros with no
+		// parameters. A nil slice identifies object-like macros.
+		params = []string{}
 		j := i + 1
 		depth := 1
 		for ; j < len(rest); j++ {
@@ -580,7 +583,7 @@ closeFound:
 }
 
 func expandInlineMacroCalls(line, name string, m ppMacro) (string, bool) {
-	if len(m.params) == 0 || line == "" {
+	if m.params == nil || line == "" {
 		return line, false
 	}
 	var out strings.Builder
