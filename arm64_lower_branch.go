@@ -301,6 +301,7 @@ func (c *arm64Ctx) callSym(symOp Operand) error {
 		// Default for external runtime helpers not discovered in this asm file.
 		csig = FuncSig{Name: callee, Ret: Void}
 	}
+	callee = funcSigSymbol(callee, csig)
 	args := make([]string, 0, len(csig.Args))
 	regCursor := 0
 	for i := 0; i < len(csig.Args); i++ {
@@ -375,6 +376,7 @@ func (c *arm64Ctx) tailCallAndRet(symOp Operand) error {
 		csig = c.sig
 		csig.Name = callee
 	}
+	callee = funcSigSymbol(callee, csig)
 
 	args := make([]string, 0, len(csig.Args))
 	regCursor := 0

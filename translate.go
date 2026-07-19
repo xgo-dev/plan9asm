@@ -213,7 +213,7 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 		if sig.Ret == "" {
 			continue
 		}
-		fmt.Fprintf(b, "declare %s %s(", sig.Ret, llvmGlobal(name))
+		fmt.Fprintf(b, "declare %s %s(", sig.Ret, llvmGlobal(funcSigSymbol(name, sig)))
 		for i, t := range sig.Args {
 			if i > 0 {
 				b.WriteString(", ")
@@ -229,6 +229,13 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 	if len(names) != 0 {
 		b.WriteString("\n")
 	}
+}
+
+func funcSigSymbol(resolved string, sig FuncSig) string {
+	if sig.Name != "" {
+		return sig.Name
+	}
+	return resolved
 }
 
 func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig) {

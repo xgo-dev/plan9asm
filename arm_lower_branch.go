@@ -127,6 +127,7 @@ func (c *armCtx) tailCallAndRet(symOp Operand) error {
 	if !ok {
 		return fmt.Errorf("arm tailcall missing signature for %q", callee)
 	}
+	callee = funcSigSymbol(callee, csig)
 	args := make([]string, 0, len(csig.Args))
 	for i := 0; i < len(csig.Args); i++ {
 		r := Reg(fmt.Sprintf("R%d", i))
@@ -180,6 +181,7 @@ func (c *armCtx) callSym(symOp Operand) error {
 	if !ok {
 		csig = FuncSig{Name: callee, Ret: Void}
 	}
+	callee = funcSigSymbol(callee, csig)
 	args := make([]string, 0, len(csig.Args))
 	for i := 0; i < len(csig.Args); i++ {
 		r := Reg(fmt.Sprintf("R%d", i))
