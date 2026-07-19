@@ -3,7 +3,42 @@
 
 package plan9asm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestTranslateAMD64NOTB(t *testing.T) {
+	src := `
+TEXT notb(SB),NOSPLIT,$0-0
+	MOVQ $0x1234, R11
+	NOTB R11
+	NOTB 3(AX)
+	RET
+`
+	file, err := Parse(ArchAMD64, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "x86_64-unknown-linux-gnu",
+		Sigs: map[string]FuncSig{
+			"notb": {Name: "notb", Ret: Void},
+		},
+		Goarch: "amd64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(ir, "xor i8"); got != 2 {
+		t.Fatalf("NOTB xor count = %d, want 2:\n%s", got, ir)
+	}
+	for _, want := range []string{"and i64", "or i64", "load i8", "store i8"} {
+		if !strings.Contains(ir, want) {
+			t.Fatalf("NOTB output missing %q:\n%s", want, ir)
+		}
+	}
+}
 
 func TestTranslateAMD64SHA1Family(t *testing.T) {
 	src := `
