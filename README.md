@@ -1,6 +1,6 @@
 # plan9asm
 
-[![Build Status](https://github.com/xgo-dev/plan9asm/actions/workflows/go.yml/badge.svg)](https://github.com/xgo-dev/plan9asm/actions/workflows/go.yml)
+[![Build Status](https://github.com/xgo-dev/plan9asm/actions/workflows/go-ci.yml/badge.svg)](https://github.com/xgo-dev/plan9asm/actions/workflows/go-ci.yml)
 [![GitHub release](https://img.shields.io/github/v/tag/xgo-dev/plan9asm.svg?label=release)](https://github.com/xgo-dev/plan9asm/releases)
 [![Coverage Status](https://codecov.io/gh/xgo-dev/plan9asm/branch/main/graph/badge.svg)](https://codecov.io/gh/xgo-dev/plan9asm)
 [![GoDoc](https://pkg.go.dev/badge/github.com/xgo-dev/plan9asm.svg)](https://pkg.go.dev/github.com/xgo-dev/plan9asm)
