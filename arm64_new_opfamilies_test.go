@@ -97,6 +97,33 @@ done:
 	}
 }
 
+func TestTranslateARM64FLDPQ(t *testing.T) {
+	src := `
+TEXT pairload(SB),NOSPLIT,$0-0
+	MOVD $4096, R1
+	FLDPQ (R1), (F0, F1)
+	VMOVI $7, V2.B16
+	RET
+`
+	file, err := Parse(ArchARM64, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ll, err := Translate(file, Options{
+		TargetTriple: "aarch64-unknown-linux-gnu",
+		Sigs: map[string]FuncSig{
+			"pairload": {Name: "pairload", Ret: Void},
+		},
+		Goarch: "arm64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(ll, "load <16 x i8>") != 2 || !strings.Contains(ll, "store <16 x i8>") || !strings.Contains(ll, "i8 7") {
+		t.Fatalf("FLDPQ/VMOVI did not lower as expected:\n%s", ll)
+	}
+}
+
 func TestTranslateARM64SHA3Families(t *testing.T) {
 	src := `
 TEXT sha3ops(SB),NOSPLIT,$0-0

@@ -105,6 +105,18 @@ func arm64ParseVReg(r Reg) (idx int, ok bool) {
 	return n, true
 }
 
+func arm64ParseFReg(r Reg) (idx int, ok bool) {
+	s := strings.ToUpper(strings.TrimSpace(string(r)))
+	if !strings.HasPrefix(s, "F") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(s, "F"))
+	if err != nil || n < 0 || n > 31 {
+		return 0, false
+	}
+	return n, true
+}
+
 func (c *arm64Ctx) scanUsedRegs() {
 	markReg := func(r Reg) {
 		if r == "" {
@@ -113,6 +125,12 @@ func (c *arm64Ctx) scanUsedRegs() {
 		if idx, ok := arm64ParseVReg(r); ok {
 			c.usedVRegs[idx] = true
 			return
+		}
+		// ARM64 F registers alias the corresponding 128-bit V registers. Keep
+		// the scalar slot for existing FP lowering and make the vector slot
+		// available to pair loads such as FLDPQ (F0, F1).
+		if idx, ok := arm64ParseFReg(r); ok {
+			c.usedVRegs[idx] = true
 		}
 		c.usedRegs[r] = true
 	}
