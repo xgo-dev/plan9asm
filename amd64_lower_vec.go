@@ -17,10 +17,11 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		"VPCMPEQB", "VPMOVMSKB", "VZEROUPPER", "VZEROALL", "VPBROADCASTB", "VPAND", "VPXOR", "VPOR", "VPADDD", "VPADDQ", "VPTEST",
 		"VPANDQ", "VPXORQ", "VPORQ", "VPCLMULQDQ", "VPTERNLOGD", "VEXTRACTF32X4",
 		"VPERMB", "VGF2P8AFFINEQB", "VPERMI2B", "VPCOMPRESSQ", "VPOPCNTB", "VPCMPUQ",
+		"VBROADCASTI128", "VBROADCASTF32X2", "VBROADCASTSD", "VXORPD",
 		"VPSHUFB", "VPSHUFD", "VPSLLD", "VPSRLD", "VPSRLQ", "VPSLLQ", "VPSRLDQ", "VPSLLDQ",
 		"VPALIGNR", "VPERM2I128", "VPERM2F128", "VINSERTI128", "VPBLENDD",
 		"PXOR", "PAND", "PANDN", "PADDD", "PADDL", "PSUBL", "PCLMULQDQ", "PCMPEQB", "PCMPEQL", "PMOVMSKB",
-		"PSHUFB", "PSRLDQ", "PSLLDQ", "PSRLQ", "PSRLL", "PSLLL", "PSRAL", "PEXTRD", "PEXTRB",
+		"PSHUFB", "PSRLDQ", "PSLLDQ", "PSRLQ", "PSRLL", "PSLLL", "PSRAL", "PEXTRD", "PEXTRB", "PEXTRQ",
 		"PINSRQ", "PINSRD", "PINSRB", "PINSRW", "PALIGNR", "PUNPCKLBW", "PSHUFL", "PSHUFD", "PSHUFHW", "SHUFPS",
 		"PBLENDW", "PADDQ", "KMOVB", "KMOVW", "KMOVQ", "KXORQ",
 		"SHA1NEXTE", "SHA1MSG1", "SHA1MSG2", "SHA1RNDS4", "SHA256MSG1", "SHA256MSG2", "SHA256RNDS2",
@@ -346,14 +347,31 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		if len(ins.Args) != 4 || ins.Args[0].Kind != OpImm || ins.Args[3].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 VGF2P8AFFINEQB expects $imm, mat, src, dst: %q", ins.Raw)
 		}
-		if _, ok := amd64ParseZReg(ins.Args[3].Reg); !ok {
-			return false, false, nil
+		if _, ok := amd64ParseZReg(ins.Args[3].Reg); ok {
+			if ins.Args[2].Kind == OpReg {
+				if _, ok := amd64ParseZReg(ins.Args[2].Reg); !ok {
+					return false, false, nil
+				}
+			}
+			src, err := c.loadZVecOperand(ins.Args[2])
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeZ(ins.Args[3].Reg, src)
 		}
-		src, err := c.loadZVecOperand(ins.Args[2])
-		if err != nil {
-			return true, false, err
+		if _, ok := amd64ParseYReg(ins.Args[3].Reg); ok {
+			if ins.Args[2].Kind == OpReg {
+				if _, ok := amd64ParseYReg(ins.Args[2].Reg); !ok {
+					return false, false, nil
+				}
+			}
+			src, err := c.loadYVecOperand(ins.Args[2])
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeY(ins.Args[3].Reg, src)
 		}
-		return true, false, c.storeZ(ins.Args[3].Reg, src)
+		return false, false, nil
 
 	case "VPERMI2B":
 		if len(ins.Args) != 3 && len(ins.Args) != 4 {
@@ -514,6 +532,93 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i64> %%%s to <64 x i8>\n", out, t)
 		return true, false, c.storeZ(ins.Args[2].Reg, "%"+out)
+
+	case "VBROADCASTI128":
+		// VBROADCASTI128 Xsrc|mem, Ydst
+		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VBROADCASTI128 expects Xsrc|mem, Ydst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseYReg(ins.Args[1].Reg); !ok {
+			return false, false, nil
+		}
+		src, err := c.loadXVecOperand(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> %s, <32 x i32> %s\n", out, src, src, llvmRepeatI8Mask(16, 32))
+		return true, false, c.storeY(ins.Args[1].Reg, "%"+out)
+
+	case "VBROADCASTF32X2", "VBROADCASTSD":
+		// Both instructions broadcast one 64-bit memory/register value. The
+		// former names the value as two f32 lanes; the latter as one f64 lane.
+		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 %s expects scalar src, vector dst: %q", op, ins.Raw)
+		}
+		v64, err := c.evalI64(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		chunk := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast i64 %s to <8 x i8>\n", chunk, v64)
+		if _, ok := amd64ParseYReg(ins.Args[1].Reg); ok {
+			out := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <8 x i8> %%%s, <8 x i8> %%%s, <32 x i32> %s\n", out, chunk, chunk, llvmRepeatI8Mask(8, 32))
+			return true, false, c.storeY(ins.Args[1].Reg, "%"+out)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[1].Reg); ok {
+			out := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <8 x i8> %%%s, <8 x i8> %%%s, <64 x i32> %s\n", out, chunk, chunk, llvmRepeatI8Mask(8, 64))
+			return true, false, c.storeZ(ins.Args[1].Reg, "%"+out)
+		}
+		return false, false, nil
+
+	case "VXORPD":
+		// VXORPD src1, src2, dst; this is a bitwise operation despite the
+		// floating-point mnemonic, so byte-vector xor preserves all bits.
+		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VXORPD expects src1, src2, dst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[2].Reg); ok {
+			a, err := c.loadZVecOperand(ins.Args[0])
+			if err != nil {
+				return true, false, err
+			}
+			b, err := c.loadZVecOperand(ins.Args[1])
+			if err != nil {
+				return true, false, err
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor <64 x i8> %s, %s\n", t, a, b)
+			return true, false, c.storeZ(ins.Args[2].Reg, "%"+t)
+		}
+		if _, ok := amd64ParseYReg(ins.Args[2].Reg); ok {
+			a, err := c.loadYVecOperand(ins.Args[0])
+			if err != nil {
+				return true, false, err
+			}
+			b, err := c.loadYVecOperand(ins.Args[1])
+			if err != nil {
+				return true, false, err
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor <32 x i8> %s, %s\n", t, a, b)
+			return true, false, c.storeY(ins.Args[2].Reg, "%"+t)
+		}
+		if _, ok := amd64ParseXReg(ins.Args[2].Reg); ok {
+			a, err := c.loadXVecOperand(ins.Args[0])
+			if err != nil {
+				return true, false, err
+			}
+			b, err := c.loadXVecOperand(ins.Args[1])
+			if err != nil {
+				return true, false, err
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor <16 x i8> %s, %s\n", t, a, b)
+			return true, false, c.storeX(ins.Args[2].Reg, "%"+t)
+		}
+		return false, false, nil
 
 	case "VPXOR", "VPOR", "VPADDD", "VPADDQ":
 		// V* three-operand op; support both X and Y destinations.
@@ -2004,6 +2109,38 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		if len(ins.Args) != 4 || ins.Args[0].Kind != OpImm || ins.Args[3].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 VPTERNLOGD expects $imm, src1, src2, dst: %q", ins.Raw)
 		}
+		if _, ok := amd64ParseYReg(ins.Args[3].Reg); ok {
+			if ins.Args[1].Kind == OpReg {
+				if _, ok := amd64ParseYReg(ins.Args[1].Reg); !ok {
+					return false, false, nil
+				}
+			}
+			if ins.Args[2].Kind == OpReg {
+				if _, ok := amd64ParseYReg(ins.Args[2].Reg); !ok {
+					return false, false, nil
+				}
+			}
+			if ins.Args[0].Imm != 0x96 {
+				return true, false, fmt.Errorf("amd64 VPTERNLOGD only supports imm 0x96 for now: %q", ins.Raw)
+			}
+			a, err := c.loadYVecOperand(ins.Args[1])
+			if err != nil {
+				return true, false, err
+			}
+			b, err := c.loadYVecOperand(ins.Args[2])
+			if err != nil {
+				return true, false, err
+			}
+			dstv, err := c.loadY(ins.Args[3].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			x1 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor <32 x i8> %s, %s\n", x1, dstv, a)
+			x2 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor <32 x i8> %%%s, %s\n", x2, x1, b)
+			return true, false, c.storeY(ins.Args[3].Reg, "%"+x2)
+		}
 		if _, ok := amd64ParseZReg(ins.Args[3].Reg); !ok {
 			return false, false, nil
 		}
@@ -2285,6 +2422,38 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 			return true, false, fmt.Errorf("amd64 PEXTRB unsupported dst: %q", ins.Raw)
 		}
 
+	case "PEXTRQ":
+		// PEXTRQ $imm, Xsrc, dstReg|dstMem (extract 64-bit lane)
+		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 PEXTRQ expects $imm, Xsrc, dstReg|dstMem: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
+			return false, false, nil
+		}
+		imm := ins.Args[0].Imm & 1
+		v, err := c.loadX(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		bc := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, v)
+		ex := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 %d\n", ex, bc, imm)
+		switch ins.Args[2].Kind {
+		case OpReg:
+			return true, false, c.storeReg(ins.Args[2].Reg, "%"+ex)
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[2].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s, align 1\n", ex, p)
+			return true, false, nil
+		default:
+			return true, false, fmt.Errorf("amd64 PEXTRQ expects reg or mem destination: %q", ins.Raw)
+		}
+
 	case "PALIGNR":
 		// PALIGNR $imm, Xsrc, Xdst ; dst = alignr(dst, src, imm)
 		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
@@ -2475,6 +2644,22 @@ func llvmAlignRightBytesMask(n int64) string {
 		}
 	}
 	sb.WriteString(">")
+	return sb.String()
+}
+
+func llvmRepeatI8Mask(chunk, width int) string {
+	if chunk <= 0 {
+		chunk = 1
+	}
+	var sb strings.Builder
+	sb.WriteByte('<')
+	for i := 0; i < width; i++ {
+		if i != 0 {
+			sb.WriteString(", ")
+		}
+		fmt.Fprintf(&sb, "i32 %d", i%chunk)
+	}
+	sb.WriteByte('>')
 	return sb.String()
 }
 
