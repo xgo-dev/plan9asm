@@ -1,0 +1,14 @@
+{"module":"fuchsia.googlesource.com/third_party/golang.org/x/crypto.git","version":"v0.57.0","status":"pending"}
+{"module":"github.com/0xPolygon/erigon/erigon-lib","version":"v0.0.0-20260803055935-b778c5b0d1df","status":"pending"}
+{"module":"github.com/ajithor/http2chrome","version":"v0.0.3","status":"pending"}
+{"module":"github.com/alexeyakhunov/go-ethereum","version":"v1.7.3","status":"pending"}
+{"module":"github.com/bozaro/go","version":"v0.0.0-20260528095046-c7e6da5ca596","status":"pending"}
+{"module":"github.com/deadpoets/secmem/secmem-crypto","version":"v0.7.0","status":"pending"}
+{"module":"github.com/fyne-io/mobile","version":"v0.1.2","status":"pending"}
+{"module":"github.com/golangci/go-misc","version":"v0.0.0-20220329215616-d24fe342adfe","status":"pending"}
+{"module":"github.com/pmcalpine/rules_go","version":"v0.0.0-20170731131147-a814e5641ed2","status":"pending"}
+{"module":"github.com/rod-hynes/psiphon-tunnel-core","version":"v0.0.0-20260921160406-9718e9cbedb1","status":"pending"}
+{"module":"github.com/tkuchiki/go-p5-regexp","version":"v0.1.1","status":"pending"}
+{"module":"github.com/voiceblender/goamr-nb","version":"v1.0.0","status":"pending"}
+{"module":"gitlab.com/mayachain/arbitrum/go-ethereum/v3","version":"v3.9.81","status":"pending"}
+{"module":"sigs.k8s.io/node-feature-discovery","version":"v0.19.0","status":"pending"}

@@ -3,6 +3,7 @@ package plan9asm
 import (
 	"bufio"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
@@ -12,13 +13,129 @@ type ppMacro struct {
 	params []string
 }
 
+// Recognize comments in lexical order: // hides any later /*, and quoted
+// constants hide both. A block comment is whitespace, not token concatenation.
+func stripAssemblyComments(line string, inBlock *bool) string {
+	if !*inBlock && !strings.Contains(line, "/") {
+		return line
+	}
+	var out strings.Builder
+	var quote byte
+	for i := 0; i < len(line); {
+		if *inBlock {
+			end := strings.Index(line[i:], "*/")
+			if end < 0 {
+				break
+			}
+			i += end + 2
+			*inBlock = false
+			continue
+		}
+		ch := line[i]
+		if quote != 0 {
+			out.WriteByte(ch)
+			i++
+			if ch == '\\' && quote != '`' && i < len(line) {
+				out.WriteByte(line[i])
+				i++
+			} else if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(line) {
+			if line[i+1] == '/' {
+				break
+			}
+			if line[i+1] == '*' {
+				out.WriteByte(' ')
+				*inBlock = true
+				i += 2
+				continue
+			}
+		}
+		if ch == '"' || ch == '\'' || ch == '`' {
+			quote = ch
+		}
+		out.WriteByte(ch)
+		i++
+	}
+	return out.String()
+}
+
 // preprocess applies a very small preprocessor needed for some stdlib asm:
 //   - strips // comments
 //   - ignores #include
 //   - supports #define NAME <body> with optional single-line continuation via '\'
 //   - expands macros only when a statement is exactly NAME
 func preprocess(src string) (string, error) {
+	return preprocessWithDefines(src, nil)
+}
+
+// GoAssemblerDefines returns the predefined symbols cmd/go passes to cmd/asm.
+// The feature values come from the same GO* environment variables used to
+// select files and configure the assembler invocation.
+func GoAssemblerDefines(goos, goarch string) []string {
+	defines := []string{}
+	if goos != "" {
+		defines = append(defines, "GOOS_"+goos)
+	}
+	if goarch != "" {
+		defines = append(defines, "GOARCH_"+goarch)
+	}
+	switch goarch {
+	case "386":
+		value := os.Getenv("GO386")
+		if value == "" {
+			value = "sse2"
+		}
+		defines = append(defines, "GO386_"+value)
+	case "amd64":
+		value := os.Getenv("GOAMD64")
+		if value == "" {
+			value = "v1"
+		}
+		defines = append(defines, "GOAMD64_"+value)
+	case "arm":
+		value := os.Getenv("GOARM")
+		if value == "" {
+			value = "7"
+		}
+		if strings.Contains(value, "7") {
+			defines = append(defines, "GOARM_7")
+		}
+		if strings.Contains(value, "6") || strings.Contains(value, "7") {
+			defines = append(defines, "GOARM_6")
+		}
+		defines = append(defines, "GOARM_5")
+	case "arm64":
+		if strings.Contains(os.Getenv("GOARM64"), ",lse") {
+			defines = append(defines, "GOARM64_LSE")
+		}
+	}
+	return defines
+}
+
+func preprocessWithDefines(src string, defines []string) (string, error) {
 	macros := map[string]ppMacro{}
+	for _, name := range defines {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			macros[name] = ppMacro{body: "1"}
+		}
+	}
+	macroNames := []string{}
+	refreshMacroNames := func() {
+		macroNames = macroNames[:0]
+		for name := range macros {
+			macroNames = append(macroNames, name)
+		}
+		// Try longer names first to avoid prefix shadowing.
+		sort.Slice(macroNames, func(i, j int) bool {
+			return len(macroNames[i]) > len(macroNames[j])
+		})
+	}
+	refreshMacroNames()
 
 	type ifState struct {
 		outerActive bool
@@ -60,10 +177,38 @@ func preprocess(src string) (string, error) {
 		return val
 	}
 
-	// First pass: collect #define, build output lines for further parsing.
+	// Expand each instruction while its source-order macro environment is live.
+	// Delaying expansion until EOF would apply later #undef/#define changes to
+	// earlier functions, changing both Go's accepted forms and their semantics.
 	lines := []string{}
+	// Conditional directives emitted by a macro must also use the definitions
+	// in force at its invocation, not the final map after the whole source.
+	expandedConditions := map[int]bool{}
+	appendExpanded := func(line string) {
+		for _, expanded := range expandPPLine(line, macros, macroNames, 0) {
+			trim := strings.TrimSpace(expanded)
+			switch {
+			case strings.HasPrefix(trim, "#ifdef"):
+				name := strings.TrimSpace(strings.TrimPrefix(trim, "#ifdef"))
+				expandedConditions[len(lines)] = isDefined(name)
+			case strings.HasPrefix(trim, "#ifndef"):
+				name := strings.TrimSpace(strings.TrimPrefix(trim, "#ifndef"))
+				expandedConditions[len(lines)] = !isDefined(name)
+			case strings.HasPrefix(trim, "#if"):
+				expr := strings.TrimSpace(strings.TrimPrefix(trim, "#if"))
+				expandedConditions[len(lines)] = evalIfExpr(expr)
+			case strings.HasPrefix(trim, "#elif"):
+				expr := strings.TrimSpace(strings.TrimPrefix(trim, "#elif"))
+				expandedConditions[len(lines)] = evalIfExpr(expr)
+			}
+			lines = append(lines, expanded)
+		}
+	}
 
 	sc := bufio.NewScanner(strings.NewReader(src))
+	// The source is already in memory. Its length bounds a physical line,
+	// unlike Scanner's unrelated 64 KiB default (Go assembly has no such cap).
+	sc.Buffer(nil, len(src)+1)
 	inBlockComment := false
 	var defName string
 	var defParams []string
@@ -81,6 +226,7 @@ func preprocess(src string) (string, error) {
 			return fmt.Errorf("invalid #define with empty name")
 		}
 		macros[name] = ppMacro{body: body, params: defParams}
+		refreshMacroNames()
 		defName = ""
 		defParams = nil
 		defBody.Reset()
@@ -91,53 +237,22 @@ func preprocess(src string) (string, error) {
 	lineno := 0
 	for sc.Scan() {
 		lineno++
-		line := sc.Text()
-		// Strip C-style /* ... */ comments (may span lines). Some stdlib asm uses
-		// these in addition to // comments.
-		for {
-			if inBlockComment {
-				if end := strings.Index(line, "*/"); end >= 0 {
-					line = line[end+2:]
-					inBlockComment = false
-					// Continue scanning in case of multiple comment blocks on one line.
-					continue
-				}
-				// Entire line is within a block comment.
-				line = ""
-				break
-			}
-			start := strings.Index(line, "/*")
-			if start < 0 {
-				break
-			}
-			end := strings.Index(line[start+2:], "*/")
-			if end >= 0 {
-				end += start + 2
-				line = line[:start] + line[end+2:]
-				continue
-			}
-			// Unterminated block comment starts here; keep prefix and drop the rest.
-			line = line[:start]
-			inBlockComment = true
-			break
-		}
-		// Strip // comments after block comments.
-		if idx := strings.Index(line, "//"); idx >= 0 {
-			line = line[:idx]
-		}
+		rawLine := sc.Text()
+		// C-style preprocessing splices a physical backslash-newline before
+		// removing comments. Record it before the comment pass below can erase
+		// the slash from a continued multi-line #define.
+		physicalContinuation := strings.HasSuffix(strings.TrimRight(rawLine, " \t\r"), "\\")
+		line := stripAssemblyComments(rawLine, &inBlockComment)
 		line = strings.TrimRight(line, " \t")
-		if strings.TrimSpace(line) == "" {
-			if err := flushDefine(); err != nil {
-				return "", fmt.Errorf("line %d: %v", lineno, err)
-			}
-			continue
-		}
-
+		// cmd/asm also accepts historical assembly that places a // comment
+		// after the continuation slash. In that spelling the slash only becomes
+		// the last token after comment removal (for example "MOVQ ... \\ // why").
+		physicalContinuation = physicalContinuation || strings.HasSuffix(line, "\\")
 		if defCont {
 			// Continue a definition body on the following line(s).
 			if !active {
 				// Discard bodies from inactive blocks.
-				if strings.HasSuffix(strings.TrimSpace(line), "\\") {
+				if physicalContinuation {
 					continue
 				}
 				if err := flushDefine(); err != nil {
@@ -146,8 +261,8 @@ func preprocess(src string) (string, error) {
 				continue
 			}
 			cont := strings.TrimSpace(line)
-			if strings.HasSuffix(cont, "\\") {
-				// Continuation to the next line.
+			if physicalContinuation {
+				// Comment removal may already have removed the slash.
 				cont = strings.TrimSpace(strings.TrimSuffix(cont, "\\"))
 				defBody.WriteString("\n")
 				defBody.WriteString(cont)
@@ -160,11 +275,24 @@ func preprocess(src string) (string, error) {
 			}
 			continue
 		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 
 		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "#include") || strings.HasPrefix(trim, "#undef") {
-			// Ignore includes for now. We don't need textflag.h values because
-			// we treat flags as opaque in TEXT.
+		if strings.HasPrefix(trim, "#include") {
+			// We do not need textflag.h values because TEXT flags are opaque.
+			continue
+		}
+		if strings.HasPrefix(trim, "#undef") {
+			if active {
+				name := strings.TrimSpace(strings.TrimPrefix(trim, "#undef"))
+				if name == "" || strings.ContainsAny(name, " \t") {
+					return "", fmt.Errorf("line %d: invalid #undef: %q", lineno, line)
+				}
+				delete(macros, name)
+				refreshMacroNames()
+			}
 			continue
 		}
 		if strings.HasPrefix(trim, "#ifdef") {
@@ -246,7 +374,7 @@ func preprocess(src string) (string, error) {
 			}
 			defName = name
 			defParams = params
-			if strings.HasSuffix(afterName, "\\") {
+			if physicalContinuation {
 				afterName = strings.TrimSpace(strings.TrimSuffix(afterName, "\\"))
 				defBody.WriteString(afterName)
 				defCont = true
@@ -263,7 +391,7 @@ func preprocess(src string) (string, error) {
 		if !active {
 			continue
 		}
-		lines = append(lines, strings.TrimSpace(line))
+		appendExpanded(strings.TrimSpace(line))
 	}
 	if err := sc.Err(); err != nil {
 		return "", err
@@ -277,19 +405,89 @@ func preprocess(src string) (string, error) {
 		return "", fmt.Errorf("unterminated #if block")
 	}
 
-	// Second pass: expand macro invocations (statement == NAME).
-	macroNames := make([]string, 0, len(macros))
-	for k := range macros {
-		macroNames = append(macroNames, k)
-	}
-	// Expand longer names first to reduce prefix shadowing.
-	sort.Slice(macroNames, func(i, j int) bool { return len(macroNames[i]) > len(macroNames[j]) })
+	// Some Go assembly deliberately places conditionals inside a continued
+	// macro body (runtime's ARM64 BREAK macro is the canonical example). Those
+	// directives become visible only after macro expansion, so evaluate a
+	// second conditional pass instead of leaking them into the instruction
+	// stream.
+	active = true
+	ifStack = nil
+	expandedOpen := []string{}
 	var out strings.Builder
-	for _, line := range lines {
-		for _, ex := range expandPPLine(line, macros, macroNames, 0) {
-			out.WriteString(ex)
-			out.WriteString("\n")
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trim, "#ifdef"):
+			name := strings.TrimSpace(strings.TrimPrefix(trim, "#ifdef"))
+			if name == "" {
+				return "", fmt.Errorf("expanded line %d: invalid #ifdef: %q", i+1, line)
+			}
+			st := ifState{outerActive: active, cond: expandedConditions[i]}
+			ifStack = append(ifStack, st)
+			expandedOpen = append(expandedOpen, trim)
+			active = active && st.cond
+			continue
+		case strings.HasPrefix(trim, "#ifndef"):
+			name := strings.TrimSpace(strings.TrimPrefix(trim, "#ifndef"))
+			if name == "" {
+				return "", fmt.Errorf("expanded line %d: invalid #ifndef: %q", i+1, line)
+			}
+			st := ifState{outerActive: active, cond: expandedConditions[i]}
+			ifStack = append(ifStack, st)
+			expandedOpen = append(expandedOpen, trim)
+			active = active && st.cond
+			continue
+		case strings.HasPrefix(trim, "#if"):
+			st := ifState{outerActive: active, cond: expandedConditions[i]}
+			ifStack = append(ifStack, st)
+			expandedOpen = append(expandedOpen, trim)
+			active = active && st.cond
+			continue
+		case strings.HasPrefix(trim, "#elif"):
+			if len(ifStack) == 0 {
+				return "", fmt.Errorf("expanded line %d: stray #elif", i+1)
+			}
+			top := ifStack[len(ifStack)-1]
+			if top.inElse {
+				return "", fmt.Errorf("expanded line %d: #elif after #else", i+1)
+			}
+			if top.cond {
+				active = false
+				continue
+			}
+			top.cond = expandedConditions[i]
+			ifStack[len(ifStack)-1] = top
+			active = top.outerActive && top.cond
+			continue
+		case strings.HasPrefix(trim, "#else"):
+			if len(ifStack) == 0 {
+				return "", fmt.Errorf("expanded line %d: stray #else", i+1)
+			}
+			top := ifStack[len(ifStack)-1]
+			if top.inElse {
+				return "", fmt.Errorf("expanded line %d: duplicate #else", i+1)
+			}
+			top.inElse = true
+			ifStack[len(ifStack)-1] = top
+			active = top.outerActive && !top.cond
+			continue
+		case strings.HasPrefix(trim, "#endif"):
+			if len(ifStack) == 0 {
+				return "", fmt.Errorf("expanded line %d: stray #endif", i+1)
+			}
+			top := ifStack[len(ifStack)-1]
+			ifStack = ifStack[:len(ifStack)-1]
+			expandedOpen = expandedOpen[:len(expandedOpen)-1]
+			active = top.outerActive
+			continue
 		}
+		if active {
+			out.WriteString(line)
+			out.WriteByte('\n')
+		}
+	}
+	if len(ifStack) != 0 {
+		return "", fmt.Errorf("unterminated expanded #if block: %s", strings.Join(expandedOpen, ", "))
 	}
 	return out.String(), nil
 }
@@ -298,9 +496,23 @@ func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, d
 	if depth >= 16 {
 		return []string{line}
 	}
+	if strings.Contains(line, "\n") {
+		chunks := strings.Split(line, "\n")
+		out := make([]string, 0, len(chunks))
+		for _, chunk := range chunks {
+			out = append(out, expandPPLine(strings.TrimSpace(chunk), macros, macroNames, depth+1)...)
+		}
+		return out
+	}
 	trimLine := strings.TrimSpace(line)
 	if trimLine == "" {
 		return []string{""}
+	}
+	// Conditional directives embedded in a continued macro are evaluated by
+	// preprocessWithDefines after expansion. Their identifiers are macro names,
+	// not replacement tokens; keep the directive text intact for that pass.
+	if strings.HasPrefix(trimLine, "#") {
+		return []string{trimLine}
 	}
 	for _, name := range macroNames {
 		m := macros[name]
@@ -370,7 +582,7 @@ func ppIsIdentChar(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') ||
 		(ch >= 'A' && ch <= 'Z') ||
 		(ch >= '0' && ch <= '9') ||
-		ch == '_'
+		ch == '_' || ch >= 0x80
 }
 
 func expandIdentMacros(line string, macros map[string]ppMacro, macroNames []string) (string, bool) {
@@ -478,7 +690,7 @@ func replaceMacroIdents(expr string, macros map[string]ppMacro) string {
 }
 
 func isIdentStart(ch byte) bool {
-	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch >= 0x80
 }
 
 func isIdentPart(ch byte) bool {
@@ -597,7 +809,10 @@ func expandInlineMacroCalls(line, name string, m ppMacro) (string, bool) {
 		}
 		j += i
 		// Identifier boundary check on the left side.
-		if j > 0 && isIdentPart(line[j-1]) {
+		// Go assembler symbols commonly prefix package-local names with the
+		// UTF-8 middle dot. Treat non-ASCII bytes as identifier bytes here so a
+		// macro named g expands in g(CX), but not inside TEXT ·g(SB).
+		if j > 0 && ppIsIdentChar(line[j-1]) {
 			out.WriteString(line[i : j+1])
 			i = j + 1
 			continue

@@ -11,6 +11,9 @@ func (c *armCtx) imm32(n int64) string {
 }
 
 func (c *armCtx) addrI32(mem MemRef, postInc bool) (addr string, base Reg, inc int64, err error) {
+	if mem.OffRaw != "" && !armNamedStackOffset(mem) {
+		return "", "", 0, fmt.Errorf("arm: unresolved address offset %q requires a typed address form", mem.OffRaw)
+	}
 	base = mem.Base
 	baseVal, err := c.loadReg(base)
 	if err != nil {
@@ -62,6 +65,14 @@ func (c *armCtx) loadMem(mem MemRef, bits int, postInc bool, signed bool) (strin
 	if err != nil {
 		return "", err
 	}
+	out, err := c.loadMemAddress(addr, bits, signed)
+	if err == nil {
+		err = c.updatePostInc(base, inc)
+	}
+	return out, err
+}
+
+func (c *armCtx) loadMemAddress(addr string, bits int, signed bool) (string, error) {
 	pt := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %s to ptr\n", pt, addr)
 	ptr := "%" + pt
@@ -99,9 +110,6 @@ func (c *armCtx) loadMem(mem MemRef, bits int, postInc bool, signed bool) (strin
 	default:
 		return "", fmt.Errorf("arm: unsupported load bits %d", bits)
 	}
-	if err := c.updatePostInc(base, inc); err != nil {
-		return "", err
-	}
 	return out, nil
 }
 
@@ -110,6 +118,13 @@ func (c *armCtx) storeMem(mem MemRef, bits int, postInc bool, v32 string) error 
 	if err != nil {
 		return err
 	}
+	if err := c.storeMemAddress(addr, bits, v32); err != nil {
+		return err
+	}
+	return c.updatePostInc(base, inc)
+}
+
+func (c *armCtx) storeMemAddress(addr string, bits int, v32 string) error {
 	pt := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %s to ptr\n", pt, addr)
 	ptr := "%" + pt
@@ -129,7 +144,7 @@ func (c *armCtx) storeMem(mem MemRef, bits int, postInc bool, v32 string) error 
 	default:
 		return fmt.Errorf("arm: unsupported store bits %d", bits)
 	}
-	return c.updatePostInc(base, inc)
+	return nil
 }
 
 func (c *armCtx) eval32(op Operand, postInc bool) (string, error) {
@@ -218,7 +233,7 @@ func (c *armCtx) evalFPValue32(op Operand) (string, error) {
 	slot, ok := c.fpParams[op.FPOffset]
 	if !ok {
 		for base, candidate := range c.fpParams {
-			if candidate.Type != I64 || op.FPOffset != base+4 {
+			if candidate.Type != I64 && candidate.Type != LLVMType("double") || op.FPOffset != base+4 {
 				continue
 			}
 			p := c.fpParamAlloca[base]
@@ -226,10 +241,16 @@ func (c *armCtx) evalFPValue32(op Operand) (string, error) {
 				return "", fmt.Errorf("arm: missing FP param alloca for +%d(FP)", base)
 			}
 			full := c.newTmp()
+			fullValue := "%" + full
 			hi := c.newTmp()
 			word := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", full, p)
-			fmt.Fprintf(c.b, "  %%%s = lshr i64 %%%s, 32\n", hi, full)
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s\n", full, candidate.Type, p)
+			if candidate.Type == LLVMType("double") {
+				bits := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast double %s to i64\n", bits, fullValue)
+				fullValue = "%" + bits
+			}
+			fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 32\n", hi, fullValue)
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", word, hi)
 			return "%" + word, nil
 		}
@@ -243,10 +264,10 @@ func (c *armCtx) evalFPValue32(op Operand) (string, error) {
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s\n", t, slot.Type, p)
 		arg = "%" + t
-	} else if slot.Field >= 0 {
+	} else if fields := frameSlotFields(slot); len(fields) != 0 {
 		aggTy := c.sig.Args[slot.Index]
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", t, aggTy, arg, slot.Field)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s%s\n", t, aggTy, arg, frameSlotExtractSuffix(slot))
 		arg = "%" + t
 	}
 	switch slot.Type {
@@ -272,16 +293,25 @@ func (c *armCtx) evalFPValue32(op Operand) (string, error) {
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, arg)
 		return "%" + t, nil
+	case LLVMType("double"):
+		bits := c.newTmp()
+		word := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast double %s to i64\n", bits, arg)
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", word, bits)
+		return "%" + word, nil
 	default:
 		return "", fmt.Errorf("arm: unsupported FP slot type %q", slot.Type)
 	}
 }
 
 func (c *armCtx) evalFPAddr32(op Operand) (string, error) {
-	if slot, ok := c.fpResAllocaOff[op.FPOffset]; ok {
-		c.markFPResultAddrTaken(op.FPOffset)
+	ptr, resultOffset, isResult, ok := c.armFramePointer(op.FPOffset, 0)
+	if ok {
+		if isResult {
+			c.markFPResultAddrTaken(resultOffset)
+		}
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i32\n", t, slot)
+		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i32\n", t, ptr)
 		return "%" + t, nil
 	}
 	if op.FPName == "argframe" {
@@ -292,5 +322,97 @@ func (c *armCtx) evalFPAddr32(op Operand) (string, error) {
 		// for using only addressable, modeled slots.
 		return "0", nil
 	}
+	if strings.EqualFold(op.FPName, "sp") && op.FPOffset == -4 {
+		// runtime.vdsoCall spells the caller's stack pointer as $sp-4(FP).
+		// An ordinary LLVM function signature does not expose that caller-owned
+		// address. Match the explicit argframe context fallback above so corpus
+		// and object lowering remain possible; executable ABI coverage must not
+		// treat this placeholder as an addressable modeled frame slot.
+		return "0", nil
+	}
 	return "", fmt.Errorf("arm: unsupported FP addr slot: %s", op.String())
+}
+
+func armFrameTypeSize(typ LLVMType) int64 {
+	switch typ {
+	case I1, I8:
+		return 1
+	case I16:
+		return 2
+	case I32, Ptr, LLVMType("float"):
+		return 4
+	case I64, LLVMType("double"):
+		return 8
+	default:
+		// Frame slots are normally scalar leaves. Preserve the established
+		// conservative aggregate fallback used by the x86 classic-frame model.
+		return 16
+	}
+}
+
+// armFramePointer resolves exact and interior classic-frame offsets to the
+// backing alloca. accessBytes == 0 forms an address; positive sizes additionally
+// prove that the requested load/store remains inside that modeled slot.
+func (c *armCtx) armFramePointer(off, accessBytes int64) (ptr string, base int64, isResult, ok bool) {
+	type candidate struct {
+		slot     FrameSlot
+		ptr      string
+		isResult bool
+	}
+	candidates := make([]candidate, 0, len(c.sig.Frame.Params)+len(c.fpResults))
+	for _, slot := range c.sig.Frame.Params {
+		if p := c.fpParamAlloca[slot.Offset]; p != "" {
+			candidates = append(candidates, candidate{slot: slot, ptr: p})
+		}
+	}
+	for _, slot := range c.fpResults {
+		if p := c.fpResAllocaIdx[slot.Index]; p != "" {
+			candidates = append(candidates, candidate{slot: slot, ptr: p, isResult: true})
+		}
+	}
+	// Prefer an exact slot when one starts at the same offset as the end of an
+	// earlier slot.
+	for pass := 0; pass < 2; pass++ {
+		for _, candidate := range candidates {
+			size := armFrameTypeSize(candidate.slot.Type)
+			exact := off == candidate.slot.Offset
+			inside := off >= candidate.slot.Offset && off < candidate.slot.Offset+size
+			if (pass == 0 && !exact) || (pass == 1 && exact) || !inside {
+				continue
+			}
+			if accessBytes > 0 && off+accessBytes > candidate.slot.Offset+size {
+				continue
+			}
+			resolved := candidate.ptr
+			if delta := off - candidate.slot.Offset; delta != 0 {
+				t := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i32 %d\n", t, resolved, delta)
+				resolved = "%" + t
+			}
+			return resolved, candidate.slot.Offset, candidate.isResult, true
+		}
+	}
+	return "", 0, false, false
+}
+
+func (c *armCtx) loadARMFrameBits(off int64, bits int) (string, error) {
+	ptr, _, _, ok := c.armFramePointer(off, int64(bits/8))
+	if !ok {
+		return "", fmt.Errorf("arm: unsupported %d-bit FP frame load at +%d(FP)", bits, off)
+	}
+	value := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load i%d, ptr %s\n", value, bits, ptr)
+	return "%" + value, nil
+}
+
+func (c *armCtx) storeARMFrameBits(off int64, bits int, value string) error {
+	ptr, resultOffset, isResult, ok := c.armFramePointer(off, int64(bits/8))
+	if !ok {
+		return fmt.Errorf("arm: unsupported %d-bit FP frame store at +%d(FP)", bits, off)
+	}
+	fmt.Fprintf(c.b, "  store i%d %s, ptr %s\n", bits, value, ptr)
+	if isResult {
+		c.markFPResultWritten(resultOffset)
+	}
+	return nil
 }

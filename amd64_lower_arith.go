@@ -24,6 +24,17 @@ func (c *amd64Ctx) loadIntDestination(dst Operand, ty LLVMType) (string, func(st
 			fmt.Fprintf(c.b, "  store %s %s, %s %s, align 1\n", ty, out, ptrType, p)
 			return nil
 		}, nil
+	case OpFP:
+		value, err := c.evalFPToI64(dst.FPOffset)
+		if err != nil {
+			return "", nil, err
+		}
+		if ty != I64 {
+			value = c.truncI64(value, ty)
+		}
+		return value, func(out string) error {
+			return c.storeFPResult(dst.FPOffset, ty, out)
+		}, nil
 	case OpSym:
 		p, err := c.ptrFromSB(dst.Sym)
 		if err != nil {
@@ -48,6 +59,7 @@ type x86FlagSlot struct {
 func (c *amd64Ctx) x86FlagSlots() []x86FlagSlot {
 	flags := []x86FlagSlot{
 		{c.flagsCFSlot, 0},
+		{c.flagsPFSlot, 2},
 		{c.flagsZSlot, 6},
 		{c.flagsSltSlot, 7},
 	}
@@ -100,68 +112,100 @@ func (c *amd64Ctx) truncI64(v string, ty LLVMType) string {
 	return "%" + t
 }
 
-func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	switch op {
-	case "PUSHL":
-		if c.goarch != "386" {
-			return true, false, fmt.Errorf("amd64 PUSHL requires GOARCH=386")
-		}
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 PUSHL expects src: %q", ins.Raw)
-		}
-		v32, err := c.evalIntSized(ins.Args[0], I32)
-		if err != nil {
-			return true, false, err
-		}
-		return true, false, c.pushI32(v32)
-	case "POPL":
-		if c.goarch != "386" {
-			return true, false, fmt.Errorf("amd64 POPL requires GOARCH=386")
-		}
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 POPL expects dst: %q", ins.Raw)
-		}
-		v32, err := c.popI32()
-		if err != nil {
-			return true, false, err
-		}
-		switch ins.Args[0].Kind {
-		case OpReg:
-			return true, false, c.storeRegSized(ins.Args[0].Reg, I32, v32)
-		case OpMem:
-			p, ptrType, err := c.ptrFromMem(ins.Args[0].Mem)
-			if err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  store i32 %s, %s %s, align 1\n", v32, ptrType, p)
-			return true, false, nil
+func isGoYmbRegisterForArch(r Reg, goarch string) bool {
+	if goarch == "386" {
+		// Go classifies SP/BP/SI/DI as Yrl32 in 386 mode, so they do not
+		// directly cover Ymb. Its assembler nevertheless accepts BP/SI/DI
+		// and synthesizes an equivalent sequence through BX; only a direct
+		// SP spelling remains invalid.
+		switch r {
+		case AX, BX, CX, DX, BP, SI, DI, AL, AH, BL, BH, CL, CH, DL, DH:
+			return true
 		default:
-			return true, false, fmt.Errorf("amd64 POPL expects reg/mem dst: %q", ins.Raw)
+			return false
 		}
-	case "PUSHFL":
-		if c.goarch != "386" {
-			return true, false, fmt.Errorf("amd64 PUSHFL requires GOARCH=386")
+	}
+	if isX86YrlRegisterForArch(r, goarch) {
+		return true
+	}
+	switch r {
+	case AL, AH, BL, BH, CL, CH, DL, DH,
+		BPB, SIB, DIB, R8B, R9B, R10B, R11B, R12B, R13B, R14B, R15B:
+		return true
+	default:
+		return false
+	}
+}
+
+// amd64YmbEffectiveRegister mirrors the raw ModRM numbering used when Go's
+// broad Ymb table accepts a byte-register spelling for a wider NEG/NOT opcode.
+func amd64YmbEffectiveRegister(r Reg, bits int) Reg {
+	if bits == 8 {
+		return r
+	}
+	switch r {
+	case AL:
+		return AX
+	case CL:
+		return CX
+	case DL:
+		return DX
+	case BL:
+		return BX
+	case AH:
+		return SP
+	case CH:
+		return BP
+	case DH:
+		return SI
+	case BH:
+		return DI
+	default:
+		if base, _, ok := amd64ByteAlias(r); ok {
+			return base
 		}
-		if len(ins.Args) != 0 {
-			return true, false, fmt.Errorf("amd64 PUSHFL takes no operands: %q", ins.Raw)
-		}
-		flags := c.truncI64(c.packX86Flags(), I32)
-		return true, false, c.pushI32(flags)
-	case "POPFL":
-		if c.goarch != "386" {
-			return true, false, fmt.Errorf("amd64 POPFL requires GOARCH=386")
-		}
-		if len(ins.Args) != 0 {
-			return true, false, fmt.Errorf("amd64 POPFL takes no operands: %q", ins.Raw)
-		}
-		flags32, err := c.popI32()
-		if err != nil {
-			return true, false, err
-		}
-		flags64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", flags64, flags32)
-		c.unpackX86Flags("%" + flags64)
-		return true, false, nil
+		return r
+	}
+}
+
+func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	if ok, terminated, err := c.lowerStackWidth(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerAccumulatorSignExtend(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerBZHI(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerBEXTR(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerADX(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerLeadingZeroCount(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerBMI2VariableShift(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerScalarUnaryYmb(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerLowestSetBitManipulation(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerHardwareRandom(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerScalarADCSBB(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerScalarMultiplyDivide(op, ins); ok {
+		return ok, terminated, err
+	}
+	switch op {
 	case "PUSHAL":
 		if c.goarch != "386" {
 			return true, false, fmt.Errorf("amd64 PUSHAL requires GOARCH=386")
@@ -223,43 +267,24 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			}
 		}
 		return true, false, nil
-	case "PUSHQ":
-		// Stack-manipulation appears in syscall asm stubs (e.g. preserve return
-		// address register around SYSCALL). Lower to the local virtual stack.
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 PUSHQ expects src: %q", ins.Raw)
-		}
-		v, err := c.evalI64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		c.pushI64(v)
-		return true, false, nil
-	case "POPQ":
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 POPQ expects dstReg: %q", ins.Raw)
-		}
-		v := c.popI64()
-		if err := c.storeReg(ins.Args[0].Reg, v); err != nil {
-			return true, false, err
-		}
-		return true, false, nil
-	case "PUSHFQ":
-		// Keep the historical amd64 stack-shape model. The 32-bit PUSHFL path
-		// above carries flags because 386 runtime asm consumes them.
-		c.pushI64("0")
-		return true, false, nil
-	case "POPFQ":
-		_ = c.popI64()
-		return true, false, nil
 	case "LFENCE", "MFENCE", "SFENCE", "PAUSE":
 		if c.goarch == "386" {
 			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", strings.ToLower(string(op)), "~{memory}")
 		}
 		return true, false, nil
-	case "PREFETCHNTA", "EMMS":
-		// Prefetch does not change SSA-visible values. MMX registers are modeled
-		// as ordinary integers, so there is no hardware x87 tag state to clear.
+	case "PREFETCHNTA", "PREFETCHT0", "PREFETCHT1", "PREFETCHT2",
+		"PREFETCHRST2", "PREFETCHIT0", "PREFETCHIT1":
+		// Go 1.27's shared yprefetch table has exactly one memory operand for
+		// each named locality hint. The raw-only 0F 18 /4, /6 and /7 forms
+		// share that one-memory-operand grammar. Cache hints have no
+		// SSA-visible result.
+		if len(ins.Args) != 1 || !isAMD64MemoryOperand(ins.Args[0]) {
+			return true, false, fmt.Errorf("%s %s expects one memory operand: %q", c.goarch, op, ins.Raw)
+		}
+		return true, false, nil
+	case "EMMS":
+		// MMX registers are modeled as ordinary integers, so there is no
+		// hardware x87 tag state to clear.
 		return true, false, nil
 	case "UNDEF":
 		if c.goarch == "386" {
@@ -282,6 +307,16 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			return true, false, err
 		}
 		return true, false, nil
+	case "RDPID":
+		if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 1 || ins.Args[0].Kind != OpReg || !isAMD64YrlRegister(ins.Args[0].Reg) {
+			return true, false, fmt.Errorf("%s RDPID expects one general register with no suffix: %q", c.goarch, ins.Raw)
+		}
+		if c.goarch == "386" && amd64IsExtendedGPRegister(ins.Args[0].Reg) {
+			return true, false, fmt.Errorf("386 RDPID destination is outside the 386 register file: %q", ins.Raw)
+		}
+		value := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.rdpid()\n", value)
+		return true, false, c.storeRegSized(ins.Args[0].Reg, I32, "%"+value)
 	case OpCPUID:
 		eax64, err := c.loadReg(AX)
 		if err != nil {
@@ -424,82 +459,6 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			return true, false, err
 		}
 		return true, false, nil
-	case "NEGL":
-		// 32-bit negate with x86 semantics: write back low 32 bits and zero-extend.
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 NEGL expects dst: %q", ins.Raw)
-		}
-		switch ins.Args[0].Kind {
-		case OpReg:
-			dv, err := c.loadReg(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			t32 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t32, dv)
-			neg := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sub i32 0, %%%s\n", neg, t32)
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ne i32 %%%s, 0\n", cf, t32)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-			z := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, neg)
-			if err := c.storeReg(ins.Args[0].Reg, "%"+z); err != nil {
-				return true, false, err
-			}
-			c.setZSFlagsFromI32("%" + neg)
-			return true, false, nil
-		case OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
-			if err != nil {
-				return true, false, err
-			}
-			p := c.ptrFromAddrI64(addr)
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
-			neg := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sub i32 0, %%%s\n", neg, ld)
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ne i32 %%%s, 0\n", cf, ld)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s, align 1\n", neg, p)
-			c.setZSFlagsFromI32("%" + neg)
-			return true, false, nil
-		default:
-			return true, false, fmt.Errorf("amd64 NEGL expects reg/mem dst: %q", ins.Raw)
-		}
-	case "RCRQ":
-		// Rotate through carry right (count=1) used by runtime time division path.
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpImm {
-			return true, false, fmt.Errorf("amd64 RCRQ expects $count, dstReg: %q", ins.Raw)
-		}
-		if ins.Args[0].Imm != 1 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 RCRQ currently supports $1, reg: %q", ins.Raw)
-		}
-		dv, err := c.loadReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		oldCF := c.loadFlag(c.flagsCFSlot)
-		lsb := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 1\n", lsb, dv)
-		newCF := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", newCF, lsb)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newCF, c.flagsCFSlot)
-		shr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 1\n", shr, dv)
-		cf64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i64\n", cf64, oldCF)
-		cfhi := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, 63\n", cfhi, cf64)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", out, shr, cfhi)
-		if err := c.storeReg(ins.Args[1].Reg, "%"+out); err != nil {
-			return true, false, err
-		}
-		c.setZSFlagsFromI64("%" + out)
-		return true, false, nil
-
 	case "ADDQ", "SUBQ", "XORQ", "ANDQ", "ORQ":
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("amd64 %s expects src, dst: %q", op, ins.Raw)
@@ -566,7 +525,24 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		default:
 			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
 		}
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		if op == "ADDQ" || op == "SUBQ" {
+			xorOperands := c.newTmp()
+			xorResult := c.newTmp()
+			overflowBits := c.newTmp()
+			overflow := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i64 %s, %s\n", xorOperands, dv, src)
+			if op == "ADDQ" {
+				inverted := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = xor i64 %%%s, -1\n", inverted, xorOperands)
+				xorOperands = inverted
+			}
+			fmt.Fprintf(c.b, "  %%%s = xor i64 %s, %s\n", xorResult, dv, r)
+			fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, %%%s\n", overflowBits, xorOperands, xorResult)
+			fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %%%s, 0\n", overflow, overflowBits)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", overflow, c.flagsOFSlot)
+		} else {
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		}
 		c.setZSFlagsFromI64(r)
 		return true, false, nil
 
@@ -757,53 +733,6 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		sf := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp slt i8 %%%s, 0\n", sf, res)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
-		return true, false, nil
-
-	case "ADCXQ", "ADOXQ":
-		// BMI2 add-with-carry chains.
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects src, dstReg: %q", op, ins.Raw)
-		}
-		src, err := c.evalI64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		dst := ins.Args[1].Reg
-		dv, err := c.loadReg(dst)
-		if err != nil {
-			return true, false, err
-		}
-		carryIn := c.loadFlag(c.flagsCFSlot)
-		flagOut := c.flagsCFSlot
-		if op == "ADOXQ" {
-			carryIn = c.loadFlag(c.flagsOFSlot)
-			flagOut = c.flagsOFSlot
-		}
-		cf64t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i64\n", cf64t, carryIn)
-		cf64 := "%" + cf64t
-		sum := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", sum, dv, src)
-		res := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %s\n", res, sum, cf64)
-		out := "%" + res
-		if err := c.storeReg(dst, out); err != nil {
-			return true, false, err
-		}
-		dv128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", dv128, dv)
-		src128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", src128, src)
-		cf128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", cf128, cf64)
-		total1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i128 %%%s, %%%s\n", total1, dv128, src128)
-		total2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i128 %%%s, %%%s\n", total2, total1, cf128)
-		carry := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ugt i128 %%%s, 18446744073709551615\n", carry, total2)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", carry, flagOut)
-		// ADCX/ADOX do not define ZF/SF in the same way as ADD; keep current bits.
 		return true, false, nil
 
 	case "ADDL", "SUBL", "XORL", "ANDL", "ORL":
@@ -1007,6 +936,12 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 				fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", out, p)
 				return nil
 			}
+		case OpFP:
+			var err error
+			v, storeDst, err = c.loadIntDestination(ins.Args[0], I64)
+			if err != nil {
+				return true, false, err
+			}
 		default:
 			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
 		}
@@ -1055,11 +990,17 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 				fmt.Fprintf(c.b, "  store i32 %s, ptr %s, align 1\n", out32, p)
 				return nil
 			}
+		case OpFP:
+			var err error
+			v64, storeDst, err = c.loadIntDestination(ins.Args[0], I32)
+			if err != nil {
+				return true, false, err
+			}
 		default:
 			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
 		}
 		tr := c.newTmp()
-		if ins.Args[0].Kind == OpMem {
+		if ins.Args[0].Kind == OpMem || ins.Args[0].Kind == OpFP {
 			fmt.Fprintf(c.b, "  %%%s = add i32 0, %s\n", tr, v64)
 		} else {
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v64)
@@ -1076,24 +1017,35 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		c.setZSFlagsFromI32("%" + x)
 		return true, false, nil
 
-	case "LEAQ", "LEAL":
-		// LEA{Q,L} srcAddr, dstReg
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects srcAddr, dstReg: %q", op, ins.Raw)
+	case "LEAW", "LEAL", "LEAQ":
+		// All three widths use Go 1.27's sole ym_rl row: an addressable
+		// memory expression and an in-range general-register destination.
+		if op == "LEAQ" && c.goarch == "386" {
+			return true, false, fmt.Errorf("386 LEAQ is illegal in 32-bit mode: %q", ins.Raw)
+		}
+		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg || !isX86YrlRegisterForArch(ins.Args[1].Reg, c.goarch) {
+			return true, false, fmt.Errorf("%s %s expects Ym address and Yrl destination: %q", c.goarch, op, ins.Raw)
 		}
 		dst := ins.Args[1].Reg
 		storeLEA := func(addr string) error {
-			if op == "LEAL" {
+			switch op {
+			case "LEAW":
+				t := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", t, addr)
+				return c.storeRegSized(dst, I16, "%"+t)
+			case "LEAL":
 				t := c.newTmp()
 				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, addr)
-				z := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, t)
-				return c.storeReg(dst, "%"+z)
+				return c.storeRegSized(dst, I32, "%"+t)
+			default:
+				return c.storeRegSized(dst, I64, addr)
 			}
-			return c.storeReg(dst, addr)
 		}
 		switch ins.Args[0].Kind {
 		case OpMem:
+			if !x86MemoryRegistersValidForArch(ins.Args[0].Mem, c.goarch) {
+				return true, false, fmt.Errorf("%s %s source uses an out-of-range address register: %q", c.goarch, op, ins.Raw)
+			}
 			addr, err := c.addrFromMem(ins.Args[0].Mem)
 			if err != nil {
 				return true, false, err
@@ -1152,74 +1104,95 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
 		}
 
-	case "POPCNTL", "POPCNTQ":
-		// POPCNT{L,Q} src, dstReg accepts the same register-or-memory source
-		// family as the Go x86 assembler.
+	case "POPCNTW", "POPCNTL", "POPCNTQ":
+		// All three widths use Go 1.27's yml_rl table: a Yml GP-or-memory
+		// source and a Yrl GP destination. POPCNTQ requires 64-bit mode.
 		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 %s expects src, dstReg: %q", op, ins.Raw)
 		}
+		if op == "POPCNTQ" && c.goarch != "amd64" {
+			return true, false, fmt.Errorf("amd64 %s requires GOARCH=amd64: %q", op, ins.Raw)
+		}
 		validFullReg := func(r Reg) bool {
-			if _, _, ok := amd64ByteAlias(r); ok || r == FS || r == GS {
-				return false
-			}
-			_, ok := amd64FullRegBase(r)
-			return ok
+			return isX86YrlRegisterForArch(r, c.goarch)
 		}
 		if !validFullReg(ins.Args[1].Reg) {
-			return false, false, nil
+			return true, false, fmt.Errorf("amd64 %s destination is outside Go 1.27's Yrl class: %q", op, ins.Raw)
 		}
 		src := ins.Args[0]
 		switch src.Kind {
 		case OpReg:
 			if !validFullReg(src.Reg) {
-				return false, false, nil
+				return true, false, fmt.Errorf("amd64 %s source is outside Go 1.27's Yml class: %q", op, ins.Raw)
 			}
-		case OpMem, OpFP:
-		case OpSym:
-			if strings.HasPrefix(strings.TrimSpace(src.Sym), "$") {
-				return false, false, nil
-			}
+		case OpMem, OpFP, OpSym:
 		default:
-			return false, false, nil
+			return true, false, fmt.Errorf("amd64 %s source is outside Go 1.27's Yml class: %q", op, ins.Raw)
 		}
-		if op == "POPCNTL" {
-			srcv, err := c.evalIntSized(src, I32)
-			if err != nil {
-				return true, false, err
-			}
-			call := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.ctpop.i32(i32 %s)\n", call, srcv)
-			z := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, call)
-			return true, false, c.storeReg(ins.Args[1].Reg, "%"+z)
+		bits := 64
+		typ := I64
+		switch op {
+		case "POPCNTW":
+			bits, typ = 16, I16
+		case "POPCNTL":
+			bits, typ = 32, I32
 		}
-		srcv, err := c.evalIntSized(src, I64)
+		srcv, err := c.evalIntSized(src, typ)
 		if err != nil {
 			return true, false, err
 		}
 		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.ctpop.i64(i64 %s)\n", call, srcv)
-		return true, false, c.storeReg(ins.Args[1].Reg, "%"+call)
+		fmt.Fprintf(c.b, "  %%%s = call i%d @llvm.ctpop.i%d(i%d %s)\n", call, bits, bits, bits, srcv)
+		zero := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i%d %s, 0\n", zero, bits, srcv)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zero, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		return true, false, c.storeRegSized(ins.Args[1].Reg, typ, "%"+call)
 
-	case "TZCNTQ":
-		// TZCNTQ srcReg, dstReg.
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 TZCNTQ expects srcReg, dstReg: %q", ins.Raw)
+	case "TZCNTW", "TZCNTL", "TZCNTQ":
+		// All widths share Go 1.27's ycrc32l table: Yml source and Yrl
+		// destination. TZCNTQ requires 64-bit mode.
+		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 %s expects src, dstReg: %q", op, ins.Raw)
 		}
-		srcv, err := c.loadReg(ins.Args[0].Reg)
+		if op == "TZCNTQ" && c.goarch != "amd64" {
+			return true, false, fmt.Errorf("amd64 TZCNTQ requires GOARCH=amd64: %q", ins.Raw)
+		}
+		if !isX86YrlRegisterForArch(ins.Args[1].Reg, c.goarch) {
+			return true, false, fmt.Errorf("amd64 %s destination is outside Go 1.27's Yrl class: %q", op, ins.Raw)
+		}
+		source := ins.Args[0]
+		if source.Kind == OpReg {
+			if !isX86YrlRegisterForArch(source.Reg, c.goarch) {
+				return true, false, fmt.Errorf("amd64 %s source is outside Go 1.27's Yml class: %q", op, ins.Raw)
+			}
+		} else if !isAMD64MemoryOperand(source) {
+			return true, false, fmt.Errorf("amd64 %s source is outside Go 1.27's Yml class: %q", op, ins.Raw)
+		}
+		bits := 64
+		typ := I64
+		switch op {
+		case "TZCNTW":
+			bits, typ = 16, I16
+		case "TZCNTL":
+			bits, typ = 32, I32
+		}
+		sourceValue, err := c.evalIntSized(source, typ)
 		if err != nil {
 			return true, false, err
 		}
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.cttz.i64(i64 %s, i1 false)\n", call, srcv)
-		if err := c.storeReg(ins.Args[1].Reg, "%"+call); err != nil {
-			return true, false, err
-		}
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", cf, srcv)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		c.setZSFlagsFromI64("%" + call)
-		return true, false, nil
+		count := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i%d @llvm.cttz.i%d(i%d %s, i1 false)\n", count, bits, bits, bits, sourceValue)
+		carry := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i%d %s, 0\n", carry, bits, sourceValue)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", carry, c.flagsCFSlot)
+		zero := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i%d %%%s, 0\n", zero, bits, count)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zero, c.flagsZSlot)
+		return true, false, c.storeRegSized(ins.Args[1].Reg, typ, "%"+count)
 
 	case "BSFW", "BSRW":
 		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
@@ -1344,34 +1317,20 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		cond := ""
 		switch op {
 		case "SETEQ":
-			cond = c.loadFlag(c.flagsZSlot)
+			cond, err = c.x86Condition("EQ")
 		case "SETLT":
-			cond = c.loadFlag(c.flagsSltSlot)
+			cond, err = c.x86Condition("LT")
 		case "SETGT":
-			// signed >
-			slt := c.loadFlag(c.flagsSltSlot)
-			z := c.loadFlag(c.flagsZSlot)
-			t1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, slt, z)
-			t2 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-			cond = "%" + t2
+			cond, err = c.x86Condition("GT")
 		case "SETGE":
-			slt := c.loadFlag(c.flagsSltSlot)
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, slt)
-			cond = "%" + t
+			cond, err = c.x86Condition("GE")
 		case "SETHI":
-			// unsigned >
-			cf := c.loadFlag(c.flagsCFSlot)
-			z := c.loadFlag(c.flagsZSlot)
-			t1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, cf, z)
-			t2 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-			cond = "%" + t2
+			cond, err = c.x86Condition("HI")
 		case "SETCS":
-			cond = c.loadFlag(c.flagsCFSlot)
+			cond, err = c.x86Condition("CS")
+		}
+		if err != nil {
+			return true, false, err
 		}
 		switch ins.Args[0].Kind {
 		case OpReg:
@@ -1393,17 +1352,23 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			return true, false, fmt.Errorf("amd64 %s expects reg, mem, or fp destination: %q", op, ins.Raw)
 		}
 
-	case "CMOVQEQ", "CMOVQNE", "CMOVQCS", "CMOVQCC", "CMOVQGT":
+	case "CMOVQEQ", "CMOVQNE", "CMOVQCS", "CMOVQCC", "CMOVQGT", "CMOVQLE", "CMOVLGT", "CMOVWCC":
 		// Conditional move: src, dstReg
 		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 %s expects src, dstReg: %q", op, ins.Raw)
 		}
-		src, err := c.evalI64(ins.Args[0])
+		ty := I64
+		if op == "CMOVLGT" {
+			ty = I32
+		} else if op == "CMOVWCC" {
+			ty = I16
+		}
+		src, err := c.evalIntSized(ins.Args[0], ty)
 		if err != nil {
 			return true, false, err
 		}
 		dst := ins.Args[1].Reg
-		cur, err := c.loadReg(dst)
+		cur, err := c.evalIntSized(ins.Args[1], ty)
 		if err != nil {
 			return true, false, err
 		}
@@ -1418,12 +1383,12 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			cond = "%" + nz
 		case "CMOVQCS":
 			cond = c.loadFlag(c.flagsCFSlot)
-		case "CMOVQCC":
+		case "CMOVQCC", "CMOVWCC":
 			cf := c.loadFlag(c.flagsCFSlot)
 			nc := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", nc, cf)
 			cond = "%" + nc
-		case "CMOVQGT":
+		case "CMOVQGT", "CMOVLGT":
 			slt := c.loadFlag(c.flagsSltSlot)
 			z := c.loadFlag(c.flagsZSlot)
 			t1 := c.newTmp()
@@ -1431,121 +1396,54 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			t2 := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
 			cond = "%" + t2
+		case "CMOVQLE":
+			slt := c.loadFlag(c.flagsSltSlot)
+			z := c.loadFlag(c.flagsZSlot)
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, slt, z)
+			cond = "%" + t
 		}
 		sel := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %s, i64 %s, i64 %s\n", sel, cond, src, cur)
-		return true, false, c.storeReg(dst, "%"+sel)
+		fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %s, %s %s\n", sel, cond, ty, src, ty, cur)
+		return true, false, c.storeRegSized(dst, ty, "%"+sel)
 
 	case "ANDNL", "ANDNQ":
-		// BMI1 ANDN: dst = ~src2 & src1
-		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects src1, src2, dstReg: %q", op, ins.Raw)
+		// BMI1 ANDN: destination = ~second & first. Go's _yandnl table
+		// accepts Yml,Yrl,Yrl for both spellings. VEX.W is ignored in 386.
+		if len(ins.Args) != 3 || ins.Args[1].Kind != OpReg || !isX86YrlRegisterForArch(ins.Args[1].Reg, c.goarch) || ins.Args[2].Kind != OpReg || !isX86YrlRegisterForArch(ins.Args[2].Reg, c.goarch) {
+			return true, false, fmt.Errorf("%s %s expects GP/memory source, GP source, GP destination: %q", c.goarch, op, ins.Raw)
 		}
-		src1, err := c.evalI64(ins.Args[0])
+		if ins.Args[0].Kind == OpReg {
+			if !isX86YrlRegisterForArch(ins.Args[0].Reg, c.goarch) {
+				return true, false, fmt.Errorf("%s %s first source is outside Go 1.27's Yml class: %q", c.goarch, op, ins.Raw)
+			}
+		} else if !isAMD64MemoryOperand(ins.Args[0]) {
+			return true, false, fmt.Errorf("%s %s first source is outside Go 1.27's Yml class: %q", c.goarch, op, ins.Raw)
+		}
+		typ := I32
+		if op == "ANDNQ" && c.goarch == "amd64" {
+			typ = I64
+		}
+		first, err := c.evalIntSized(ins.Args[0], typ)
 		if err != nil {
 			return true, false, err
 		}
-		src2, err := c.evalI64(ins.Args[1])
+		second, err := c.evalIntSized(ins.Args[1], typ)
 		if err != nil {
 			return true, false, err
 		}
-		dst := ins.Args[2].Reg
-		if op == "ANDNQ" {
-			n := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i64 %s, -1\n", n, src2)
-			a := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, %s\n", a, n, src1)
-			return true, false, c.storeReg(dst, "%"+a)
+		inverted := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor %s %s, -1\n", inverted, typ, second)
+		result := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", result, typ, inverted, first)
+		if typ == I64 {
+			c.setZSFlagsFromI64("%" + result)
+		} else {
+			c.setZSFlagsFromI32("%" + result)
 		}
-		s1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", s1, src1)
-		s2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", s2, src2)
-		n := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i32 %%%s, -1\n", n, s2)
-		a := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", a, n, s1)
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, a)
-		return true, false, c.storeReg(dst, "%"+z)
-
-	case "BEXTRQ":
-		// BMI1 bit field extract: control, src, dst.
-		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 BEXTRQ expects control, src, dstReg: %q", ins.Raw)
-		}
-		ctrl, err := c.evalI64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		src, err := c.evalI64(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		start := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 255\n", start, ctrl)
-		lenShift := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 8\n", lenShift, ctrl)
-		length := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 255\n", length, lenShift)
-		startOK := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %%%s, 64\n", startOK, start)
-		safeStart := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 63\n", safeStart, startOK, start)
-		shifted := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %%%s\n", shifted, src, safeStart)
-		rawLen := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 0\n", rawLen, startOK, length)
-		remain := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = sub i64 64, %%%s\n", remain, safeStart)
-		useRawLen := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %%%s, %%%s\n", useRawLen, rawLen, remain)
-		effLen := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 %%%s\n", effLen, useRawLen, rawLen, remain)
-		isFull := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, 64\n", isFull, effLen)
-		safeLen := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 63\n", safeLen, effLen)
-		one := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i64 1, %%%s\n", one, safeLen)
-		maskTmp := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, -1\n", maskTmp, one)
-		mask := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 -1, i64 %%%s\n", mask, isFull, maskTmp)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, %%%s\n", out, shifted, mask)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+out)
-
-	case "BZHIQ":
-		// BMI2 zero high bits: index, src, dst.
-		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 BZHIQ expects index, src, dstReg: %q", ins.Raw)
-		}
-		idx, err := c.evalI64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		src, err := c.evalI64(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		valid := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, 64\n", valid, idx)
-		isZero := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", isZero, idx)
-		safeIdx := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 63\n", safeIdx, idx)
-		one := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i64 1, %%%s\n", one, safeIdx)
-		maskTmp := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, -1\n", maskTmp, one)
-		maskOrZero := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 0, i64 %%%s\n", maskOrZero, isZero, maskTmp)
-		mask := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 -1\n", mask, valid, maskOrZero)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %%%s\n", out, src, mask)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+out)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		return true, false, c.storeRegSized(ins.Args[2].Reg, typ, "%"+result)
 
 	case "SHRQ", "SHLQ", "SARQ", "SHLL", "SHRL", "SARL", "SALQ", "SALL":
 		// Shift ops:
@@ -1707,38 +1605,6 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 0\n", out, inRange, sh)
 		return true, false, c.storeRegSized(dst, I8, "%"+out)
-
-	case "SHLXQ", "SHRXQ":
-		// BMI2 variable shifts: amt, src, dst.
-		if len(ins.Args) != 3 || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects amt, srcReg, dstReg: %q", op, ins.Raw)
-		}
-		src, err := c.loadReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		var amt string
-		switch ins.Args[0].Kind {
-		case OpImm:
-			amt = fmt.Sprintf("%d", ins.Args[0].Imm&63)
-		case OpReg:
-			av, err := c.loadReg(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			m := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 63\n", m, av)
-			amt = "%" + m
-		default:
-			return true, false, fmt.Errorf("amd64 %s unsupported shift amt: %q", op, ins.Raw)
-		}
-		t := c.newTmp()
-		if op == "SHLXQ" {
-			fmt.Fprintf(c.b, "  %%%s = shl i64 %s, %s\n", t, src, amt)
-		} else {
-			fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %s\n", t, src, amt)
-		}
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+t)
 
 	case "ROLL":
 		// 32-bit rotate-left: count, dstReg.
@@ -1903,18 +1769,26 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		return true, false, c.storeReg(dst, "%"+z)
 
 	case "RORXL", "RORXQ":
-		// BMI2 rotate-right without flags:
-		// - RORXL $imm, srcReg, dstReg (32-bit)
-		// - RORXQ $imm, srcReg, dstReg (64-bit)
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects $imm, srcReg, dstReg: %q", op, ins.Raw)
+		// BMI2 rotate-right without flags. Go's Yml source class accepts a
+		// general register or every ModRM/SIB memory form; Yrl is the complete
+		// destination class. In 386 mode Go accepts the Q spelling too, but
+		// VEX.W is ignored and the architectural operation remains 32-bit.
+		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[2].Kind != OpReg || !isX86YrlRegisterForArch(ins.Args[2].Reg, c.goarch) {
+			return true, false, fmt.Errorf("%s %s expects $imm, GP/memory source, in-range GP destination: %q", c.goarch, op, ins.Raw)
 		}
-		src, err := c.loadReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
+		if ins.Args[1].Kind == OpReg {
+			if !isX86YrlRegisterForArch(ins.Args[1].Reg, c.goarch) {
+				return true, false, fmt.Errorf("%s %s source is outside Go 1.27's Yml class: %q", c.goarch, op, ins.Raw)
+			}
+		} else if !isAMD64MemoryOperand(ins.Args[1]) {
+			return true, false, fmt.Errorf("%s %s source is outside Go 1.27's Yml class: %q", c.goarch, op, ins.Raw)
 		}
 		dst := ins.Args[2].Reg
-		if op == "RORXQ" {
+		if op == "RORXQ" && c.goarch == "amd64" {
+			src, err := c.evalIntSized(ins.Args[1], I64)
+			if err != nil {
+				return true, false, err
+			}
 			n := uint64(ins.Args[0].Imm) & 63
 			neg := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = sub i64 64, %d\n", neg, n)
@@ -1928,104 +1802,24 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", rot, lhs, rhs)
 			return true, false, c.storeReg(dst, "%"+rot)
 		}
+		src, err := c.evalIntSized(ins.Args[1], I32)
+		if err != nil {
+			return true, false, err
+		}
 		n := uint32(ins.Args[0].Imm) & 31
-		tr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, src)
 		neg := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = sub i32 32, %d\n", neg, n)
 		nm := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, 31\n", nm, neg)
 		lhs := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i32 %%%s, %d\n", lhs, tr, n)
+		fmt.Fprintf(c.b, "  %%%s = lshr i32 %s, %d\n", lhs, src, n)
 		rhs := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i32 %%%s, %%%s\n", rhs, tr, nm)
+		fmt.Fprintf(c.b, "  %%%s = shl i32 %s, %%%s\n", rhs, src, nm)
 		rot := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i32 %%%s, %%%s\n", rot, lhs, rhs)
 		z := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, rot)
 		return true, false, c.storeReg(dst, "%"+z)
-
-	case "NOTB":
-		// NOT does not modify flags. For a register operand, only the selected
-		// low byte is changed and the remaining register bits are preserved.
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 NOTB expects one operand: %q", ins.Raw)
-		}
-		switch ins.Args[0].Kind {
-		case OpReg:
-			r := ins.Args[0].Reg
-			v64, err := c.loadReg(r)
-			if err != nil {
-				return true, false, err
-			}
-			v8 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", v8, v64)
-			not := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i8 %%%s, -1\n", not, v8)
-			return true, false, c.storeRegSized(r, I8, "%"+not)
-		case OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
-			if err != nil {
-				return true, false, err
-			}
-			p := c.ptrFromAddrI64(addr)
-			load := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s, align 1\n", load, p)
-			not := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i8 %%%s, -1\n", not, load)
-			fmt.Fprintf(c.b, "  store i8 %%%s, ptr %s, align 1\n", not, p)
-			return true, false, nil
-		default:
-			return true, false, fmt.Errorf("amd64 NOTB expects reg or mem: %q", ins.Raw)
-		}
-
-	case "NOTL":
-		// 32-bit bitwise NOT, result zero-extended to 64-bit.
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 NOTL expects reg: %q", ins.Raw)
-		}
-		r := ins.Args[0].Reg
-		v64, err := c.loadReg(r)
-		if err != nil {
-			return true, false, err
-		}
-		tr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v64)
-		x := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i32 %%%s, -1\n", x, tr)
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, x)
-		return true, false, c.storeReg(r, "%"+z)
-
-	case "NOTQ":
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 NOTQ expects one operand: %q", ins.Raw)
-		}
-		switch ins.Args[0].Kind {
-		case OpReg:
-			r := ins.Args[0].Reg
-			v, err := c.loadReg(r)
-			if err != nil {
-				return true, false, err
-			}
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i64 %s, -1\n", t, v)
-			return true, false, c.storeReg(r, "%"+t)
-		case OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
-			if err != nil {
-				return true, false, err
-			}
-			p := c.ptrFromAddrI64(addr)
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i64 %%%s, -1\n", t, ld)
-			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s, align 1\n", t, p)
-			return true, false, nil
-		default:
-			return true, false, fmt.Errorf("amd64 NOTQ expects reg or mem: %q", ins.Raw)
-		}
 
 	case "BSWAPL":
 		// BSWAPL reg: byte swap low 32 bits and zero-extend result to i64.
@@ -2045,40 +1839,61 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, bswap)
 		return true, false, c.storeReg(r, "%"+z)
 
-	case "MULQ":
-		// MULQ src: RDX:RAX = RAX * src (unsigned).
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 MULQ expects src: %q", ins.Raw)
+	case "MULXL":
+		// BMI2 MULXL src, loDst, hiDst multiplies the low 32 bits of DX by
+		// a 32-bit register or memory source and zero-extends both results.
+		if len(ins.Args) != 3 || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 MULXL expects src, loDst, hiDst: %q", ins.Raw)
 		}
-		src, err := c.evalI64(ins.Args[0])
+		var src32 string
+		switch ins.Args[0].Kind {
+		case OpReg:
+			src64, err := c.loadReg(ins.Args[0].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			value := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", value, src64)
+			src32 = "%" + value
+		case OpMem:
+			pointer, pointerType, err := c.ptrFromMem(ins.Args[0].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			value := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i32, %s %s, align 1\n", value, pointerType, pointer)
+			src32 = "%" + value
+		default:
+			return true, false, fmt.Errorf("amd64 MULXL source must be register or memory: %q", ins.Raw)
+		}
+		dx64, err := c.loadReg(DX)
 		if err != nil {
 			return true, false, err
 		}
-		ax, err := c.loadReg(AX)
-		if err != nil {
-			return true, false, err
-		}
-		a128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", a128, ax)
-		b128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", b128, src)
-		p := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", p, a128, b128)
-		lo := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", lo, p)
+		dx32 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", dx32, dx64)
+		a64 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", a64, dx32)
+		b64 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", b64, src32)
+		product := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = mul i64 %%%s, %%%s\n", product, a64, b64)
+		lo32 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", lo32, product)
 		hiShift := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i128 %%%s, 64\n", hiShift, p)
-		hi := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", hi, hiShift)
-		if err := c.storeReg(AX, "%"+lo); err != nil {
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %%%s, 32\n", hiShift, product)
+		hi32 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", hi32, hiShift)
+		lo64 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", lo64, lo32)
+		hi64 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", hi64, hi32)
+		if err := c.storeReg(ins.Args[1].Reg, "%"+lo64); err != nil {
 			return true, false, err
 		}
-		if err := c.storeReg(DX, "%"+hi); err != nil {
+		if err := c.storeReg(ins.Args[2].Reg, "%"+hi64); err != nil {
 			return true, false, err
 		}
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, hi)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
 		return true, false, nil
 
 	case "MULXQ":
@@ -2114,260 +1929,6 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		}
 		return true, false, nil
 
-	case "MULL":
-		// MULL src: EDX:EAX = EAX * src (unsigned 32-bit)
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 MULL expects src: %q", ins.Raw)
-		}
-		src32, err := c.evalIntSized(ins.Args[0], I32)
-		if err != nil {
-			return true, false, err
-		}
-		ax64, err := c.loadReg(AX)
-		if err != nil {
-			return true, false, err
-		}
-		ax32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", ax32, ax64)
-		az := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", az, ax32)
-		bz := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", bz, src32)
-		p := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = mul i64 %%%s, %%%s\n", p, az, bz)
-		lo32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", lo32, p)
-		hiShift := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %%%s, 32\n", hiShift, p)
-		hi32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", hi32, hiShift)
-		lo64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", lo64, lo32)
-		hi64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", hi64, hi32)
-		if err := c.storeReg(AX, "%"+lo64); err != nil {
-			return true, false, err
-		}
-		if err := c.storeReg(DX, "%"+hi64); err != nil {
-			return true, false, err
-		}
-		return true, false, nil
-
-	case "DIVL":
-		// DIVL src: unsigned divide EDX:EAX by src; quotient->EAX remainder->EDX.
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("amd64 DIVL expects src: %q", ins.Raw)
-		}
-		src32, err := c.evalIntSized(ins.Args[0], I32)
-		if err != nil {
-			return true, false, err
-		}
-		ax64, err := c.loadReg(AX)
-		if err != nil {
-			return true, false, err
-		}
-		dx64, err := c.loadReg(DX)
-		if err != nil {
-			return true, false, err
-		}
-		ax32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", ax32, ax64)
-		dx32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", dx32, dx64)
-		az := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", az, ax32)
-		dz := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", dz, dx32)
-		divisor := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", divisor, src32)
-		hi := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, 32\n", hi, dz)
-		dividend := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", dividend, hi, az)
-		q := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = udiv i64 %%%s, %%%s\n", q, dividend, divisor)
-		r := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = urem i64 %%%s, %%%s\n", r, dividend, divisor)
-		q32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", q32, q)
-		r32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", r32, r)
-		q64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", q64, q32)
-		r64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", r64, r32)
-		if err := c.storeReg(AX, "%"+q64); err != nil {
-			return true, false, err
-		}
-		if err := c.storeReg(DX, "%"+r64); err != nil {
-			return true, false, err
-		}
-		return true, false, nil
-
-	case "IMULL", "IMUL3L":
-		// Signed 32-bit multiply. The one-operand form writes DX:AX; the two-
-		// and three-operand forms write the low word to their explicit dst.
-		switch len(ins.Args) {
-		case 1:
-			src, err := c.evalIntSized(ins.Args[0], I32)
-			if err != nil {
-				return true, false, err
-			}
-			ax, err := c.evalIntSized(Operand{Kind: OpReg, Reg: AX}, I32)
-			if err != nil {
-				return true, false, err
-			}
-			a64 := c.newTmp()
-			b64 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", a64, ax)
-			fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", b64, src)
-			product := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = mul i64 %%%s, %%%s\n", product, a64, b64)
-			lo := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", lo, product)
-			hiShift := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = ashr i64 %%%s, 32\n", hiShift, product)
-			hi := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", hi, hiShift)
-			if err := c.storeRegSized(AX, I32, "%"+lo); err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeRegSized(DX, I32, "%"+hi)
-		case 2:
-			if ins.Args[1].Kind != OpReg {
-				return true, false, fmt.Errorf("amd64 IMULL expects src, dstReg: %q", ins.Raw)
-			}
-			src, err := c.evalIntSized(ins.Args[0], I32)
-			if err != nil {
-				return true, false, err
-			}
-			dst, err := c.evalIntSized(ins.Args[1], I32)
-			if err != nil {
-				return true, false, err
-			}
-			product := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = mul i32 %s, %s\n", product, dst, src)
-			return true, false, c.storeRegSized(ins.Args[1].Reg, I32, "%"+product)
-		case 3:
-			if op != "IMUL3L" || ins.Args[2].Kind != OpReg {
-				return true, false, fmt.Errorf("amd64 %s expects imm, src, dstReg: %q", op, ins.Raw)
-			}
-			a, err := c.evalIntSized(ins.Args[0], I32)
-			if err != nil {
-				return true, false, err
-			}
-			bv, err := c.evalIntSized(ins.Args[1], I32)
-			if err != nil {
-				return true, false, err
-			}
-			product := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = mul i32 %s, %s\n", product, bv, a)
-			return true, false, c.storeRegSized(ins.Args[2].Reg, I32, "%"+product)
-		default:
-			return true, false, fmt.Errorf("amd64 %s unsupported operand count: %q", op, ins.Raw)
-		}
-
-	case "IMULQ", "IMUL3Q":
-		// IMULQ src         -> RDX:RAX = signed RAX*src
-		// IMULQ src, dst    -> dst = signed(dst*src)
-		// IMUL3Q imm,src,dst -> dst = signed(src*imm)
-		switch len(ins.Args) {
-		case 1:
-			src, err := c.evalI64(ins.Args[0])
-			if err != nil {
-				return true, false, err
-			}
-			ax, err := c.loadReg(AX)
-			if err != nil {
-				return true, false, err
-			}
-			a128 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sext i64 %s to i128\n", a128, ax)
-			b128 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sext i64 %s to i128\n", b128, src)
-			p := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", p, a128, b128)
-			lo := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", lo, p)
-			hiShift := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = ashr i128 %%%s, 64\n", hiShift, p)
-			hi := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", hi, hiShift)
-			if err := c.storeReg(AX, "%"+lo); err != nil {
-				return true, false, err
-			}
-			if err := c.storeReg(DX, "%"+hi); err != nil {
-				return true, false, err
-			}
-			return true, false, nil
-		case 2:
-			if ins.Args[1].Kind != OpReg {
-				return true, false, fmt.Errorf("amd64 IMULQ expects src, dstReg: %q", ins.Raw)
-			}
-			src, err := c.evalI64(ins.Args[0])
-			if err != nil {
-				return true, false, err
-			}
-			dst := ins.Args[1].Reg
-			dv, err := c.loadReg(dst)
-			if err != nil {
-				return true, false, err
-			}
-			a128 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sext i64 %s to i128\n", a128, dv)
-			b128 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sext i64 %s to i128\n", b128, src)
-			p := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", p, a128, b128)
-			lo := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", lo, p)
-			return true, false, c.storeReg(dst, "%"+lo)
-		case 3:
-			if op != "IMUL3Q" || ins.Args[2].Kind != OpReg {
-				return true, false, fmt.Errorf("amd64 %s expects imm, src, dstReg: %q", op, ins.Raw)
-			}
-			imm, err := c.evalI64(ins.Args[0])
-			if err != nil {
-				return true, false, err
-			}
-			src, err := c.evalI64(ins.Args[1])
-			if err != nil {
-				return true, false, err
-			}
-			a128 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sext i64 %s to i128\n", a128, src)
-			b128 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sext i64 %s to i128\n", b128, imm)
-			p := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", p, a128, b128)
-			lo := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", lo, p)
-			return true, false, c.storeReg(ins.Args[2].Reg, "%"+lo)
-		default:
-			return true, false, fmt.Errorf("amd64 %s expects 1/2/3 operands: %q", op, ins.Raw)
-		}
-
-	case "NEGQ":
-		// NEGQ reg
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 NEGQ expects reg: %q", ins.Raw)
-		}
-		r := ins.Args[0].Reg
-		v, err := c.loadReg(r)
-		if err != nil {
-			return true, false, err
-		}
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = sub i64 0, %s\n", t, v)
-		out := "%" + t
-		if err := c.storeReg(r, out); err != nil {
-			return true, false, err
-		}
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %s, 0\n", cf, v)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		c.setZSFlagsFromI64(out)
-		return true, false, nil
 	}
 	return false, false, nil
 }

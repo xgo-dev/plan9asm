@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -24,7 +21,7 @@ func TestInferFuncTargetFeatures(t *testing.T) {
 		{
 			name: "amd64 pclmul",
 			arch: ArchAMD64,
-			ops:  []Op{"PCLMULQDQ"},
+			ops:  []Op{"PCLMULQDQ", "VPCLMULQDQ"},
 			want: "+pclmul,+sse4.1",
 		},
 		{
@@ -36,8 +33,50 @@ func TestInferFuncTargetFeatures(t *testing.T) {
 		{
 			name: "amd64 aes",
 			arch: ArchAMD64,
-			ops:  []Op{"AESENC", "AESENCLAST", "AESDEC", "AESDECLAST", "AESIMC", "AESKEYGENASSIST"},
+			ops:  []Op{"AESENC", "AESENCLAST", "AESDEC", "AESDECLAST", "AESIMC", "AESKEYGENASSIST", "VAESENC", "VAESENCLAST", "VAESDEC", "VAESDECLAST", "VAESIMC", "VAESKEYGENASSIST"},
 			want: "+aes",
+		},
+		{
+			name: "amd64 cmpxchg16b",
+			arch: ArchAMD64,
+			ops:  []Op{"CMPXCHG16B"},
+			want: "+cx16",
+		},
+		{
+			name: "x86 cache line writeback",
+			arch: ArchAMD64,
+			ops:  []Op{"CLFLUSH", "CLFLUSHOPT", "CLWB"},
+			want: "+clflushopt,+clwb",
+		},
+		{
+			name: "amd64 round",
+			arch: ArchAMD64,
+			ops:  []Op{"ROUNDPS", "ROUNDPD", "ROUNDSS", "ROUNDSD", "VROUNDPS", "VROUNDPD", "VROUNDSS", "VROUNDSD"},
+			want: "+avx,+sse4.1",
+		},
+		{
+			name: "x86 reciprocal14",
+			arch: ArchAMD64,
+			ops:  []Op{"VRCP14SS", "VRSQRT14PD.Z"},
+			want: "+avx512f,+avx512vl",
+		},
+		{
+			name: "x86 raw fp16",
+			arch: ArchAMD64,
+			ops:  []Op{"VMOVSH", "VADDSH.RU_SAE", "VMAXPH.SAE", "VFMADD213SH", "VFNMADD231PH.Z"},
+			want: "+avx512fp16",
+		},
+		{
+			name: "x86 raw BF16 dot product",
+			arch: ArchAMD64,
+			ops:  []Op{"VDPBF16PS", "VDPBF16PS.BCST.Z"},
+			want: "+avx512bf16,+avx512f",
+		},
+		{
+			name: "x86 single float duplicate is not fp16",
+			arch: ArchAMD64,
+			ops:  []Op{"VMOVSHDUP"},
+			want: "",
 		},
 		{
 			name: "amd64 combined sorted deduped",
@@ -69,6 +108,21 @@ func TestInferFuncTargetFeatures(t *testing.T) {
 				t.Fatalf("inferFuncTargetFeatures(%q, %v) = %q, want %q", tt.arch, tt.ops, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInferFuncTargetFeaturesRawFP16VectorLength(t *testing.T) {
+	for _, op := range []Op{"VFMADD132PH", "VFMSUBADD231PH.Z", "VADDPH"} {
+		for _, reg := range []Reg{"X1", "Y1", "Z1"} {
+			fn := Func{Instrs: []Instr{{Op: op, Args: []Operand{{Kind: OpReg, Reg: reg}}}}}
+			want := "+avx512fp16"
+			if reg != "Z1" {
+				want += ",+avx512vl"
+			}
+			if got := inferFuncTargetFeatures(ArchAMD64, fn); got != want {
+				t.Fatalf("%s %s: features %q, want %q", op, reg, got, want)
+			}
+		}
 	}
 }
 

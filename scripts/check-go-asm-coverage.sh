@@ -70,6 +70,7 @@ if actual_versions != expected_versions:
         "coverage baseline versions differ: "
         f"expected {sorted(expected_versions)}, got {sorted(actual_versions)}"
     )
+latest_version = max(expected_versions, key=lambda item: int(item.split(".")[1]))
 
 fields = (
     "official_opcodes",
@@ -154,13 +155,21 @@ for report_path in report_paths:
             if line.strip() and not line.lstrip().startswith("#")
         }
         catalog = {item["opcode"]: item for item in report["opcode_catalog"]}
-        missing_encoder = sorted(op for op in required if not catalog.get(op, {}).get("encoder_forms"))
-        missing_corpus = sorted(op for op in required if not catalog.get(op, {}).get("observed_in_corpus"))
-        unsupported = sorted(op for op in required if catalog.get(op, {}).get("unsupported_forms"))
-        if missing_encoder or missing_corpus or unsupported:
+        available = required.intersection(catalog)
+        unavailable = sorted(required.difference(available))
+        missing_encoder = sorted(op for op in available if not catalog[op].get("encoder_forms"))
+        missing_corpus = sorted(op for op in available if not catalog[op].get("observed_in_corpus"))
+        unsupported = sorted(op for op in available if catalog[op].get("unsupported_forms"))
+        missing_latest = unavailable if version == latest_version else []
+        if missing_latest or missing_encoder or missing_corpus or unsupported:
             raise SystemExit(
                 f"{version}/arm64: incomplete required Go assembler families: "
-                f"missing_encoder={missing_encoder}, missing_corpus={missing_corpus}, unsupported={unsupported}"
+                f"missing_from_latest={missing_latest}, missing_encoder={missing_encoder}, "
+                f"missing_corpus={missing_corpus}, unsupported={unsupported}"
             )
-        print(f"{version}/arm64: all {len(required)} required opcodes are encoder-defined, observed, and lowerable")
+        print(
+            f"{version}/arm64: all {len(available)} toolchain-available required opcodes "
+            f"are encoder-defined, observed, and lowerable"
+            + (f"; {len(unavailable)} future opcodes are absent from this Go release" if unavailable else "")
+        )
 PY

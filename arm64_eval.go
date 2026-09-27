@@ -13,7 +13,16 @@ func (c *arm64Ctx) imm64(n int64) string {
 // addrI64 computes an i64 address from a MemRef.
 // If postInc is true, mem.Off is treated as post-increment (address displacement is 0).
 func (c *arm64Ctx) addrI64(mem MemRef, postInc bool) (addr string, base Reg, inc int64, err error) {
+	if mem.OffRaw != "" && !arm64NamedStackOffset(mem) {
+		return "", "", 0, fmt.Errorf("arm64: unresolved memory displacement %q", mem.OffRaw)
+	}
 	base = mem.Base
+	// Register encoding 31 denotes SP in an address operand even when the Go
+	// source spells it ZR. RSP is the explicit hardware-stack-pointer spelling;
+	// both use the same modeled stack-pointer slot.
+	if base == ZR || base == Reg("RSP") {
+		base = SP
+	}
 	baseVal, err := c.loadReg(base)
 	if err != nil {
 		return "", "", 0, err
@@ -372,19 +381,11 @@ func (c *arm64Ctx) evalFPValue64(op Operand) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("arm64: unsupported FP param slot: %s", op.String())
 	}
-	idx := slot.Index
-	if idx < 0 || idx >= len(c.sig.Args) {
-		return "", fmt.Errorf("arm64: FP slot %s invalid arg index %d", op.String(), idx)
+	arg, err := c.loadFPParameter(slot)
+	if err != nil {
+		return "", err
 	}
-	arg := fmt.Sprintf("%%arg%d", idx)
-
 	ty := slot.Type
-	if slot.Field >= 0 {
-		aggTy := c.sig.Args[idx]
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", t, aggTy, arg, slot.Field)
-		arg = "%" + t
-	}
 
 	switch string(ty) {
 	case "i64":
@@ -414,10 +415,16 @@ func (c *arm64Ctx) evalFPValue64(op Operand) (string, error) {
 
 func (c *arm64Ctx) evalFPAddr64(op Operand) (string, error) {
 	p, ok := c.fpResAllocaOff[op.FPOffset]
+	result := ok
+	if !ok {
+		p, ok = c.fpParamAlloca[op.FPOffset]
+	}
 	if !ok {
 		return "0", nil
 	}
-	c.markFPResultAddrTaken(op.FPOffset)
+	if result {
+		c.markFPResultAddrTaken(op.FPOffset)
+	}
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)
 	return "%" + t, nil

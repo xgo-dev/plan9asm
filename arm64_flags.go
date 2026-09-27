@@ -10,6 +10,10 @@ func (c *arm64Ctx) storeFlag(slot string, v string) {
 }
 
 func (c *arm64Ctx) setFlagsSub(dst, src, res string) {
+	c.setFlagsSubWithCarry(dst, src, res, "")
+}
+
+func (c *arm64Ctx) setFlagsSubWithCarry(dst, src, res, carryValue string) {
 	// NZCV for subtraction:
 	// Z: res==0
 	// N: res<0 (signed)
@@ -21,8 +25,12 @@ func (c *arm64Ctx) setFlagsSub(dst, src, res string) {
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", z, res)
 	n := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %s, 0\n", n, res)
-	carry := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp uge i64 %s, %s\n", carry, dst, src)
+	carry := carryValue
+	if carry == "" {
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp uge i64 %s, %s\n", t, dst, src)
+		carry = "%" + t
+	}
 
 	// overflow = ((dst ^ src) & (dst ^ res)) < 0
 	x1 := c.newTmp()
@@ -36,11 +44,15 @@ func (c *arm64Ctx) setFlagsSub(dst, src, res string) {
 
 	c.storeFlag(c.flagsZSlot, "%"+z)
 	c.storeFlag(c.flagsNSlot, "%"+n)
-	c.storeFlag(c.flagsCSlot, "%"+carry)
+	c.storeFlag(c.flagsCSlot, carry)
 	c.storeFlag(c.flagsVSlot, "%"+ov)
 }
 
 func (c *arm64Ctx) setFlagsSub32(dst, src, res string) {
+	c.setFlagsSub32WithCarry(dst, src, res, "")
+}
+
+func (c *arm64Ctx) setFlagsSub32WithCarry(dst, src, res, carryValue string) {
 	// SUBSW computes NZCV from the low 32 bits, before the architectural
 	// zero-extension of the result into the 64-bit register file.
 	c.flagsWritten = true
@@ -49,8 +61,12 @@ func (c *arm64Ctx) setFlagsSub32(dst, src, res string) {
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
 	n := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", n, res)
-	carry := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp uge i32 %s, %s\n", carry, dst, src)
+	carry := carryValue
+	if carry == "" {
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp uge i32 %s, %s\n", t, dst, src)
+		carry = "%" + t
+	}
 	x1 := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x1, dst, src)
 	x2 := c.newTmp()
@@ -62,11 +78,15 @@ func (c *arm64Ctx) setFlagsSub32(dst, src, res string) {
 
 	c.storeFlag(c.flagsZSlot, "%"+z)
 	c.storeFlag(c.flagsNSlot, "%"+n)
-	c.storeFlag(c.flagsCSlot, "%"+carry)
+	c.storeFlag(c.flagsCSlot, carry)
 	c.storeFlag(c.flagsVSlot, "%"+ov)
 }
 
 func (c *arm64Ctx) setFlagsAdd(dst, src, res string) {
+	c.setFlagsAddWithCarry(dst, src, res, "")
+}
+
+func (c *arm64Ctx) setFlagsAddWithCarry(dst, src, res, carryValue string) {
 	// NZCV for addition:
 	// Z: res==0
 	// N: res<0 (signed)
@@ -78,8 +98,12 @@ func (c *arm64Ctx) setFlagsAdd(dst, src, res string) {
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", z, res)
 	n := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %s, 0\n", n, res)
-	carry := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, %s\n", carry, res, dst)
+	carry := carryValue
+	if carry == "" {
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, %s\n", t, res, dst)
+		carry = "%" + t
+	}
 
 	// overflow = (~(dst ^ src) & (dst ^ res)) < 0
 	x1 := c.newTmp()
@@ -95,7 +119,42 @@ func (c *arm64Ctx) setFlagsAdd(dst, src, res string) {
 
 	c.storeFlag(c.flagsZSlot, "%"+z)
 	c.storeFlag(c.flagsNSlot, "%"+n)
-	c.storeFlag(c.flagsCSlot, "%"+carry)
+	c.storeFlag(c.flagsCSlot, carry)
+	c.storeFlag(c.flagsVSlot, "%"+ov)
+}
+
+func (c *arm64Ctx) setFlagsAdd32(dst, src, res string) {
+	c.setFlagsAdd32WithCarry(dst, src, res, "")
+}
+
+func (c *arm64Ctx) setFlagsAdd32WithCarry(dst, src, res, carryValue string) {
+	// ADDSW/CMNW compute flags from the low 32-bit sum.
+	c.flagsWritten = true
+
+	z := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
+	n := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", n, res)
+	carry := carryValue
+	if carry == "" {
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, %s\n", t, res, dst)
+		carry = "%" + t
+	}
+	x1 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x1, dst, src)
+	nx1 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = xor i32 %%%s, -1\n", nx1, x1)
+	x2 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x2, dst, res)
+	x3 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", x3, nx1, x2)
+	ov := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", ov, x3)
+
+	c.storeFlag(c.flagsZSlot, "%"+z)
+	c.storeFlag(c.flagsNSlot, "%"+n)
+	c.storeFlag(c.flagsCSlot, carry)
 	c.storeFlag(c.flagsVSlot, "%"+ov)
 }
 
@@ -182,7 +241,12 @@ func (c *arm64Ctx) setFlagsLogic32(res string) {
 
 func (c *arm64Ctx) condValue(cond string) (string, error) {
 	if !c.flagsWritten {
-		return "", fmt.Errorf("%w: arm64 condition %s has no prior flags write", ErrProbeNeedsContext, cond)
+		if c.flagFlow == nil {
+			return "", fmt.Errorf("%w: arm64 condition %s has no prior flags write", ErrProbeNeedsContext, cond)
+		}
+		// A predecessor may occur later in source order. Check every incoming
+		// path after lowering has recorded the actual flag writes and edges.
+		c.flagFlow.blocks[c.flagFlow.current].condition = cond
 	}
 	ldN := c.newTmp()
 	ldZ := c.newTmp()

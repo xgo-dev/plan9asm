@@ -185,3 +185,240 @@ TEXT ·families(SB), NOSPLIT, $0-16
 	FMOVD R2, F4
 	FMOVQ F4, 592(R0)
 	RET
+
+// scalarFloatSquareRoots covers scalar S/D constants, F-register copies,
+// F<->general-register bit moves, memory stores, and square roots.
+TEXT ·scalarFloatSquareRoots(SB), NOSPLIT, $0-8
+	MOVD out+0(FP), R0
+	FMOVS $(4.0), F0
+	FSQRTS F0, F1
+	FMOVS F1, 0(R0)
+	FMOVS F1, R1
+	FMOVS R1, F2
+	FMOVS F2, 4(R0)
+	FMOVD $(16.0), F3
+	FSQRTD F3, F4
+	FMOVD F4, 8(R0)
+	RET
+
+// fusedMultiplyAddSemantics distinguishes all four sign variants and both
+// scalar widths. In Go assembler order the operands are Fm, Fa, Fn, Fd.
+TEXT ·fusedMultiplyAddSemantics(SB), NOSPLIT, $0-8
+	MOVD out+0(FP), R0
+	FMOVS $(2.0), F0
+	FMOVS $(5.0), F1
+	FMOVS $(3.0), F2
+	FMADDS F0, F1, F2, F3
+	FMSUBS F0, F1, F2, F4
+	FNMADDS F0, F1, F2, F5
+	FNMSUBS F0, F1, F2, F6
+	FMOVS F3, 0(R0)
+	FMOVS F4, 4(R0)
+	FMOVS F5, 8(R0)
+	FMOVS F6, 12(R0)
+
+	FMOVD $(2.0), F10
+	FMOVD $(5.0), F11
+	FMOVD $(3.0), F12
+	FMADDD F10, F11, F12, F13
+	FMSUBD F10, F11, F12, F14
+	FNMADDD F10, F11, F12, F15
+	FNMSUBD F10, F11, F12, F16
+	FMOVD F13, 16(R0)
+	FMOVD F14, 24(R0)
+	FMOVD F15, 32(R0)
+	FMOVD F16, 40(R0)
+	RET
+
+// vectorPermuteSemantics fixes the Plan 9 Vm,Vn,Vd operand order and all six
+// ZIP/UZP/TRN lane-selection variants with distinguishable byte inputs.
+TEXT ·vectorPermuteSemantics(SB), NOSPLIT, $0-24
+	MOVD out+0(FP), R0
+	MOVD n+8(FP), R1
+	MOVD m+16(FP), R2
+	FMOVQ (R1), F0
+	FMOVQ (R2), F1
+	VZIP1 V1.B16, V0.B16, V2.B16
+	FMOVQ F2, 0(R0)
+	VZIP2 V1.B16, V0.B16, V2.B16
+	FMOVQ F2, 16(R0)
+	VUZP1 V1.B16, V0.B16, V2.B16
+	FMOVQ F2, 32(R0)
+	VUZP2 V1.B16, V0.B16, V2.B16
+	FMOVQ F2, 48(R0)
+	VTRN1 V1.B16, V0.B16, V2.B16
+	FMOVQ F2, 64(R0)
+	VTRN2 V1.B16, V0.B16, V2.B16
+	FMOVQ F2, 80(R0)
+	RET
+
+// vectorWideningShiftSemantics distinguishes signed/unsigned extension,
+// low/high source halves, and the immediate-shift forms of the family.
+TEXT ·vectorWideningShiftSemantics(SB), NOSPLIT, $0-16
+	MOVD out+0(FP), R0
+	MOVD source+8(FP), R1
+	FMOVQ (R1), F0
+	VUXTL V0.B8, V1.H8
+	FMOVQ F1, 0(R0)
+	VUXTL2 V0.B16, V1.H8
+	FMOVQ F1, 16(R0)
+	VSXTL V0.B8, V1.H8
+	FMOVQ F1, 32(R0)
+	VSXTL2 V0.B16, V1.H8
+	FMOVQ F1, 48(R0)
+	VUSHLL $7, V0.B8, V1.H8
+	FMOVQ F1, 64(R0)
+	VUSHLL2 $1, V0.B16, V1.H8
+	FMOVQ F1, 80(R0)
+	VSSHLL $3, V0.B8, V1.H8
+	FMOVQ F1, 96(R0)
+	VSSHLL2 $2, V0.B16, V1.H8
+	FMOVQ F1, 112(R0)
+	RET
+
+// scalarExtendSemantics distinguishes 64-bit and W-register destinations for
+// every signed and unsigned scalar extend mnemonic in Go's shared optab row.
+TEXT ·scalarExtendSemantics(SB), NOSPLIT, $0-16
+	MOVD out+0(FP), R0
+	MOVD value+8(FP), R1
+	SXTB R1, R2
+	MOVD R2, 0(R0)
+	SXTBW R1, R2
+	MOVD R2, 8(R0)
+	SXTH R1, R2
+	MOVD R2, 16(R0)
+	SXTHW R1, R2
+	MOVD R2, 24(R0)
+	SXTW R1, R2
+	MOVD R2, 32(R0)
+	UXTB R1, R2
+	MOVD R2, 40(R0)
+	UXTBW R1, R2
+	MOVD R2, 48(R0)
+	UXTH R1, R2
+	MOVD R2, 56(R0)
+	UXTHW R1, R2
+	MOVD R2, 64(R0)
+	UXTW R1, R2
+	MOVD R2, 72(R0)
+	RET
+
+TEXT ·vectorCountBitsSemantics(SB), NOSPLIT, $0-16
+	MOVD out+0(FP), R0
+	MOVD source+8(FP), R1
+	FMOVQ (R1), F0
+	VCNT V0.B8, V1.B8
+	FMOVQ F1, 0(R0)
+	VCNT V0.B16, V1.B16
+	FMOVQ F1, 16(R0)
+	RET
+
+TEXT ·unsignedWideningAddSemantics(SB), NOSPLIT, $0-24
+	MOVD out+0(FP), R0
+	MOVD narrow+8(FP), R1
+	MOVD addend+16(FP), R2
+	FMOVQ (R1), F0
+	FMOVQ (R2), F1
+	VUADDW V0.B8, V1.H8, V2.H8
+	FMOVQ F2, 0(R0)
+	VUADDW V0.H4, V1.S4, V2.S4
+	FMOVQ F2, 16(R0)
+	VUADDW V0.S2, V1.D2, V2.D2
+	FMOVQ F2, 32(R0)
+	VUADDW2 V0.B16, V1.H8, V2.H8
+	FMOVQ F2, 48(R0)
+	VUADDW2 V0.H8, V1.S4, V2.S4
+	FMOVQ F2, 64(R0)
+	VUADDW2 V0.S4, V1.D2, V2.D2
+	FMOVQ F2, 80(R0)
+	RET
+
+// pairedAtomicSemantics exercises success and failure paths for both CASP
+// widths and for the load-exclusive/store-exclusive pair family.
+TEXT ·pairedAtomicSemantics(SB), NOSPLIT, $0-16
+	MOVD out+0(FP), R0
+	MOVD data+8(FP), R1
+
+	// CASPD success: compare registers receive the old memory pair and the
+	// destination pair is installed.
+	MOVD $0x11, R2
+	MOVD $0x22, R3
+	MOVD $0xaa, R4
+	MOVD $0xbb, R5
+	MOVD R1, R6
+	CASPD (R2, R3), (R6), (R4, R5)
+	MOVD R2, 0(R0)
+	MOVD R3, 8(R0)
+	MOVD 0(R6), R8
+	MOVD R8, 16(R0)
+	MOVD 8(R6), R8
+	MOVD R8, 24(R0)
+
+	// CASPD failure: memory is unchanged and the compare pair receives its
+	// actual contents.
+	MOVD $0x99, R2
+	MOVD $0x88, R3
+	MOVD $0xcc, R4
+	MOVD $0xdd, R5
+	ADD $16, R1, R6
+	CASPD (R2, R3), (R6), (R4, R5)
+	MOVD R2, 32(R0)
+	MOVD R3, 40(R0)
+	MOVD 0(R6), R8
+	MOVD R8, 48(R0)
+	MOVD 8(R6), R8
+	MOVD R8, 56(R0)
+
+	// CASPW compares the low 32 bits of each register and zero-extends the
+	// loaded pair back into the compare registers.
+	MOVD $0xffffffff00000011, R2
+	MOVD $0xeeeeeeee00000022, R3
+	MOVD $0xdddddddd000000aa, R4
+	MOVD $0xcccccccc000000bb, R5
+	ADD $32, R1, R6
+	CASPW (R2, R3), (R6), (R4, R5)
+	MOVD R2, 64(R0)
+	MOVD R3, 72(R0)
+	MOVD 0(R6), R8
+	MOVD R8, 80(R0)
+
+	MOVD $0xffffffff00000099, R2
+	MOVD $0xeeeeeeee00000088, R3
+	MOVD $0xdddddddd000000cc, R4
+	MOVD $0xcccccccc000000dd, R5
+	ADD $40, R1, R6
+	CASPW (R2, R3), (R6), (R4, R5)
+	MOVD R2, 88(R0)
+	MOVD R3, 96(R0)
+	MOVD 0(R6), R8
+	MOVD R8, 104(R0)
+
+	// A matching LDXP/STXP reservation succeeds.
+	ADD $48, R1, R6
+	LDXP (R6), (R2, R3)
+	MOVD R2, 112(R0)
+	MOVD R3, 120(R0)
+	MOVD $0xcc, R4
+	MOVD $0xdd, R5
+	STXP (R4, R5), (R6), R7
+	MOVD R7, 128(R0)
+	MOVD 0(R6), R8
+	MOVD R8, 136(R0)
+	MOVD 8(R6), R8
+	MOVD R8, 144(R0)
+
+	// An intervening store invalidates an LDAXPW reservation, so STLXPW
+	// reports failure and leaves the intervening value in memory.
+	ADD $64, R1, R6
+	LDAXPW (R6), (R2, R3)
+	MOVD R2, 152(R0)
+	MOVD R3, 160(R0)
+	MOVD $0x000000aa00000099, R8
+	MOVD R8, 0(R6)
+	MOVD $0xcc, R4
+	MOVD $0xdd, R5
+	STLXPW (R4, R5), (R6), R7
+	MOVD R7, 168(R0)
+	MOVD 0(R6), R8
+	MOVD R8, 176(R0)
+	RET

@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -155,8 +156,6 @@ func TestTranslate386RejectsInvalidInstructionForms(t *testing.T) {
 		{name: "cld operand", instruction: "CLD AX", want: "CLD takes no operands"},
 		{name: "std operand", instruction: "STD AX", want: "STD takes no operands"},
 		{name: "rep operand", instruction: "REP AX", want: "REP takes no operands"},
-		{name: "repne movs", instruction: "REPN; MOVSB", want: "REPN is unsupported for MOVSB"},
-		{name: "rep scas", instruction: "REP; SCASB", want: "REP SCASB is not yet supported"},
 		{name: "movsb operand", instruction: "MOVSB AX", want: "MOVSB takes no operands"},
 		{name: "rdtsc operand", instruction: "RDTSC AX", want: "RDTSC takes no operands"},
 		{name: "rdtscp operand", instruction: "RDTSCP AX", want: "RDTSCP takes no operands"},
@@ -170,34 +169,31 @@ func TestTranslate386RejectsInvalidInstructionForms(t *testing.T) {
 		{name: "pushal operand", instruction: "PUSHAL AX", want: "PUSHAL takes no operands"},
 		{name: "popal operand", instruction: "POPAL AX", want: "POPAL takes no operands"},
 		{name: "unmodeled direct sp write", instruction: "XORL AX, SP", want: "direct SP write is unsupported"},
-		{name: "cmpxchg8b destination", instruction: "CMPXCHG8B AX", want: "CMPXCHG8B expects mem"},
-		{name: "cmpxchg8b segment", instruction: "CMPXCHG8B 0(FS)", want: "does not support segment-relative memory"},
 		{name: "fmovd count", instruction: "FMOVD F0", want: "FMOVD expects src, dst"},
-		{name: "fmovd destination", instruction: "FMOVD F0, AX", want: "unsupported x87 double destination"},
-		{name: "fmovdp count", instruction: "FMOVDP F0", want: "FMOVDP expects src, dst"},
-		{name: "fmovdp destination", instruction: "FMOVDP F0, AX", want: "unsupported x87 double destination"},
-		{name: "fmovv count", instruction: "FMOVV AX", want: "FMOVV expects src, dst"},
-		{name: "fmovv destination", instruction: "FMOVV AX, F1", want: "FMOVV expects F0 destination"},
-		{name: "fmovvp count", instruction: "FMOVVP F0", want: "FMOVVP expects src, dst"},
+		{name: "fmovd destination", instruction: "FMOVD F0, AX", want: "FMOVD expects memory,F0"},
+		{name: "fmovdp count", instruction: "FMOVDP F0", want: "FMOVDP expects F0 source"},
+		{name: "fmovdp destination", instruction: "FMOVDP F0, AX", want: "FMOVDP expects F0 source"},
+		{name: "fmovv count", instruction: "FMOVV AX", want: "FMOVV expects memory source"},
+		{name: "fmovv destination", instruction: "FMOVV AX, F1", want: "FMOVV expects memory source"},
+		{name: "fmovvp count", instruction: "FMOVVP F0", want: "FMOVVP expects F0 source"},
 		{name: "fmovvp source", instruction: "FMOVVP F1, 0(SP)", want: "FMOVVP expects F0 source"},
-		{name: "fmovvp destination", instruction: "FMOVVP F0, AX", want: "unsupported x87 integer destination"},
+		{name: "fmovvp destination", instruction: "FMOVVP F0, AX", want: "FMOVVP expects F0 source"},
 		{name: "fxchd count", instruction: "FXCHD F0", want: "FXCHD expects Fsrc, Fdst"},
 		{name: "fxchd registers", instruction: "FXCHD AX, BX", want: "FXCHD expects x87 registers"},
 		{name: "fdivd count", instruction: "FDIVD F0", want: "FDIVD expects src, dst"},
-		{name: "fdivd destination", instruction: "FDIVD F0, $1", want: "unsupported x87 double destination"},
+		{name: "fdivd destination", instruction: "FDIVD F0, $1", want: "FDIVD expects memory,F0"},
 		{name: "fadddp count", instruction: "FADDDP F0", want: "FADDDP expects src, dst"},
-		{name: "fadddp destination", instruction: "FADDDP F0, $1", want: "unsupported x87 double destination"},
-		{name: "fstcw count", instruction: "FSTCW", want: "FSTCW expects dst"},
-		{name: "fstcw destination", instruction: "FSTCW ret+0(FP)", want: "unsupported x87 word destination"},
-		{name: "fldcw count", instruction: "FLDCW", want: "FLDCW expects src"},
+		{name: "fadddp destination", instruction: "FADDDP F0, $1", want: "FADDDP expects F0 source"},
+		{name: "fstcw count", instruction: "FSTCW", want: "FSTCW expects memory destination"},
+		{name: "fstcw undeclared FP destination", instruction: "FSTCW ret+0(FP)", want: "unsupported FP write slot"},
+		{name: "fldcw count", instruction: "FLDCW", want: "FLDCW expects memory source"},
 		{name: "frndint operand", instruction: "FRNDINT AX", want: "FRNDINT takes no operands"},
 		{name: "fabs operand", instruction: "FABS AX", want: "FABS takes no operands"},
 		{name: "fucomi count", instruction: "FUCOMI F0", want: "FUCOMI expects lhs, rhs"},
 		{name: "ftst operand", instruction: "FTST AX", want: "FTST takes no operands"},
-		{name: "fstsw count", instruction: "FSTSW", want: "FSTSW expects dst"},
-		{name: "fstsw destination", instruction: "FSTSW ret+0(FP)", want: "unsupported x87 word destination"},
+		{name: "fstsw count", instruction: "FSTSW", want: "FSTSW expects memory destination"},
+		{name: "fstsw undeclared FP destination", instruction: "FSTSW ret+0(FP)", want: "unsupported FP write slot"},
 		{name: "fld1 operand", instruction: "FLD1 AX", want: "FLD1 takes no operands"},
-		{name: "x87 on amd64", instruction: "FLD1", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushl on amd64", instruction: "PUSHL AX", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "popl on amd64", instruction: "POPL AX", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushfl on amd64", instruction: "PUSHFL", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
@@ -900,7 +896,7 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 	for _, want := range []string{
 		"cmpxchg ptr",
 		"@__plan9asm_rep_stosl",
-		"@__plan9asm_repne_scasb",
+		"@__plan9asm_rep_scasb",
 		"@__plan9asm_movsb",
 		"@__plan9asm_movsl",
 		`asm sideeffect "fnstcw $0"`,
@@ -925,10 +921,397 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 			t.Fatalf("386 IR missing %q:\n%s", want, ir)
 		}
 	}
-	if strings.Contains(ir, "roundeven") {
+	if strings.Contains(ir, "call double @llvm.roundeven") || strings.Contains(ir, "call float @llvm.roundeven") {
 		t.Fatalf("386 x87 lowering unexpectedly depends on external roundeven:\n%s", ir)
 	}
 	compile386IR(t, ir, "instruction_families")
+}
+
+func TestTranslate386X87MoveFamilyCompleteForms(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT x87moves(SB),NOSPLIT,$0-0
+	FMOVB 0(SI), F0
+	FMOVBP F0, 0(DI)
+	FMOVD 0(SI), F0
+	FMOVD $(2.928932188134524e-01), F0
+	FMOVD F0, 0(DI)
+	FMOVD F1, F0
+	FMOVD F0, F1
+	FMOVDP F0, 0(DI)
+	FMOVDP F0, F1
+	FMOVF 0(SI), F0
+	FMOVF F0, 0(DI)
+	FMOVFP F0, 0(DI)
+	FMOVL 0(SI), F0
+	FMOVL F0, 0(DI)
+	FMOVLP F0, 0(DI)
+	FMOVV 0(SI), F0
+	FMOVVP F0, 0(DI)
+	FMOVW 0(SI), F0
+	FMOVW F0, 0(DI)
+	FMOVWP F0, 0(DI)
+	FMOVX 0(SI), F0
+	FMOVXP F0, 0(DI)
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87moves": {Name: "x87moves", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if err != nil {
+		t.Fatalf("Translate(complete x87 move family) error = %v", err)
+	}
+	compile386IR(t, ir, "x87_move_family")
+}
+
+func TestTranslate386X87MoveFamilyRejectsNonGoForms(t *testing.T) {
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FMOVF F1, F0", want: "FMOVF expects memory source and F0 destination"},
+		{instruction: "FMOVFP F1, 0(DI)", want: "FMOVFP expects F0 source and memory destination"},
+		{instruction: "FMOVL 0(SI), F1", want: "FMOVL expects memory source and F0 destination"},
+		{instruction: "FMOVLP F0, F1", want: "FMOVLP expects F0 source and memory destination"},
+		{instruction: "FMOVX F0, F1", want: "FMOVX expects memory source and F0 destination"},
+		{instruction: "FMOVXP F1, 0(DI)", want: "FMOVXP expects F0 source and memory destination"},
+	} {
+		t.Run(test.instruction, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+test.instruction+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+			}
+		})
+	}
+}
+
+func TestTranslate386X87ConstantUnaryAndTranscendentalFamily(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT x87transcendental(SB),NOSPLIT,$0-0
+	FBLD 0(SI)
+	FBSTP 0(DI)
+	FLD1
+	FLDL2E
+	FLDL2T
+	FLDLG2
+	FLDLN2
+	FLDPI
+	FLDZ
+	F2XM1
+	FABS
+	FCHS
+	FCLEX
+	FCOS
+	FDECSTP
+	FINCSTP
+	FINIT
+	FNOP
+	FPATAN
+	FPREM
+	FPREM1
+	FPTAN
+	FRNDINT
+	FSCALE
+	FSIN
+	FSINCOS
+	FSQRT
+	FTST
+	FXAM
+	FXTRACT
+	FYL2X
+	FYL2XP1
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87transcendental": {Name: "x87transcendental", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if err != nil {
+		t.Fatalf("Translate(complete x87 constant/unary/transcendental family) error = %v", err)
+	}
+	compile386IR(t, ir, "x87_transcendental_family")
+}
+
+func TestTranslate386X87ConstantUnaryAndTranscendentalFamilyRejectsOperands(t *testing.T) {
+	for _, op := range []string{
+		"F2XM1", "FABS", "FCHS", "FCLEX", "FCOS", "FDECSTP", "FINCSTP", "FINIT",
+		"FLD1", "FLDL2E", "FLDL2T", "FLDLG2", "FLDLN2", "FLDPI", "FLDZ", "FNOP",
+		"FPATAN", "FPREM", "FPREM1", "FPTAN", "FRNDINT", "FSCALE", "FSIN", "FSINCOS",
+		"FSQRT", "FTST", "FXAM", "FXTRACT", "FYL2X", "FYL2XP1",
+	} {
+		t.Run(op, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+op+" AX\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "takes no operands") {
+				t.Fatalf("Translate(%s AX) error = %v, want no-operand rejection", op, err)
+			}
+		})
+	}
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FBLD F0", want: "FBLD expects memory source"},
+		{instruction: "FBSTP AX", want: "FBSTP expects memory destination"},
+	} {
+		file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+test.instruction+"\nRET\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Translate(file, Options{
+			TargetTriple: "i386-unknown-linux-gnu",
+			Goarch:       "386",
+			Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+		})
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+		}
+	}
+}
+
+func TestTranslate386X87ArithmeticFamilyCompleteForms(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("TEXT x87arithmetic(SB),NOSPLIT,$0-0\n")
+	for _, stem := range []string{"FADD", "FMUL", "FSUB", "FSUBR", "FDIV", "FDIVR"} {
+		for _, width := range []string{"W", "L", "F"} {
+			fmt.Fprintf(&src, "\t%s%s 0(SI), F0\n", stem, width)
+		}
+		fmt.Fprintf(&src, "\t%sD 0(SI), F0\n", stem)
+		fmt.Fprintf(&src, "\t%sD F1, F0\n", stem)
+		fmt.Fprintf(&src, "\t%sD F0, F1\n", stem)
+		fmt.Fprintf(&src, "\t%sDP F0, F1\n", stem)
+	}
+	src.WriteString("\tRET\n")
+	file, err := Parse(ArchAMD64, src.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87arithmetic": {Name: "x87arithmetic", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if err != nil {
+		t.Fatalf("Translate(complete x87 arithmetic family) error = %v", err)
+	}
+	compile386IR(t, ir, "x87_arithmetic_family")
+}
+
+func TestTranslate386X87ArithmeticFamilyRejectsNonGoForms(t *testing.T) {
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FADDW F1, F0", want: "FADDW expects memory source and F0 destination"},
+		{instruction: "FMULL 0(SI), F1", want: "FMULL expects memory source and F0 destination"},
+		{instruction: "FSUBF F0, 0(DI)", want: "FSUBF expects memory source and F0 destination"},
+		{instruction: "FDIVD 0(SI), F1", want: "FDIVD expects memory,F0"},
+		{instruction: "FSUBRDP 0(SI), F0", want: "FSUBRDP expects F0 source and x87-register destination"},
+		{instruction: "FDIVRDP F1, F0", want: "FDIVRDP expects F0 source and x87-register destination"},
+	} {
+		t.Run(test.instruction, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+test.instruction+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+			}
+		})
+	}
+}
+
+func TestTranslate386X87CompareFamilyCompleteForms(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT x87compare(SB),NOSPLIT,$0-0
+	FCOMD 0(SI), F0
+	FCOMD F1, F0
+	FCOMD F0, F1
+	FCOMDP 0(SI), F0
+	FCOMDP F1, F0
+	FCOMDP F0, F1
+	FCOMDPP F0, F1
+	FCOMF 0(SI), F0
+	FCOMFP 0(SI), F0
+	FCOML 0(SI), F0
+	FCOMLP 0(SI), F0
+	FCOMW 0(SI), F0
+	FCOMWP 0(SI), F0
+	FCOMI F1, F0
+	FCOMIP F1, F0
+	FUCOM F0, F1
+	FUCOMP F0, F1
+	FUCOMPP F0, F1
+	FUCOMI F0, F1
+	FUCOMIP F0, F1
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87compare": {Name: "x87compare", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if err != nil {
+		t.Fatalf("Translate(complete x87 compare family) error = %v", err)
+	}
+	compile386IR(t, ir, "x87_compare_family")
+}
+
+func TestTranslate386X87CompareFamilyRejectsNonGoForms(t *testing.T) {
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FCOMF F1, F0", want: "FCOMF expects memory source and F0 destination"},
+		{instruction: "FCOMD 0(SI), F1", want: "FCOMD expects memory,F0"},
+		{instruction: "FCOMDPP F1, F0", want: "FCOMDPP expects F0 source and x87-register destination"},
+		{instruction: "FCOMI F0, F1", want: "FCOMI expects x87-register source and F0 destination"},
+		{instruction: "FUCOM F1, F0", want: "FUCOM expects F0 source and x87-register destination"},
+		{instruction: "FUCOMIP 0(SI), F0", want: "FUCOMIP expects F0 source and x87-register destination"},
+	} {
+		t.Run(test.instruction, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+test.instruction+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+			}
+		})
+	}
+}
+
+func TestTranslate386LAHFSAHFFamily(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT flags386(SB),NOSPLIT,$0-0
+	LAHF
+	SAHF
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"flags386": {Name: "flags386", Ret: Void}},
+	})
+	if err != nil {
+		t.Fatalf("Translate(LAHF/SAHF) error = %v", err)
+	}
+	compile386IR(t, ir, "lahf_sahf_family")
+	for _, op := range []string{"LAHF", "SAHF"} {
+		bad, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+op+" AX\nRET\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Translate(bad, Options{
+			TargetTriple: "i386-unknown-linux-gnu",
+			Goarch:       "386",
+			Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "takes no operands") {
+			t.Fatalf("Translate(%s AX) error = %v, want no-operand rejection", op, err)
+		}
+	}
+}
+
+func TestTranslate386X87EnvironmentAndControlFamily(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT x87environment(SB),NOSPLIT,$0-0
+	FLDCW 0(SI)
+	FLDENV 0(SI)
+	FRSTOR 0(SI)
+	FSAVE 0(DI)
+	FSTCW 0(DI)
+	FSTENV 0(DI)
+	FSTSW 0(DI)
+	FSTSW AX
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87environment": {Name: "x87environment", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if err != nil {
+		t.Fatalf("Translate(complete x87 environment/control family) error = %v", err)
+	}
+	compile386IR(t, ir, "x87_environment_family")
+}
+
+func TestTranslate386X87EnvironmentAndControlFamilyRejectsNonGoForms(t *testing.T) {
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FLDCW AX", want: "FLDCW expects memory source"},
+		{instruction: "FLDENV F0", want: "FLDENV expects memory source"},
+		{instruction: "FRSTOR AX", want: "FRSTOR expects memory source"},
+		{instruction: "FSAVE AX", want: "FSAVE expects memory destination"},
+		{instruction: "FSTCW AX", want: "FSTCW expects memory destination"},
+		{instruction: "FSTENV F0", want: "FSTENV expects memory destination"},
+		{instruction: "FSTSW BX", want: "FSTSW expects memory destination or AX"},
+	} {
+		t.Run(test.instruction, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+test.instruction+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+			}
+		})
+	}
 }
 
 func TestTranslate386X87Modes(t *testing.T) {
@@ -986,7 +1369,7 @@ func TestTranslate386X87Modes(t *testing.T) {
 func TestTranslate386X87Codegen(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 	ir := translate386RoundingIR(t, X87Hardware)
 	dir := t.TempDir()
@@ -1013,7 +1396,7 @@ func TestTranslate386X87Codegen(t *testing.T) {
 			args = append(args, "-filetype=asm", llPath, "-o", asmPath)
 			if output, err := exec.Command(llc, args...).CombinedOutput(); err != nil {
 				if unsupported386Target(string(output)) {
-					t.Skipf("llc lacks 386 target: %s", output)
+					t.Fatalf("llc lacks 386 target: %s", output)
 				}
 				t.Fatalf("llc failed: %v\n%s", err, output)
 			}
@@ -1185,7 +1568,7 @@ func compile386IR(t *testing.T, ir, name string) {
 	t.Helper()
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 	tmp := t.TempDir()
 	llPath := filepath.Join(tmp, name+".ll")
@@ -1196,7 +1579,7 @@ func compile386IR(t *testing.T, ir, name string) {
 	cmd := exec.Command(llc, "-mtriple=i386-unknown-linux-gnu", "-filetype=obj", llPath, "-o", objPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		if unsupported386Target(string(out)) {
-			t.Skipf("llc does not support i386: %s", strings.TrimSpace(string(out)))
+			t.Fatalf("llc does not support i386: %s", strings.TrimSpace(string(out)))
 		}
 		t.Fatalf("llc failed: %v\n%s", err, out)
 	}
@@ -1209,7 +1592,7 @@ func TestRuntimeExec386Core(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	clang := findLLVM22Tool("clang")
 	if llc == "" || clang == "" {
-		t.Skip("llc/clang not found")
+		t.Fatal("llc/clang not found")
 	}
 	file, err := Parse(ArchAMD64, `
 TEXT addCarry(SB),NOSPLIT,$0-12

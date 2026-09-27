@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/plan9asm"
+	"github.com/xgo-dev/plan9asm/internal/asmsig"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -343,15 +344,30 @@ func transpileSingleFileMode(inFile, outFile, goos, goarch string, annotate bool
 }
 
 func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string, annotate bool) (translation, bool, error) {
-	src, err := os.ReadFile(asmPath)
+	sourceRoot := filepath.Dir(asmPath)
+	if pkg != nil && pkg.Module != nil && pkg.Module.Dir != "" {
+		sourceRoot = pkg.Module.Dir
+	}
+	src, err := plan9asm.ReadGoAssemblySource(asmPath, sourceRoot)
 	if err != nil {
 		return translation{}, false, err
 	}
+	imports := make(map[string]*types.Package, len(pkg.Imports))
+	for path, imported := range pkg.Imports {
+		if imported != nil && imported.Types != nil {
+			imports[path] = imported.Types
+		}
+	}
+	src = plan9asm.ExpandGoAssemblySource(plan9asm.GoPackage{
+		Path:    pkg.PkgPath,
+		Types:   pkg.Types,
+		Imports: imports,
+	}, src, goarch)
 	arch, err := toPlan9Arch(goarch)
 	if err != nil {
 		return translation{}, false, err
 	}
-	file, err := plan9asm.Parse(arch, string(src))
+	file, err := plan9asm.ParseWithDefines(arch, string(src), plan9asm.GoAssemblerDefines(goos, goarch))
 	if err != nil {
 		if strings.Contains(err.Error(), "no TEXT directive found") {
 			return translation{}, false, nil
@@ -367,12 +383,6 @@ func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string,
 		wasmABI := plan9asm.WASMABIDirect
 		if goos == "js" || goos == "wasip1" {
 			wasmABI = plan9asm.WASMABIGo
-		}
-		imports := make(map[string]*types.Package, len(pkg.Imports))
-		for path, imported := range pkg.Imports {
-			if imported != nil && imported.Types != nil {
-				imports[path] = imported.Types
-			}
 		}
 		tr, err := plan9asm.TranslateGoModule(plan9asm.GoPackage{
 			Path:    pkg.PkgPath,
@@ -786,15 +796,21 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 	if pkg == nil || pkg.Types == nil || pkg.Types.Scope() == nil {
 		for _, fn := range file.Funcs {
 			fs := fallbackSigForAsmFunc(fn, resolve(stripABISuffix(fn.Sym)), goarch)
-			if goarch == "wasm" && strings.HasSuffix(fn.Sym, "<>") {
-				var err error
-				fs, err = plan9asm.InferWASMAssemblyFuncSig(fn, fs.Name)
-				if err != nil {
-					return nil, err
+			if goarch == "wasm" {
+				if native, ok := plan9asm.LookupGoWASMNativeFuncSig(fs.Name); ok {
+					fs = native
+				} else if strings.HasSuffix(stripABISuffix(fn.Sym), "<>") && plan9asm.WASMAssemblyUsesNativeReturn(fn) {
+					var err error
+					fs, err = plan9asm.InferWASMAssemblyFuncSig(fn, fs.Name)
+					if err != nil {
+						return nil, err
+					}
+					fs.WASMNative = true
 				}
 			}
 			sigs[fs.Name] = fs
 		}
+		asmsig.RefineTailForwarders(file, sigs, resolve, nil)
 		return sigs, nil
 	}
 
@@ -823,20 +839,31 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 		if !ok {
 			fs = fallbackSigForAsmFunc(fn, resolved, goarch)
 		} else {
+			if goarch == "arm64" {
+				inferred := fallbackSigForAsmFunc(fn, resolved, goarch)
+				if borrowed, ok := asmsig.ARM64BorrowedTailFrame(file, fn, fs, inferred, resolve); ok {
+					fs = borrowed
+				}
+			}
 			declaredSigs[resolved] = true
 		}
 		sigs[resolved] = fs
 	}
 	if goarch == "wasm" {
 		for _, fn := range file.Funcs {
-			if !strings.HasSuffix(fn.Sym, "<>") {
-				continue
-			}
 			resolved := resolve(stripABISuffix(fn.Sym))
-			fs, err := plan9asm.InferWASMAssemblyFuncSig(fn, resolved)
-			if err != nil {
-				return nil, err
+			fs, ok := plan9asm.LookupGoWASMNativeFuncSig(resolved)
+			if !ok {
+				if !strings.HasSuffix(stripABISuffix(fn.Sym), "<>") || !plan9asm.WASMAssemblyUsesNativeReturn(fn) {
+					continue
+				}
+				var err error
+				fs, err = plan9asm.InferWASMAssemblyFuncSig(fn, resolved)
+				if err != nil {
+					return nil, err
+				}
 			}
+			fs.WASMNative = true
 			sigs[resolved] = fs
 		}
 	}
@@ -857,7 +884,7 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 			// result slots agree with the declared caller. Local helpers share the
 			// caller's physical frame, so a byte result may otherwise remain an i32
 			// fallback slot underneath an i1 function signature.
-			if tail && caller.Name != "" && !declaredSigs[resolved] {
+			if tail && declaredSigs[caller.Name] && !declaredSigs[resolved] {
 				existing.Ret = caller.Ret
 				if len(existing.Frame.Results) == len(caller.Frame.Results) {
 					for i := range existing.Frame.Results {
@@ -872,6 +899,12 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 				sigs[resolved] = existing
 			}
 			return
+		}
+		if goarch == "wasm" {
+			if fs, ok := plan9asm.LookupGoWASMNativeFuncSig(resolved); ok {
+				sigs[resolved] = fs
+				return
+			}
 		}
 		fs, ok, err := tryDeclSig(scope, asmDeclLookupSym(pkg, sym), resolved, linknames, goarch, sz)
 		if err == nil && ok {
@@ -893,8 +926,8 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 		caller := sigs[callerName]
 		for _, ins := range fn.Instrs {
 			op := strings.ToUpper(string(ins.Op))
-			tail := op == "JMP" || op == "B"
-			if !(tail || op == "CALL" || op == "BL") {
+			tail := op == "JMP" || op == "B" || (op == "RET" && len(ins.Args) == 1)
+			if !(tail || op == "CALL" || op == "CALLNORESUME" || op == "WASMCALL" || op == "BL") {
 				continue
 			}
 			if len(ins.Args) != 1 || ins.Args[0].Kind != plan9asm.OpSym {
@@ -927,6 +960,7 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 		}
 	}
 
+	asmsig.RefineTailForwarders(file, sigs, resolve, declaredSigs)
 	return sigs, nil
 }
 
@@ -948,7 +982,7 @@ func fallbackSigForAsmFunc(fn plan9asm.Func, resolved, goarch string) plan9asm.F
 	for _, ins := range fn.Instrs {
 		op := strings.ToUpper(string(ins.Op))
 		for i, a := range ins.Args {
-			if a.Kind != plan9asm.OpFP {
+			if a.Kind != plan9asm.OpFP && a.Kind != plan9asm.OpFPAddr {
 				continue
 			}
 			if isLikelyResultSlot(op, i, len(ins.Args), a.FPName) {
@@ -981,7 +1015,12 @@ func fallbackSigForAsmFunc(fn plan9asm.Func, resolved, goarch string) plan9asm.F
 	ret := plan9asm.Void
 	switch len(results) {
 	case 0:
-		ret = word
+		// A fallback with FP parameters follows ABI0, whose results also live
+		// in explicit FP slots. No result slot therefore means void. Keep the
+		// conservative word return only for register-only assembly helpers.
+		if len(params) == 0 {
+			ret = word
+		}
 	case 1:
 		ret = word
 	default:

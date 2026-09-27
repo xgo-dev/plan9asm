@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -36,6 +33,17 @@ func findLLVM22Tool(name string) string {
 		candidates = append(candidates, filepath.Join(strings.TrimSpace(string(out)), name))
 	} else {
 		candidates = append(candidates, name+"-22", name)
+		// Homebrew keeps versioned LLVM/LLD installations outside PATH. Keep
+		// these explicit candidates version-checked so an unversioned LLVM 23
+		// tool can never become a silent fallback for the LLVM 22 tests.
+		for _, prefix := range []string{
+			"/opt/homebrew/opt/llvm@22/bin",
+			"/opt/homebrew/opt/lld@22/bin",
+			"/usr/local/opt/llvm@22/bin",
+			"/usr/local/opt/lld@22/bin",
+		} {
+			candidates = append(candidates, filepath.Join(prefix, name))
+		}
 	}
 	for _, candidate := range candidates {
 		path, err := exec.LookPath(candidate)

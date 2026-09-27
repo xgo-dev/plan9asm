@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -15,21 +12,21 @@ import (
 func TestStdlibBoringSig_CompileManyTriples(t *testing.T) {
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 
 	goroot := runtime.GOROOT()
 	srcOther, err := os.ReadFile(filepath.Join(goroot, "src", "crypto", "internal", "boring", "sig", "sig_other.s"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			t.Skip("crypto/internal/boring/sig/sig_other.s not present in this GOROOT")
+			t.Fatal("crypto/internal/boring/sig/sig_other.s not present in this GOROOT")
 		}
 		t.Fatal(err)
 	}
 	srcAMD64, err := os.ReadFile(filepath.Join(goroot, "src", "crypto", "internal", "boring", "sig", "sig_amd64.s"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			t.Skip("crypto/internal/boring/sig/sig_amd64.s not present in this GOROOT")
+			t.Fatal("crypto/internal/boring/sig/sig_amd64.s not present in this GOROOT")
 		}
 		t.Fatal(err)
 	}
@@ -99,7 +96,7 @@ func TestStdlibBoringSig_CompileManyTriples(t *testing.T) {
 						strings.Contains(s, "unknown target triple") ||
 						strings.Contains(s, "unknown target") ||
 						strings.Contains(s, "is not a registered target") {
-						t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+						t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 					}
 					t.Fatalf("llc failed for triple %q: %v\n%s", triple, err, s)
 				}
@@ -118,7 +115,7 @@ func TestStdlibBoringSig_TranslateOnly(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "crypto", "internal", "boring", "sig", "sig_amd64.s"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			t.Skip("crypto/internal/boring/sig/sig_amd64.s not present in this GOROOT")
+			t.Fatal("crypto/internal/boring/sig/sig_amd64.s not present in this GOROOT")
 		}
 		t.Fatal(err)
 	}

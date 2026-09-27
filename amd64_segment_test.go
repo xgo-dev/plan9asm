@@ -1,5 +1,3 @@
-//go:build !llgo
-
 package plan9asm
 
 import (

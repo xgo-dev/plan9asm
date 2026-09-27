@@ -1,0 +1,10 @@
+{"module":"github.com/JamesPagetButler/qbp-compute-unit/emulator","version":"v0.1.0-rc1","status":"pending"}
+{"module":"github.com/Lz-Gustavo/etcd","version":"v2.3.8+incompatible","status":"pending"}
+{"module":"github.com/carved4/go-wincall","version":"v1.3.2","status":"pending"}
+{"module":"github.com/echoowall/xray-core","version":"v0.0.0-20260711090905-42eb2baf7892","status":"pending"}
+{"module":"github.com/fengyunpan/kubernetes","version":"v1.5.2","status":"pending"}
+{"module":"github.com/freehandle/breeze","version":"v0.0.0-20260423015900-8b32f10eaa42","status":"pending"}
+{"module":"github.com/statusx7/xray-core-oldxr","version":"v1.260327.0","status":"pending"}
+{"module":"github.com/threshold-ml-dsa/threshold-ml-dsa/implementation","version":"v0.0.0-20260905090722-66e269e75dd8","status":"pending"}
+{"module":"github.com/tombrk/gvisor","version":"v0.0.0-20260312014806-293707e850ca","status":"pending"}
+{"module":"github.tiyicn.workers.dev/mmcloughlin/avo","version":"v0.6.0","status":"pending"}

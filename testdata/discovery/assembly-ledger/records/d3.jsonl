@@ -1,0 +1,14 @@
+{"module":"git.chainmaker.org.cn/chainmaker/common/v2","version":"v2.4.0","status":"pending"}
+{"module":"github.com/BitnetMoney/bitnet","version":"v0.0.5","status":"pending"}
+{"module":"github.com/Mezo-org/go-ethereum","version":"v1.17.2","status":"pending"}
+{"module":"github.com/Regclient/regclient","version":"v0.11.6","status":"pending"}
+{"module":"github.com/Threshold-ML-DSA/Threshold-ML-DSA/implementation","version":"v0.0.0-20260905090722-66e269e75dd8","status":"pending"}
+{"module":"github.com/chyezh/arrow/go/v17","version":"v17.0.0","status":"pending"}
+{"module":"github.com/consensys/gnark-crypto","version":"v0.21.0","status":"pending"}
+{"module":"github.com/deploymenttheory/go-bindings-win32","version":"v0.5.0","status":"pending"}
+{"module":"github.com/egonelbre/exp","version":"v0.0.0-20260608104311-915c8eed874a","status":"pending"}
+{"module":"github.com/rapidai/codeclaw","version":"v0.0.0-20260921124151-65a70b387a4a","status":"pending"}
+{"module":"github.com/sagerNet/gvisor","version":"v0.0.0-20260727.0-sing-box-mod.1","status":"pending"}
+{"module":"github.com/wuwuz/pacmann/pianopir","version":"v0.0.0-20260820034800-ac59599146e2","status":"pending"}
+{"module":"gitlab.com/yawning/chacha20","version":"v0.0.0-20230427033715-7877545b1b37","status":"pending"}
+{"module":"paepcke.de/hq","version":"v0.1.45","status":"pending"}

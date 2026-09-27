@@ -1,0 +1,17 @@
+{"module":"github.com/ABFoundationGlobal/abcore","version":"v1.13.15","status":"pending"}
+{"module":"github.com/KuangBo/tidb","version":"v1.0.9","status":"pending"}
+{"module":"github.com/ScottMansfield/tools","version":"v0.0.0-20160116173134-3c782264fbde","status":"pending"}
+{"module":"github.com/StanfordSNR/crypto","version":"v0.0.0-20180224013306-e451cabda2ac","status":"pending"}
+{"module":"github.com/bronze1man/go","version":"v0.0.0-20190114075844-4e8aaf6b2255","status":"pending"}
+{"module":"github.com/consenSys/gurvy","version":"v0.21.0","status":"pending"}
+{"module":"github.com/dazzar56/thrupty","version":"v0.1.3","status":"pending"}
+{"module":"github.com/honeycombio/lz4/v4","version":"v4.1.26","status":"pending"}
+{"module":"github.com/misak113/exp","version":"v0.0.0-20260807101602-fe2d323a5bdd","status":"pending"}
+{"module":"github.com/optimism-java/go-ethereum","version":"v0.0.0-20250122130636-a840e9b59f28","status":"pending"}
+{"module":"github.com/rink-labs/libevm","version":"v1.0.0","status":"pending"}
+{"module":"github.com/rockdaboot/opentelemetry-ebpf-profiler","version":"v0.0.202636","status":"pending"}
+{"module":"github.com/thesyncim/govpx","version":"v0.0.0-20260716224042-691cd0512c48","status":"pending"}
+{"module":"github.com/tianon-sso/golang-sys","version":"v0.0.0-20260825160830-e812f53e86a9","status":"pending"}
+{"module":"github.com/vernesong/mihomo-oix","version":"v0.0.0-20260914123646-76a3e9e39460","status":"pending"}
+{"module":"github.com/zhwn/gvisor","version":"v0.0.0-20260411170118-dee23e3a1f5e","status":"pending"}
+{"module":"gorgonia.org/tensor","version":"v0.9.24","status":"pending"}

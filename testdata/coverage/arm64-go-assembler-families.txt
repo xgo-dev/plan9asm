@@ -1,6 +1,25 @@
-# ARM64 scalar opcode families completed by the issue #2552 fix.
-# The Go assembler encoder tables and positive testdata define this list's
-# legal operand forms; external packages are regression consumers only.
+# ARM64 opcode families with complete named-form coverage. The Go assembler
+# encoder tables and positive testdata define this list's legal operand forms;
+# external packages are regression consumers only. Raw-encoding completeness
+# is enforced by each family's decoder tests rather than inferred from this list.
+AESD
+AESE
+AESIMC
+AESMC
+SHA1C
+SHA1H
+SHA1M
+SHA1P
+SHA1SU0
+SHA1SU1
+SHA256H
+SHA256H2
+SHA256SU0
+SHA256SU1
+SHA512H
+SHA512H2
+SHA512SU0
+SHA512SU1
 BFI
 BFIW
 BFXIL
@@ -38,6 +57,14 @@ REV16W
 REV32
 ASR
 ASRW
+RBIT
+RBITW
+CLZ
+CLZW
+CLS
+CLSW
+VCLS
+VCLZ
 LSL
 LSLW
 LSR
@@ -46,8 +73,26 @@ ROR
 RORW
 SUBS
 SUBSW
+ADDS
+ADDSW
+BIC
+BICW
+BICS
+BICSW
 TST
 TSTW
+FCCMPS
+FCCMPD
+FCCMPES
+FCCMPED
+FCMPS
+FCMPD
+FCMPES
+FCMPED
+VFMAXV
+VFMINV
+VFMAXNMV
+VFMINNMV
 FMOVQ
 MOVB
 MOVBU

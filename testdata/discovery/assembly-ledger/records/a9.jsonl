@@ -1,0 +1,17 @@
+{"module":"github.com/Celo-Org/celo-blockchain","version":"v1.8.9","status":"pending"}
+{"module":"github.com/DogeProtocol/go-dp","version":"v1.10.13","status":"pending"}
+{"module":"github.com/ExclaveNetwork/exclave-core/v5","version":"v5.50.0","status":"pending"}
+{"module":"github.com/agberohq/agbero","version":"v0.1.3","status":"pending"}
+{"module":"github.com/alaudadevops/cfssl","version":"v1.6.5","status":"pending"}
+{"module":"github.com/bytedance/sonic","version":"v1.15.4","status":"pending"}
+{"module":"github.com/dappledger/annchain","version":"v1.5.0","status":"pending"}
+{"module":"github.com/erikdubbelboer/go-brrr","version":"v0.0.0-20260918154904-be490d257a7f","status":"pending"}
+{"module":"github.com/gen2brain/jxl","version":"v0.2.0","status":"pending"}
+{"module":"github.com/luxfi/go-ipa","version":"v0.0.0-20260906101212-f63b76cde36b","status":"pending"}
+{"module":"github.com/metalblockchain/libevm","version":"v1.16.2","status":"pending"}
+{"module":"github.com/mgomes/blake3","version":"v0.0.0-20260331135518-b032e7b6def0","status":"pending"}
+{"module":"github.com/minio/sha256-simd","version":"v1.0.1","status":"pending"}
+{"module":"github.com/piotrnar/gocoin","version":"v0.0.0-20260921155626-172d60466111","status":"pending"}
+{"module":"github.com/status-im/go-ethereum","version":"v1.12.0","status":"pending"}
+{"module":"github.com/xstarnet/circl","version":"v0.0.0-20260321045037-9008a6b5d286","status":"pending"}
+{"module":"github.com/ztNozdormu/xuperunion","version":"v0.0.0-20190909090034-13a7421c372b","status":"pending"}

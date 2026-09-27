@@ -1,0 +1,15 @@
+{"module":"github.com/Microsoft/go-crypto-openssl","version":"v0.5.0","status":"pending"}
+{"module":"github.com/TangLiChun/Xray-core","version":"v0.0.0-20260527192839-8f8b9e334e3d","status":"pending"}
+{"module":"github.com/TeslaSmith/v2ray-vless","version":"v0.0.0-20201120000903-9c1f251173be","status":"pending"}
+{"module":"github.com/adrianduke/tools","version":"v0.0.0-20160727171133-9e7459099f9a","status":"pending"}
+{"module":"github.com/asheshgoplani/agent-deck","version":"v1.16.16","status":"pending"}
+{"module":"github.com/deepin-community/golang-gvisor-gvisor","version":"v0.0.0-20241112074236-54495ee5a152","status":"pending"}
+{"module":"github.com/enfplove/sing-tun","version":"v0.9.3","status":"pending"}
+{"module":"github.com/headlands-org/go-semantica","version":"v0.3.1","status":"pending"}
+{"module":"github.com/jmozah/swarm","version":"v1.8.27","status":"pending"}
+{"module":"github.com/lf-decentralized-trust-labs/waterfall-gwat","version":"v0.0.0-20250128112811-15c1c664a423","status":"pending"}
+{"module":"github.com/mediagui/Go","version":"v0.0.0-20260227122306-34024557799e","status":"pending"}
+{"module":"github.com/pactus-project/gotk4/pkg","version":"v0.0.0-20260626172655-14e3591aac91","status":"pending"}
+{"module":"github.com/pingcap/tIDb","version":"v1.0.9","status":"pending"}
+{"module":"github.com/sila-chain/go-bigmodexpfix","version":"v0.0.1","status":"pending"}
+{"module":"golang.org/x/net","version":"v0.59.0","status":"pending"}

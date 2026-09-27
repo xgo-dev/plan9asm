@@ -1,0 +1,17 @@
+{"module":"github.com/Coreos/etcd","version":"v2.3.8+incompatible","status":"pending"}
+{"module":"github.com/Nelbert442/derosuite","version":"v2.1.5+incompatible","status":"pending"}
+{"module":"github.com/akshathasgshetty/websocket","version":"v0.0.0-20260109125802-9f473adfa595","status":"pending"}
+{"module":"github.com/arr-ai/frozen/v2","version":"v2.0.0","status":"pending"}
+{"module":"github.com/bobanetwork/v3-erigon","version":"v1.10.16","status":"pending"}
+{"module":"github.com/cam-coffee/go_adiantum","version":"v1.0.0","status":"pending"}
+{"module":"github.com/cortexFoundation/cortexTheseus","version":"v1.10.72","status":"pending"}
+{"module":"github.com/fake-mahdi/acheron","version":"v0.0.0-20260905053135-7efb58e5fb85","status":"pending"}
+{"module":"github.com/fanyiguang/gvisor-dev-gvisor-copy","version":"v0.0.0-20260323070810-f64ee6c9ac15","status":"pending"}
+{"module":"github.com/lavab/api","version":"v0.0.0-20181026173911-eca9d0580304","status":"pending"}
+{"module":"github.com/qur/withmock","version":"v0.0.0-20180804144346-b0df8b0932f1","status":"pending"}
+{"module":"github.com/rnavarro/fyne/v2","version":"v2.7.4","status":"pending"}
+{"module":"github.com/subscan-explorer/scale.go","version":"v1.11.2","status":"pending"}
+{"module":"github.com/taraxa-project/taraxa-evm","version":"v1.8.22","status":"pending"}
+{"module":"github.com/trailofbits/gosentry","version":"v0.0.0-20260922003706-97df2fcb2b54","status":"pending"}
+{"module":"github.com/wlynch/rules_go","version":"v0.0.0-20170213151000-3299996eb81d","status":"pending"}
+{"module":"github.com/xDarkicex/libravdb","version":"v1.6.13","status":"pending"}

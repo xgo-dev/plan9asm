@@ -127,7 +127,7 @@ func TestARM64AtomicCoverage(t *testing.T) {
 		}
 	}
 
-	mem := arm64MemOp("R10", 32)
+	mem := arm64MemOp("R10", 0)
 	for _, tc := range []Instr{
 		{Op: "LDARW", Args: []Operand{mem, arm64RegOp("R0")}, Raw: "LDARW 32(R10), R0"},
 		{Op: "LDARB", Args: []Operand{mem, arm64RegOp("R1")}, Raw: "LDARB 32(R10), R1"},
@@ -141,19 +141,19 @@ func TestARM64AtomicCoverage(t *testing.T) {
 		{Op: "STLXRW", Args: []Operand{arm64RegOp("R3"), mem, arm64RegOp("R6")}, Raw: "STLXRW R3, 32(R10), R6"},
 		{Op: "STLXRB", Args: []Operand{arm64RegOp("R4"), mem, arm64RegOp("R7")}, Raw: "STLXRB R4, 32(R10), R7"},
 		{Op: "STLXR", Args: []Operand{arm64RegOp("R5"), mem, arm64RegOp("R8")}, Raw: "STLXR R5, 32(R10), R8"},
-		{Op: "SWPALB", Args: []Operand{arm64RegOp("R0"), mem, arm64RegOp("R1")}, Raw: "SWPALB R0, 32(R10), R1"},
-		{Op: "SWPALW", Args: []Operand{arm64RegOp("R2"), mem, arm64RegOp("R3")}, Raw: "SWPALW R2, 32(R10), R3"},
-		{Op: "SWPALD", Args: []Operand{arm64RegOp("R4"), mem, arm64RegOp("R5")}, Raw: "SWPALD R4, 32(R10), R5"},
-		{Op: "LDADDALW", Args: []Operand{arm64RegOp("R0"), mem, arm64RegOp("R1")}, Raw: "LDADDALW R0, 32(R10), R1"},
-		{Op: "LDADDALD", Args: []Operand{arm64RegOp("R2"), mem, arm64RegOp("R3")}, Raw: "LDADDALD R2, 32(R10), R3"},
-		{Op: "LDORALB", Args: []Operand{arm64RegOp("R4"), mem, arm64RegOp("R5")}, Raw: "LDORALB R4, 32(R10), R5"},
-		{Op: "LDORALW", Args: []Operand{arm64RegOp("R6"), mem, arm64RegOp("R7")}, Raw: "LDORALW R6, 32(R10), R7"},
-		{Op: "LDORALD", Args: []Operand{arm64RegOp("R8"), mem, arm64RegOp("R9")}, Raw: "LDORALD R8, 32(R10), R9"},
-		{Op: "LDCLRALB", Args: []Operand{arm64RegOp("R0"), mem, arm64RegOp("R1")}, Raw: "LDCLRALB R0, 32(R10), R1"},
-		{Op: "LDCLRALW", Args: []Operand{arm64RegOp("R2"), mem, arm64RegOp("R3")}, Raw: "LDCLRALW R2, 32(R10), R3"},
-		{Op: "LDCLRALD", Args: []Operand{arm64RegOp("R4"), mem, arm64RegOp("R5")}, Raw: "LDCLRALD R4, 32(R10), R5"},
-		{Op: "CASALW", Args: []Operand{arm64RegOp("R6"), mem, arm64RegOp("R7")}, Raw: "CASALW R6, 32(R10), R7"},
-		{Op: "CASALD", Args: []Operand{arm64RegOp("R8"), mem, arm64RegOp("R9")}, Raw: "CASALD R8, 32(R10), R9"},
+		{Op: "SWPALB", Args: []Operand{arm64RegOp("R0"), mem, arm64RegOp("R1")}, Raw: "SWPALB R0, (R10), R1"},
+		{Op: "SWPALW", Args: []Operand{arm64RegOp("R2"), mem, arm64RegOp("R3")}, Raw: "SWPALW R2, (R10), R3"},
+		{Op: "SWPALD", Args: []Operand{arm64RegOp("R4"), mem, arm64RegOp("R5")}, Raw: "SWPALD R4, (R10), R5"},
+		{Op: "LDADDALW", Args: []Operand{arm64RegOp("R0"), mem, arm64RegOp("R1")}, Raw: "LDADDALW R0, (R10), R1"},
+		{Op: "LDADDALD", Args: []Operand{arm64RegOp("R2"), mem, arm64RegOp("R3")}, Raw: "LDADDALD R2, (R10), R3"},
+		{Op: "LDORALB", Args: []Operand{arm64RegOp("R4"), mem, arm64RegOp("R5")}, Raw: "LDORALB R4, (R10), R5"},
+		{Op: "LDORALW", Args: []Operand{arm64RegOp("R6"), mem, arm64RegOp("R7")}, Raw: "LDORALW R6, (R10), R7"},
+		{Op: "LDORALD", Args: []Operand{arm64RegOp("R8"), mem, arm64RegOp("R9")}, Raw: "LDORALD R8, (R10), R9"},
+		{Op: "LDCLRALB", Args: []Operand{arm64RegOp("R0"), mem, arm64RegOp("R1")}, Raw: "LDCLRALB R0, (R10), R1"},
+		{Op: "LDCLRALW", Args: []Operand{arm64RegOp("R2"), mem, arm64RegOp("R3")}, Raw: "LDCLRALW R2, (R10), R3"},
+		{Op: "LDCLRALD", Args: []Operand{arm64RegOp("R4"), mem, arm64RegOp("R5")}, Raw: "LDCLRALD R4, (R10), R5"},
+		{Op: "CASALW", Args: []Operand{arm64RegOp("R6"), mem, arm64RegOp("R7")}, Raw: "CASALW R6, (R10), R7"},
+		{Op: "CASALD", Args: []Operand{arm64RegOp("R8"), mem, arm64RegOp("R9")}, Raw: "CASALD R8, (R10), R9"},
 	} {
 		ok, _, err := c.lowerAtomic(tc.Op, tc)
 		mustLowerARM64(t, "lowerAtomic", tc, ok, err)
@@ -251,10 +251,10 @@ func TestARM64ArithmeticCoverage(t *testing.T) {
 		{Op: "ADD", Args: []Operand{arm64ImmOp(2), arm64RegOp("R0")}, Raw: "ADD $2, R0"},
 		{Op: "SUB", Args: []Operand{arm64ImmOp(3), arm64RegOp("R1"), arm64RegOp("R2")}, Raw: "SUB $3, R1, R2"},
 		{Op: "ADDS", Args: []Operand{arm64ImmOp(4), arm64RegOp("R2"), arm64RegOp("R3")}, Raw: "ADDS $4, R2, R3"},
-		{Op: "ADC", Args: []Operand{arm64ImmOp(5), arm64RegOp("R3")}, Raw: "ADC $5, R3"},
-		{Op: "ADCS", Args: []Operand{arm64ImmOp(6), arm64RegOp("R3"), arm64RegOp("R4")}, Raw: "ADCS $6, R3, R4"},
-		{Op: "SBC", Args: []Operand{arm64ImmOp(1), arm64RegOp("R4")}, Raw: "SBC $1, R4"},
-		{Op: "SBCS", Args: []Operand{arm64ImmOp(2), arm64RegOp("R4"), arm64RegOp("R5")}, Raw: "SBCS $2, R4, R5"},
+		{Op: "ADC", Args: []Operand{arm64RegOp("R5"), arm64RegOp("R3")}, Raw: "ADC R5, R3"},
+		{Op: "ADCS", Args: []Operand{arm64RegOp("R6"), arm64RegOp("R3"), arm64RegOp("R4")}, Raw: "ADCS R6, R3, R4"},
+		{Op: "SBC", Args: []Operand{arm64RegOp("R1"), arm64RegOp("R4")}, Raw: "SBC R1, R4"},
+		{Op: "SBCS", Args: []Operand{arm64RegOp("R2"), arm64RegOp("R4"), arm64RegOp("R5")}, Raw: "SBCS R2, R4, R5"},
 		{Op: "ADDW", Args: []Operand{arm64ImmOp(7), arm64RegOp("R5"), arm64RegOp("R6")}, Raw: "ADDW $7, R5, R6"},
 		{Op: "SUBW", Args: []Operand{arm64ImmOp(3), arm64RegOp("R6")}, Raw: "SUBW $3, R6"},
 		{Op: "AND", Args: []Operand{arm64ImmOp(15), arm64RegOp("R6"), arm64RegOp("R7")}, Raw: "AND $15, R6, R7"},
@@ -336,7 +336,7 @@ func TestARM64ArithmeticCoverage(t *testing.T) {
 	out := b.String()
 	for _, want := range []string{
 		`asm sideeffect "mrs $0, TPIDR_EL0"`,
-		`asm sideeffect "msr S3_3_C4_C2_5, $0"`,
+		`asm sideeffect "msr DIT, #1"`,
 		"lshr i64",
 		"lshr i32",
 		"shl i64",
@@ -467,20 +467,20 @@ func TestARM64DataVectorAndBranchCoverage(t *testing.T) {
 		{"VMOV", false, Instr{Op: "VMOV", Args: []Operand{arm64RegOp("R2"), arm64RegOp("V2.D[1]")}, Raw: "VMOV R2, V2.D[1]"}, "vec"},
 		{"VMOV", false, Instr{Op: "VMOV", Args: []Operand{arm64RegOp("V2.D[1]"), arm64RegOp("R3")}, Raw: "VMOV V2.D[1], R3"}, "vec"},
 		{"VMOV", false, Instr{Op: "VMOV", Args: []Operand{arm64RegOp("V1"), arm64RegOp("V3")}, Raw: "VMOV V1, V3"}, "vec"},
-		{"VEOR", false, Instr{Op: "VEOR", Args: []Operand{arm64RegOp("V0"), arm64RegOp("V1"), arm64RegOp("V4")}, Raw: "VEOR V0, V1, V4"}, "vec"},
-		{"VORR", false, Instr{Op: "VORR", Args: []Operand{arm64RegOp("V1"), arm64RegOp("V2"), arm64RegOp("V5")}, Raw: "VORR V1, V2, V5"}, "vec"},
+		{"VEOR", false, Instr{Op: "VEOR", Args: []Operand{arm64RegOp("V0.B16"), arm64RegOp("V1.B16"), arm64RegOp("V4.B16")}, Raw: "VEOR V0.B16, V1.B16, V4.B16"}, "vec"},
+		{"VORR", false, Instr{Op: "VORR", Args: []Operand{arm64RegOp("V1.B16"), arm64RegOp("V2.B16"), arm64RegOp("V5.B16")}, Raw: "VORR V1.B16, V2.B16, V5.B16"}, "vec"},
 		{"VLD1", true, Instr{Op: "VLD1.P", Args: []Operand{arm64MemOp("R21", 0), arm64RegOp("V4.B[3]")}, Raw: "VLD1.P (R21), V4.B[3]"}, "vec"},
-		{"VLD1", true, Instr{Op: "VLD1.P", Args: []Operand{arm64MemOp("R21", 0), arm64RegListOp("V4", "V5", "V6", "V7")}, Raw: "VLD1.P (R21), [V4, V5, V6, V7]"}, "vec"},
-		{"VST1", true, Instr{Op: "VST1.P", Args: []Operand{arm64RegListOp("V4", "V5"), arm64MemOp("R21", 0)}, Raw: "VST1.P [V4, V5], (R21)"}, "vec"},
+		{"VLD1", true, Instr{Op: "VLD1.P", Args: []Operand{arm64MemOp("R21", 0), arm64RegListOp("V4.B16", "V5.B16", "V6.B16", "V7.B16")}, Raw: "VLD1.P (R21), [V4.B16, V5.B16, V6.B16, V7.B16]"}, "vec"},
+		{"VST1", true, Instr{Op: "VST1.P", Args: []Operand{arm64RegListOp("V4.B16", "V5.B16"), arm64MemOp("R21", 0)}, Raw: "VST1.P [V4.B16, V5.B16], (R21)"}, "vec"},
 		{"VCMEQ", false, Instr{Op: "VCMEQ", Args: []Operand{arm64RegOp("V4.B16"), arm64RegOp("V5.B16"), arm64RegOp("V6.B16")}, Raw: "VCMEQ V4.B16, V5.B16, V6.B16"}, "vec"},
 		{"VCMEQ", false, Instr{Op: "VCMEQ", Args: []Operand{arm64RegOp("V4.D2"), arm64RegOp("V5.D2"), arm64RegOp("V7.D2")}, Raw: "VCMEQ V4.D2, V5.D2, V7.D2"}, "vec"},
-		{"VAND", false, Instr{Op: "VAND", Args: []Operand{arm64RegOp("V4"), arm64RegOp("V5"), arm64RegOp("V6")}, Raw: "VAND V4, V5, V6"}, "vec"},
+		{"VAND", false, Instr{Op: "VAND", Args: []Operand{arm64RegOp("V4.B16"), arm64RegOp("V5.B16"), arm64RegOp("V6.B16")}, Raw: "VAND V4.B16, V5.B16, V6.B16"}, "vec"},
 		{"VADDP", false, Instr{Op: "VADDP", Args: []Operand{arm64RegOp("V4.B16"), arm64RegOp("V5.B16"), arm64RegOp("V6.B16")}, Raw: "VADDP V4.B16, V5.B16, V6.B16"}, "vec"},
 		{"VADDP", false, Instr{Op: "VADDP", Args: []Operand{arm64RegOp("V4.D2"), arm64RegOp("V5.D2"), arm64RegOp("V7.D2")}, Raw: "VADDP V4.D2, V5.D2, V7.D2"}, "vec"},
 		{"VUADDLV", false, Instr{Op: "VUADDLV", Args: []Operand{arm64RegOp("V6.B16"), arm64RegOp("V7")}, Raw: "VUADDLV V6.B16, V7"}, "vec"},
 		{"VADD", false, Instr{Op: "VADD", Args: []Operand{arm64RegOp("V4.S4"), arm64RegOp("V5.S4"), arm64RegOp("V6.S4")}, Raw: "VADD V4.S4, V5.S4, V6.S4"}, "vec"},
-		{"VADD", false, Instr{Op: "VADD", Args: []Operand{arm64RegOp("V6.D2"), arm64RegOp("V7.D2")}, Raw: "VADD V6.D2, V7.D2"}, "vec"},
-		{"AESE", false, Instr{Op: "AESE", Args: []Operand{arm64RegOp("V0"), arm64RegOp("V1"), arm64RegOp("V2")}, Raw: "AESE V0, V1, V2"}, "vec"},
+		{"VADD", false, Instr{Op: "VADD", Args: []Operand{arm64RegOp("V5.D2"), arm64RegOp("V6.D2"), arm64RegOp("V7.D2")}, Raw: "VADD V5.D2, V6.D2, V7.D2"}, "vec"},
+		{"VDUP", false, Instr{Op: "VDUP", Args: []Operand{arm64RegOp("V0.B[0]"), arm64RegOp("V1.B16")}, Raw: "VDUP V0.B[0], V1.B16"}, "vec"},
 	} {
 		switch tc.kind {
 		case "data":
@@ -516,7 +516,7 @@ func TestARM64DataVectorAndBranchCoverage(t *testing.T) {
 	emitCondBr := arm64TestEmitCondBr(c)
 	for _, tc := range []Instr{
 		{Op: "BL", Args: []Operand{arm64RegOp("R0")}, Raw: "BL R0"},
-		{Op: "CALL", Args: []Operand{arm64MemOp("R20", 8)}, Raw: "CALL 8(R20)"},
+		{Op: "CALL", Args: []Operand{arm64MemOp("R20", 0)}, Raw: "CALL (R20)"},
 		{Op: "BL", Args: []Operand{arm64SymOp("helper(SB)")}, Raw: "BL helper(SB)"},
 		{Op: "B", Args: []Operand{arm64RegOp("R1")}, Raw: "B R1"},
 		{Op: "JMP", Args: []Operand{arm64MemOp("R20", 8)}, Raw: "JMP 8(R20)"},
@@ -627,7 +627,12 @@ func TestARM64FPOpsCoverage(t *testing.T) {
 			},
 		},
 	}
-	c, b := newARM64CtxWithFuncForTest(t, Func{}, sig, nil)
+	c, b := newARM64CtxWithFuncForTest(t, Func{Instrs: []Instr{{
+		Op: "FMOVD",
+		Args: []Operand{
+			arm64RegOp("F0"), arm64RegOp("F1"), arm64RegOp("F2"), arm64RegOp("F3"), arm64RegOp("F4"),
+		},
+	}}}, sig, nil)
 	check := func(kind string, ins Instr, ok bool, err error) {
 		t.Helper()
 		if err != nil {
@@ -653,27 +658,27 @@ func TestARM64FPOpsCoverage(t *testing.T) {
 	}
 
 	for _, ins := range []Instr{
-		{Op: "FMOVD", Args: []Operand{arm64SymOp("$1.5"), arm64RegOp("R0")}, Raw: "FMOVD $1.5, R0"},
-		{Op: "FMOVD", Args: []Operand{arm64SymOp("$0x10"), arm64FPOp(48)}, Raw: "FMOVD $0x10, ret+48(FP)"},
-		{Op: "FCMPD", Args: []Operand{arm64FPOp(0), arm64RegOp("R0")}, Raw: "FCMPD arg+0(FP), R0"},
-		{Op: "FCSELD", Args: []Operand{arm64IdentOp("EQ"), arm64FPOp(0), arm64FPOp(8), arm64RegOp("R1")}, Raw: "FCSELD EQ, arg+0(FP), arg+8(FP), R1"},
-		{Op: "FADDD", Args: []Operand{arm64FPOp(0), arm64RegOp("R1")}, Raw: "FADDD arg+0(FP), R1"},
-		{Op: "FSUBD", Args: []Operand{arm64FPOp(8), arm64RegOp("R1"), arm64RegOp("R2")}, Raw: "FSUBD arg+8(FP), R1, R2"},
-		{Op: "FMULD", Args: []Operand{arm64FPOp(16), arm64RegOp("R2")}, Raw: "FMULD arg+16(FP), R2"},
-		{Op: "FDIVD", Args: []Operand{arm64FPOp(24), arm64RegOp("R2"), arm64FPOp(48)}, Raw: "FDIVD arg+24(FP), R2, ret+48(FP)"},
-		{Op: "FMAXD", Args: []Operand{arm64FPOp(32), arm64RegOp("R2")}, Raw: "FMAXD arg+32(FP), R2"},
-		{Op: "FMIND", Args: []Operand{arm64FPOp(40), arm64RegOp("R2"), arm64RegOp("R3")}, Raw: "FMIND arg+40(FP), R2, R3"},
-		{Op: "FMADDD", Args: []Operand{arm64FPOp(0), arm64FPOp(8), arm64FPOp(16), arm64RegOp("R3")}, Raw: "FMADDD arg+0(FP), arg+8(FP), arg+16(FP), R3"},
-		{Op: "FMSUBD", Args: []Operand{arm64FPOp(8), arm64FPOp(16), arm64FPOp(24), arm64RegOp("R4")}, Raw: "FMSUBD arg+8(FP), arg+16(FP), arg+24(FP), R4"},
-		{Op: "FNMSUBD", Args: []Operand{arm64FPOp(16), arm64FPOp(24), arm64FPOp(32), arm64FPOp(56)}, Raw: "FNMSUBD arg+16(FP), arg+24(FP), arg+32(FP), ret+56(FP)"},
-		{Op: "FNMULD", Args: []Operand{arm64FPOp(0), arm64RegOp("R3")}, Raw: "FNMULD arg+0(FP), R3"},
-		{Op: "FNMULD", Args: []Operand{arm64FPOp(8), arm64FPOp(16), arm64RegOp("R4")}, Raw: "FNMULD arg+8(FP), arg+16(FP), R4"},
-		{Op: "FABSD", Args: []Operand{arm64RegOp("R4"), arm64FPOp(48)}, Raw: "FABSD R4, ret+48(FP)"},
-		{Op: "FRINTZD", Args: []Operand{arm64FPOp(0), arm64RegOp("R0")}, Raw: "FRINTZD arg+0(FP), R0"},
-		{Op: "FRINTMD", Args: []Operand{arm64FPOp(8), arm64RegOp("R1")}, Raw: "FRINTMD arg+8(FP), R1"},
-		{Op: "FRINTPD", Args: []Operand{arm64FPOp(16), arm64FPOp(56)}, Raw: "FRINTPD arg+16(FP), ret+56(FP)"},
-		{Op: "FCVTZSD", Args: []Operand{arm64FPOp(0), arm64RegOp("R2")}, Raw: "FCVTZSD arg+0(FP), R2"},
-		{Op: "SCVTFD", Args: []Operand{arm64RegOp("R2"), arm64RegOp("R3")}, Raw: "SCVTFD R2, R3"},
+		{Op: "FMOVD", Args: []Operand{arm64ImmOp(0), arm64RegOp("F0")}, Raw: "FMOVD $0, F0"},
+		{Op: "FMOVD", Args: []Operand{arm64RegOp("F0"), arm64FPOp(48)}, Raw: "FMOVD F0, ret+48(FP)"},
+		{Op: "FCMPD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F1")}, Raw: "FCMPD F0, F1"},
+		{Op: "FCSELD", Args: []Operand{arm64IdentOp("EQ"), arm64RegOp("F0"), arm64RegOp("F1"), arm64RegOp("F2")}, Raw: "FCSELD EQ, F0, F1, F2"},
+		{Op: "FADDD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F1")}, Raw: "FADDD F0, F1"},
+		{Op: "FSUBD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F1"), arm64RegOp("F2")}, Raw: "FSUBD F0, F1, F2"},
+		{Op: "FMULD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F2")}, Raw: "FMULD F0, F2"},
+		{Op: "FDIVD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F2"), arm64RegOp("F3")}, Raw: "FDIVD F0, F2, F3"},
+		{Op: "FMAXD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F2")}, Raw: "FMAXD F0, F2"},
+		{Op: "FMIND", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F2"), arm64RegOp("F3")}, Raw: "FMIND F0, F2, F3"},
+		{Op: "FMADDD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F1"), arm64RegOp("F2"), arm64RegOp("F3")}, Raw: "FMADDD F0, F1, F2, F3"},
+		{Op: "FMSUBD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F1"), arm64RegOp("F2"), arm64RegOp("F4")}, Raw: "FMSUBD F0, F1, F2, F4"},
+		{Op: "FNMSUBD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F1"), arm64RegOp("F2"), arm64RegOp("F4")}, Raw: "FNMSUBD F0, F1, F2, F4"},
+		{Op: "FNMULD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F3")}, Raw: "FNMULD F0, F3"},
+		{Op: "FNMULD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F1"), arm64RegOp("F4")}, Raw: "FNMULD F0, F1, F4"},
+		{Op: "FABSD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("F4")}, Raw: "FABSD F0, F4"},
+		{Op: "FRINTZD", Args: []Operand{arm64RegOp("F1"), arm64RegOp("F2")}, Raw: "FRINTZD F1, F2"},
+		{Op: "FRINTMD", Args: []Operand{arm64RegOp("F2"), arm64RegOp("F3")}, Raw: "FRINTMD F2, F3"},
+		{Op: "FRINTPD", Args: []Operand{arm64RegOp("F3"), arm64RegOp("F4")}, Raw: "FRINTPD F3, F4"},
+		{Op: "FCVTZSD", Args: []Operand{arm64RegOp("F0"), arm64RegOp("R2")}, Raw: "FCVTZSD F0, R2"},
+		{Op: "SCVTFD", Args: []Operand{arm64RegOp("R2"), arm64RegOp("F3")}, Raw: "SCVTFD R2, F3"},
 	} {
 		ok, _, err := c.lowerFP(ins.Op, ins)
 		check("lowerFP", ins, ok, err)
@@ -753,13 +758,13 @@ func TestARM64FPOpsCoverage(t *testing.T) {
 		"fmul double",
 		"fdiv double",
 		"fneg double",
-		"@llvm.maxnum.f64",
-		"@llvm.minnum.f64",
+		"@llvm.maximum.f64",
+		"@llvm.minimum.f64",
 		"@llvm.fabs.f64",
 		"@llvm.trunc.f64",
 		"@llvm.floor.f64",
 		"@llvm.ceil.f64",
-		"fptosi double",
+		"@llvm.fptosi.sat.i64.f64",
 		"sitofp i64",
 		"fpext float",
 		"ptrtoint ptr",
@@ -852,8 +857,8 @@ func TestARM64BranchAndReturnEdgeCoverage(t *testing.T) {
 
 	sigs := map[string]FuncSig{
 		"example.structSink": {Name: "example.structSink", Args: []LLVMType{LLVMType("{ i32, i64 }")}, Ret: Void},
-		"example.badarg":     {Name: "example.badarg", Args: []LLVMType{LLVMType("double")}, Ret: Void},
-		"example.badret":     {Name: "example.badret", Args: []LLVMType{I64}, Ret: LLVMType("double")},
+		"example.badarg":     {Name: "example.badarg", Args: []LLVMType{LLVMType("<2 x i64>")}, Ret: Void},
+		"example.badret":     {Name: "example.badret", Args: []LLVMType{I64}, Ret: LLVMType("<2 x i64>")},
 		"example.aggregate":  {Name: "example.aggregate", Ret: LLVMType("{ ptr, i64 }")},
 		"example.voidsame":   {Name: "example.voidsame", Args: []LLVMType{I64}, Ret: Void},
 		"example.badtailret": {Name: "example.badtailret", Args: []LLVMType{I64}, Ret: LLVMType("double")},
@@ -948,6 +953,68 @@ func TestARM64FPEdgeErrors(t *testing.T) {
 	}
 	if _, err := c.evalFMOVDBits(Operand{Kind: OpRegShift, Reg: "R0", ShiftOp: "BAD", ShiftAmount: 1}); err == nil {
 		t.Fatalf("evalFMOVDBits(bad shift) unexpectedly succeeded")
+	}
+}
+
+func TestARM64TailCallReturnIntegerWidths(t *testing.T) {
+	integerTypes := []LLVMType{I1, I8, I16, I32, I64}
+	for _, calleeType := range integerTypes {
+		for _, callerType := range integerTypes {
+			if calleeType == callerType {
+				continue
+			}
+			name := fmt.Sprintf("%s_to_%s", calleeType, callerType)
+			t.Run(name, func(t *testing.T) {
+				callee := "example.return_" + name
+				c, b := newARM64CtxWithFuncForTest(t, Func{}, FuncSig{
+					Name: "example.caller_" + name,
+					Ret:  callerType,
+				}, map[string]FuncSig{
+					callee: {Name: callee, Ret: calleeType},
+				})
+				if err := c.tailCallAndRet(arm64SymOp(callee + "(SB)")); err != nil {
+					t.Fatalf("tailCallAndRet(%s -> %s) error = %v", calleeType, callerType, err)
+				}
+				conversion := "zext"
+				calleeBits, _ := armIntegerTypeWidth(calleeType)
+				callerBits, _ := armIntegerTypeWidth(callerType)
+				if calleeBits > callerBits {
+					conversion = "trunc"
+				}
+				for _, want := range []string{
+					fmt.Sprintf("%s %s", conversion, calleeType),
+					fmt.Sprintf("to %s", callerType),
+					fmt.Sprintf("ret %s %%", callerType),
+				} {
+					if !strings.Contains(b.String(), want) {
+						t.Fatalf("tailCallAndRet(%s -> %s) missing %q:\n%s", calleeType, callerType, want, b.String())
+					}
+				}
+			})
+		}
+	}
+
+	for _, tc := range []struct {
+		name       string
+		calleeType LLVMType
+		callerType LLVMType
+		conversion string
+	}{
+		{name: "pointer_to_integer", calleeType: Ptr, callerType: I64, conversion: "ptrtoint ptr"},
+		{name: "integer_to_pointer", calleeType: I64, callerType: Ptr, conversion: "inttoptr i64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			callee := "example." + tc.name
+			c, b := newARM64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.caller_" + tc.name, Ret: tc.callerType}, map[string]FuncSig{
+				callee: {Name: callee, Ret: tc.calleeType},
+			})
+			if err := c.tailCallAndRet(arm64SymOp(callee + "(SB)")); err != nil {
+				t.Fatalf("tailCallAndRet(%s -> %s) error = %v", tc.calleeType, tc.callerType, err)
+			}
+			if got := b.String(); !strings.Contains(got, tc.conversion) || !strings.Contains(got, fmt.Sprintf("ret %s %%", tc.callerType)) {
+				t.Fatalf("tailCallAndRet(%s -> %s) output:\n%s", tc.calleeType, tc.callerType, got)
+			}
+		})
 	}
 }
 
@@ -1072,7 +1139,7 @@ func TestARM64ArithmeticErrorCoverage(t *testing.T) {
 		{Op: "MUL", Raw: "MUL $1", Args: []Operand{arm64ImmOp(1)}},
 		{Op: "MUL", Raw: "MUL $1, label", Args: []Operand{arm64ImmOp(1), arm64IdentOp("label")}},
 		{Op: "MUL", Raw: "MUL $1, R0, label", Args: []Operand{arm64ImmOp(1), arm64RegOp("R0"), arm64IdentOp("label")}},
-		{Op: "UMULH", Raw: "UMULH R0, R1", Args: []Operand{arm64RegOp("R0"), arm64RegOp("R1")}},
+		{Op: "UMULH", Raw: "UMULH R0", Args: []Operand{arm64RegOp("R0")}},
 		{Op: "MADDW", Raw: "MADDW R0, R1, R2", Args: []Operand{arm64RegOp("R0"), arm64RegOp("R1"), arm64RegOp("R2")}},
 		{Op: "MADDW", Raw: "MADDW label, R1, R2, R3", Args: []Operand{arm64IdentOp("label"), arm64RegOp("R1"), arm64RegOp("R2"), arm64RegOp("R3")}},
 		{Op: "MADDW", Raw: "MADDW R0, label, R2, R3", Args: []Operand{arm64RegOp("R0"), arm64IdentOp("label"), arm64RegOp("R2"), arm64RegOp("R3")}},
@@ -1245,7 +1312,6 @@ func TestARM64VectorEdgeCoverage(t *testing.T) {
 		}
 	}
 
-	check("VLD1R", false, Instr{Op: "VLD1R", Raw: "VLD1R (R20), V0"})
 	check("VMOV", false, Instr{Op: "VMOV", Raw: "VMOV R0, V0.S4", Args: []Operand{arm64RegOp("R0"), arm64RegOp("V0.S4")}})
 	check("VMOV", false, Instr{Op: "VMOV", Raw: "VMOV V0.S[2], R3", Args: []Operand{arm64RegOp("V0.S[2]"), arm64RegOp("R3")}})
 	check("VMOV", false, Instr{Op: "VMOV", Raw: "VMOV V1.H[4], R4", Args: []Operand{arm64RegOp("V1.H[4]"), arm64RegOp("R4")}})
@@ -1254,10 +1320,10 @@ func TestARM64VectorEdgeCoverage(t *testing.T) {
 	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), V3.D[1]", Args: []Operand{arm64MemOp("R20", 0), arm64RegOp("V3.D[1]")}})
 	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), V4.S[1]", Args: []Operand{arm64MemOp("R20", 0), arm64RegOp("V4.S[1]")}})
 	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), V5.H[3]", Args: []Operand{arm64MemOp("R20", 0), arm64RegOp("V5.H[3]")}})
-	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), [V6]", Args: []Operand{arm64MemOp("R20", 0), arm64RegListOp("V6")}})
-	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), [V7, V8, V9]", Args: []Operand{arm64MemOp("R20", 0), arm64RegListOp("V7", "V8", "V9")}})
-	check("VST1", true, Instr{Op: "VST1.P", Raw: "VST1.P [V0], (R20)", Args: []Operand{arm64RegListOp("V0"), arm64MemOp("R20", 0)}})
-	check("VST1", true, Instr{Op: "VST1.P", Raw: "VST1.P [V1, V2, V3], (R20)", Args: []Operand{arm64RegListOp("V1", "V2", "V3"), arm64MemOp("R20", 0)}})
+	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), [V6.B16]", Args: []Operand{arm64MemOp("R20", 0), arm64RegListOp("V6.B16")}})
+	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), [V7.B16, V8.B16, V9.B16]", Args: []Operand{arm64MemOp("R20", 0), arm64RegListOp("V7.B16", "V8.B16", "V9.B16")}})
+	check("VST1", true, Instr{Op: "VST1.P", Raw: "VST1.P [V0.B16], (R20)", Args: []Operand{arm64RegListOp("V0.B16"), arm64MemOp("R20", 0)}})
+	check("VST1", true, Instr{Op: "VST1.P", Raw: "VST1.P [V1.B16, V2.B16, V3.B16], (R20)", Args: []Operand{arm64RegListOp("V1.B16", "V2.B16", "V3.B16"), arm64MemOp("R20", 0)}})
 
 	for _, tc := range []Instr{
 		{Op: "VMOV", Raw: "VMOV R0", Args: []Operand{arm64RegOp("R0")}},
@@ -1310,12 +1376,12 @@ func TestARM64BranchErrorCoverage(t *testing.T) {
 	sigs := map[string]FuncSig{
 		"example.ret8":        {Name: "example.ret8", Args: []LLVMType{I64}, Ret: I8},
 		"example.retptr":      {Name: "example.retptr", Args: []LLVMType{I64}, Ret: Ptr},
-		"example.badarg":      {Name: "example.badarg", Args: []LLVMType{LLVMType("double")}, Ret: Void},
-		"example.badret":      {Name: "example.badret", Args: []LLVMType{I64}, Ret: LLVMType("double")},
+		"example.badarg":      {Name: "example.badarg", Args: []LLVMType{LLVMType("<2 x i64>")}, Ret: Void},
+		"example.badret":      {Name: "example.badret", Args: []LLVMType{I64}, Ret: LLVMType("<2 x i64>")},
 		"example.badagg":      {Name: "example.badagg", Args: []LLVMType{LLVMType("{ i32, double }")}, Ret: Void},
 		"example.badargreg":   {Name: "example.badargreg", Args: []LLVMType{I64}, ArgRegs: []Reg{"BAD"}, Ret: Void},
 		"example.casttail":    {Name: "example.casttail", Args: []LLVMType{I32, I64, I64, Ptr}, Ret: I64},
-		"example.badtailtype": {Name: "example.badtailtype", Args: []LLVMType{LLVMType("double")}, ArgRegs: []Reg{"R0"}, Ret: I64},
+		"example.badtailtype": {Name: "example.badtailtype", Args: []LLVMType{LLVMType("<2 x i64>")}, ArgRegs: []Reg{"R0"}, Ret: I64},
 		"example.structtail":  {Name: "example.structtail", Args: []LLVMType{LLVMType("{ i32, i64 }")}, Ret: I64},
 		"example.badtailreg":  {Name: "example.badtailreg", Args: []LLVMType{LLVMType("double")}, ArgRegs: []Reg{"BAD"}, Ret: I64},
 		"example.voidsink2":   {Name: "example.voidsink2", Args: []LLVMType{I64}, Ret: Void},
@@ -1477,10 +1543,11 @@ func TestARM64BranchErrorCoverage(t *testing.T) {
 		t.Fatalf("tailCallAndRet(casttail) error = %v", err)
 	}
 	for _, want := range []string{
-		"trunc i64 %t3 to i32",
+		"trunc i64",
+		"to i32",
 		"load i64, ptr %reg_R1",
 		"load i64, ptr %reg_R2",
-		"inttoptr i64 %t7 to ptr",
+		"inttoptr i64",
 	} {
 		if !strings.Contains(bTailCast.String(), want) {
 			t.Fatalf("tailCallAndRet(casttail) missing %q:\n%s", want, bTailCast.String())
@@ -1752,18 +1819,20 @@ func TestARM64EvalCoverage(t *testing.T) {
 		t.Fatalf("eval64(bad field type) unexpectedly succeeded")
 	}
 
-	cBadIndex, _ := newARM64CtxWithFuncForTest(t, Func{}, FuncSig{
+	badIndexSig := FuncSig{
 		Name: "example.badidx",
 		Args: []LLVMType{I64},
 		Ret:  Void,
 		Frame: FrameLayout{
 			Params: []FrameSlot{{Offset: 0, Type: I64, Index: 2}},
 		},
-	}, nil)
-	if _, err := cBadIndex.eval64(Operand{Kind: OpFP, FPOffset: 0}, false); err == nil {
-		t.Fatalf("eval64(bad fp index) unexpectedly succeeded")
 	}
-	if _, err := cBadIndex.eval64(Operand{Kind: OpMem, Mem: MemRef{Base: "BAD"}}, false); err == nil {
+	var badIndexOutput strings.Builder
+	cBadIndex := newARM64Ctx(&badIndexOutput, Func{}, badIndexSig, testResolveSym("example"), nil, false)
+	if err := cBadIndex.emitEntryAllocasAndArgInit(); err == nil {
+		t.Fatalf("entry initialization with bad FP argument index unexpectedly succeeded")
+	}
+	if _, err := c.eval64(Operand{Kind: OpMem, Mem: MemRef{Base: "BAD"}}, false); err == nil {
 		t.Fatalf("eval64(bad mem base) unexpectedly succeeded")
 	}
 

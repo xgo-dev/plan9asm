@@ -161,7 +161,7 @@ func armDecodeOp(raw string) (base string, cond string, postInc bool, setFlags b
 	base = parts[0]
 	for _, p := range parts[1:] {
 		switch p {
-		case "P":
+		case "P", "PW", "WP":
 			postInc = true
 		case "S":
 			setFlags = true

@@ -144,10 +144,10 @@ func arm64InstructionFamily(op string) string {
 	switch {
 	case isARM64BranchOpcode(op):
 		return "control-flow"
+	case strings.HasPrefix(op, "CAS") || strings.HasPrefix(op, "SWP") || strings.Contains(op, "XR") || strings.Contains(op, "XP"):
+		return "atomic-memory"
 	case strings.HasPrefix(op, "LD") || strings.HasPrefix(op, "ST") || strings.HasPrefix(op, "MOV"):
 		return "load-store-move"
-	case strings.HasPrefix(op, "CAS") || strings.HasPrefix(op, "SWP") || strings.Contains(op, "XR"):
-		return "atomic-memory"
 	case strings.HasPrefix(op, "AES") || strings.HasPrefix(op, "SHA"):
 		return "crypto"
 	case strings.HasPrefix(op, "V"):
@@ -315,6 +315,9 @@ func registerClass(arch Arch, goarch string, reg Reg) string {
 		if r == "ZR" {
 			return "zero-register"
 		}
+		if r == "RSP" {
+			return "stack-pointer"
+		}
 		if prefix, index, _, ok := regRangeParts(Reg(r)); ok {
 			switch {
 			case prefix == "Z" && index <= 31:
@@ -402,6 +405,23 @@ func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
 	if strings.HasPrefix(normalizeInstructionOpcode(ins.Op), "REP") {
 		return fmt.Errorf("%w: REP prefix must be probed with its following instruction", ErrProbeNeedsContext)
 	}
+	if arch == ArchAMD64 && goarch == "386" && normalizeInstructionOpcode(ins.Op) == "JMP" &&
+		len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
+		return fmt.Errorf("%w: %s uses the 386 assembler's legacy numeric branch relocation and requires final text layout", ErrProbeNeedsContext, ins.Raw)
+	}
+	if arch == ArchARM && normalizeInstructionOpcode(ins.Op) == "RFE" {
+		return fmt.Errorf("%w: %s returns through privileged exception state", ErrProbeNeedsContext, ins.Raw)
+	}
+	if arch == ArchARM64 {
+		op := normalizeInstructionOpcode(ins.Op)
+		if op == "ADR" || op == "ADRP" {
+			return fmt.Errorf("%w: %s requires the final function-local label layout", ErrProbeNeedsContext, ins.Raw)
+		}
+		switch op {
+		case "TLBI", "SYS", "SYSL", "DCPS1", "DCPS2", "DCPS3", "DRPS", "ERET", "HLT", "HVC", "SMC":
+			return fmt.Errorf("%w: %s depends on privileged ARM64 execution state", ErrProbeNeedsContext, ins.Raw)
+		}
+	}
 	for _, arg := range ins.Args {
 		switch arg.Kind {
 		case OpFP, OpFPAddr:
@@ -414,6 +434,10 @@ func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
 			if arg.Mem.Base == PC {
 				return fmt.Errorf("%w: %s uses a PC-relative target", ErrProbeNeedsContext, ins.Raw)
 			}
+			if arch == ArchARM && armMemoryOffsetNeedsContext(arg.Mem) ||
+				arch == ArchARM64 && arm64MemoryOffsetNeedsContext(arg.Mem) {
+				return fmt.Errorf("%w: %s uses an unresolved memory-offset macro", ErrProbeNeedsContext, ins.Raw)
+			}
 		case OpIdent:
 			if InstructionFamily(arch, string(ins.Op)) == "control-flow" {
 				return fmt.Errorf("%w: %s uses a function-local target", ErrProbeNeedsContext, ins.Raw)
@@ -421,21 +445,52 @@ func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
 		}
 	}
 
-	fn := Func{Sym: "plan9asm.probe", Instrs: []Instr{ins}}
+	err := probeInstructionSequence(arch, goarch, []Instr{ins})
+	if arch == ArchARM && ins.Op == OpWORD && err != nil {
+		return fmt.Errorf("%w: %s requires surrounding instruction, register, and control-flow state: %v", ErrProbeNeedsContext, ins.Raw, err)
+	}
+	return err
+}
+
+// ProbeInstructionSequence runs a self-contained instruction sequence through
+// the real lowering pipeline. Coverage scanners use this for forms whose
+// meaning spans source directives, such as consecutive x86 BYTE/WORD/LONG/QUAD
+// directives that encode one or more machine instructions.
+func ProbeInstructionSequence(arch Arch, goarch string, instrs []Instr) error {
+	if len(instrs) == 0 {
+		return fmt.Errorf("empty instruction probe sequence")
+	}
+	if arch == ArchWASM {
+		return fmt.Errorf("%w: wasm instructions require their full function", ErrProbeNeedsContext)
+	}
+	return probeInstructionSequence(arch, goarch, instrs)
+}
+
+func probeInstructionSequence(arch Arch, goarch string, instrs []Instr) error {
+	fn := Func{Sym: "plan9asm.probe", Instrs: append([]Instr(nil), instrs...)}
 	labels := map[string]struct{}{}
+	definedLabels := map[string]struct{}{}
 	sigs := map[string]FuncSig{
 		fn.Sym: {Name: fn.Sym, Ret: Void},
 	}
-	for _, arg := range ins.Args {
-		if arg.Kind == OpLabel {
-			labels[arg.Sym] = struct{}{}
-		}
-		if arg.Kind == OpSym && (ins.Op == OpCALL || ins.Op == OpJMP || normalizeInstructionOpcode(ins.Op) == "CALLNORESUME") {
-			name := strings.TrimSuffix(arg.Sym, "(SB)")
-			sigs[name] = FuncSig{Name: name, Ret: Void}
+	for _, ins := range instrs {
+		for _, arg := range ins.Args {
+			if arg.Kind == OpLabel {
+				labels[arg.Sym] = struct{}{}
+				if ins.Op == OpLABEL {
+					definedLabels[arg.Sym] = struct{}{}
+				}
+			}
+			if arg.Kind == OpSym && (ins.Op == OpCALL || ins.Op == OpJMP || normalizeInstructionOpcode(ins.Op) == "CALLNORESUME") {
+				name := strings.TrimSuffix(arg.Sym, "(SB)")
+				sigs[name] = FuncSig{Name: name, Ret: Void}
+			}
 		}
 	}
 	for label := range labels {
+		if _, ok := definedLabels[label]; ok {
+			continue
+		}
 		fn.Instrs = append(fn.Instrs, Instr{Op: OpLABEL, Args: []Operand{{Kind: OpLabel, Sym: label}}, Raw: label + ":"})
 	}
 	fn.Instrs = append(fn.Instrs, Instr{Op: OpRET, Raw: "RET"})

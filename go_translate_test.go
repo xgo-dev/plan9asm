@@ -76,6 +76,35 @@ TEXT ·gogo(SB),NOSPLIT,$0-8
 	}
 }
 
+func TestExpandGoAssemblySourcePreservesIncludedMacroDefinitionNames(t *testing.T) {
+	pkg := mustGoPackage(t, "example.com/ffi", `package ffi
+const type64 = 0
+type frame struct { value uintptr }
+func asmcall()
+`)
+	source := []byte(`// runtime has #include "go_asm.h"
+#define const_type64 0x0
+#define frame__size 8
+TEXT ·asmcall(SB),NOSPLIT,$0-0
+	CMPB AX, $const_type64
+	MOVQ $frame__size, BX
+	RET
+`)
+	expanded := ExpandGoAssemblySource(pkg, source, "amd64")
+	if strings.Contains(string(expanded), "#define 0 ") {
+		t.Fatalf("constant expansion rewrote the macro definition name:\n%s", expanded)
+	}
+	if !strings.Contains(string(expanded), "#define const_type64 0x0") {
+		t.Fatalf("constant expansion did not preserve the macro definition:\n%s", expanded)
+	}
+	if !strings.Contains(string(expanded), "#define frame__size 8") {
+		t.Fatalf("type-layout expansion did not preserve the macro definition:\n%s", expanded)
+	}
+	if _, err := ParseWithDefines(ArchAMD64, string(expanded), GoAssemblerDefines("linux", "amd64")); err != nil {
+		t.Fatalf("ParseWithDefines(expanded) error = %v\n%s", err, expanded)
+	}
+}
+
 func TestTranslateGoModule_UsesCallerWasmTypeSizes(t *testing.T) {
 	pkg := mustGoPackage(t, "example.com/wasm32", `package wasm32
 func Consume(value int, data []byte) int

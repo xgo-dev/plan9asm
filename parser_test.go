@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -31,6 +28,16 @@ RET
 	// TEXT + 3 ops + RET
 	if len(file.Funcs[0].Instrs) != 5 {
 		t.Fatalf("instrs=%d, want 5", len(file.Funcs[0].Instrs))
+	}
+}
+
+func TestParseNormalizesLegacyZeroTextSymbolOffset(t *testing.T) {
+	file, err := Parse(ArchAMD64, "TEXT ·Sqrtf+0(SB),NOSPLIT,$0-8\nRET\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := file.Funcs[0].Sym; got != "·Sqrtf" {
+		t.Fatalf("TEXT symbol = %q, want %q", got, "·Sqrtf")
 	}
 }
 
@@ -249,6 +256,46 @@ RET
 	mem1 := file.Funcs[0].Instrs[2].Args[0].Mem
 	if mem1.Base != SI || mem1.Off != 12 {
 		t.Fatalf("second mem=(base=%s,off=%d), want (SI,12)", mem1.Base, mem1.Off)
+	}
+}
+
+func TestParseArithmeticOffsetBeforeBaseRegister(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT arithmeticOffset(SB),NOSPLIT,$0-0
+	ADDQ 0+(1*16)(BP), R10
+	MOVQ (-64*1024+104)(SP), AX
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := file.Funcs[0].Instrs[1].Args[0]
+	if first.Kind != OpMem || first.Mem.Base != BP || first.Mem.Off != 16 {
+		t.Fatalf("first operand = %#v, want 16(BP)", first)
+	}
+	second := file.Funcs[0].Instrs[2].Args[0]
+	if second.Kind != OpMem || second.Mem.Base != SP || second.Mem.Off != -65432 {
+		t.Fatalf("second operand = %#v, want -65432(SP)", second)
+	}
+}
+
+func TestParseX86TLSPseudoRegisterAndRelocationIndex(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT tlsforms(SB),NOSPLIT,$0-0
+	MOVQ TLS, CX
+	MOVQ 0(CX)(TLS*1), BX
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadBase := file.Funcs[0].Instrs[1].Args[0]
+	if loadBase.Kind != OpReg || loadBase.Reg != Reg("TLS") {
+		t.Fatalf("TLS source = %#v, want TLS pseudo-register", loadBase)
+	}
+	indexed := file.Funcs[0].Instrs[2].Args[0]
+	if indexed.Kind != OpMem || indexed.Mem.Base != CX || indexed.Mem.Index != Reg("TLS") || indexed.Mem.Scale != 1 {
+		t.Fatalf("TLS relocation memory = %#v, want 0(CX)(TLS*1)", indexed)
 	}
 }
 

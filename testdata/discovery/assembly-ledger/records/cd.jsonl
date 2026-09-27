@@ -1,0 +1,17 @@
+{"module":"ghproxy-9d2.pages.dev/0xsequence/ethkit","version":"v1.43.1","status":"pending"}
+{"module":"github.com/Itering/scale.go","version":"v1.11.2","status":"pending"}
+{"module":"github.com/arturonaredo/goffi","version":"v0.6.3","status":"pending"}
+{"module":"github.com/cloudflare/go","version":"v0.0.0-20250507102823-37bc41c6ff79","status":"pending"}
+{"module":"github.com/cryptopro/go/src","version":"v0.0.0-20260705003648-9d759167f01f","status":"pending"}
+{"module":"github.com/csirmazbendeguz/regclient","version":"v0.0.0-20260429082137-82ab6d426079","status":"pending"}
+{"module":"github.com/dchest/siphash","version":"v1.2.3","status":"pending"}
+{"module":"github.com/fadeace/apper","version":"v0.0.0-20181127040145-8066c555ae8e","status":"pending"}
+{"module":"github.com/heshunme/sing-tun","version":"v0.4.22","status":"pending"}
+{"module":"github.com/ledao/arrgo","version":"v0.0.3","status":"pending"}
+{"module":"github.com/m3db/M3","version":"v1.5.0","status":"pending"}
+{"module":"github.com/rsc/tmp","version":"v0.0.0-20260826135005-a7dac69396f1","status":"pending"}
+{"module":"github.com/secure-io/siv-go","version":"v0.0.0-20180922214919-5ff40651e2c4","status":"pending"}
+{"module":"github.com/shelnutt2/websocket","version":"v1.8.15","status":"pending"}
+{"module":"github.com/sola97/xray-core","version":"v0.0.0-20260802131416-77ae50451803","status":"pending"}
+{"module":"github.com/tenderly/net-bera","version":"v1.17.5","status":"pending"}
+{"module":"github.com/thirdfort/cfssl","version":"v1.6.6","status":"pending"}

@@ -1,0 +1,17 @@
+{"module":"github.com/Eidon-AI/go-ethereum","version":"v1.10.26","status":"pending"}
+{"module":"github.com/FiloSottile/bigmod","version":"v0.1.0","status":"pending"}
+{"module":"github.com/KLAUSPost/compress","version":"v1.20.0","status":"pending"}
+{"module":"github.com/Reactive-Network/geth-rnk2-genesis","version":"v0.0.0-20260827231907-8cce496420cd","status":"pending"}
+{"module":"github.com/aarzilli/exp","version":"v0.0.0-20250508142343-e302c350bfce","status":"pending"}
+{"module":"github.com/caitinggui/seelog","version":"v0.0.0-20201101100052-c937a28847c5","status":"pending"}
+{"module":"github.com/cloudflare/CIRCL","version":"v1.6.5","status":"pending"}
+{"module":"github.com/criyle/go-judger","version":"v0.13.7","status":"pending"}
+{"module":"github.com/ericlagergren/aegis","version":"v0.0.0-20250325060835-cd0defd64358","status":"pending"}
+{"module":"github.com/james-bowman/sparse","version":"v0.0.0-20260216202247-495ee4f84d35","status":"pending"}
+{"module":"github.com/ltcsuite/ltcd/ltcutil","version":"v1.1.4","status":"pending"}
+{"module":"github.com/metacubex/tailscale-wireguard-go","version":"v0.0.0-20260725073821-e61ab99cede2","status":"pending"}
+{"module":"github.com/rebelice/tidb","version":"v1.0.9","status":"pending"}
+{"module":"github.com/remi71350-droid/websocket","version":"v0.0.0-20250905081622-7d7c644330e7","status":"pending"}
+{"module":"github.com/ronin-chain/ronin","version":"v1.1.2","status":"pending"}
+{"module":"github.com/wy2926/nebula","version":"v0.0.0-20260904152608-e50f8128f437","status":"pending"}
+{"module":"k8s.io/contrib","version":"v0.0.0-20190411182844-89f6948e2457","status":"pending"}

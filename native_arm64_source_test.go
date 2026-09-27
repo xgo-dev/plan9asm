@@ -54,13 +54,36 @@ int main(void) {
 }`)
 }
 
+func TestNativeARM64SourceRequiresLLVM22(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(executable, "-test.run=^TestNativeARM64Source$", "-test.v")
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(strings.ToUpper(variable), "LLVM_CONFIG=") {
+			cmd.Env = append(cmd.Env, variable)
+		}
+	}
+	cmd.Env = append(cmd.Env, "LLVM_CONFIG="+filepath.Join(t.TempDir(), "missing-llvm-config"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("native ARM64 source test passed without required LLVM 22 tools:\n%s", output)
+	}
+	if !strings.Contains(string(output), "LLVM 22 clang not found") {
+		t.Fatalf("native ARM64 source test did not fail for missing LLVM 22: %v\n%s", err, output)
+	}
+}
+
 // Compile the generated Mach-O assembly on every LLVM host; only execution
 // needs Darwin/ARM64. No test or implementation reads a Go object format.
 func nativeCompileAndRun(t *testing.T, assembly, harness string) {
 	t.Helper()
-	clang, err := exec.LookPath("clang")
-	if err != nil {
-		t.Skip("clang not installed")
+	clang := findLLVM22Tool("clang")
+	if clang == "" {
+		t.Fatal("LLVM 22 clang not found")
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "native.s")

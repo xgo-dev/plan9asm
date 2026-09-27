@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type corpusManifest struct {
@@ -46,21 +47,45 @@ type commandInvocation struct {
 }
 
 type matrixReport struct {
-	Targets      []targetReport `json:"targets"`
-	TotalTargets int            `json:"total_targets"`
-	TotalAsm     int            `json:"total_asm"`
-	Success      int            `json:"success"`
-	Failed       int            `json:"failed"`
+	Targets                  []targetReport                     `json:"targets"`
+	TotalTargets             int                                `json:"total_targets"`
+	TotalAsm                 int                                `json:"total_asm"`
+	Success                  int                                `json:"success"`
+	NotApplicable            int                                `json:"not_applicable"`
+	Failed                   int                                `json:"failed"`
+	NotApplicableItems       []matrixTargetNotApplicableItem    `json:"not_applicable_items,omitempty"`
+	SourceNotApplicableItems []discoverySourceNotApplicableItem `json:"source_not_applicable_items,omitempty"`
+	PrivateExtension         *discoveryPrivateExtensionSkip     `json:"-"`
+}
+
+const targetNotApplicableGoTextArgSize = "go_text_arg_size_mismatch"
+
+type targetNotApplicableItem struct {
+	PkgPath         string `json:"pkg_path"`
+	AsmFile         string `json:"asm_file"`
+	Kind            string `json:"kind"`
+	Symbol          string `json:"symbol"`
+	DeclaredArgSize int64  `json:"declared_arg_size"`
+	ExpectedArgSize int64  `json:"expected_arg_size"`
+	Reason          string `json:"reason"`
+}
+
+type matrixTargetNotApplicableItem struct {
+	Target string `json:"target"`
+	targetNotApplicableItem
 }
 
 type targetReport struct {
-	Goos        string   `json:"goos"`
-	Goarch      string   `json:"goarch"`
-	TotalPkgs   int      `json:"total_pkgs"`
-	AsmPackages []string `json:"asm_packages"`
-	TotalAsm    int      `json:"total_asm"`
-	Success     int      `json:"success"`
-	Failed      int      `json:"failed"`
+	Goos               string                    `json:"goos"`
+	Goarch             string                    `json:"goarch"`
+	TotalPkgs          int                       `json:"total_pkgs"`
+	AsmPackages        []string                  `json:"asm_packages"`
+	AsmFiles           []string                  `json:"asm_files"`
+	TotalAsm           int                       `json:"total_asm"`
+	Success            int                       `json:"success"`
+	NotApplicable      int                       `json:"not_applicable"`
+	Failed             int                       `json:"failed"`
+	NotApplicableItems []targetNotApplicableItem `json:"not_applicable_items,omitempty"`
 }
 
 var (
@@ -71,6 +96,11 @@ var (
 const (
 	originLLGoIssue     = "llgo-issue"
 	originEcosystemScan = "ecosystem-scan"
+
+	// The deadline is renewed for candidate setup and each target configuration.
+	// This bounds stuck tools without penalizing modules that legitimately need
+	// several expensive target configurations.
+	defaultDiscoveryCandidateTimeout = 60 * time.Minute
 )
 
 func main() {
@@ -82,7 +112,27 @@ func main() {
 	suite := flag.String("suite", "all", "suite id to run, or all")
 	checkLatest := flag.Bool("check-latest", true, "require each pinned module version to equal @latest")
 	list := flag.Bool("list", false, "list suite ids as a JSON array and exit")
+	discoveryLedger := flag.String("discovery-ledger", "", "run every matched module@version in a discovery ledger instead of the curated manifest")
+	discoveryTargets := flag.String("discovery-targets", "", "comma-separated target subset for replaying matching discovery records")
+	discoveryShardIndex := flag.Int("discovery-shard-index", 0, "zero-based discovery candidate shard")
+	discoveryShardCount := flag.Int("discovery-shard-count", 1, "number of stable discovery candidate shards")
+	discoveryTimeout := flag.Duration("candidate-timeout", defaultDiscoveryCandidateTimeout, "timeout for discovery setup and each target configuration")
+	discoveryReport := flag.String("discovery-report", "", "write the discovery shard result as JSON")
+	discoveryBuildCache := flag.String("discovery-build-cache", "", "existing absolute Go build-cache directory shared by discovery shards; never removed by the runner")
+	verifyDiscoveryReports := flag.String("verify-discovery-reports", "", "verify a complete directory of discovery shard reports against -discovery-ledger")
+	discoveryProgressReports := flag.String("discovery-progress", "", "report pending/passed/N/A/failed candidates from a possibly incomplete directory of frozen shard reports")
+	writeAssemblyLedgerPath := flag.String("write-assembly-ledger", "", "persist audited discovery progress in a separate module-hashed assembly ledger")
+	assemblyLedgerStatusPath := flag.String("assembly-ledger-status", "", "read and validate persisted assembly results against the current scan and source")
 	flag.Parse()
+	if *verifyDiscoveryReports != "" && *discoveryProgressReports != "" {
+		check(errors.New("-verify-discovery-reports and -discovery-progress are mutually exclusive"))
+	}
+	if *writeAssemblyLedgerPath != "" && *discoveryProgressReports == "" {
+		check(errors.New("-write-assembly-ledger requires -discovery-progress"))
+	}
+	if *assemblyLedgerStatusPath != "" && (*discoveryProgressReports != "" || *verifyDiscoveryReports != "") {
+		check(errors.New("-assembly-ledger-status cannot be combined with report verification or progress"))
+	}
 
 	manifest, err := loadManifest(*manifestPath)
 	check(err)
@@ -94,11 +144,83 @@ func main() {
 		check(json.NewEncoder(os.Stdout).Encode(ids))
 		return
 	}
+	if *verifyDiscoveryReports != "" {
+		if *discoveryLedger == "" {
+			check(errors.New("-verify-discovery-reports requires -discovery-ledger"))
+		}
+		source, err := collectDiscoverySource(*repoRoot)
+		check(err)
+		check(verifyDiscoveryCorpusReports(*discoveryLedger, *verifyDiscoveryReports, manifest.Targets, source, *repoRoot))
+		fmt.Printf("verified discovery corpus reports against %s\n", *discoveryLedger)
+		return
+	}
+	if *assemblyLedgerStatusPath != "" {
+		if *discoveryLedger == "" {
+			check(errors.New("-assembly-ledger-status requires -discovery-ledger"))
+		}
+		ledgerSHA, err := discoveryLedgerFingerprint(*discoveryLedger)
+		check(err)
+		semanticSourceSHA, err := collectDiscoverySemanticSourceSHA(*repoRoot)
+		check(err)
+		progress, err := readAssemblyLedger(*assemblyLedgerStatusPath, ledgerSHA, semanticSourceSHA)
+		check(err)
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		check(encoder.Encode(progress))
+		return
+	}
+	if *discoveryProgressReports != "" {
+		if *discoveryLedger == "" || *discoveryShardCount <= 0 {
+			check(errors.New("-discovery-progress requires -discovery-ledger and a positive -discovery-shard-count"))
+		}
+		source, err := collectDiscoverySource(*repoRoot)
+		check(err)
+		progress, err := collectDiscoveryProgress(*discoveryLedger, *discoveryProgressReports, manifest.Targets, source, *discoveryShardCount, *repoRoot)
+		check(err)
+		finalSource, err := collectDiscoverySource(*repoRoot)
+		check(err)
+		if finalSource != source {
+			check(errors.New("discovery source changed while reading progress"))
+		}
+		if *writeAssemblyLedgerPath != "" {
+			check(validateAssemblyLedgerDestination(*discoveryLedger, *writeAssemblyLedgerPath))
+			semanticSourceSHA, err := collectDiscoverySemanticSourceSHA(*repoRoot)
+			check(err)
+			check(writeAssemblyLedger(*writeAssemblyLedgerPath, progress, semanticSourceSHA))
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		check(encoder.Encode(progress))
+		return
+	}
 	if *translator == "" {
 		check(errors.New("-translator is required"))
 	}
 	if *llc == "" {
 		check(errors.New("-llc is required"))
+	}
+	if *discoveryLedger != "" {
+		targets := manifest.Targets
+		filterTargets := false
+		if *discoveryTargets != "" {
+			targets, err = parseDiscoveryTargets(*discoveryTargets)
+			check(err)
+			filterTargets = true
+		}
+		check(runDiscoveryCorpus(discoveryCorpusConfig{
+			LedgerPath:       *discoveryLedger,
+			RepoRoot:         *repoRoot,
+			Translator:       *translator,
+			LLC:              *llc,
+			Targets:          targets,
+			FilterTargets:    filterTargets,
+			ShardIndex:       *discoveryShardIndex,
+			ShardCount:       *discoveryShardCount,
+			CandidateTimeout: *discoveryTimeout,
+			ReportPath:       *discoveryReport,
+			buildCache:       *discoveryBuildCache,
+		}))
+		return
 	}
 
 	libraries, err := selectLibraries(manifest.Libraries, *suite)
@@ -106,6 +228,29 @@ func main() {
 	for _, library := range libraries {
 		check(runLibrary(manifest, library, *corpusDir, *repoRoot, *translator, *llc, *checkLatest))
 	}
+}
+
+func parseDiscoveryTargets(value string) ([]string, error) {
+	var targets []string
+	seen := make(map[string]bool)
+	for _, target := range strings.Split(value, ",") {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			return nil, errors.New("-discovery-targets contains an empty target")
+		}
+		if err := validateTarget(target); err != nil {
+			return nil, err
+		}
+		if seen[target] {
+			return nil, fmt.Errorf("duplicate discovery target %q", target)
+		}
+		seen[target] = true
+		targets = append(targets, target)
+	}
+	if len(targets) == 0 {
+		return nil, errors.New("-discovery-targets must not be empty")
+	}
+	return targets, nil
 }
 
 func check(err error) {
@@ -300,22 +445,60 @@ func runLibrary(manifest corpusManifest, library libraryManifest, corpusDir, rep
 	if err := validateReport(manifest.Targets, library, report); err != nil {
 		return err
 	}
-	fmt.Printf("%s: all %d assembly translations passed across %d targets\n", library.ID, report.TotalAsm, report.TotalTargets)
+	fmt.Printf("%s: all %d assembly translations passed or were evidence-backed N/A across %d targets\n", library.ID, report.TotalAsm, report.TotalTargets)
 	return nil
 }
 
 func makeTranslatorInvocation(corpusDir, modulePath, outDir, repoRoot, llc, reportPath string) commandInvocation {
-	return commandInvocation{Dir: corpusDir, Args: []string{
-		"-all-targets",
-		"-patterns=" + modulePath + "/...",
+	invocation := makeTranslatorInvocationForPatterns(corpusDir, modulePath, []string{modulePath + "/..."}, outDir, repoRoot, llc, reportPath)
+	invocation.Args = append(invocation.Args, "-strict-load")
+	return invocation
+}
+
+func makeTranslatorInvocationForPatterns(corpusDir, modulePath string, patterns []string, outDir, repoRoot, llc, reportPath string) commandInvocation {
+	return makeTranslatorInvocationForPatternsAndTags(corpusDir, modulePath, patterns, nil, outDir, repoRoot, llc, reportPath)
+}
+
+func makeTranslatorInvocationForPatternsAndTags(corpusDir, modulePath string, patterns, buildTags []string, outDir, repoRoot, llc, reportPath string) commandInvocation {
+	return makeTranslatorInvocationForTargetsAndTags(corpusDir, modulePath, patterns, buildTags, nil, nil, outDir, repoRoot, llc, reportPath)
+}
+
+func makeTranslatorInvocationForTargetsAndTags(corpusDir, modulePath string, patterns, buildTags, targets, asmFiles []string, outDir, repoRoot, llc, reportPath string) commandInvocation {
+	args := []string{
+		"-patterns=" + strings.Join(patterns, ","),
 		"-module-path=" + modulePath,
-		"-out=" + outDir,
+	}
+	if len(targets) == 0 {
+		args = append([]string{"-all-targets"}, args...)
+	} else {
+		args = append([]string{"-targets=" + strings.Join(targets, ",")}, args...)
+	}
+	if len(buildTags) != 0 {
+		args = append(args, "-tags="+strings.Join(buildTags, ","))
+	}
+	if len(asmFiles) != 0 {
+		args = append(args, "-asm-files="+strings.Join(asmFiles, ","))
+	}
+	args = append(args,
+		"-out="+outDir,
 		"-compile",
-		"-llc=" + llc,
-		"-report=" + reportPath,
-		"-repo-root=" + repoRoot,
-		"-strict-load",
-	}}
+		"-llc="+llc,
+		"-report="+reportPath,
+		"-repo-root="+repoRoot,
+	)
+	return commandInvocation{Dir: corpusDir, Args: args}
+}
+
+func makeDiscoveryTranslatorInvocation(corpusDir, modulePath string, patterns, buildTags, targets, asmFiles []string, outDir, repoRoot, llc, reportPath string) commandInvocation {
+	invocation := makeTranslatorInvocationForTargetsAndTags(
+		corpusDir, modulePath, patterns, buildTags, targets, asmFiles,
+		outDir, repoRoot, llc, reportPath,
+	)
+	// Discovery verifies IR and produces a real LLVM object for every selected
+	// source. Optimization does not add coverage, and -O0 keeps generated
+	// megabyte-scale files tractable in the complete module-index sweep.
+	invocation.Args = append(invocation.Args, "-llc-opt-level=0")
+	return invocation
 }
 
 func queryModule(dir, query string) (moduleInfo, error) {
@@ -361,6 +544,7 @@ func validateReport(targets []string, library libraryManifest, report matrixRepo
 	seen := make(map[string]bool, len(targets))
 	totalAsm := 0
 	totalSuccess := 0
+	totalNotApplicable := 0
 	for _, actual := range report.Targets {
 		target := actual.Goos + "/" + actual.Goarch
 		if seen[target] {
@@ -376,19 +560,23 @@ func validateReport(targets []string, library libraryManifest, report matrixRepo
 		if actual.TotalPkgs != len(actual.AsmPackages) {
 			return fmt.Errorf("%s: %s inconsistent package count: total_pkgs=%d asm_packages=%v", library.ID, target, actual.TotalPkgs, actual.AsmPackages)
 		}
-		if actual.Failed != 0 || actual.Success != actual.TotalAsm {
-			return fmt.Errorf("%s: %s failed: success=%d failed=%d total=%d", library.ID, target, actual.Success, actual.Failed, actual.TotalAsm)
+		if actual.Failed != 0 || actual.Success+actual.NotApplicable != actual.TotalAsm {
+			return fmt.Errorf("%s: %s failed: success=%d not_applicable=%d failed=%d total=%d", library.ID, target, actual.Success, actual.NotApplicable, actual.Failed, actual.TotalAsm)
+		}
+		if err := validateTargetNotApplicableEvidence(actual); err != nil {
+			return fmt.Errorf("%s: %s: %w", library.ID, target, err)
 		}
 		totalAsm += actual.TotalAsm
 		totalSuccess += actual.Success
+		totalNotApplicable += actual.NotApplicable
 	}
 	for _, target := range targets {
 		if !seen[target] {
 			return fmt.Errorf("%s: target %s was silently skipped", library.ID, target)
 		}
 	}
-	if report.TotalAsm != totalAsm || report.Success != totalSuccess || report.Failed != 0 || report.Success != report.TotalAsm {
-		return fmt.Errorf("%s: inconsistent matrix totals: success=%d failed=%d total=%d", library.ID, report.Success, report.Failed, report.TotalAsm)
+	if report.TotalAsm != totalAsm || report.Success != totalSuccess || report.NotApplicable != totalNotApplicable || report.Failed != 0 || report.Success+report.NotApplicable != report.TotalAsm {
+		return fmt.Errorf("%s: inconsistent matrix totals: success=%d not_applicable=%d failed=%d total=%d", library.ID, report.Success, report.NotApplicable, report.Failed, report.TotalAsm)
 	}
 	return nil
 }

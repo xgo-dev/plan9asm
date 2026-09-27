@@ -20,8 +20,15 @@ type directValue struct {
 }
 
 func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
+	return translateModuleDirectInContext(llvm.GlobalContext(), file, opt)
+}
+
+func translateModuleDirectInContext(ctx llvm.Context, file *File, opt Options) (llvm.Module, error) {
 	if file == nil {
 		return llvm.Module{}, fmt.Errorf("nil file")
+	}
+	if len(file.x86Continuations) != 0 {
+		return llvm.Module{}, directUnsupportedf("x86 continuations require shared CFG lowering")
 	}
 	if len(file.Funcs) == 0 && len(file.Data) == 0 && len(file.Globl) == 0 {
 		return llvm.Module{}, fmt.Errorf("empty file")
@@ -35,7 +42,6 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 		resolve = func(s string) string { return s }
 	}
 
-	ctx := llvm.GlobalContext()
 	mod := ctx.NewModule("plan9asm")
 	if opt.TargetTriple != "" {
 		mod.SetTarget(opt.TargetTriple)
@@ -50,6 +56,10 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 
 	for i := range file.Funcs {
 		fn := &file.Funcs[i]
+		if fn.X86RawText != nil {
+			mod.Dispose()
+			return llvm.Module{}, directUnsupportedf("address-sensitive x86 raw TEXT requires textual lowering for %s", fn.Sym)
+		}
 		name := resolve(fn.Sym)
 		sig, ok := opt.Sigs[name]
 		if !ok {
@@ -71,7 +81,13 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("%s: %v", name, err)
 		}
-		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
+		if file.Arch == ArchAMD64 {
+			if err := validateAMD64ScalarAddSubFunction(opt.Goarch, *fn); err != nil {
+				mod.Dispose()
+				return llvm.Module{}, fmt.Errorf("%s: %w", name, err)
+			}
+		}
+		if file.Arch == ArchARM {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("arm CFG lowering required for %s", name)
 		}
@@ -278,8 +294,11 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 				return directValue{}, directUnsupportedf("FP slot %s invalid arg index %d", op.String(), slot.Index)
 			}
 			arg := args[slot.Index]
-			if slot.Field >= 0 {
-				ev := b.CreateExtractValue(arg, slot.Field, "")
+			if fields := frameSlotFields(slot); len(fields) != 0 {
+				ev := arg
+				for _, field := range fields {
+					ev = b.CreateExtractValue(ev, field, "")
+				}
 				return directValue{typ: slot.Type, val: ev}, nil
 			}
 			return directValue{typ: slot.Type, val: arg}, nil
@@ -353,6 +372,9 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 				return directUnsupportedf("MOVL expects 2 args")
 			}
 			src, dst := ins.Args[0], ins.Args[1]
+			if dst.Kind == OpFP && (src.Kind == OpFP || src.Kind == OpMem || src.Kind == OpSym) {
+				return fmt.Errorf("x86 MOVL does not allow memory-to-result-memory: %q", ins.Raw)
+			}
 			v, err := valueOf(src)
 			if err != nil {
 				return err
@@ -383,9 +405,19 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 			if err != nil {
 				return err
 			}
-			rhs, err := valueOf(src)
-			if err != nil {
-				return err
+			var rhs directValue
+			if (ins.Op == OpADDQ || ins.Op == OpSUBQ) && src.Kind == OpImm {
+				i64Ty, typeErr := llvmTypeFromLLVMType(ctx, I64)
+				if typeErr != nil {
+					return typeErr
+				}
+				normalized := amd64ScalarAddSubImmediateInt64(src.Imm, 64)
+				rhs = directValue{typ: I64, val: llvm.ConstInt(i64Ty, uint64(normalized), true)}
+			} else {
+				rhs, err = valueOf(src)
+				if err != nil {
+					return err
+				}
 			}
 			lhs, err = cast(lhs, I64)
 			if err != nil {
@@ -550,8 +582,10 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 
 func emitDataGlobalsModule(mod llvm.Module, file *File, resolve func(string) string) error {
 	type symData struct {
-		size  int64
-		bytes map[int64][]byte
+		size     int64
+		bytes    map[int64][]byte
+		readOnly bool
+		local    bool
 	}
 	syms := map[string]*symData{}
 	resolveData := func(sym string) string {
@@ -561,6 +595,10 @@ func emitDataGlobalsModule(mod llvm.Module, file *File, resolve func(string) str
 		return resolve("·" + sym)
 	}
 	for _, g := range file.Globl {
+		readOnly, err := globlReadOnly(g.Flags)
+		if err != nil {
+			return err
+		}
 		name := resolveData(g.Sym)
 		sd := syms[name]
 		if sd == nil {
@@ -570,6 +608,8 @@ func emitDataGlobalsModule(mod llvm.Module, file *File, resolve func(string) str
 		if g.Size > sd.size {
 			sd.size = g.Size
 		}
+		sd.readOnly = readOnly
+		sd.local = strings.HasSuffix(g.Sym, "<>")
 	}
 	for _, d := range file.Data {
 		name := resolveData(d.Sym)
@@ -578,6 +618,7 @@ func emitDataGlobalsModule(mod llvm.Module, file *File, resolve func(string) str
 			sd = &symData{bytes: map[int64][]byte{}}
 			syms[name] = sd
 		}
+		sd.local = strings.HasSuffix(d.Sym, "<>")
 		end, err := dataStmtEnd(d)
 		if err != nil {
 			return err
@@ -620,7 +661,10 @@ func emitDataGlobalsModule(mod llvm.Module, file *File, resolve func(string) str
 		init := llvm.ConstArray(i8Ty, elems)
 		g := llvm.AddGlobal(mod, arrTy, name)
 		g.SetInitializer(init)
-		g.SetGlobalConstant(true)
+		g.SetGlobalConstant(sd.readOnly)
+		if sd.local {
+			g.SetLinkage(llvm.InternalLinkage)
+		}
 		g.SetAlignment(int(bestAlign(int64(len(buf)))))
 	}
 	return nil

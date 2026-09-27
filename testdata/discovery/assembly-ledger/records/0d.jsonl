@@ -1,0 +1,14 @@
+{"module":"fuchsia.googlesource.com/third_party/golang.org/x/sys.git","version":"v0.48.0","status":"pending"}
+{"module":"github.com/DTRules/DTRules","version":"v1.25.0","status":"pending"}
+{"module":"github.com/K900/mobile","version":"v0.0.0-20260514233045-7de0a8fa7f4d","status":"pending"}
+{"module":"github.com/PinGCAP/tidb","version":"v1.0.9","status":"pending"}
+{"module":"github.com/base/op-geth","version":"v1.101701.0-rc.3-eip8130.6","status":"pending"}
+{"module":"github.com/conductant/gohm","version":"v0.0.0-20160904190135-21d6f6e44c4e","status":"pending"}
+{"module":"github.com/consensys/Gnark-Crypto","version":"v0.21.0","status":"pending"}
+{"module":"github.com/curvegrid/go-ethereum","version":"v1.10.4","status":"pending"}
+{"module":"github.com/cwBudde/algo-fft","version":"v0.8.0","status":"pending"}
+{"module":"github.com/fadeAce/apper","version":"v0.0.0-20181127040145-8066c555ae8e","status":"pending"}
+{"module":"github.com/feedmepos/ristretto/v2","version":"v2.4.2","status":"pending"}
+{"module":"github.com/henrydcase/nobs","version":"v0.0.0-20230313231516-25b66236df73","status":"pending"}
+{"module":"github.com/polynetwork/go-ethereum","version":"v1.10.8","status":"pending"}
+{"module":"github.com/rfxct/websocket","version":"v0.0.0-20241204191143-11bda985bf5f","status":"pending"}

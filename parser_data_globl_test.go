@@ -81,6 +81,46 @@ GLOBL ·symptr<>(SB), NOPTR, $(machTimebaseInfo__size)
 	}
 }
 
+func TestParseLegacyTwoOperandGloblDirective(t *testing.T) {
+	file, err := Parse(ArchAMD64, `DATA ·REDMASK51(SB)/8, $0x0007FFFFFFFFFFFF
+GLOBL ·REDMASK51(SB), $8
+DATA ·ROUNDING(SB)/2, $0x137f
+GLOBL ·ROUNDING(SB), $2
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(file.Globl), 2; got != want {
+		t.Fatalf("len(Globl) = %d, want %d", got, want)
+	}
+	for i, want := range []GloblStmt{
+		{Sym: "·REDMASK51", Size: 8},
+		{Sym: "·ROUNDING", Size: 2},
+	} {
+		if got := file.Globl[i]; got != want {
+			t.Fatalf("Globl[%d] = %#v, want %#v", i, got, want)
+		}
+	}
+	mod, err := TranslateModule(file, Options{
+		Goarch: "amd64",
+		ResolveSym: func(sym string) string {
+			return "legacy." + strings.TrimPrefix(sym, "·")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mod.Dispose()
+	for _, want := range []string{
+		`@legacy.REDMASK51 = global [8 x i8]`,
+		`@legacy.ROUNDING = global [2 x i8]`,
+	} {
+		if ir := mod.String(); !strings.Contains(ir, want) {
+			t.Fatalf("legacy GLOBL translation missing %q:\n%s", want, ir)
+		}
+	}
+}
+
 func TestParseDataRejectsMalformedPayloads(t *testing.T) {
 	for _, stmt := range []string{
 		`·missing(SB)/8 $1`,

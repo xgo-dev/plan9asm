@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 // testTargetTriple returns a practical LLVM target triple for tests.
@@ -22,11 +19,14 @@ func testTargetTriple(goos, goarch string) string {
 			return "aarch64-unknown-linux-gnu"
 		}
 	case "windows":
+		// Runtime fixtures link with MSYS2/MinGW clang, not the MSVC CRT.
+		// In particular, their large frames need ___chkstk_ms on amd64.
+		// Explicit MSVC object-compile tests keep their separate triples.
 		switch goarch {
 		case "amd64":
-			return "x86_64-pc-windows-msvc"
+			return "x86_64-w64-windows-gnu"
 		case "arm64":
-			return "aarch64-pc-windows-msvc"
+			return "aarch64-w64-windows-gnu"
 		}
 	}
 

@@ -1,0 +1,16 @@
+{"module":"github.com/Ethersphere/bee/v2","version":"v2.8.2","status":"pending"}
+{"module":"github.com/Go-delve/delve","version":"v1.27.2","status":"pending"}
+{"module":"github.com/LimeChain/scroll-go-ethereum","version":"v0.0.0-20231025095240-bbf42042e2ec","status":"pending"}
+{"module":"github.com/benchflow/commons","version":"v0.0.0-20161120184547-d158804f6880","status":"pending"}
+{"module":"github.com/chainpqc/chainpqc-node","version":"v0.0.0-20240716032056-d104ce71ce02","status":"pending"}
+{"module":"github.com/confidentsecurity/go-sev-guest","version":"v0.0.1","status":"pending"}
+{"module":"github.com/deorth-kku/xray-core","version":"v0.0.0-20260527130646-f0949c4552cb","status":"pending"}
+{"module":"github.com/dewebprotocol/malt-core","version":"v0.0.8","status":"pending"}
+{"module":"github.com/felixn1l/xray-core","version":"v1.260327.0","status":"pending"}
+{"module":"github.com/hanzos3/sha256-simd","version":"v1.0.2","status":"pending"}
+{"module":"github.com/jwendell/runc","version":"v0.1.1","status":"pending"}
+{"module":"github.com/lxt1045/utils","version":"v0.0.0-20260921090857-c0cd5f1eab7c","status":"pending"}
+{"module":"github.com/pornin/go-fn-dsa","version":"v0.3.0","status":"pending"}
+{"module":"github.com/tiborvass/runc","version":"v0.1.1","status":"pending"}
+{"module":"github.com/zkMIPS/zkMIPS/crates/go-runtime/zkvm_runtime","version":"v0.0.0-20260904015846-89a2b745b5c2","status":"pending"}
+{"module":"modernc.org/qbecc","version":"v0.1.20","status":"pending"}

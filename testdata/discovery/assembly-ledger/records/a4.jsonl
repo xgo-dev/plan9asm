@@ -1,0 +1,17 @@
+{"module":"github.com/Containers/Buildah","version":"v1.45.1","status":"pending"}
+{"module":"github.com/aliyun/aliyun-odps-go-sdk","version":"v0.4.26","status":"pending"}
+{"module":"github.com/authzed/roaring/v2","version":"v2.0.0-20260916192932-b642a9f31cae","status":"pending"}
+{"module":"github.com/bigwhite/experiments","version":"v0.0.0-20260327062558-e3a40e4b0ecb","status":"pending"}
+{"module":"github.com/duynguyendang/meb","version":"v0.7.0","status":"pending"}
+{"module":"github.com/ebitengine/gomobile","version":"v0.0.0-20260820040257-d11f821a26a6","status":"pending"}
+{"module":"github.com/eliotcougar/Xray-core","version":"v0.0.0-20260827223245-c1958dba04ba","status":"pending"}
+{"module":"github.com/emseco/go-hashgrid","version":"v0.0.0-20180822125425-cc391c2613e9","status":"pending"}
+{"module":"github.com/goexlib/cgo","version":"v0.1.0","status":"pending"}
+{"module":"github.com/gzliudan/XDPoSChain","version":"v0.0.0-20260915070722-cdce8fc5c285","status":"pending"}
+{"module":"github.com/infinite1st/exclave-core/v5","version":"v5.50.0","status":"pending"}
+{"module":"github.com/klaytn/klaytn","version":"v1.12.1","status":"pending"}
+{"module":"github.com/leadaxe/utls-lx","version":"v1.8.7","status":"pending"}
+{"module":"github.com/nem-toolchain/crypto","version":"v0.0.0-20171011054418-90a8fb66ba62","status":"pending"}
+{"module":"github.com/source-foundry/code-corpora","version":"v0.0.0-20180615015751-d44f6f43e852","status":"pending"}
+{"module":"github.com/spacemonkeygo/infectious","version":"v0.0.0-20200605153912-25a574ae18a3","status":"pending"}
+{"module":"github.com/tenderly/boba/l2geth","version":"v0.0.0-20221031174940-8ec499175dc4","status":"pending"}

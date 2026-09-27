@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "skips": [
+    {
+      "module": "github.com/fiber/ai",
+      "version": "v0.1.2",
+      "asm_file": "internal/kernel/kernel_amx_darwin_arm64.s",
+      "target": "darwin/arm64",
+      "source_sha256": "b86ed4ef10064faa32906c89080c0b83f13eb9f29c9c5242cac8b93c6748cc85",
+      "opcode": "0x00201220",
+      "reason": "Apple AMX private instruction encodings are emitted as raw WORDs by current Go, but their architectural state and operand semantics are not modeled by the LLVM 22 translator. Only this exact Darwin/ARM64 source file is excluded; all other assembly remains subject to translation and object compilation.",
+      "evidence_urls": [
+        "https://github.com/fiber/ai/blob/v0.1.2/internal/kernel/kernel_amx_darwin_arm64.s"
+      ]
+    }
+  ]
+}

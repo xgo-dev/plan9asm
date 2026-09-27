@@ -99,16 +99,9 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		resolve = func(sym string) string { return goStripABISuffix(sym) }
 	}
 
-	if bytes.Contains(src, []byte("const_")) {
-		src = goExpandConsts(src, pkg.Types, pkg.Imports)
-	}
-	// Struct layout macros only exist when the assembly includes go_asm.h.
-	// Keep the common path cheap: building them walks every package-scope type.
-	if bytes.Contains(src, []byte("go_asm.h")) {
-		src = goExpandAsmHeaderTypes(src, pkg.Types, opt.GOARCH)
-	}
+	src = ExpandGoAssemblySource(pkg, src, opt.GOARCH)
 
-	file, err := Parse(arch, string(src))
+	file, err := ParseWithDefines(arch, string(src), GoAssemblerDefines(opt.GOOS, opt.GOARCH))
 	if err != nil {
 		return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
 	}
@@ -146,6 +139,23 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 	}
 
 	return &GoModuleTranslation{Module: mod, Signatures: sigs, Functions: funcs}, nil
+}
+
+// ExpandGoAssemblySource resolves the constants and type-layout identifiers
+// that cmd/compile writes to a package's generated go_asm.h. Callers that parse
+// package assembly themselves must run this before Parse; leaving a $const_X
+// token unresolved can otherwise be mistaken for a successfully translated
+// zero value or rejected only after unrelated lowering has begun.
+func ExpandGoAssemblySource(pkg GoPackage, src []byte, goarch string) []byte {
+	if bytes.Contains(src, []byte("const_")) {
+		src = goExpandConsts(src, pkg.Types, pkg.Imports)
+	}
+	// Struct layout macros only exist when the assembly includes go_asm.h.
+	// Keep the common path cheap: building them walks every package-scope type.
+	if bytes.Contains(src, []byte("go_asm.h")) {
+		src = goExpandAsmHeaderTypes(src, pkg.Types, goarch)
+	}
+	return src
 }
 
 var goABISuffixRe = regexp.MustCompile(`<ABI[^>]*>$`)
@@ -252,6 +262,13 @@ func wasmUsesNativeReturn(fn Func) bool {
 	return false
 }
 
+// WASMAssemblyUsesNativeReturn reports whether fn contains Go's WebAssembly
+// Return pseudo-instruction. Unlike RET, Return exchanges a result through the
+// native wasm operand stack and therefore requires a native wasm signature.
+func WASMAssemblyUsesNativeReturn(fn Func) bool {
+	return wasmUsesNativeReturn(fn)
+}
+
 type goSigBuilder struct {
 	sigs      map[string]FuncSig
 	localSigs map[string]bool
@@ -356,6 +373,15 @@ func wasmGoNativeFuncSig(name string) (FuncSig, bool) {
 		return native([]LLVMType{I32, I32, I32}, I32), true
 	}
 	return FuncSig{}, false
+}
+
+// LookupGoWASMNativeFuncSig returns the native WebAssembly ABI used by Go
+// assembly entry points whose signatures are not described by Go declarations.
+// These functions are part of the Go runtime/standard-library assembly
+// contract and intentionally exchange values through wasm registers or the
+// operand stack instead of the ordinary Go stack ABI.
+func LookupGoWASMNativeFuncSig(name string) (FuncSig, bool) {
+	return wasmGoNativeFuncSig(name)
 }
 
 func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
@@ -632,44 +658,47 @@ func goExpandConsts(src []byte, pkgTypes *types.Package, imports map[string]*typ
 		return "", false
 	}
 
-	src = goConstPlusRefRe.ReplaceAllFunc(src, func(m []byte) []byte {
-		sub := goConstPlusRefRe.FindSubmatch(m)
-		if len(sub) != 3 {
+	expand := func(fragment []byte) []byte {
+		fragment = goConstPlusRefRe.ReplaceAllFunc(fragment, func(m []byte) []byte {
+			sub := goConstPlusRefRe.FindSubmatch(m)
+			if len(sub) != 3 {
+				return m
+			}
+			prefix := string(sub[1])
+			name := string(sub[2])
+			if i := strings.LastIndex(prefix, "/"); i >= 0 {
+				path := prefix[:i]
+				sym := prefix[i+1:]
+				if tp := typeByPath[path]; tp != nil {
+					if val, ok := lookupConst(tp, name); ok {
+						return []byte(path + "/" + sym + "+" + val)
+					}
+				}
+			}
+			if j := strings.LastIndex(prefix, "."); j >= 0 {
+				path := prefix[:j]
+				sym := prefix[j+1:]
+				if tp := typeByPath[path]; tp != nil {
+					if val, ok := lookupConst(tp, name); ok {
+						return []byte(path + "." + sym + "+" + val)
+					}
+				}
+			}
+			if val, ok := lookupConst(pkgTypes, name); ok {
+				return []byte(prefix + "+" + val)
+			}
 			return m
-		}
-		prefix := string(sub[1])
-		name := string(sub[2])
-		if i := strings.LastIndex(prefix, "/"); i >= 0 {
-			path := prefix[:i]
-			sym := prefix[i+1:]
-			if tp := typeByPath[path]; tp != nil {
-				if val, ok := lookupConst(tp, name); ok {
-					return []byte(path + "/" + sym + "+" + val)
-				}
-			}
-		}
-		if j := strings.LastIndex(prefix, "."); j >= 0 {
-			path := prefix[:j]
-			sym := prefix[j+1:]
-			if tp := typeByPath[path]; tp != nil {
-				if val, ok := lookupConst(tp, name); ok {
-					return []byte(path + "." + sym + "+" + val)
-				}
-			}
-		}
-		if val, ok := lookupConst(pkgTypes, name); ok {
-			return []byte(prefix + "+" + val)
-		}
-		return m
-	})
+		})
 
-	return goConstRefRe.ReplaceAllFunc(src, func(m []byte) []byte {
-		name := strings.TrimPrefix(string(m), "const_")
-		if val, ok := lookupConst(pkgTypes, name); ok {
-			return []byte(val)
-		}
-		return m
-	})
+		return goConstRefRe.ReplaceAllFunc(fragment, func(m []byte) []byte {
+			name := strings.TrimPrefix(string(m), "const_")
+			if val, ok := lookupConst(pkgTypes, name); ok {
+				return []byte(val)
+			}
+			return m
+		})
+	}
+	return goExpandAssemblyMacroUses(src, expand)
 }
 
 // goExpandAsmHeaderTypes expands the struct size and field offset macros that
@@ -685,6 +714,13 @@ func goExpandAsmHeaderTypes(src []byte, pkgTypes *types.Package, goarch string) 
 	if sizes == nil {
 		return src
 	}
+	referenced := make(map[string]bool)
+	goExpandAssemblyMacroUses(src, func(fragment []byte) []byte {
+		for _, ident := range goAsmHeaderIdentRe.FindAll(fragment, -1) {
+			referenced[string(ident)] = true
+		}
+		return fragment
+	})
 	macros := make(map[string]string)
 	for _, name := range pkgTypes.Scope().Names() {
 		obj, ok := pkgTypes.Scope().Lookup(name).(*types.TypeName)
@@ -695,32 +731,118 @@ func goExpandAsmHeaderTypes(src []byte, pkgTypes *types.Package, goarch string) 
 		if !ok {
 			continue
 		}
-		size := sizes.Sizeof(obj.Type())
-		if size < 0 {
+		needSize := referenced[name+"__size"]
+		needOffsets := false
+		for i := 0; i < st.NumFields(); i++ {
+			field := st.Field(i)
+			if field.Name() != "_" && referenced[name+"_"+field.Name()] {
+				needOffsets = true
+				break
+			}
+		}
+		if !needSize && !needOffsets {
 			continue
 		}
-		macros[name+"__size"] = strconv.FormatInt(size, 10)
+		if goTypeHasUnboundTypeParams(obj.Type()) {
+			continue
+		}
+		if needSize {
+			size := sizes.Sizeof(obj.Type())
+			if size >= 0 {
+				macros[name+"__size"] = strconv.FormatInt(size, 10)
+			}
+		}
+		if !needOffsets {
+			continue
+		}
 		fields := make([]*types.Var, st.NumFields())
 		for i := range fields {
 			fields[i] = st.Field(i)
 		}
 		for i, offset := range sizes.Offsetsof(fields) {
 			field := fields[i]
-			if field.Name() == "_" || offset < 0 {
+			macro := name + "_" + field.Name()
+			if field.Name() == "_" || !referenced[macro] || offset < 0 {
 				continue
 			}
-			macros[name+"_"+field.Name()] = strconv.FormatInt(offset, 10)
+			macros[macro] = strconv.FormatInt(offset, 10)
 		}
 	}
 	if len(macros) == 0 {
 		return src
 	}
-	return goAsmHeaderIdentRe.ReplaceAllFunc(src, func(ident []byte) []byte {
-		if value, ok := macros[string(ident)]; ok {
-			return []byte(value)
-		}
-		return ident
+	return goExpandAssemblyMacroUses(src, func(fragment []byte) []byte {
+		return goAsmHeaderIdentRe.ReplaceAllFunc(fragment, func(ident []byte) []byte {
+			if value, ok := macros[string(ident)]; ok {
+				return []byte(value)
+			}
+			return ident
+		})
 	})
+}
+
+func goTypeHasUnboundTypeParams(typ types.Type) bool {
+	generic, ok := typ.(interface {
+		TypeParams() *types.TypeParamList
+		TypeArgs() *types.TypeList
+	})
+	return ok && generic.TypeParams().Len() != 0 && generic.TypeArgs().Len() == 0
+}
+
+// goExpandAssemblyMacroUses applies a generated-header expansion everywhere
+// except the name and formal-parameter list of a #define directive. Package
+// assembly may include a real generated header (for example ffi.h) alongside
+// Go's virtual go_asm.h. Rewriting the definition name would turn a valid
+// directive such as "#define const_type64 0" into "#define 0 0" before the
+// ordinary preprocessor has a chance to consume it.
+func goExpandAssemblyMacroUses(src []byte, expand func([]byte) []byte) []byte {
+	var out bytes.Buffer
+	for _, line := range bytes.SplitAfter(src, []byte{'\n'}) {
+		protected := goAssemblyDefinePrefixLen(line)
+		out.Write(line[:protected])
+		out.Write(expand(line[protected:]))
+	}
+	return out.Bytes()
+}
+
+func goAssemblyDefinePrefixLen(line []byte) int {
+	i := 0
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	const directive = "#define"
+	if !bytes.HasPrefix(line[i:], []byte(directive)) {
+		return 0
+	}
+	i += len(directive)
+	if i >= len(line) || line[i] != ' ' && line[i] != '\t' {
+		return 0
+	}
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	if i >= len(line) || !isIdentStart(line[i]) {
+		return 0
+	}
+	for i < len(line) && isIdentPart(line[i]) {
+		i++
+	}
+	if i >= len(line) || line[i] != '(' {
+		return i
+	}
+	depth := 0
+	for ; i < len(line); i++ {
+		switch line[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(line)
 }
 
 func goLLVMTypeForType(t types.Type, goarch string) (LLVMType, error) {
@@ -803,6 +925,10 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 	off := startOff
 	argIdx := 0
 	for i := 0; i < tup.Len(); i++ {
+		name := ""
+		if flattenAgg {
+			name = tup.At(i).Name()
+		}
 		t := tup.At(i).Type()
 		a := int64(frameSz.Alignof(t))
 		off = goAlignOff(off, a)
@@ -812,7 +938,7 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 			if flattenAgg {
 				for _, part := range parts {
 					args = append(args, part.Type)
-					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: -1})
+					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: -1, Name: name})
 					argIdx++
 				}
 			} else {
@@ -835,7 +961,7 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 			return nil, nil, 0, e
 		}
 		args = append(args, ty)
-		slots = append(slots, FrameSlot{Offset: off, Type: ty, Index: argIdx, Field: -1})
+		slots = append(slots, FrameSlot{Offset: off, Type: ty, Index: argIdx, Field: -1, Name: name})
 		argIdx++
 		off += int64(frameSz.Sizeof(t))
 	}

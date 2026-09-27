@@ -104,6 +104,30 @@
       ]
     },
     {
+      "id": "amd64-expanded-ecosystem-vector-families",
+      "goarch": "amd64",
+      "asm": "amd64/conformance_amd64.s",
+      "validation": "execute",
+      "forms": [
+        "VMOVQ gpr64,xmm",
+        "VMOVQ xmm,gpr64",
+        "PSLLQ immediate,xmm",
+        "PSRLQ immediate,xmm",
+        "PMINUB memory.gpr64-base,xmm",
+        "PMINSB memory.gpr64-base,xmm",
+        "PMINUW memory.gpr64-base,xmm",
+        "PMINSW memory.gpr64-base,xmm",
+        "PMINUD memory.gpr64-base,xmm",
+        "PMINSD memory.gpr64-base,xmm",
+        "PMAXUB memory.gpr64-base,xmm",
+        "PMAXSB memory.gpr64-base,xmm",
+        "PMAXUW memory.gpr64-base,xmm",
+        "PMAXSW memory.gpr64-base,xmm",
+        "PMAXUD memory.gpr64-base,xmm",
+        "PMAXSD memory.gpr64-base,xmm"
+      ]
+    },
+    {
       "id": "arm64-go-assembler-scalar-families",
       "goarch": "arm64",
       "asm": "arm64/conformance_arm64.s",

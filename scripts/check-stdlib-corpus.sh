@@ -174,7 +174,7 @@ if unsupported:
     raise SystemExit(f"{target}: unsupported ops remain: {top}")
 if unsupported_forms:
     top = ", ".join(
-        f"{item['form']} ({item['examples'][0] if item.get('examples') else 'no example'})"
+        f"{item['form']} ({item['errors'][0] if item.get('errors') else item['examples'][0] if item.get('examples') else 'no diagnostic'})"
         for item in unsupported_forms[:12]
     )
     raise SystemExit(f"{target}: unsupported operand forms remain: {top}")
@@ -186,7 +186,14 @@ PY
   echo "==> transpile+compile $target_label"
   out_dir="$tmp_root/$target_name-ll"
   meta="$tmp_root/$target_name-meta.json"
-  env "${target_env[@]}" GOTOOLCHAIN=local "$plan9asm_cmd" transpile -goos="$goos" -goarch="$goarch" -dir "$out_dir" -meta "$meta" std >/dev/null
+  transpile_log="$tmp_root/$target_name-transpile.log"
+  if ! env "${target_env[@]}" GOTOOLCHAIN=local "$plan9asm_cmd" transpile \
+    -goos="$goos" -goarch="$goarch" -dir "$out_dir" -meta "$meta" std \
+    >"$transpile_log" 2>&1; then
+    cat "$transpile_log" >&2
+    exit 1
+  fi
+  rm "$transpile_log"
 
   ll_count=$(find "$out_dir" -name '*.ll' | wc -l | tr -d ' ')
   if [ "$ll_count" -eq 0 ]; then
@@ -196,7 +203,11 @@ PY
   echo "compiled corpus $target_label: ll_files=$ll_count"
 
   while IFS= read -r ll; do
-    obj="${ll%.ll}.o"
-    "$llc_cmd" -mtriple="$triple" -filetype=obj "$ll" -o "$obj"
+    "$llc_cmd" -mtriple="$triple" -filetype=obj "$ll" -o "$tmp_root/verify-object.o"
   done < <(find "$out_dir" -name '*.ll' | sort)
+
+  # The corpus only checks object compilation. Keep one reusable object and
+  # release each target's IR and scan output before starting the next target.
+  rm "$tmp_root/verify-object.o" "$json" "$meta"
+  rm -r "$out_dir"
 done

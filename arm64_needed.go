@@ -20,7 +20,7 @@ func funcNeedsARM64CFG(fn Func) bool {
 		}
 		switch Op(op) {
 		// Keep the linear path only for the tiny subset it can currently lower.
-		case OpTEXT, OpBYTE, OpMRS:
+		case OpTEXT, OpMRS:
 			continue
 		case OpRET:
 			if len(ins.Args) != 0 {

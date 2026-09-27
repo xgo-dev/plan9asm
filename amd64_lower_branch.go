@@ -34,6 +34,16 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 			}
 			return true, false, nil
 		case OpSym:
+			if strings.HasPrefix(strings.TrimSpace(ins.Args[0].Sym), "*") {
+				addr, err := c.loadIndirectSymbolAddr(ins.Args[0].Sym)
+				if err != nil {
+					return true, false, err
+				}
+				if err := c.callIndirectAddr(addr); err != nil {
+					return true, false, err
+				}
+				return true, false, nil
+			}
 			if err := c.callSym(ins.Args[0]); err != nil {
 				return true, false, err
 			}
@@ -42,16 +52,22 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 			return true, false, fmt.Errorf("amd64 CALL expects reg or symbol(SB) target: %q", ins.Raw)
 		}
 
-	case "JMP",
-		"JE", "JEQ", "JZ", "JNE", "JNZ",
-		"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
-		"JA", "JHI", "JAE", "JHS", "JB", "JLO", "JBE", "JLS", "JNA",
-		"JC", "JNC", "JCC":
-		// ok
 	default:
-		return false, false, nil
+		if op != "JMP" && op != "LOOP" && !isAMD64ConditionalBranch(op) {
+			return false, false, nil
+		}
 	}
-	if len(ins.Args) != 1 {
+	args := ins.Args
+	// The Go assembler accepts a legacy x86 branch-hint operand such as
+	// JEQ $1, target. It is not part of the encoded instruction on current
+	// toolchains, so preserve control flow and ignore the hint value.
+	if op != "JMP" && op != "LOOP" && !isAMD64CounterZeroBranch(op) && len(args) == 2 && args[0].Kind == OpImm {
+		if args[0].Imm != 0 && args[0].Imm != 1 {
+			return true, false, fmt.Errorf("amd64 %s branch hint must be $0 or $1: %q", op, ins.Raw)
+		}
+		args = args[1:]
+	}
+	if len(args) != 1 {
 		return true, false, fmt.Errorf("amd64 %s expects 1 operand: %q", op, ins.Raw)
 	}
 	target := ""
@@ -65,19 +81,19 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		}
 		return false
 	}
-	switch ins.Args[0].Kind {
+	switch args[0].Kind {
 	case OpIdent:
-		target = ins.Args[0].Ident
+		target = args[0].Ident
 	case OpReg:
 		// Labels like V1 may be tokenized as registers. Prefer block labels;
 		// otherwise treat JMP reg as an indirect tail jump.
-		name := string(ins.Args[0].Reg)
+		name := string(args[0].Reg)
 		if knownBlock(name) {
 			target = name
 			break
 		}
 		if op == "JMP" {
-			addr, err := c.loadReg(ins.Args[0].Reg)
+			addr, err := c.loadReg(args[0].Reg)
 			if err != nil {
 				return true, false, err
 			}
@@ -88,10 +104,20 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		}
 		return true, false, fmt.Errorf("amd64 %s invalid register target: %q", op, ins.Raw)
 	case OpSym:
-		s := strings.TrimSpace(ins.Args[0].Sym)
+		s := strings.TrimSpace(args[0].Sym)
+		if op == "JMP" && strings.HasPrefix(s, "*") {
+			addr, err := c.loadIndirectSymbolAddr(s)
+			if err != nil {
+				return true, false, err
+			}
+			if err := c.tailCallIndirectAddrAndRet(addr); err != nil {
+				return true, false, err
+			}
+			return true, true, nil
+		}
 		// Treat JMP foo(SB) as a tailcall to another TEXT (common in stdlib asm).
 		if op == "JMP" && strings.HasSuffix(s, "(SB)") {
-			if err := c.tailCallAndRet(ins.Args[0]); err != nil {
+			if err := c.tailCallAndRet(args[0]); err != nil {
 				return true, false, err
 			}
 			return true, true, nil
@@ -103,13 +129,13 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		// PC-relative branches like "JEQ 2(PC)" are used as a compact way to skip
 		// the next instruction. Handle them by mapping the offset to our block
 		// sequence (blocks are split at terminators, so the pattern works well).
-		if strings.EqualFold(string(ins.Args[0].Mem.Base), "PC") {
+		if strings.EqualFold(string(args[0].Mem.Base), "PC") {
 			pcRel = true
-			pcOff = ins.Args[0].Mem.Off
+			pcOff = args[0].Mem.Off
 			break
 		}
 		if op == "JMP" {
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
+			addr, err := c.addrFromMem(args[0].Mem)
 			if err != nil {
 				return true, false, err
 			}
@@ -150,75 +176,127 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 	fall := c.blocks[bi+1].name
 	cond := ""
 	switch op {
+	case "LOOP":
+		counter, err := c.loadReg(CX)
+		if err != nil {
+			return true, false, err
+		}
+		if c.goarch == "386" {
+			old32 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", old32, counter)
+			next32 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = sub i32 %%%s, 1\n", next32, old32)
+			next64 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", next64, next32)
+			if err := c.storeReg(CX, "%"+next64); err != nil {
+				return true, false, err
+			}
+			test := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp ne i32 %%%s, 0\n", test, next32)
+			cond = "%" + test
+		} else {
+			next := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = sub i64 %s, 1\n", next, counter)
+			if err := c.storeReg(CX, "%"+next); err != nil {
+				return true, false, err
+			}
+			test := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", test, next)
+			cond = "%" + test
+		}
+	case "JCXZW", "JCXZL", "JCXZQ":
+		// cmd/internal/obj/x86 emits an address-size override only for
+		// JCXZL. Therefore Go's historical spellings test these widths:
+		//
+		//             JCXZW  JCXZL  JCXZQ
+		//   amd64       RCX    ECX    RCX
+		//   386         ECX     CX    ECX
+		//
+		// Preserve that behavior instead of inferring the width from the
+		// mnemonic suffix.
+		counter, err := c.loadReg(CX)
+		if err != nil {
+			return true, false, err
+		}
+		bits := 64
+		if c.goarch == "386" {
+			bits = 32
+		}
+		if op == "JCXZL" {
+			bits /= 2
+		}
+		value := counter
+		if bits != 64 {
+			truncated := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i%d\n", truncated, counter, bits)
+			value = "%" + truncated
+		}
+		test := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i%d %s, 0\n", test, bits, value)
+		cond = "%" + test
 	case "JE", "JEQ", "JZ":
-		cond = c.loadFlag(c.flagsZSlot)
+		cond, err = c.x86Condition("EQ")
 	case "JNE", "JNZ":
-		z := c.loadFlag(c.flagsZSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, z)
-		cond = "%" + t
-	case "JL", "JLT":
-		cond = c.loadFlag(c.flagsSltSlot)
-	case "JGE":
-		slt := c.loadFlag(c.flagsSltSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, slt)
-		cond = "%" + t
-	case "JS":
-		cond = c.loadFlag(c.flagsSltSlot)
-	case "JNS":
-		slt := c.loadFlag(c.flagsSltSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, slt)
-		cond = "%" + t
-	case "JLE":
-		slt := c.loadFlag(c.flagsSltSlot)
-		z := c.loadFlag(c.flagsZSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, slt, z)
-		cond = "%" + t
-	case "JG", "JGT":
-		slt := c.loadFlag(c.flagsSltSlot)
-		z := c.loadFlag(c.flagsZSlot)
-		t1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, slt, z)
-		t2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-		cond = "%" + t2
-	case "JB", "JLO", "JC":
-		cond = c.loadFlag(c.flagsCFSlot)
-	case "JNC", "JCC":
-		cf := c.loadFlag(c.flagsCFSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, cf)
-		cond = "%" + t
-	case "JAE", "JHS":
-		cf := c.loadFlag(c.flagsCFSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, cf)
-		cond = "%" + t
+		cond, err = c.x86Condition("NE")
+	case "JL", "JLT", "JNGE":
+		cond, err = c.x86Condition("LT")
+	case "JGE", "JNL":
+		cond, err = c.x86Condition("GE")
+	case "JS", "JMI":
+		cond, err = c.x86Condition("MI")
+	case "JNS", "JPL":
+		cond, err = c.x86Condition("PL")
+	case "JLE", "JNG":
+		cond, err = c.x86Condition("LE")
+	case "JG", "JGT", "JNLE":
+		cond, err = c.x86Condition("GT")
+	case "JB", "JLO", "JC", "JCS", "JNAE":
+		cond, err = c.x86Condition("CS")
+	case "JNC", "JCC", "JAE", "JHS", "JNB":
+		cond, err = c.x86Condition("CC")
 	case "JBE", "JLS", "JNA":
-		cf := c.loadFlag(c.flagsCFSlot)
-		z := c.loadFlag(c.flagsZSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, cf, z)
-		cond = "%" + t
-	case "JA", "JHI":
-		cf := c.loadFlag(c.flagsCFSlot)
-		z := c.loadFlag(c.flagsZSlot)
-		t1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, cf, z)
-		t2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-		cond = "%" + t2
+		cond, err = c.x86Condition("LS")
+	case "JA", "JHI", "JNBE":
+		cond, err = c.x86Condition("HI")
+	case "JO", "JOS":
+		cond, err = c.x86Condition("OS")
+	case "JNO", "JOC":
+		cond, err = c.x86Condition("OC")
+	case "JP", "JPE", "JPS":
+		cond, err = c.x86Condition("PS")
+	case "JNP", "JPO", "JPC":
+		cond, err = c.x86Condition("PC")
 	default:
 		return true, false, fmt.Errorf("amd64: unsupported branch %s", op)
+	}
+	if err != nil {
+		return true, false, err
 	}
 
 	if err := emitCondBr(cond, target, fall); err != nil {
 		return true, false, err
 	}
 	return true, true, nil
+}
+
+func (c *amd64Ctx) loadIndirectSymbolAddr(sym string) (string, error) {
+	sym = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(sym), "*"))
+	if !strings.HasSuffix(sym, "(SB)") {
+		return "", fmt.Errorf("amd64 indirect branch expects register, memory, or *symbol(SB), got %q", sym)
+	}
+	ptr, err := c.ptrFromSB(sym)
+	if err != nil {
+		return "", err
+	}
+	value := c.newTmp()
+	if c.goarch == "386" {
+		fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", value, ptr)
+		wide := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", wide, value)
+		return "%" + wide, nil
+	}
+	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", value, ptr)
+	return "%" + value, nil
 }
 
 func (c *amd64Ctx) callIndirectAddr(addr string) error {
@@ -237,6 +315,15 @@ func (c *amd64Ctx) callIndirectAddr(addr string) error {
 }
 
 func (c *amd64Ctx) tailCallIndirectAddrAndRet(addr string) error {
+	if len(c.indirectLabels) != 0 {
+		ptr := c.ptrFromAddrI64(addr)
+		labels := make([]string, len(c.indirectLabels))
+		for i, label := range c.indirectLabels {
+			labels[i] = "label %" + amd64LLVMBlockName(label)
+		}
+		fmt.Fprintf(c.b, "  indirectbr ptr %s, [%s]\n", ptr, strings.Join(labels, ", "))
+		return nil
+	}
 	if err := c.callIndirectAddr(addr); err != nil {
 		return err
 	}
@@ -294,6 +381,7 @@ func (c *amd64Ctx) callSym(symOp Operand) error {
 	if !strings.HasSuffix(s, "(SB)") {
 		return fmt.Errorf("amd64 call expects (SB) symbol, got %q", s)
 	}
+	internalABI := strings.HasSuffix(strings.TrimSuffix(s, "(SB)"), "<ABIInternal>")
 	s = strings.TrimSuffix(s, "(SB)")
 	callee := c.resolve(s)
 	// Syscall stubs invoke runtime entersyscall/exitsyscall around SYSCALL.
@@ -309,6 +397,24 @@ func (c *amd64Ctx) callSym(symOp Operand) error {
 		return fmt.Errorf("amd64 call missing signature for %q", callee)
 	}
 	callee = funcSigSymbol(callee, csig)
+
+	stackABI := !internalABI && len(csig.ArgRegs) == 0 && len(csig.Frame.Params) != 0
+	if stackABI {
+		args, err := c.abi0CallArgs(callee, csig)
+		if err != nil {
+			return err
+		}
+		if csig.Ret == Void {
+			fmt.Fprintf(c.b, "  call void %s(%s)\n", llvmGlobal(callee), strings.Join(args, ", "))
+			return nil
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call %s %s(%s)\n", t, csig.Ret, llvmGlobal(callee), strings.Join(args, ", "))
+		if len(csig.Frame.Results) != 0 {
+			return c.storeABI0CallResult(callee, csig, "%"+t)
+		}
+		return fmt.Errorf("amd64 call %q: ABI0 result %s has no frame slot", callee, csig.Ret)
+	}
 
 	args := make([]string, 0, len(csig.Args))
 	goABI := []Reg{AX, BX, CX, DI, SI, Reg("R8"), Reg("R9"), Reg("R10"), Reg("R11")}
@@ -418,12 +524,13 @@ func (c *amd64Ctx) tailCallAndRet(symOp Operand) error {
 		// If ArgRegs is empty, default to register-based passing (ABIInternal-ish)
 		// because most intra-asm tailcalls depend on explicit register setup.
 		//
-		// Exception: for tailcalls to Go functions with an identical signature,
+		// Exception: for tailcalls to Go functions with identical argument types,
 		// use the current function's LLVM args. This matches stdlib patterns like
 		// "JMP ·countGeneric(SB)" that happen before any register shuffling and
-		// are stack-ABI tailcalls in the original asm.
+		// are stack-ABI tailcalls in the original asm. The return types may differ
+		// while using ABI-equivalent physical result slots.
 		useLLVMArgs := false
-		if len(csig.ArgRegs) == 0 && len(csig.Args) == len(c.sig.Args) && csig.Ret == c.sig.Ret {
+		if len(csig.ArgRegs) == 0 && len(csig.Args) == len(c.sig.Args) {
 			same := true
 			for j := 0; j < len(csig.Args); j++ {
 				if csig.Args[j] != c.sig.Args[j] {
@@ -527,8 +634,22 @@ func (c *amd64Ctx) tailCallAndRet(symOp Operand) error {
 		return nil
 	}
 	if c.sig.Ret != csig.Ret {
+		if adapted, ok, err := c.adaptTailCallAggregateReturn("%"+t, csig.Ret, c.sig.Ret); err != nil {
+			return fmt.Errorf("amd64 tailcall return type mismatch for %q: %w", callee, err)
+		} else if ok {
+			fmt.Fprintf(c.b, "  ret %s %s\n", c.sig.Ret, adapted)
+			return nil
+		}
 		conv := c.newTmp()
 		switch {
+		case c.goarch == "386" && csig.Ret == I32 && c.sig.Ret == Ptr:
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %%%s to ptr\n", conv, t)
+			fmt.Fprintf(c.b, "  ret ptr %%%s\n", conv)
+			return nil
+		case c.goarch == "386" && csig.Ret == Ptr && c.sig.Ret == I32:
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i32\n", conv, t)
+			fmt.Fprintf(c.b, "  ret i32 %%%s\n", conv)
+			return nil
 		case csig.Ret == I64 && (c.sig.Ret == I1 || c.sig.Ret == I8 || c.sig.Ret == I16 || c.sig.Ret == I32):
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to %s\n", conv, t, c.sig.Ret)
 			fmt.Fprintf(c.b, "  ret %s %%%s\n", c.sig.Ret, conv)
@@ -551,4 +672,48 @@ func (c *amd64Ctx) tailCallAndRet(symOp Operand) error {
 	}
 	fmt.Fprintf(c.b, "  ret %s %%%s\n", c.sig.Ret, t)
 	return nil
+}
+
+func (c *amd64Ctx) adaptTailCallAggregateReturn(value string, fromTy, toTy LLVMType) (string, bool, error) {
+	fromFields, fromAggregate := parseLiteralStructFields(fromTy)
+	toFields, toAggregate := parseLiteralStructFields(toTy)
+	if !fromAggregate || !toAggregate {
+		return "", false, nil
+	}
+	if len(fromFields) != len(toFields) {
+		return "", false, fmt.Errorf("caller %s and callee %s use different aggregate field counts", toTy, fromTy)
+	}
+
+	wordTy := I64
+	if c.goarch == "386" {
+		wordTy = I32
+	}
+	for i := range fromFields {
+		from, to := fromFields[i], toFields[i]
+		if from == to || (from == wordTy && to == Ptr) || (from == Ptr && to == wordTy) {
+			continue
+		}
+		return "", false, fmt.Errorf("caller field %d has type %s but callee field has ABI-incompatible type %s", i, to, from)
+	}
+
+	result := "undef"
+	for i := range fromFields {
+		from, to := fromFields[i], toFields[i]
+		extracted := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", extracted, fromTy, value, i)
+		field := "%" + extracted
+		if from != to {
+			converted := c.newTmp()
+			if from == wordTy && to == Ptr {
+				fmt.Fprintf(c.b, "  %%%s = inttoptr %s %s to ptr\n", converted, wordTy, field)
+			} else {
+				fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to %s\n", converted, field, wordTy)
+			}
+			field = "%" + converted
+		}
+		inserted := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = insertvalue %s %s, %s %s, %d\n", inserted, toTy, result, to, field, i)
+		result = "%" + inserted
+	}
+	return result, true, nil
 }

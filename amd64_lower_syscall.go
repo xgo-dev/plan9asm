@@ -7,6 +7,35 @@ import (
 
 func (c *amd64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
+	case "LRET":
+		if len(ins.Args) != 0 {
+			return true, false, fmt.Errorf("x86 LRET expects no operands: %q", ins.Raw)
+		}
+		// The raw decoder uses the Go spelling LRET for the 64-bit far return
+		// byte sequence. LLVM's x86 assembler names the same instruction LRETQ.
+		c.b.WriteString("  call void asm sideeffect \"lretq\", \"~{memory}\"()\n")
+		c.b.WriteString("  unreachable\n")
+		return true, true, nil
+	case "WAIT":
+		if len(ins.Args) != 0 {
+			return true, false, fmt.Errorf("x86 WAIT expects no operands: %q", ins.Raw)
+		}
+		c.b.WriteString("  call void asm sideeffect \"wait\", \"~{memory}\"()\n")
+		return true, false, nil
+	case "HLT":
+		if len(ins.Args) != 0 {
+			return true, false, fmt.Errorf("x86 HLT expects no operands: %q", ins.Raw)
+		}
+		c.b.WriteString("  call void asm sideeffect \"hlt\", \"~{memory}\"()\n")
+		c.b.WriteString("  unreachable\n")
+		return true, true, nil
+	case "UD2":
+		if len(ins.Args) != 0 {
+			return true, false, fmt.Errorf("x86 UD2 expects no operands: %q", ins.Raw)
+		}
+		c.b.WriteString("  call void asm sideeffect \"ud2\", \"~{memory}\"()\n")
+		c.b.WriteString("  unreachable\n")
+		return true, true, nil
 	case "INT":
 		if c.goarch == "386" && (len(ins.Args) != 1 || ins.Args[0].Kind != OpImm) {
 			return true, false, fmt.Errorf("386 INT expects an immediate vector: %q", ins.Raw)

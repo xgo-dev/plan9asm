@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -15,7 +12,7 @@ import (
 func TestStdlibMathExp_ARM64_Compile(t *testing.T) {
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 
 	goroot := runtime.GOROOT()
@@ -92,7 +89,7 @@ func TestStdlibMathExp_ARM64_Compile(t *testing.T) {
 					strings.Contains(s, "unknown target triple") ||
 					strings.Contains(s, "unknown target") ||
 					strings.Contains(s, "is not a registered target") {
-					t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+					t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 				}
 				t.Fatalf("llc failed for %q: %v\n%s", triple, err, s)
 			}

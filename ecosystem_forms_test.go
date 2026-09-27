@@ -1,5 +1,3 @@
-//go:build !llgo
-
 package plan9asm
 
 import (
@@ -126,10 +124,63 @@ TEXT vectors(SB),NOSPLIT,$0-0
 	POPCNTL 4(AX), R10
 	RET
 `)
-	for _, want := range []string{"mul <2 x i64>", "shufflevector <4 x i32>", "shufflevector <8 x i8>", "@llvm.ctpop.i64", "@llvm.ctpop.i32"} {
+	for _, want := range []string{"mul <2 x i64>", "shufflevector <4 x i32>", "shufflevector <2 x i64>", "@llvm.ctpop.i64", "@llvm.ctpop.i32"} {
 		if !strings.Contains(ir, want) {
 			t.Fatalf("discovered x86 vector forms are missing %q:\n%s", want, ir)
 		}
+	}
+}
+
+// These forms come from github.com/aead/siphash@v1.0.1,
+// github.com/klauspost/crc32@v1.3.0, and github.com/phuslu/log@v1.0.132.
+// The packed min/max forms are tested as a family because the Go assembler
+// accepts the same register-or-memory source shape for every lane width and
+// signedness combination.
+func TestTranslateExpandedEcosystemX86VectorForms(t *testing.T) {
+	ir := translateEcosystemScalarForms(t, ArchAMD64, "x86_64-unknown-linux-gnu", "amd64", `
+TEXT vectors(SB),NOSPLIT,$0-0
+	MOVQ $13, AX
+	VMOVQ AX, X0
+	PSLLQ $13, X0
+	PSRLQ $64, X0
+	PMINUB X1, X0
+	PMINSB X1, X0
+	PMINUW X1, X0
+	PMINSW X1, X0
+	PMINUD X1, X0
+	PMINSD X1, X0
+	PMAXUB X1, X0
+	PMAXSB X1, X0
+	PMAXUW X1, X0
+	PMAXSW X1, X0
+	PMAXUD X1, X0
+	PMAXSD 16(BX), X0
+	VMOVQ X0, CX
+	VZEROUPPER
+	RET
+`)
+	for want, count := range map[string]int{
+		"shl <2 x i64>":            1,
+		"icmp ult <16 x i8>":       1,
+		"icmp slt <16 x i8>":       1,
+		"icmp ult <8 x i16>":       1,
+		"icmp slt <8 x i16>":       1,
+		"icmp ult <4 x i32>":       1,
+		"icmp slt <4 x i32>":       1,
+		"icmp ugt <16 x i8>":       1,
+		"icmp sgt <16 x i8>":       1,
+		"icmp ugt <8 x i16>":       1,
+		"icmp sgt <8 x i16>":       1,
+		"icmp ugt <4 x i32>":       1,
+		"icmp sgt <4 x i32>":       1,
+		"extractelement <2 x i64>": 1,
+	} {
+		if got := strings.Count(ir, want); got != count {
+			t.Fatalf("expanded ecosystem form %q count = %d, want %d:\n%s", want, got, count, ir)
+		}
+	}
+	if !strings.Contains(ir, "store <16 x i8> zeroinitializer") {
+		t.Fatalf("PSRLQ with an oversized count must clear the vector:\n%s", ir)
 	}
 }
 

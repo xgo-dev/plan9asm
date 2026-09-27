@@ -70,10 +70,13 @@ int main(void){return call_entry("native ABI")!=10 || call_mixedEntry(5,0x400000
 
 func nativeModuleAssembly(t *testing.T, ir, pipeline string) string {
 	t.Helper()
-	for _, name := range []string{"opt", "llc"} {
-		if _, err := exec.LookPath(name); err != nil {
-			t.Skip(name + " unavailable")
-		}
+	opt := findLLVM22Tool("opt")
+	if opt == "" {
+		t.Fatal("LLVM 22 opt not found")
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "native.ll")
@@ -82,10 +85,10 @@ func nativeModuleAssembly(t *testing.T, ir, pipeline string) string {
 	if err := os.WriteFile(src, []byte(ir), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := exec.Command("opt", "-passes="+pipeline, "-verify-each", "-S", src, "-o", optimized).CombinedOutput(); err != nil {
+	if b, err := exec.Command(opt, "-passes="+pipeline, "-verify-each", "-S", src, "-o", optimized).CombinedOutput(); err != nil {
 		t.Fatalf("opt: %v\n%s\n%s", err, b, ir)
 	}
-	if b, err := exec.Command("llc", "-relocation-model=pic", optimized, "-o", out).CombinedOutput(); err != nil {
+	if b, err := exec.Command(llc, "-relocation-model=pic", optimized, "-o", out).CombinedOutput(); err != nil {
 		t.Fatalf("llc: %v\n%s\n%s", err, b, ir)
 	}
 	asm, err := os.ReadFile(out)
@@ -93,6 +96,41 @@ func nativeModuleAssembly(t *testing.T, ir, pipeline string) string {
 		t.Fatal(err)
 	}
 	return string(asm)
+}
+
+func TestNativeModuleToolPreflight(t *testing.T) {
+	const ir = `target triple = "x86_64-unknown-linux-gnu"
+define void @noop() {
+  ret void
+}
+`
+	assembly := nativeModuleAssembly(t, ir, "default<O2>")
+	if !strings.Contains(assembly, "noop") {
+		t.Fatalf("missing compiled function:\n%s", assembly)
+	}
+}
+
+func TestNativeNakedModuleRequiresLLVM22(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(executable, "-test.run=^TestNativeModuleToolPreflight$", "-test.v")
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(strings.ToUpper(variable), "LLVM_CONFIG=") {
+			cmd.Env = append(cmd.Env, variable)
+		}
+	}
+	cmd.Env = append(cmd.Env, "LLVM_CONFIG="+filepath.Join(t.TempDir(), "missing-llvm-config"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("native module test passed without required LLVM 22 tools:\n%s", output)
+	}
+	if !strings.Contains(string(output), "LLVM 22 opt not found") {
+		t.Fatalf("native module test did not fail for missing LLVM 22: %v\n%s", err, output)
+	}
 }
 
 func TestNativeNakedLinkAndReachability(t *testing.T) {

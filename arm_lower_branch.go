@@ -12,6 +12,13 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins Instr, emitBr armEmitB
 	switch op {
 	case "JMP":
 		op = "B"
+	case "BX":
+		if cond != "" || len(ins.Args) != 1 || ins.Args[0].Kind != OpMem ||
+			!isARMGeneralReg(ins.Args[0].Mem.Base) || ins.Args[0].Mem.Base == PC || ins.Args[0].Mem.Off != 0 ||
+			ins.Args[0].Mem.OffRaw != "" || ins.Args[0].Mem.Index != "" || ins.Args[0].Mem.Sym != "" {
+			return true, false, fmt.Errorf("arm BX expects exactly (general-register): %q", ins.Raw)
+		}
+		op = "B"
 	}
 	switch op {
 	case "BL", "CALL":
@@ -146,7 +153,20 @@ func (c *armCtx) tailCallAndRet(symOp Operand) error {
 	}
 	callee = funcSigSymbol(callee, csig)
 	args := make([]string, 0, len(csig.Args))
+	useLLVMArgs := len(csig.ArgRegs) == 0 && len(csig.Args) == len(c.sig.Args) && csig.Ret == c.sig.Ret
+	if useLLVMArgs {
+		for i := range csig.Args {
+			if csig.Args[i] != c.sig.Args[i] {
+				useLLVMArgs = false
+				break
+			}
+		}
+	}
 	for i := 0; i < len(csig.Args); i++ {
+		if useLLVMArgs {
+			args = append(args, fmt.Sprintf("%s %%arg%d", csig.Args[i], i))
+			continue
+		}
 		r := Reg(fmt.Sprintf("R%d", i))
 		if i < len(csig.ArgRegs) {
 			r = csig.ArgRegs[i]
@@ -181,7 +201,13 @@ func (c *armCtx) tailCallAndRet(symOp Operand) error {
 	}
 	if c.sig.Ret != csig.Ret {
 		conv := c.newTmp()
+		calleeBits, calleeInteger := armIntegerTypeWidth(csig.Ret)
+		callerBits, callerInteger := armIntegerTypeWidth(c.sig.Ret)
 		switch {
+		case calleeInteger && callerInteger && calleeBits > callerBits:
+			fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", conv, csig.Ret, t, c.sig.Ret)
+		case calleeInteger && callerInteger && calleeBits < callerBits:
+			fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to %s\n", conv, csig.Ret, t, c.sig.Ret)
 		case csig.Ret == I32 && (c.sig.Ret == I1 || c.sig.Ret == I8 || c.sig.Ret == I16):
 			fmt.Fprintf(c.b, "  %%%s = trunc i32 %%%s to %s\n", conv, t, c.sig.Ret)
 		case (csig.Ret == I1 || csig.Ret == I8 || csig.Ret == I16) && c.sig.Ret == I32:
@@ -198,6 +224,23 @@ func (c *armCtx) tailCallAndRet(symOp Operand) error {
 	}
 	fmt.Fprintf(c.b, "  ret %s %%%s\n", c.sig.Ret, t)
 	return nil
+}
+
+func armIntegerTypeWidth(typ LLVMType) (int, bool) {
+	switch typ {
+	case I1:
+		return 1, true
+	case I8:
+		return 8, true
+	case I16:
+		return 16, true
+	case I32:
+		return 32, true
+	case I64:
+		return 64, true
+	default:
+		return 0, false
+	}
 }
 
 func (c *armCtx) callSym(symOp Operand) error {

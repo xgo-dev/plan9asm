@@ -1,11 +1,10 @@
-//go:build !llgo
-
 package plan9asm
 
 import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +20,231 @@ func TestCrossLinuxRuntimeMatrix(t *testing.T) {
 	if llc == "" {
 		t.Fatal("llc not found")
 	}
+	t.Run("amd64_text_continuations", func(t *testing.T) {
+		runX86ContinuationGo(t)
+		clang := findLLVM22Tool("clang")
+		if clang == "" {
+			t.Fatal("LLVM 22 clang not found")
+		}
+		ir := x86ContinuationIR(t, "x86_64-unknown-linux-gnu", x86ContinuationSource)
+		runX86Continuation(t, llc, clang, "x86_64-unknown-linux-gnu", ir)
+	})
+	t.Run("386_text_continuations", func(t *testing.T) {
+		ir := x86Continuation386IR(t, "i386-unknown-linux-gnu")
+		main := strings.NewReplacer("uint64_t", "uint32_t", "UINT64_MAX", "UINT32_MAX").Replace(x86ContinuationMain)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"i686-linux-gnu-gcc", "-no-pie"},
+			"continuation386", "i386-unknown-linux-gnu", ir, main, []string{"qemu-i386", "-L", "/usr/i686-linux-gnu"})
+	})
+	t.Run("amd64_integer_broadcast_views", func(t *testing.T) {
+		clang := findLLVM22Tool("clang")
+		if clang == "" {
+			t.Fatal("LLVM 22 clang not found")
+		}
+		ir, main := integerBroadcastViews(t, "x86_64-unknown-linux-gnu")
+		compileAndRunRuntimeTestForTarget(t, llc, clang, "integer_broadcast", "x86_64-unknown-linux-gnu", ir, main, nil)
+	})
+	t.Run("arm64_raw_sve_count_index", func(t *testing.T) {
+		testARM64RawSVECountIndexRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_float", func(t *testing.T) {
+		testARM64RawSVEFloatRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_float_compare", func(t *testing.T) {
+		testARM64RawSVEFloatCompareRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_predicate_permute", func(t *testing.T) {
+		testARM64RawSVEPredicatePermuteRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_compact", func(t *testing.T) {
+		testARM64RawSVECompactRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_copy", func(t *testing.T) {
+		testARM64RawSVECopyRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_integer_unary", func(t *testing.T) {
+		testARM64RawSVEIntegerUnaryRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_predicate_memory", func(t *testing.T) {
+		testARM64RawSVEPredicateMemoryRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_structured_memory", func(t *testing.T) {
+		testARM64RawSVEStructuredMemoryRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_integer_dot", func(t *testing.T) {
+		testARM64RawSVEIntegerDotRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_xar", func(t *testing.T) {
+		testARM64RawSVEXARRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_splice", func(t *testing.T) {
+		testARM64RawSVESpliceRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_integer_reduction", func(t *testing.T) {
+		testARM64RawSVEIntegerReductionRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_ternary_bitwise", func(t *testing.T) {
+		testARM64RawSVETernaryBitwiseRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_multiply_accumulate", func(t *testing.T) {
+		testARM64RawSVEMultiplyAccumulateRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_extra_shift", func(t *testing.T) {
+		testARM64RawSVEExtraShiftRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_signed_load", func(t *testing.T) {
+		testARM64RawSVESignedLoadRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_unsigned_load", func(t *testing.T) {
+		testARM64RawSVEUnsignedLoadRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_extended_load", func(t *testing.T) {
+		testARM64RawSVEExtendedLoadRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_add_sub_wide", func(t *testing.T) {
+		testARM64RawSVEAddSubWideRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_multiply_high", func(t *testing.T) {
+		testARM64RawSVEMultiplyHighRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_saturating_add_sub", func(t *testing.T) {
+		testARM64RawSVESaturatingAddSubRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_float_arithmetic", func(t *testing.T) {
+		testARM64RawSVEFloatArithmeticRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_float_divide_scale", func(t *testing.T) {
+		testARM64RawSVEFloatDivideScaleRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_float_immediate", func(t *testing.T) {
+		testARM64RawSVEFloatImmediateRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_address_generation", func(t *testing.T) {
+		testARM64RawSVEAddressGenerationRuntime(t, llc)
+	})
+	t.Run("arm64_raw_sve_vector_count", func(t *testing.T) {
+		testARM64RawSVEVectorCountRuntime(t, llc)
+	})
+	t.Run("arm64_sve_ordinary_memory_offset", func(t *testing.T) {
+		testARM64SVEMemoryOffsetRuntime(t, llc, false)
+	})
+	t.Run("arm64_sve_non_faulting_memory_offset", func(t *testing.T) {
+		testARM64SVEMemoryOffsetRuntime(t, llc, true)
+	})
+	t.Run("arm64_raw_pool_control_flow", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolControlFlowIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "branchpool", triple, ir,
+			arm64RawPoolControlFlowMain, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_void_return", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawVoidPoolIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "voidpool", triple, ir,
+			arm64RawVoidPoolMain, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_register_effects", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolRegisterEffectsIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "pool_effects", triple, ir,
+			arm64RawPoolRegisterEffectsMain, []string{"qemu-aarch64", "-cpu", "max", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_result_contract", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolResultIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "pool_result", triple, ir,
+			arm64RawPoolResultMain, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_bounded_offsets", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolOffsetIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "pool_offset", triple, ir,
+			arm64RawPoolOffsetMain, []string{"qemu-aarch64", "-cpu", "max", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_bounded_indexes", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolIndexedIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "pool_index", triple, ir,
+			arm64RawPoolIndexedMain, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_aliases", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolAliasesIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "pool_alias", triple, ir,
+			arm64RawPoolAliasesMain, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_guarded_indexes", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolGuardIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "pool_guard", triple, ir,
+			arm64RawPoolGuardMain, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_affine_indexes", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolAffineIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "pool_affine", triple, ir,
+			arm64RawPoolAffineMain, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_multiply_accumulate", func(t *testing.T) {
+		t.Run("native_go", TestARM64MultiplyAccumulateNativeGo)
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64MultiplyAccumulateIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "multiply", triple, ir,
+			main, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_stack_bounds", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64StackBoundsRuntime(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "stack", triple, ir,
+			main, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_sve_pool_aliases", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64RawPoolSVEAliasesRuntime(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc", "-march=armv8.2-a+sve"}, "pool_sve", triple, ir, main,
+			[]string{"qemu-aarch64", "-cpu", "max,sve-max-vq=16", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_dynamic_stack", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64DynamicStackRuntime(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "dynamic", triple, ir,
+			main, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_sve_pool_values", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64RawPoolSVEValuesRuntime(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc", "-march=armv8.2-a+sve"}, "pool_sve_values", triple, ir, main,
+			[]string{"qemu-aarch64", "-cpu", "max,sve-max-vq=16", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_sve_pool_memory", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64RawPoolSVEMemoryRuntime(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc", "-march=armv8.2-a+sve"}, "pool_sve_memory", triple, ir, main,
+			[]string{"qemu-aarch64", "-cpu", "max,sve-max-vq=16", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_sve_pool_flags", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64RawPoolSVEFlagsRuntime(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc", "-march=armv8.2-a+sve"}, "pool_sve_flags", triple, ir, main,
+			[]string{"qemu-aarch64", "-cpu", "max,sve-max-vq=16", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_pool_counter_loops", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir := arm64RawPoolLoopIR(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "pool_loop", triple, ir,
+			arm64RawPoolLoopMain, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_fixed_gp_float", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64FixedGPFloatRuntime(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc"}, "fixed_gp", triple, ir,
+			main, []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"})
+	})
+	t.Run("arm64_raw_scalar_abd_mul", func(t *testing.T) {
+		const triple = "aarch64-unknown-linux-gnu"
+		ir, main := arm64ScalarABDMulRuntime(t, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{"aarch64-linux-gnu-gcc", "-march=armv8.2-a+fp16"},
+			"scalar_abd_mul", triple, ir, main, []string{"qemu-aarch64", "-cpu", "max", "-L", "/usr/aarch64-linux-gnu"})
+	})
 
 	type target struct {
 		goarch    string

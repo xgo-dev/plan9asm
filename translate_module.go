@@ -12,7 +12,22 @@ import (
 //
 // Caller owns the returned module and should call Dispose when finished.
 func TranslateModule(file *File, opt Options) (llvm.Module, error) {
-	mod, err := translateModuleDirect(file, opt)
+	return TranslateModuleInContext(llvm.GlobalContext(), file, opt)
+}
+
+// TranslateModuleInContext builds the module in a caller-owned LLVM context.
+// Dispose the returned module before disposing ctx. High-volume callers should
+// create a fresh context per file so LLVM can release context-owned caches.
+func TranslateModuleInContext(ctx llvm.Context, file *File, opt Options) (llvm.Module, error) {
+	file, err := normalizeX86RawFile(file, opt.Goarch)
+	if err != nil {
+		return llvm.Module{}, err
+	}
+	file, err = coalesceX86Continuations(file, opt)
+	if err != nil {
+		return llvm.Module{}, err
+	}
+	mod, err := translateModuleDirectInContext(ctx, file, opt)
 	if err == nil {
 		return finishTranslatedModule(file, mod)
 	}
@@ -24,7 +39,7 @@ func TranslateModule(file *File, opt Options) (llvm.Module, error) {
 	if err != nil {
 		return llvm.Module{}, err
 	}
-	mod, err = parseIRModule(ir)
+	mod, err = parseIRModuleInContext(ctx, ir)
 	if err != nil {
 		return llvm.Module{}, err
 	}
@@ -52,6 +67,10 @@ func finishTranslatedModule(file *File, mod llvm.Module) (llvm.Module, error) {
 }
 
 func parseIRModule(ir string) (llvm.Module, error) {
+	return parseIRModuleInContext(llvm.GlobalContext(), ir)
+}
+
+func parseIRModuleInContext(ctx llvm.Context, ir string) (llvm.Module, error) {
 	f, err := os.CreateTemp("", "plan9asm-*.ll")
 	if err != nil {
 		return llvm.Module{}, fmt.Errorf("create temp ir file: %w", err)
@@ -69,7 +88,6 @@ func parseIRModule(ir string) (llvm.Module, error) {
 	}
 	// NOTE: do not dispose MemoryBuffer here. In this llvm binding, ParseIR
 	// may take ownership and disposing the buffer can crash.
-	ctx := llvm.GlobalContext()
 	mod, err := (&ctx).ParseIR(buf)
 	if err != nil {
 		return llvm.Module{}, fmt.Errorf("parse generated ir: %w", err)

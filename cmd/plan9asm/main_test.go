@@ -1,12 +1,14 @@
 package main
 
 import (
+	"go/constant"
 	"go/token"
 	"go/types"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/xgo-dev/plan9asm"
@@ -35,6 +37,99 @@ func TestPackageSFilesAbsFiltersNonPlan9Asm(t *testing.T) {
 	}
 }
 
+func TestSigsForAsmFileARM64TailHelperBorrowsCallerFrame(t *testing.T) {
+	typesPkg := types.NewPackage("example.com/ring0", "ring0")
+	for _, name := range []string{"El1Sync", "HaltEl1ExceptionAndResume"} {
+		sig := types.NewSignatureType(nil, nil, nil, nil, nil, false)
+		typesPkg.Scope().Insert(types.NewFunc(token.NoPos, typesPkg, name, sig))
+	}
+	pkg := &packages.Package{
+		PkgPath:    typesPkg.Path(),
+		Types:      typesPkg,
+		TypesSizes: types.SizesFor("gc", "arm64"),
+	}
+	const source = `TEXT ·El1Sync(SB),NOSPLIT,$0-0
+	MOVD $7, R3
+	MOVD R3, 8(RSP)
+	B ·HaltEl1ExceptionAndResume(SB)
+TEXT ·HaltEl1ExceptionAndResume(SB),NOSPLIT,$0-0
+	MOVD vector+0(FP), R3
+	RET
+`
+	file, err := plan9asm.Parse(plan9asm.ArchARM64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigs, err := sigsForAsmFile(pkg, file, resolveSymFunc(pkg.PkgPath), "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := sigs[pkg.PkgPath+".HaltEl1ExceptionAndResume"]
+	if len(helper.Args) != 1 || helper.Args[0] != plan9asm.I64 ||
+		len(helper.Frame.Params) != 1 || helper.Frame.Params[0].Offset != 0 {
+		t.Fatalf("tail helper did not borrow caller's ABI0 frame: %+v", helper)
+	}
+}
+
+func TestTranslateAsmForPackageExpandsRuntimeStyleFunctionMacro(t *testing.T) {
+	dir := t.TempDir()
+	header := filepath.Join(dir, "abi.h")
+	asm := filepath.Join(dir, "entry_arm64.s")
+	if err := os.WriteFile(header, []byte("#ifdef GOOS_linux\n#define SAVE(offset) MOVD R19, offset(RSP)\n#else\n#define SAVE(offset) UNKNOWN_TARGET\n#endif\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(asm, []byte("#include \"abi.h\"\nTEXT ·entry(SB),NOSPLIT,$0-0\nSAVE(8)\nRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgTypes := types.NewPackage("example.com/m/p", "p")
+	pkgTypes.Scope().Insert(types.NewFunc(token.NoPos, pkgTypes, "entry", types.NewSignature(nil, nil, nil, false)))
+	pkg := &packages.Package{
+		PkgPath:    pkgTypes.Path(),
+		Types:      pkgTypes,
+		TypesSizes: types.SizesFor("gc", "arm64"),
+		Module:     &packages.Module{Path: "example.com/m", Dir: dir},
+	}
+	tr, ok, err := translateAsmForPackage(pkg, asm, "linux", "arm64", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !strings.Contains(tr.LLVMIR, "store i64") {
+		t.Fatalf("included SAVE macro was not translated:\n%s", tr.LLVMIR)
+	}
+}
+
+func TestTranslateAsmForPackageExpandsGeneratedGoAsmConstants(t *testing.T) {
+	dir := t.TempDir()
+	asm := filepath.Join(dir, "asm_amd64.s")
+	if err := os.WriteFile(asm, []byte(`#include "go_asm.h"
+#ifdef GOOS_windows
+GLOBL zeroTLS<>(SB),RODATA,$const_tlsSize
+#endif
+TEXT ·entry(SB),NOSPLIT,$0-0
+RET
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgTypes := types.NewPackage("runtime", "runtime")
+	pkgTypes.Scope().Insert(types.NewConst(token.NoPos, pkgTypes, "tlsSize", types.Typ[types.Int], constant.MakeInt64(48)))
+	pkgTypes.Scope().Insert(types.NewFunc(token.NoPos, pkgTypes, "entry", types.NewSignature(nil, nil, nil, false)))
+	pkg := &packages.Package{
+		PkgPath:    pkgTypes.Path(),
+		Types:      pkgTypes,
+		TypesSizes: types.SizesFor("gc", "amd64"),
+		Module:     &packages.Module{Path: "runtime", Dir: dir},
+	}
+	tr, ok, err := translateAsmForPackage(pkg, asm, "windows", "amd64", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !strings.Contains(tr.LLVMIR, `@"runtime.zeroTLS$local" = internal constant [48 x i8]`) {
+		t.Fatalf("generated const_tlsSize was not expanded:\n%s", tr.LLVMIR)
+	}
+}
+
 func TestFallbackSigUsesTargetWordSize(t *testing.T) {
 	fn := plan9asm.Func{Instrs: []plan9asm.Instr{{
 		Op: "MOVW",
@@ -59,6 +154,20 @@ func TestFallbackSigUsesTargetWordSize(t *testing.T) {
 				t.Fatalf("fallback signature = %#v, want arg and return %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFallbackSigTreatsAddressedFrameWithoutResultAsVoid(t *testing.T) {
+	fn := plan9asm.Func{Instrs: []plan9asm.Instr{{
+		Op: "LEAL",
+		Args: []plan9asm.Operand{
+			{Kind: plan9asm.OpFPAddr, FPName: "arg", FPOffset: 0},
+			{Kind: plan9asm.OpReg, Reg: "AX"},
+		},
+	}}}
+	got := fallbackSigForAsmFunc(fn, "example.helper$local", "386")
+	if len(got.Args) != 1 || got.Args[0] != plan9asm.I32 || got.Ret != plan9asm.Void {
+		t.Fatalf("fallback signature = %#v, want (i32) -> void", got)
 	}
 }
 
@@ -201,6 +310,74 @@ TEXT runtime·rt0_go(SB),NOSPLIT,$0
 	}
 	if got := sigs["_rt0_386"].Ret; got != plan9asm.Void {
 		t.Fatalf("_rt0_386 return = %s, want void from its declared tail target", got)
+	}
+}
+
+func TestUndeclaredPureForwarderInheritsABI0Frame(t *testing.T) {
+	file, err := plan9asm.Parse(plan9asm.ArchAMD64, "TEXT forward(SB),$0-8\nJMP body(SB)\nTEXT body(SB),$0-8\nMOVQ arg+0(FP), AX\nRET\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range []*packages.Package{nil, {Types: types.NewPackage("example", "example"), TypesSizes: types.SizesFor("gc", "amd64")}} {
+		sigs, err := sigsForAsmFile(pkg, file, resolveSymFunc("example"), "amd64")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := sigs["forward"]
+		if got.Ret != plan9asm.Void || len(got.Args) != 1 || len(got.Frame.Params) != 1 {
+			t.Fatalf("forward ABI = %#v", got)
+		}
+	}
+}
+
+func TestSigsForAsmFileDiscoversWasmCallOpcodes(t *testing.T) {
+	for _, op := range []string{"Call", "CALLNORESUME"} {
+		t.Run(op, func(t *testing.T) {
+			file, err := plan9asm.Parse(plan9asm.ArchWASM, "TEXT ·caller(SB),NOSPLIT,$0-0\n\t"+op+" ·target(SB)\n\tRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkgTypes := types.NewPackage("example", "example")
+			voidSig := types.NewSignature(nil, nil, nil, false)
+			pkgTypes.Scope().Insert(types.NewFunc(token.NoPos, pkgTypes, "caller", voidSig))
+			pkgTypes.Scope().Insert(types.NewFunc(token.NoPos, pkgTypes, "target", voidSig))
+			pkg := &packages.Package{Types: pkgTypes, TypesSizes: types.SizesFor("gc", "wasm")}
+			sigs, err := sigsForAsmFile(pkg, file, resolveSymFunc("example"), "wasm")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := sigs["example.target"]; !ok || got.Ret != plan9asm.Void {
+				t.Fatalf("%s target signature = %#v, present=%v; want void", op, got, ok)
+			}
+		})
+	}
+}
+
+func TestSigsForAsmFileUsesGoWasmNativeSignatures(t *testing.T) {
+	file, err := plan9asm.Parse(plan9asm.ArchWASM, `TEXT wasm_export_run(SB),NOSPLIT,$0
+	Call wasm_pc_f_loop(SB)
+	Return
+
+TEXT gcWriteBarrier<>(SB),NOSPLIT,$0
+	Get R0
+	I64Const $8
+	I64Add
+	Return
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgTypes := types.NewPackage("runtime", "runtime")
+	pkg := &packages.Package{Types: pkgTypes, TypesSizes: types.SizesFor("gc", "wasm")}
+	sigs, err := sigsForAsmFile(pkg, file, resolveSymFunc("runtime"), "wasm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sigs["wasm_pc_f_loop"]; len(got.Args) != 0 || got.Ret != plan9asm.Void || !got.WASMNative {
+		t.Fatalf("wasm_pc_f_loop signature = %#v; want native () -> void", got)
+	}
+	if got := sigs["runtime.gcWriteBarrier$local"]; !reflect.DeepEqual(got.Args, []plan9asm.LLVMType{plan9asm.I64}) || got.Ret != plan9asm.I64 || !got.WASMNative {
+		t.Fatalf("gcWriteBarrier signature = %#v; want native (i64) -> i64", got)
 	}
 }
 

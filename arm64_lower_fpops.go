@@ -7,252 +7,276 @@ import (
 	"strings"
 )
 
+func (c *arm64Ctx) lowerARM64ScalarFloatUnary(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	operations := map[Op]string{
+		"FABSS": "fabs", "FABSD": "fabs",
+		"FNEGS": "neg", "FNEGD": "neg",
+		"FSQRTS": "sqrt", "FSQRTD": "sqrt",
+		"FRINTNS": "roundeven", "FRINTND": "roundeven",
+		"FRINTPS": "ceil", "FRINTPD": "ceil",
+		"FRINTMS": "floor", "FRINTMD": "floor",
+		"FRINTZS": "trunc", "FRINTZD": "trunc",
+		"FRINTAS": "round", "FRINTAD": "round",
+		"FRINTXS": "rint", "FRINTXD": "rint",
+		"FRINTIS": "nearbyint", "FRINTID": "nearbyint",
+	}
+	operation, handled := operations[op]
+	if !handled {
+		return false, false, nil
+	}
+	if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 2 ||
+		ins.Args[0].Kind != OpReg || !isARM64FReg(ins.Args[0].Reg) ||
+		ins.Args[1].Kind != OpReg || !isARM64FReg(ins.Args[1].Reg) {
+		return true, false, fmt.Errorf("arm64 %s expects Fsrc, Fdst and no suffix: %q", op, ins.Raw)
+	}
+	bits := 64
+	floatType := "double"
+	intrinsicSuffix := "f64"
+	if strings.HasSuffix(string(op), "S") {
+		bits = 32
+		floatType = "float"
+		intrinsicSuffix = "f32"
+	}
+	source, err := c.loadARM64ScalarFloatReg(ins.Args[0].Reg, bits)
+	if err != nil {
+		return true, false, err
+	}
+	result := c.newTmp()
+	if operation == "neg" {
+		fmt.Fprintf(c.b, "  %%%s = fneg %s %s\n", result, floatType, source)
+	} else {
+		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %s)\n", result, floatType, operation, intrinsicSuffix, floatType, source)
+	}
+	return true, false, c.storeARM64ScalarFloatReg(ins.Args[1].Reg, bits, "%"+result)
+}
+
 func (c *arm64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	if ok, terminated, err := c.lowerARM64ScalarFloatCompare(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64FloatConditionalCompare(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64ScalarFloatBinary(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64ScalarFloatUnary(op, ins); ok {
+		return ok, terminated, err
+	}
 	switch op {
-	case "FMOVD":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("arm64 FMOVD expects 2 operands: %q", ins.Raw)
-		}
-		bits, err := c.evalFMOVDBits(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		switch ins.Args[1].Kind {
-		case OpReg:
-			return true, false, c.storeReg(ins.Args[1].Reg, bits)
-		case OpFP:
-			return true, false, c.storeFPResult64(ins.Args[1].FPOffset, bits)
-		default:
-			return true, false, fmt.Errorf("arm64 FMOVD unsupported dst: %q", ins.Raw)
-		}
+	case "FMOVB", "FMOVH", "FMOVS", "FMOVD":
+		return c.lowerScalarFloatMove(op, ins)
 
-	case "FCMPD":
-		// FCMPD src, dst => compare dst ? src (same operand order convention as CMP/SUB).
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("arm64 FCMPD expects 2 operands: %q", ins.Raw)
+	case "FCVTSD", "FCVTDS", "FCVTSH", "FCVTHS", "FCVTDH", "FCVTHD":
+		if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 2 ||
+			ins.Args[0].Kind != OpReg || !isARM64FReg(ins.Args[0].Reg) ||
+			ins.Args[1].Kind != OpReg || !isARM64FReg(ins.Args[1].Reg) {
+			return true, false, fmt.Errorf("arm64 %s expects Fsrc, Fdst and no suffix: %q", op, ins.Raw)
 		}
-		src, err := c.evalF64(ins.Args[0])
+		conversionWidths := map[Op][2]int{
+			"FCVTSD": {32, 64},
+			"FCVTDS": {64, 32},
+			"FCVTSH": {32, 16},
+			"FCVTHS": {16, 32},
+			"FCVTDH": {64, 16},
+			"FCVTHD": {16, 64},
+		}
+		sourceBits := conversionWidths[op][0]
+		destinationBits := conversionWidths[op][1]
+		source, err := c.loadARM64ScalarFloatReg(ins.Args[0].Reg, sourceBits)
 		if err != nil {
 			return true, false, err
 		}
-		dst, err := c.evalF64(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		eq := c.newTmp()
-		lt := c.newTmp()
-		gt := c.newTmp()
-		uno := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fcmp oeq double %s, %s\n", eq, dst, src)
-		fmt.Fprintf(c.b, "  %%%s = fcmp olt double %s, %s\n", lt, dst, src)
-		fmt.Fprintf(c.b, "  %%%s = fcmp ogt double %s, %s\n", gt, dst, src)
-		fmt.Fprintf(c.b, "  %%%s = fcmp uno double %s, %s\n", uno, dst, src)
-		// AArch64 FCMP flags model:
-		// - unordered: N=0 Z=0 C=1 V=1
-		// - lt: N=1 Z=0 C=0 V=0
-		// - eq: N=0 Z=1 C=1 V=0
-		// - gt: N=0 Z=0 C=1 V=0
-		c01 := c.newTmp()
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", c01, gt, eq)
-		fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", cf, c01, uno)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", lt, c.flagsNSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", uno, c.flagsVSlot)
-		c.flagsWritten = true
-		return true, false, nil
-
-	case "FCSELD":
-		// FCSELD cond, a, b, dst
-		if len(ins.Args) != 4 || ins.Args[0].Kind != OpIdent {
-			return true, false, fmt.Errorf("arm64 FCSELD expects cond, a, b, dst: %q", ins.Raw)
-		}
-		a, err := c.evalF64(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		bv, err := c.evalF64(ins.Args[2])
-		if err != nil {
-			return true, false, err
-		}
-		cv, err := c.condValue(ins.Args[0].Ident)
-		if err != nil {
-			return true, false, err
-		}
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %s, double %s, double %s\n", t, cv, a, bv)
-		return true, false, c.storeF64(ins.Args[3], "%"+t)
-
-	case "FADDD", "FSUBD", "FMULD", "FDIVD", "FMAXD", "FMIND":
-		var src, dst string
-		var dstOp Operand
-		switch len(ins.Args) {
-		case 2:
-			src, err = c.evalF64(ins.Args[0])
-			if err != nil {
-				return true, false, err
+		converted := c.newTmp()
+		llvmFloatType := func(bits int) string {
+			switch bits {
+			case 16:
+				return "half"
+			case 32:
+				return "float"
+			default:
+				return "double"
 			}
-			dst, err = c.evalF64(ins.Args[1])
-			if err != nil {
-				return true, false, err
-			}
-			dstOp = ins.Args[1]
-		case 3:
-			src, err = c.evalF64(ins.Args[0])
-			if err != nil {
-				return true, false, err
-			}
-			dst, err = c.evalF64(ins.Args[1])
-			if err != nil {
-				return true, false, err
-			}
-			dstOp = ins.Args[2]
-		default:
-			return true, false, fmt.Errorf("arm64 %s expects 2 or 3 operands: %q", op, ins.Raw)
 		}
-		t := c.newTmp()
-		switch op {
-		case "FADDD":
-			fmt.Fprintf(c.b, "  %%%s = fadd double %s, %s\n", t, dst, src)
-		case "FSUBD":
-			fmt.Fprintf(c.b, "  %%%s = fsub double %s, %s\n", t, dst, src)
-		case "FMULD":
-			fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", t, dst, src)
-		case "FDIVD":
-			fmt.Fprintf(c.b, "  %%%s = fdiv double %s, %s\n", t, dst, src)
-		case "FMAXD":
-			fmt.Fprintf(c.b, "  %%%s = call double @llvm.maxnum.f64(double %s, double %s)\n", t, dst, src)
-		case "FMIND":
-			fmt.Fprintf(c.b, "  %%%s = call double @llvm.minnum.f64(double %s, double %s)\n", t, dst, src)
+		sourceType := llvmFloatType(sourceBits)
+		destinationType := llvmFloatType(destinationBits)
+		if sourceBits < destinationBits {
+			fmt.Fprintf(c.b, "  %%%s = fpext %s %s to %s\n", converted, sourceType, source, destinationType)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = fptrunc %s %s to %s\n", converted, sourceType, source, destinationType)
 		}
-		return true, false, c.storeF64(dstOp, "%"+t)
+		return true, false, c.storeARM64ScalarFloatReg(ins.Args[1].Reg, destinationBits, "%"+converted)
 
-	case "FMADDD", "FMSUBD", "FNMSUBD":
-		// {FMA,FMSUB,FNMSUB}D a, b, c, dst
-		if len(ins.Args) != 4 {
-			return true, false, fmt.Errorf("arm64 %s expects 4 operands: %q", op, ins.Raw)
+	case "FCSELS", "FCSELD":
+		if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 4 {
+			return true, false, fmt.Errorf("arm64 %s expects condition, Fsrc, Fsrc, Fdst and no suffix: %q", op, ins.Raw)
 		}
-		a, err := c.evalF64(ins.Args[0])
-		if err != nil {
-			return true, false, err
+		condition, conditionOK := arm64ConditionOperand(ins.Args[0])
+		if !conditionOK {
+			return true, false, fmt.Errorf("arm64 %s expects a condition operand: %q", op, ins.Raw)
 		}
-		b, err := c.evalF64(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		cv, err := c.evalF64(ins.Args[2])
-		if err != nil {
-			return true, false, err
-		}
-		m := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", m, a, cv)
-		t := c.newTmp()
-		switch op {
-		case "FMADDD":
-			// b + a*c
-			fmt.Fprintf(c.b, "  %%%s = fadd double %s, %%%s\n", t, b, m)
-		case "FMSUBD":
-			// b - a*c
-			fmt.Fprintf(c.b, "  %%%s = fsub double %s, %%%s\n", t, b, m)
-		case "FNMSUBD":
-			// a*c - b
-			fmt.Fprintf(c.b, "  %%%s = fsub double %%%s, %s\n", t, m, b)
-		}
-		return true, false, c.storeF64(ins.Args[3], "%"+t)
-
-	case "FNMULD":
-		// FNMULD src, dst (or src1, src2, dst): dst = -(dst*src) or -(src2*src1).
-		var src, dst string
-		var dstOp Operand
-		switch len(ins.Args) {
-		case 2:
-			src, err = c.evalF64(ins.Args[0])
-			if err != nil {
-				return true, false, err
+		for _, operand := range ins.Args[1:] {
+			if operand.Kind != OpReg || !isARM64FReg(operand.Reg) {
+				return true, false, fmt.Errorf("arm64 %s accepts only scalar floating registers: %q", op, ins.Raw)
 			}
-			dst, err = c.evalF64(ins.Args[1])
-			if err != nil {
-				return true, false, err
-			}
-			dstOp = ins.Args[1]
-		case 3:
-			src, err = c.evalF64(ins.Args[0])
-			if err != nil {
-				return true, false, err
-			}
-			dst, err = c.evalF64(ins.Args[1])
-			if err != nil {
-				return true, false, err
-			}
-			dstOp = ins.Args[2]
-		default:
-			return true, false, fmt.Errorf("arm64 FNMULD expects 2 or 3 operands: %q", ins.Raw)
 		}
-		m := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", m, dst, src)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fneg double %%%s\n", t, m)
-		return true, false, c.storeF64(dstOp, "%"+t)
+		bits := 32
+		if op == "FCSELD" {
+			bits = 64
+		}
+		return true, false, c.lowerARM64FloatSelectValues(
+			bits,
+			condition,
+			ins.Args[1].Reg,
+			ins.Args[2].Reg,
+			ins.Args[3].Reg,
+		)
 
-	case "FABSD":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("arm64 FABSD expects 2 operands: %q", ins.Raw)
-		}
-		src, err := c.evalF64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call double @llvm.fabs.f64(double %s)\n", t, src)
-		return true, false, c.storeF64(ins.Args[1], "%"+t)
+	case "FMADDS", "FMADDD", "FMSUBS", "FMSUBD",
+		"FNMADDS", "FNMADDD", "FNMSUBS", "FNMSUBD":
+		return c.lowerFusedMultiplyAdd(op, ins)
 
-	case "FRINTZD", "FRINTMD", "FRINTPD":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("arm64 %s expects 2 operands: %q", op, ins.Raw)
+	case "FCVTZSD", "FCVTZSDW", "FCVTZSS", "FCVTZSSW",
+		"FCVTZUD", "FCVTZUDW", "FCVTZUS", "FCVTZUSW":
+		// Go 1.27 exposes the complete scalar FCVT-to-integer family through
+		// AFCVTZSD's single C_FREG -> C_ZREG optab row. The final W selects a
+		// 32-bit integer result; S/D before it selects the floating input width.
+		if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 2 ||
+			ins.Args[0].Kind != OpReg || !isARM64FReg(ins.Args[0].Reg) ||
+			ins.Args[1].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[1].Reg) {
+			return true, false, fmt.Errorf("arm64 %s expects Fsrc, Rdst/ZR and no suffix: %q", op, ins.Raw)
 		}
-		src, err := c.evalF64(ins.Args[0])
-		if err != nil {
-			return true, false, err
+		sourceBits := 64
+		sourceMnemonic := strings.TrimSuffix(string(op), "W")
+		if strings.HasSuffix(sourceMnemonic, "S") {
+			sourceBits = 32
 		}
-		t := c.newTmp()
-		switch op {
-		case "FRINTZD":
-			fmt.Fprintf(c.b, "  %%%s = call double @llvm.trunc.f64(double %s)\n", t, src)
-		case "FRINTMD":
-			fmt.Fprintf(c.b, "  %%%s = call double @llvm.floor.f64(double %s)\n", t, src)
-		case "FRINTPD":
-			fmt.Fprintf(c.b, "  %%%s = call double @llvm.ceil.f64(double %s)\n", t, src)
+		destinationBits := 64
+		if strings.HasSuffix(string(op), "W") {
+			destinationBits = 32
 		}
-		return true, false, c.storeF64(ins.Args[1], "%"+t)
+		err := c.lowerARM64ScalarFloatToInteger(
+			ins.Args[0].Reg,
+			sourceBits,
+			ins.Args[1].Reg,
+			destinationBits,
+			strings.HasPrefix(string(op), "FCVTZU"),
+			arm64FloatRoundZero,
+		)
+		return true, false, err
 
-	case "FCVTZSD":
-		// FCVTZSD src, dstReg
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 FCVTZSD expects src, dstReg: %q", ins.Raw)
+	case "SCVTFD", "SCVTFS", "SCVTFWD", "SCVTFWS", "SCVTFDD", "SCVTFSS",
+		"UCVTFD", "UCVTFS", "UCVTFWD", "UCVTFWS", "UCVTFDD", "UCVTFSS":
+		// The DD/SS forms take integer bits from an F register; the other
+		// forms take an R/ZR register. x/arch prints all twelve scalar
+		// encodings with these distinct Plan 9 names.
+		vectorSource := strings.HasSuffix(string(op), "DD") || strings.HasSuffix(string(op), "SS")
+		if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 2 ||
+			ins.Args[0].Kind != OpReg ||
+			ins.Args[1].Kind != OpReg || !isARM64FReg(ins.Args[1].Reg) {
+			return true, false, fmt.Errorf("arm64 %s expects an integer source, one F destination, and no suffix: %q", op, ins.Raw)
 		}
-		src, err := c.evalF64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fptosi double %s to i64\n", t, src)
-		return true, false, c.storeReg(ins.Args[1].Reg, "%"+t)
-
-	case "SCVTFD":
-		// SCVTFD srcReg, dst
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 SCVTFD expects srcReg, dst: %q", ins.Raw)
+		if vectorSource && !isARM64FReg(ins.Args[0].Reg) ||
+			!vectorSource && !isARM64GeneralOrZeroReg(ins.Args[0].Reg) {
+			return true, false, fmt.Errorf("arm64 %s has the wrong source register class: %q", op, ins.Raw)
 		}
 		src, err := c.loadReg(ins.Args[0].Reg)
 		if err != nil {
 			return true, false, err
 		}
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = sitofp i64 %s to double\n", t, src)
-		return true, false, c.storeF64(ins.Args[1], "%"+t)
+		integerType := "i64"
+		if strings.Contains(string(op), "W") || strings.HasSuffix(string(op), "SS") {
+			narrow := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", narrow, src)
+			src = "%" + narrow
+			integerType = "i32"
+		}
+		floatType := "double"
+		bits := 64
+		if strings.HasSuffix(string(op), "S") {
+			floatType = "float"
+			bits = 32
+		}
+		conversion := "sitofp"
+		if strings.HasPrefix(string(op), "U") {
+			conversion = "uitofp"
+		}
+		converted := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", converted, conversion, integerType, src, floatType)
+		if bits == 64 {
+			encoded := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast double %%%s to i64\n", encoded, converted)
+			return true, false, c.storeReg(ins.Args[1].Reg, "%"+encoded)
+		}
+		encoded := c.newTmp()
+		wide := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast float %%%s to i32\n", encoded, converted)
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", wide, encoded)
+		return true, false, c.storeReg(ins.Args[1].Reg, "%"+wide)
 	}
 	return false, false, nil
+}
+
+func (c *arm64Ctx) lowerFusedMultiplyAdd(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 4 {
+		return true, false, fmt.Errorf("arm64 %s expects four F-register operands and no suffixes: %q", op, ins.Raw)
+	}
+	for _, arg := range ins.Args {
+		if arg.Kind != OpReg {
+			return true, false, fmt.Errorf("arm64 %s expects four F-register operands: %q", op, ins.Raw)
+		}
+		if _, ok := arm64ParseFReg(arg.Reg); !ok {
+			return true, false, fmt.Errorf("arm64 %s expects four F-register operands: %q", op, ins.Raw)
+		}
+	}
+
+	floatType := "double"
+	intrinsic := "@llvm.fma.f64"
+	eval := c.evalF64
+	store := c.storeF64
+	if strings.HasSuffix(string(op), "S") {
+		floatType = "float"
+		intrinsic = "@llvm.fma.f32"
+		eval = c.evalF32
+		store = c.storeF32
+	}
+
+	// Go's Plan 9 order is Fm, Fa, Fn, Fd. The architectural operations are:
+	//   FMADD:   Fn*Fm + Fa       FMSUB:  Fa - Fn*Fm
+	//   FNMADD: -(Fn*Fm + Fa)     FNMSUB: Fn*Fm - Fa
+	fm, err := eval(ins.Args[0])
+	if err != nil {
+		return true, false, err
+	}
+	fa, err := eval(ins.Args[1])
+	if err != nil {
+		return true, false, err
+	}
+	fn, err := eval(ins.Args[2])
+	if err != nil {
+		return true, false, err
+	}
+
+	if strings.HasPrefix(string(op), "FMSUB") {
+		negFM := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = fneg %s %s\n", negFM, floatType, fm)
+		fm = "%" + negFM
+	} else if strings.HasPrefix(string(op), "FNMSUB") {
+		negFA := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = fneg %s %s\n", negFA, floatType, fa)
+		fa = "%" + negFA
+	}
+
+	result := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s %s(%s %s, %s %s, %s %s)\n",
+		result, floatType, intrinsic, floatType, fm, floatType, fn, floatType, fa)
+	value := "%" + result
+	if strings.HasPrefix(string(op), "FNMADD") {
+		negResult := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = fneg %s %s\n", negResult, floatType, value)
+		value = "%" + negResult
+	}
+	return true, false, store(ins.Args[3], value)
 }
 
 func (c *arm64Ctx) evalFMOVDBits(op Operand) (string, error) {
@@ -295,16 +319,9 @@ func (c *arm64Ctx) evalF64(op Operand) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("arm64: unsupported FP param slot: %s", op.String())
 		}
-		idx := slot.Index
-		if idx < 0 || idx >= len(c.sig.Args) {
-			return "", fmt.Errorf("arm64: FP slot %s invalid arg index %d", op.String(), idx)
-		}
-		arg := fmt.Sprintf("%%arg%d", idx)
-		if slot.Field >= 0 {
-			aggTy := c.sig.Args[idx]
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", t, aggTy, arg, slot.Field)
-			arg = "%" + t
+		arg, err := c.loadFPParameter(slot)
+		if err != nil {
+			return "", err
 		}
 		switch slot.Type {
 		case LLVMType("double"):
@@ -337,6 +354,21 @@ func (c *arm64Ctx) evalF64(op Operand) (string, error) {
 	}
 }
 
+func (c *arm64Ctx) evalF32(op Operand) (string, error) {
+	if op.Kind != OpReg {
+		return "", fmt.Errorf("arm64: unsupported f32 operand %s", op.String())
+	}
+	v64, err := c.loadReg(op.Reg)
+	if err != nil {
+		return "", err
+	}
+	v32 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", v32, v64)
+	value := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast i32 %%%s to float\n", value, v32)
+	return "%" + value, nil
+}
+
 func (c *arm64Ctx) storeF64(dst Operand, v string) error {
 	switch dst.Kind {
 	case OpReg:
@@ -350,6 +382,17 @@ func (c *arm64Ctx) storeF64(dst Operand, v string) error {
 	default:
 		return fmt.Errorf("arm64: unsupported f64 dst operand %s", dst.String())
 	}
+}
+
+func (c *arm64Ctx) storeF32(dst Operand, v string) error {
+	if dst.Kind != OpReg {
+		return fmt.Errorf("arm64: unsupported f32 dst operand %s", dst.String())
+	}
+	bits32 := c.newTmp()
+	bits64 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast float %s to i32\n", bits32, v)
+	fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", bits64, bits32)
+	return c.storeReg(dst.Reg, "%"+bits64)
 }
 
 func arm64ParseDollarFloat(sym string) (float64, bool) {

@@ -1,6 +1,9 @@
 package plan9asm
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string, goarch string, wasmABI WASMABI) {
 	switch file.Arch {
@@ -43,15 +46,14 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 		b.WriteString("\n")
 	}
 	want := make(map[string]bool)
+	wantFloatUnary := make(map[string]bool)
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
-			switch normalizeInstructionOpcode(ins.Op) {
-			case "F64FLOOR":
-				want["floor"] = true
-			case "F64CEIL":
-				want["ceil"] = true
-			case "F64TRUNC":
-				want["trunc"] = true
+			op := normalizeInstructionOpcode(ins.Op)
+			if spec, ok := wasmFloatUnaryOps[op]; ok && spec.intrinsic != "" {
+				wantFloatUnary[string(spec.typ)+"|"+spec.intrinsic] = true
+			}
+			switch op {
 			case "MEMORYCOPY":
 				want["memmove"] = true
 			case "MEMORYFILL":
@@ -75,12 +77,18 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	if want["memory.grow"] {
 		b.WriteString("declare i32 @llvm.wasm.memory.grow.i32(i32, i32)\n")
 	}
-	for _, name := range []string{"floor", "ceil", "trunc"} {
-		if want[name] {
-			b.WriteString("declare double @llvm." + name + ".f64(double)\n")
+	for _, typ := range []LLVMType{LLVMType("float"), LLVMType("double")} {
+		bits := "32"
+		if typ == LLVMType("double") {
+			bits = "64"
+		}
+		for _, name := range []string{"fabs", "ceil", "floor", "trunc", "roundeven", "sqrt"} {
+			if wantFloatUnary[string(typ)+"|"+name] {
+				fmt.Fprintf(b, "declare %s @llvm.%s.f%s(%s)\n", typ, name, bits, typ)
+			}
 		}
 	}
-	if len(want) != 0 {
+	if len(want) != 0 || len(wantFloatUnary) != 0 {
 		b.WriteString("\n")
 	}
 }

@@ -1,0 +1,16 @@
+{"module":"github.com/Apache/arrow/go/v13","version":"v13.0.0","status":"pending"}
+{"module":"github.com/DEROFDN/derohe","version":"v0.0.0-20240229002921-e9df1205b660","status":"pending"}
+{"module":"github.com/KlausPost/cpuid/v2","version":"v2.4.0","status":"pending"}
+{"module":"github.com/VLPraneeth/gorgonia-gorgonia","version":"v0.9.18","status":"pending"}
+{"module":"github.com/drep-project/drep-cli","version":"v0.0.0-20190129080856-7505a0cc6ac7","status":"pending"}
+{"module":"github.com/fengpf/goroutineid","version":"v0.0.0-20190905112800-23f4ede2fcd5","status":"pending"}
+{"module":"github.com/go-simd/int8dot","version":"v0.0.0-20260908181124-25b8d723bda1","status":"pending"}
+{"module":"github.com/inspektor-gadget/opentelemetry-ebpf-profiler","version":"v0.0.202636","status":"pending"}
+{"module":"github.com/justwasm/go","version":"v0.0.2","status":"pending"}
+{"module":"github.com/minio/c2goasm","version":"v0.0.0-20190812172519-36a3d3bbc4f3","status":"pending"}
+{"module":"github.com/nuaays/go-ethereum","version":"v1.4.5","status":"pending"}
+{"module":"github.com/timpalpant/go-cfr","version":"v0.0.0-20230208023716-2c859fbaa0a5","status":"pending"}
+{"module":"github.com/yelhousni/octobear","version":"v0.0.0-20260611143655-4c683caf33c2","status":"pending"}
+{"module":"github.com/zchee/go-simdutf","version":"v0.0.0-20260814100243-006e6acb311f","status":"pending"}
+{"module":"github.tiyicn.workers.dev/u-root/u-root","version":"v0.16.0","status":"pending"}
+{"module":"lab.nexedi.com/kirr/go123","version":"v0.0.0-20260421100102-64d13b24fc95","status":"pending"}

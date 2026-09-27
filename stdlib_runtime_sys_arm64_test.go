@@ -1,5 +1,5 @@
-//go:build !llgo
-// +build !llgo
+//go:build go1.27
+// +build go1.27
 
 package plan9asm
 
@@ -13,14 +13,14 @@ import (
 func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "runtime", "sys", "dit_arm64.s"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			t.Skip("internal/runtime/sys/dit_arm64.s not present in this GOROOT")
+			t.Fatal("internal/runtime/sys/dit_arm64.s not present in this GOROOT")
 		}
 		t.Fatal(err)
 	}
@@ -71,14 +71,14 @@ func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
 func TestTranslateGoModule_StdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "runtime", "sys", "dit_arm64.s"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			t.Skip("internal/runtime/sys/dit_arm64.s not present in this GOROOT")
+			t.Fatal("internal/runtime/sys/dit_arm64.s not present in this GOROOT")
 		}
 		t.Fatal(err)
 	}

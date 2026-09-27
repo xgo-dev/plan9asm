@@ -43,6 +43,144 @@ func arm64ParseVRegLane(r Reg) (kind byte, lane int, ok bool) {
 // Vector/NEON lowering for a small subset used by stdlib asm.
 // We model V0..V31 as <16 x i8>.
 func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated bool, err error) {
+	if ok, terminated, err := c.lowerARM64SignedLaneExtract(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64WideningAddSubtract(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorAbsDiff(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorFloatImmediate(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorConstant(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorDuplicate(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64SHA3(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64AES(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64SHA(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64FloatPair(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64StructureLoadStore(op, postInc, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorBitReverse(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorCountBits(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorReverse(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorTableLookup(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64PolynomialMultiply(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorWideningMultiply(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorFloatNarrow(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorFloatWiden(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorLogical(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorIntegerCompare(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorIntegerMinMax(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorIntegerMinMaxAcross(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorAddLongAcross(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorIntegerAbsNeg(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorIntegerNarrow(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorSaturatingShiftNarrow(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorShiftNarrow(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorShiftLeft(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorVariableShift(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorSaturatingShift(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorShiftRight(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorShiftInsert(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorFloatUnary(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorFloatMinMaxAcross(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorFloatArithmetic(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorFloatCompare(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorHalvingAdd(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorSaturatingArithmetic(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorIntegerMultiply(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64AddAcross(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorIntegerAddSub(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorFMA(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorExtract(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64VectorPermute(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerARM64WideningShift(op, ins); ok {
+		return ok, terminated, err
+	}
 	switch op {
 	case "FMOVQ":
 		if len(ins.Args) != 2 {
@@ -51,9 +189,19 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 		src, dst := ins.Args[0], ins.Args[1]
 		preInc := strings.Contains(strings.ToUpper(string(ins.Op)), ".W")
 		switch {
-		case (src.Kind == OpMem || src.Kind == OpSym) && dst.Kind == OpReg:
+		case (src.Kind == OpFP || src.Kind == OpMem || src.Kind == OpSym) && dst.Kind == OpReg:
 			if _, ok := arm64ParseFReg(dst.Reg); !ok {
 				return true, false, fmt.Errorf("arm64 FMOVQ expects an F register destination: %q", ins.Raw)
+			}
+			if src.Kind == OpFP {
+				if preInc || postInc {
+					return true, false, fmt.Errorf("arm64 FMOVQ .P/.W requires register memory: %q", ins.Raw)
+				}
+				value, err := c.loadFMOVQFrame(src.FPOffset)
+				if err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeVReg(dst.Reg, value)
 			}
 			ptr, base, inc, update, err := c.arm64VectorMemoryPointer(src, preInc, postInc)
 			if err != nil {
@@ -70,13 +218,19 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 				}
 			}
 			return true, false, nil
-		case src.Kind == OpReg && (dst.Kind == OpMem || dst.Kind == OpSym):
+		case src.Kind == OpReg && (dst.Kind == OpFP || dst.Kind == OpMem || dst.Kind == OpSym):
 			if _, ok := arm64ParseFReg(src.Reg); !ok {
 				return true, false, fmt.Errorf("arm64 FMOVQ expects an F register source: %q", ins.Raw)
 			}
 			value, err := c.loadVReg(src.Reg)
 			if err != nil {
 				return true, false, err
+			}
+			if dst.Kind == OpFP {
+				if preInc || postInc {
+					return true, false, fmt.Errorf("arm64 FMOVQ .P/.W requires register memory: %q", ins.Raw)
+				}
+				return true, false, c.storeFMOVQFrame(dst.FPOffset, value)
 			}
 			ptr, base, inc, update, err := c.arm64VectorMemoryPointer(dst, preInc, postInc)
 			if err != nil {
@@ -92,41 +246,6 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 		default:
 			return true, false, fmt.Errorf("arm64 FMOVQ expects memory and F register operands: %q", ins.Raw)
 		}
-
-	case "FLDPQ":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpMem || ins.Args[1].Kind != OpRegList || len(ins.Args[1].RegList) != 2 {
-			return true, false, fmt.Errorf("arm64 FLDPQ expects mem, (Freg,Freg): %q", ins.Raw)
-		}
-		mem := ins.Args[0].Mem
-		addr, base, inc, err := c.addrI64(mem, postInc)
-		if err != nil {
-			return true, false, err
-		}
-		for i, f := range ins.Args[1].RegList {
-			idx, ok := arm64ParseFReg(f)
-			if !ok {
-				return true, false, fmt.Errorf("arm64 FLDPQ expects FP register pair: %q", ins.Raw)
-			}
-			loadAddr := addr
-			if i != 0 {
-				next := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, 16\n", next, addr)
-				loadAddr = "%" + next
-			}
-			ptr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, loadAddr)
-			value := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %%%s, align 1\n", value, ptr)
-			if err := c.storeVReg(Reg(fmt.Sprintf("V%d", idx)), "%"+value); err != nil {
-				return true, false, err
-			}
-		}
-		if postInc {
-			if err := c.updatePostInc(base, inc); err != nil {
-				return true, false, err
-			}
-		}
-		return true, false, nil
 
 	case "VMOVI":
 		if len(ins.Args) != 2 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg {
@@ -154,17 +273,6 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 			elems[i] = fmt.Sprintf("i8 %d", value)
 		}
 		return true, false, c.storeVReg(ins.Args[1].Reg, "<"+strings.Join(elems, ", ")+">")
-
-	case "AESE", "AESD", "AESMC", "AESIMC",
-		"SHA1C", "SHA1H", "SHA1M", "SHA1P", "SHA1SU0", "SHA1SU1",
-		"SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1",
-		"SHA512H", "SHA512H2", "SHA512SU0", "SHA512SU1",
-		"VEOR3", "VBCAX", "VRAX1", "VXAR",
-		"VPMULL", "VPMULL2",
-		"VREV32", "VREV64", "VSHL", "VSRI", "VTBL", "VZIP1", "VZIP2", "VEXT", "VUSHR",
-		"VLD1R", "VLD4R", "VDUP":
-		// Keep translation permissive for crypto/NEON ops not yet modeled.
-		return true, false, nil
 
 	case "VMOV":
 		// Patterns used by stdlib:
@@ -470,6 +578,72 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 		return true, false, nil
 
 	case "VST1":
+		// VST1(.P) also has a single-lane element form (Vn.{B,H,S,D}[lane],
+		// memory). This is a distinct Go 1.27 C_ELEM table from the register
+		// list form handled below.
+		if len(ins.Args) == 2 && ins.Args[0].Kind == OpReg && ins.Args[1].Kind == OpMem {
+			kind, lane, ok := arm64ParseVRegLane(ins.Args[0].Reg)
+			if !ok {
+				return true, false, fmt.Errorf("arm64 VST1 expects an arranged vector lane: %q", ins.Raw)
+			}
+			index, ok := arm64ParseVReg(ins.Args[0].Reg)
+			if !ok {
+				return true, false, fmt.Errorf("arm64 VST1 expects a vector register lane: %q", ins.Raw)
+			}
+			width := int64(1)
+			switch kind {
+			case 'H':
+				width = 2
+			case 'S':
+				width = 4
+			case 'D':
+				width = 8
+			}
+			mem := ins.Args[1].Mem
+			addr, base, inc, err := c.addrI64(mem, postInc)
+			if err != nil {
+				return true, false, err
+			}
+			if postInc && inc == 0 {
+				inc = width
+			}
+			vector, err := c.loadVReg(Reg(fmt.Sprintf("V%d", index)))
+			if err != nil {
+				return true, false, err
+			}
+			ptr := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, addr)
+			switch kind {
+			case 'B':
+				element := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", element, vector, lane)
+				fmt.Fprintf(c.b, "  store i8 %%%s, ptr %%%s, align 1\n", element, ptr)
+			case 'H':
+				words := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <8 x i16>\n", words, vector)
+				element := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement <8 x i16> %%%s, i32 %d\n", element, words, lane)
+				fmt.Fprintf(c.b, "  store i16 %%%s, ptr %%%s, align 1\n", element, ptr)
+			case 'S':
+				words := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", words, vector)
+				element := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement <4 x i32> %%%s, i32 %d\n", element, words, lane)
+				fmt.Fprintf(c.b, "  store i32 %%%s, ptr %%%s, align 1\n", element, ptr)
+			case 'D':
+				words := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", words, vector)
+				element := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 %d\n", element, words, lane)
+				fmt.Fprintf(c.b, "  store i64 %%%s, ptr %%%s, align 1\n", element, ptr)
+			}
+			if postInc {
+				if err := c.updatePostInc(base, inc); err != nil {
+					return true, false, err
+				}
+			}
+			return true, false, nil
+		}
 		// VST1.P [Vn...], mem
 		if len(ins.Args) != 2 || ins.Args[0].Kind != OpRegList || ins.Args[1].Kind != OpMem {
 			return true, false, fmt.Errorf("arm64 VST1 expects [v,...], mem: %q", ins.Raw)
@@ -569,110 +743,7 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 		return true, false, c.storeVReg(ins.Args[2].Reg, "%"+t)
 
 	case "VADDP":
-		// Pairwise add:
-		// - .B16: outputs 16 bytes: 8 from src0 pairs, 8 from src1 pairs.
-		// - .D2: outputs 2x i64: sum of each source's two lanes.
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 VADDP expects reg, reg, reg: %q", ins.Raw)
-		}
-		s0 := strings.ToUpper(string(ins.Args[0].Reg))
-		s1 := strings.ToUpper(string(ins.Args[1].Reg))
-		if strings.Contains(s0, ".D2") || strings.Contains(s1, ".D2") {
-			a, err := c.loadVReg(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			b, err := c.loadVReg(ins.Args[1].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			ab := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", ab, a)
-			bb := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bb, b)
-			a0 := c.newTmp()
-			a1 := c.newTmp()
-			b0 := c.newTmp()
-			b1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", a0, ab)
-			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", a1, ab)
-			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", b0, bb)
-			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", b1, bb)
-			as := c.newTmp()
-			bs := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", as, a0, a1)
-			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", bs, b0, b1)
-			v0 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %%%s, i32 0\n", v0, as)
-			v1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %%%s, i32 1\n", v1, v0, bs)
-			out := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", out, v1)
-			return true, false, c.storeVReg(ins.Args[2].Reg, "%"+out)
-		}
-
-		// Default B16.
-		a, err := c.loadVReg(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		b, err := c.loadVReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		cur := "undef"
-		for i := 0; i < 16; i++ {
-			var src string
-			var off int
-			if i < 8 {
-				// Go/Plan9 asm operand order for VADDP matches sources, but stdlib
-				// code expects the low 64 bits to correspond to the first loaded
-				// 16-byte lane. Empirically this matches taking the second operand
-				// for the low half.
-				src = b
-				off = i * 2
-			} else {
-				src = a
-				off = (i - 8) * 2
-			}
-			e0 := c.newTmp()
-			e1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", e0, src, off)
-			fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", e1, src, off+1)
-			sum := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i8 %%%s, %%%s\n", sum, e0, e1)
-			insv := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = insertelement <16 x i8> %s, i8 %%%s, i32 %d\n", insv, cur, sum, i)
-			cur = "%" + insv
-		}
-		return true, false, c.storeVReg(ins.Args[2].Reg, cur)
-
-	case "VUADDLV":
-		// VUADDLV Vn.B16, Vd
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 VUADDLV expects reg, reg: %q", ins.Raw)
-		}
-		v, err := c.loadVReg(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext <16 x i8> %s to <16 x i64>\n", z, v)
-		sum := "0"
-		for i := 0; i < 16; i++ {
-			e := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i64> %%%s, i32 %d\n", e, z, i)
-			a := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %%%s\n", a, sum, e)
-			sum = "%" + a
-		}
-		vec := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %s, i32 0\n", vec, sum)
-		vec2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 0, i32 1\n", vec2, vec)
-		bc := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, vec2)
-		return true, false, c.storeVReg(ins.Args[1].Reg, "%"+bc)
+		return true, false, c.lowerARM64VectorADDP(ins)
 
 	case "VADD":
 		// VADD Vs, Vd (2-operand accumulate in D[0]) or VADD Va, Vb, Vd (S4 vector add).

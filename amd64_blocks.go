@@ -10,6 +10,30 @@ type amd64Block struct {
 	instrs []Instr
 }
 
+func isAMD64ConditionalBranch(op Op) bool {
+	switch Op(strings.ToUpper(string(op))) {
+	case "JCXZW", "JCXZL", "JCXZQ":
+		return true
+	case "JE", "JEQ", "JZ", "JNE", "JNZ",
+		"JL", "JLT", "JNGE", "JLE", "JNG", "JG", "JGT", "JNLE", "JGE", "JNL", "JS", "JMI", "JNS", "JPL",
+		"JA", "JHI", "JNBE", "JAE", "JHS", "JNB", "JB", "JLO", "JNAE", "JBE", "JLS", "JNA",
+		"JC", "JCS", "JNC", "JCC",
+		"JO", "JOS", "JNO", "JOC", "JP", "JPE", "JPS", "JNP", "JPO", "JPC":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAMD64CounterZeroBranch(op Op) bool {
+	switch Op(strings.ToUpper(string(op))) {
+	case "JCXZW", "JCXZL", "JCXZQ":
+		return true
+	default:
+		return false
+	}
+}
+
 func amd64SplitBlocks(fn Func) []amd64Block {
 	blocks := []amd64Block{{name: "entry"}}
 	cur := 0
@@ -17,22 +41,20 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 
 	isPCRelTarget := func(ins Instr) (off int64, ok bool) {
 		op := strings.ToUpper(string(ins.Op))
-		switch Op(op) {
-		case "JMP",
-			"JE", "JEQ", "JZ", "JNE", "JNZ",
-			"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS", "JNA",
-			"JNC", "JC", "JCC":
-		default:
+		if op != "JMP" && op != "LOOP" && op != "XBEGIN" && !isAMD64ConditionalBranch(Op(op)) {
 			return 0, false
 		}
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpMem {
+		args := ins.Args
+		if op != "JMP" && len(args) == 2 && args[0].Kind == OpImm {
+			args = args[1:]
+		}
+		if len(args) != 1 || args[0].Kind != OpMem {
 			return 0, false
 		}
-		if !strings.EqualFold(string(ins.Args[0].Mem.Base), "PC") {
+		if !strings.EqualFold(string(args[0].Mem.Base), "PC") {
 			return 0, false
 		}
-		return ins.Args[0].Mem.Off, true
+		return args[0].Mem.Off, true
 	}
 
 	startAnon := func() {
@@ -46,16 +68,16 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 			return true
 		}
 		op := strings.ToUpper(string(ins.Op))
-		switch Op(op) {
-		case "JMP",
-			"JE", "JEQ", "JZ", "JNE", "JNZ",
-			"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS", "JNA",
-			"JNC", "JC", "JCC":
+		if _, ok := amd64FarReturnSpecs[Op(op)]; ok {
 			return true
-		default:
-			return false
 		}
+		if spec, ok := amd64SystemTransferSpecs[Op(op)]; ok && spec.terminates() {
+			return true
+		}
+		if op == "JMP" || op == "LOOP" || op == "XBEGIN" || isAMD64ConditionalBranch(Op(op)) {
+			return true
+		}
+		return false
 	}
 
 	linear := make([]Instr, 0, len(fn.Instrs))

@@ -9,8 +9,13 @@ import (
 
 // File is a parsed Plan 9 asm source file (subset).
 type File struct {
-	Arch  Arch
-	Funcs []Func
+	Arch             Arch
+	Funcs            []Func
+	x86Continuations map[string]x86Continuation
+	// UnlinkedPrelude records instructions before the first TEXT. Go assembles
+	// them into no named function, so they cannot affect any translated symbol.
+	// Corpus verification checks the same source with Go's assembler first.
+	UnlinkedPrelude []string
 
 	// Data and Globl capture a minimal subset of the Plan 9 DATA/GLOBL directives
 	// used by some stdlib asm (e.g. hash/crc32/crc32_amd64.s).
@@ -35,6 +40,18 @@ type Func struct {
 	ArgSize   int64
 
 	Instrs []Instr
+
+	// X86RawText retains a byte-exact, address-sensitive raw TEXT body. It is
+	// populated only when another source instruction takes the body's address
+	// (including symbol+offset patching), so ordinary BYTE-encoded instructions
+	// still go through semantic decoding and validation.
+	X86RawText []byte
+	// X86RawAlign retains a leading PCALIGN on an address-sensitive raw body.
+	// Go aligns the function itself when PCALIGN precedes its first byte.
+	X86RawAlign int64
+
+	x86ContinuationAddresses map[string]x86Continuation
+	x86IndirectLabels        []string
 }
 
 // Parse parses a subset of Go/Plan 9 assembly syntax.
@@ -49,14 +66,23 @@ type Func struct {
 //   - #define NAME <body> with optional single-line continuation via '\' and
 //     macro invocation when the entire statement is just NAME.
 func Parse(arch Arch, src string) (*File, error) {
+	return ParseWithDefines(arch, src, nil)
+}
+
+// ParseWithDefines parses assembly with the same predefined symbols cmd/go
+// supplies to cmd/asm (for example GOOS_windows or GOARM64_LSE).
+func ParseWithDefines(arch Arch, src string, defines []string) (*File, error) {
 	f := &File{Arch: arch}
 
-	pp, err := preprocess(src)
+	pp, err := preprocessWithDefines(src, defines)
 	if err != nil {
 		return nil, err
 	}
 
 	sc := bufio.NewScanner(strings.NewReader(pp))
+	// A short nested macro can expand beyond 64 KiB on one logical line.
+	// Bound the scanner by the actual expanded input, including its final EOF.
+	sc.Buffer(nil, len(pp)+1)
 	lineno := 0
 	var cur *Func
 	for sc.Scan() {
@@ -114,6 +140,10 @@ func Parse(arch Arch, src string) (*File, error) {
 					op = "WASMRETURN"
 				}
 			}
+			if cur == nil && op != OpTEXT && op != "DATA" && op != "GLOBL" {
+				f.UnlinkedPrelude = append(f.UnlinkedPrelude, stmt)
+				continue
+			}
 			switch op {
 			case OpTEXT:
 				// TEXT name(SB), flags, $frame-args
@@ -128,6 +158,12 @@ func Parse(arch Arch, src string) (*File, error) {
 				sym = strings.TrimSpace(strings.TrimSuffix(sym, "(SB)"))
 				if sym == "" {
 					return nil, fmt.Errorf("line %d: empty TEXT symbol: %q", lineno, stmt)
+				}
+				// Early Plan 9 assembly commonly spelled function definitions as
+				// TEXT ·name+0(SB). The zero is a symbol offset, not part of the
+				// linker name; current Go still accepts this legacy form.
+				if base, off := splitSymPlusOff(sym); base != sym && off == 0 {
+					sym = base
 				}
 				frameSize, argSize, err := parseTEXTFrame(parts)
 				if err != nil {
@@ -329,14 +365,20 @@ func parseWidth(arch Arch, s string) (int64, error) {
 }
 
 func parseGLOBLStmt(rest string) (GloblStmt, error) {
+	// GLOBL sym(SB), $size
 	// GLOBL sym(SB), flags, $size
 	parts := strings.Split(rest, ",")
-	if len(parts) != 3 {
+	if len(parts) != 2 && len(parts) != 3 {
 		return GloblStmt{}, fmt.Errorf("invalid GLOBL: %q", "GLOBL "+rest)
 	}
 	symPart := strings.TrimSpace(parts[0])
-	flags := strings.TrimSpace(parts[1])
-	sizePart := strings.TrimSpace(parts[2])
+	flags := ""
+	sizePartIndex := 1
+	if len(parts) == 3 {
+		flags = strings.TrimSpace(parts[1])
+		sizePartIndex = 2
+	}
+	sizePart := strings.TrimSpace(parts[sizePartIndex])
 	if !strings.HasSuffix(symPart, "(SB)") {
 		return GloblStmt{}, fmt.Errorf("GLOBL symbol must end with (SB): %q", "GLOBL "+rest)
 	}
@@ -399,7 +441,7 @@ func parseOperandsCSV(arch Arch, op Op, s string) ([]Operand, error) {
 			continue
 		}
 		legacy := []string{part}
-		if arch == ArchAMD64 && op == "SHLL" {
+		if arch == ArchAMD64 && (op == "SHLL" || op == "SHLQ" || op == "SHRL" || op == "SHRQ") {
 			legacy = splitLegacyColonOperand(part)
 		}
 		for _, item := range legacy {
@@ -421,6 +463,41 @@ func parseOperandsCSV(arch Arch, op Op, s string) ([]Operand, error) {
 }
 
 func parseOperandForArch(arch Arch, s string) (Operand, error) {
+	if arch == ArchAMD64 || arch == ArchARM || arch == ArchARM64 {
+		operand := strings.TrimSpace(s)
+		// Go's shared parser accepts '*' on register and register-memory
+		// operands, not just x86. Reuse architecture-specific normalization
+		// (g, R(n), RSP) while preserving symbol/immediate indirection.
+		if strings.HasPrefix(operand, "*") {
+			indirect := strings.TrimSpace(operand[1:])
+			if !strings.HasPrefix(indirect, "*") {
+				parsed, err := parseOperandForArch(arch, indirect)
+				if err == nil && (parsed.Kind == OpReg || parsed.Kind == OpMem) {
+					return parsed, nil
+				}
+			}
+		}
+	}
+	s = normalizeGoGRegister(arch, s)
+	if arch == ArchARM || arch == ArchARM64 {
+		s = normalizeARMParenthesizedRegisters(arch, s)
+	}
+	if arch == ArchARM {
+		if memory, ok := parseARMShiftMemory(s); ok {
+			return Operand{Kind: OpMem, Mem: memory}, nil
+		}
+	}
+	if arch == ArchAMD64 {
+		x86Operand := strings.TrimSpace(s)
+		reg := Reg(strings.ToUpper(x86Operand))
+		switch reg {
+		case ES, CS, SS, DS:
+			return Operand{Kind: OpReg, Reg: reg}, nil
+		}
+		if _, _, ok := x86MachineRegister(reg); ok {
+			return Operand{Kind: OpReg, Reg: reg}, nil
+		}
+	}
 	if arch == ArchWASM {
 		if reg, ok := parseWASMReg(s); ok {
 			return Operand{Kind: OpReg, Reg: reg}, nil
@@ -434,7 +511,251 @@ func parseOperandForArch(arch Arch, s string) (Operand, error) {
 			}
 		}
 	}
-	return parseOperand(s)
+	op, err := parseOperand(s)
+	if err != nil {
+		return Operand{}, err
+	}
+	if arch == ArchARM64 {
+		preserveARM64PhysicalStackPointer(s, &op)
+	}
+	return op, nil
+}
+
+// Go's frontend assigns a different physical register to g on each ISA.
+// Normalize only register positions, including an
+// address immediate or indirect branch. A symbol such as g(SB) stays intact.
+// The shared x86 parser also serves 386; its operand validators reject R14.
+func normalizeGoGRegister(arch Arch, source string) string {
+	if !strings.Contains(source, "g") {
+		return source
+	}
+	register := ""
+	switch arch {
+	case ArchAMD64:
+		register = "R14"
+	case ArchARM:
+		register = "R10"
+	case ArchARM64:
+		register = "R28"
+	default:
+		return source
+	}
+	s := strings.TrimSpace(source)
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") ||
+		strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") && strings.Contains(s, ",") {
+		parts := splitTopLevelCSV(s[1 : len(s)-1])
+		for i, part := range parts {
+			ends := strings.SplitN(part, "-", 2)
+			for j, end := range ends {
+				ends[j] = normalizeGoGRegisterExpression(strings.TrimSpace(end), register)
+			}
+			parts[i] = strings.Join(ends, "-")
+		}
+		return s[:1] + strings.Join(parts, ",") + s[len(s)-1:]
+	}
+	if strings.HasPrefix(s, "*") && strings.TrimSpace(s[1:]) == "g" {
+		return "*" + register
+	}
+	s = normalizeGoGRegisterExpression(s, register)
+	// ARM writes a shifted register offset before the base, g<<2(R1).
+	// Only a parsed register shift is eligible: g(SB), named FP slots and
+	// ordinary symbolic displacement expressions must not be renamed.
+	if arch == ArchARM && strings.HasSuffix(s, ")") {
+		if open := strings.LastIndexByte(s, '('); open > 0 {
+			prefix := strings.TrimSpace(s[:open])
+			marker := ""
+			if strings.HasPrefix(prefix, "$") {
+				marker, prefix = "$", strings.TrimSpace(prefix[1:])
+			}
+			if _, _, _, _, ok := parseRegShift(prefix); ok {
+				s = marker + normalizeGoGRegisterExpression(prefix, register) + s[open:]
+			}
+		}
+	}
+	for start := 0; start < len(s); {
+		open := strings.IndexByte(s[start:], '(')
+		if open < 0 {
+			break
+		}
+		open += start
+		end := strings.IndexByte(s[open+1:], ')')
+		if end < 0 {
+			break
+		}
+		end += open + 1
+		inner := strings.TrimSpace(s[open+1 : end])
+		replacement := normalizeGoGRegisterExpression(inner, register)
+		if scale := strings.IndexByte(inner, '*'); scale >= 0 && strings.TrimSpace(inner[:scale]) == "g" {
+			replacement = register + inner[scale:]
+		}
+		if replacement != inner {
+			s = s[:open+1] + replacement + s[end:]
+			end = open + 1 + len(replacement)
+		}
+		start = end + 1
+	}
+	return s
+}
+
+// Rewrite only the register terminals in a recognized register expression.
+// This preserves symbols, constant expressions, and an explicitly written R28.
+func normalizeGoGRegisterExpression(source, register string) string {
+	if source == "g" {
+		return register
+	}
+	if _, shift, _, _, ok := parseRegShift(source); ok {
+		at := strings.Index(source, string(shift))
+		left, right := strings.TrimSpace(source[:at]), strings.TrimSpace(source[at+len(shift):])
+		if left == "g" {
+			left = register
+		}
+		if right == "g" {
+			right = register
+		}
+		return left + string(shift) + right
+	}
+	if _, _, _, ok := parseRegExtendShift(source); ok {
+		if dot := strings.IndexByte(source, '.'); strings.TrimSpace(source[:dot]) == "g" {
+			return register + source[dot:]
+		}
+	}
+	if _, _, ok := parseRegExtend(source); ok {
+		if dot := strings.IndexByte(source, '.'); strings.TrimSpace(source[:dot]) == "g" {
+			return register + source[dot:]
+		}
+	}
+	return source
+}
+
+// normalizeARMParenthesizedRegisters implements the numeric register-prefix
+// syntax accepted by Go's ARM assemblers, such as R(3), F(7), and V(16).
+// Keeping this architecture-specific prevents a symbol such as SPR(269) from
+// being mistaken for an ARM general-purpose register.
+func normalizeARMParenthesizedRegisters(arch Arch, source string) string {
+	limits := map[string]int{}
+	switch arch {
+	case ArchARM:
+		limits = map[string]int{"R": 15, "F": 15}
+	case ArchARM64:
+		limits = map[string]int{"R": 30, "F": 31, "V": 31, "Z": 31, "P": 15, "PN": 15}
+	default:
+		return source
+	}
+	prefixes := []string{"PN", "R", "F", "V", "Z", "P"}
+	var out strings.Builder
+	for i := 0; i < len(source); {
+		matched := false
+		for _, prefix := range prefixes {
+			endPrefix := i + len(prefix)
+			if endPrefix >= len(source) || !strings.EqualFold(source[i:endPrefix], prefix) || source[endPrefix] != '(' {
+				continue
+			}
+			if i > 0 && isIdentifierByte(source[i-1]) {
+				continue
+			}
+			close := strings.IndexByte(source[endPrefix+1:], ')')
+			if close < 0 {
+				continue
+			}
+			close += endPrefix + 1
+			numberText := strings.TrimSpace(source[endPrefix+1 : close])
+			number, err := strconv.Atoi(numberText)
+			limit, validPrefix := limits[prefix]
+			if err != nil || !validPrefix || number < 0 || number > limit {
+				continue
+			}
+			out.WriteString(prefix)
+			out.WriteString(strconv.Itoa(number))
+			i = close + 1
+			matched = true
+			break
+		}
+		if matched {
+			continue
+		}
+		out.WriteByte(source[i])
+		i++
+	}
+	return out.String()
+}
+
+func isIdentifierByte(ch byte) bool {
+	return ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+}
+
+// Go's arm64 assembler distinguishes the hardware stack pointer RSP from the
+// pseudo stack pointer SP. parseReg historically canonicalizes both to SP, so
+// restore the distinction here where the source spelling is still available.
+// This matters for exact optab validation: (RSP) is a C_ZOREG address, while a
+// named local+0(SP) address is C_ZAUTO, and RSP in a paired data operand
+// encodes register 31 (the zero register) rather than a writable stack pointer.
+func preserveARM64PhysicalStackPointer(source string, op *Operand) {
+	source = strings.TrimSpace(source)
+	switch op.Kind {
+	case OpReg:
+		if strings.EqualFold(source, "RSP") {
+			op.Reg = Reg("RSP")
+		}
+	case OpMem:
+		if op.Mem.Base == SP && op.Mem.OffRaw == "" && strings.HasSuffix(strings.ToUpper(source), "(SP)") {
+			prefix := strings.TrimSpace(source[:len(source)-len("(SP)")])
+			if offset, ok := parseNamedStackConstantOffset(prefix); ok && offset == op.Mem.Off {
+				// The generic parser evaluated the displacement. ARM64's
+				// optabs also need the source name to distinguish C_ZAUTO
+				// from a plain register-relative SP address.
+				op.Mem.OffRaw = prefix
+			}
+		}
+		if strings.Contains(strings.ToUpper(source), "(RSP)") {
+			if op.Mem.Base == SP {
+				op.Mem.Base = Reg("RSP")
+			}
+			if op.Mem.Index == SP {
+				op.Mem.Index = Reg("RSP")
+			}
+		}
+	case OpRegList:
+		if len(source) < 2 {
+			return
+		}
+		inner := strings.TrimSpace(strings.Trim(source, "()[]"))
+		parts := splitTopLevelCSV(inner)
+		index := 0
+		for _, part := range parts {
+			regs, ok := expandRegRange(strings.TrimSpace(part))
+			if !ok {
+				return
+			}
+			if len(regs) == 1 && strings.EqualFold(strings.TrimSpace(part), "RSP") && index < len(op.RegList) {
+				op.RegList[index] = Reg("RSP")
+			}
+			index += len(regs)
+		}
+	}
+}
+
+// ARM shifted offsets can contain parenthesized constant expressions. Retain
+// the complete shift before the final base group, including unresolved macros;
+// the typed address validator, not the generic symbol fallback, checks it.
+func parseARMShiftMemory(s string) (MemRef, bool) {
+	s = strings.TrimSpace(s)
+	open := strings.LastIndexByte(s, '(')
+	if open <= 0 || !strings.HasSuffix(s, ")") {
+		return MemRef{}, false
+	}
+	base, ok := parseReg(strings.TrimSpace(s[open+1 : len(s)-1]))
+	if !ok || !isARMGeneralReg(base) {
+		return MemRef{}, false
+	}
+	prefix := strings.TrimSpace(s[:open])
+	for _, shift := range []ShiftOp{ShiftRotate, ShiftArith, ShiftLeft, ShiftRight} {
+		if i := strings.Index(prefix, string(shift)); i > 0 {
+			if reg, ok := parseReg(strings.TrimSpace(prefix[:i])); ok && isARMGeneralReg(reg) {
+				return MemRef{Base: base, OffRaw: prefix}, true
+			}
+		}
+	}
+	return MemRef{}, false
 }
 
 func parseWASMMem(s string) (mem MemRef, matched bool, err error) {

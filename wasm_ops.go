@@ -15,6 +15,28 @@ type wasmMemoryStoreOp struct {
 	storeType LLVMType
 }
 
+type wasmFloatUnaryOp struct {
+	typ       LLVMType
+	intrinsic string
+}
+
+var wasmFloatUnaryOps = map[string]wasmFloatUnaryOp{
+	"F32ABS":     {LLVMType("float"), "fabs"},
+	"F32NEG":     {LLVMType("float"), ""},
+	"F32CEIL":    {LLVMType("float"), "ceil"},
+	"F32FLOOR":   {LLVMType("float"), "floor"},
+	"F32TRUNC":   {LLVMType("float"), "trunc"},
+	"F32NEAREST": {LLVMType("float"), "roundeven"},
+	"F32SQRT":    {LLVMType("float"), "sqrt"},
+	"F64ABS":     {LLVMType("double"), "fabs"},
+	"F64NEG":     {LLVMType("double"), ""},
+	"F64CEIL":    {LLVMType("double"), "ceil"},
+	"F64FLOOR":   {LLVMType("double"), "floor"},
+	"F64TRUNC":   {LLVMType("double"), "trunc"},
+	"F64NEAREST": {LLVMType("double"), "roundeven"},
+	"F64SQRT":    {LLVMType("double"), "sqrt"},
+}
+
 var wasmIntegerBinaryOps = map[string]wasmIntegerOp{
 	"I32ADD":  {I32, "add"},
 	"I32SUB":  {I32, "sub"},

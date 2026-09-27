@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -15,7 +12,7 @@ import (
 func TestStdlibHashCRC32_AMD64_Compile(t *testing.T) {
 	_, clang, ok := findLlcAndClang(t)
 	if !ok || clang == "" {
-		t.Skip("clang not found")
+		t.Fatal("clang not found")
 	}
 
 	goroot := runtime.GOROOT()
@@ -105,10 +102,10 @@ func TestStdlibHashCRC32_AMD64_Compile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(ll, `"target-features"="+crc32,+sse4.2"`) {
+	if !hasTargetFeatures(ll, "+crc32", "+sse4.2") {
 		t.Fatalf("missing crc32 target-features attr:\n%s", ll)
 	}
-	if !strings.Contains(ll, `"target-features"="+pclmul,+sse4.1"`) {
+	if !hasTargetFeatures(ll, "+pclmul", "+sse4.1") {
 		t.Fatalf("missing pclmul target-features attr:\n%s", ll)
 	}
 
@@ -122,5 +119,45 @@ func TestStdlibHashCRC32_AMD64_Compile(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("clang failed: %v\n%s", err, string(out))
+	}
+}
+
+func hasTargetFeatures(ir string, features ...string) bool {
+	const marker = `"target-features"="`
+	for _, line := range strings.Split(ir, "\n") {
+		start := strings.Index(line, marker)
+		if start < 0 {
+			continue
+		}
+		value := line[start+len(marker):]
+		if end := strings.IndexByte(value, '"'); end >= 0 {
+			value = value[:end]
+		}
+		available := map[string]bool{}
+		for _, feature := range strings.Split(value, ",") {
+			available[feature] = true
+		}
+		for _, feature := range features {
+			if !available[feature] {
+				goto nextLine
+			}
+		}
+		return true
+	nextLine:
+	}
+	return false
+}
+
+func TestHasTargetFeaturesAllowsExtrasButRequiresOneExactSet(t *testing.T) {
+	ir := `attributes #7 = { "target-features"="+crc32,+sse4.2" }
+attributes #8 = { "target-features"="+bmi2,+pclmul,+sse4.1" }`
+	if !hasTargetFeatures(ir, "+pclmul", "+sse4.1") {
+		t.Fatal("extra target feature prevented matching the required set")
+	}
+	if hasTargetFeatures(ir, "+crc32", "+pclmul") {
+		t.Fatal("features from separate attributes were combined")
+	}
+	if hasTargetFeatures(ir, "+sse4") {
+		t.Fatal("partial feature name matched")
 	}
 }

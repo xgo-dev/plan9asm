@@ -1,0 +1,17 @@
+{"module":"github.com/ChainSafe/geth","version":"v0.0.0-20180822083900-316fc7ecfc10","status":"pending"}
+{"module":"github.com/Consensys/quorum","version":"v1.10.26","status":"pending"}
+{"module":"github.com/Ledgerwatch/Erigon","version":"v1.10.16","status":"pending"}
+{"module":"github.com/VoidInTheShell/Xray-core","version":"v0.0.0-20260407101012-e5a9fb752e0d","status":"pending"}
+{"module":"github.com/cockroachdb/crlib","version":"v0.0.0-20260823170307-44ef894cf300","status":"pending"}
+{"module":"github.com/deatil/go-cryptobin","version":"v1.1.1021","status":"pending"}
+{"module":"github.com/golang/GO","version":"v0.0.0-20260921231307-ffc306b41731","status":"pending"}
+{"module":"github.com/jacalz/fyne/v2","version":"v2.0.0-20230602205425-9ec5de373a18","status":"pending"}
+{"module":"github.com/joomcode/net","version":"v0.56.0-fork","status":"pending"}
+{"module":"github.com/jxsl13/gorgonia","version":"v0.9.21","status":"pending"}
+{"module":"github.com/myitcvforks/tools","version":"v0.0.0-20191207011554-b8ce9b8c6b5a","status":"pending"}
+{"module":"github.com/projectatomic/buildah","version":"v1.45.1","status":"pending"}
+{"module":"github.com/qkja/gobase","version":"v1.0.2","status":"pending"}
+{"module":"github.com/sagernet/tun-bench","version":"v0.0.0-20260915013010-201b780e709b","status":"pending"}
+{"module":"github.com/ustc-vlab/sshmux/crypto","version":"v0.0.0-20260904141921-12930d5ffb38","status":"pending"}
+{"module":"github.com/vllm-project/semantic-router/src/semantic-router","version":"v0.0.0-20260922164700-a05f44a871d1","status":"pending"}
+{"module":"github.com/xdarkicex/libravdb","version":"v1.6.13","status":"pending"}

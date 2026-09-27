@@ -6,39 +6,50 @@ import (
 )
 
 func (c *armCtx) lowerData(op, cond string, postInc bool, ins Instr) (ok bool, terminated bool, err error) {
+	if ok, terminated, err := c.lowerIntegerMemoryMove(op, cond, ins); ok {
+		return ok, terminated, err
+	}
 	switch op {
-	case "MOVD":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("arm MOVD expects 2 operands: %q", ins.Raw)
-		}
-		src, dst := ins.Args[0], ins.Args[1]
-		switch {
-		case src.Kind == OpReg && strings.HasPrefix(string(src.Reg), "F") && dst.Kind == OpMem:
-			v, err := c.loadFReg(src.Reg)
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeMem(dst.Mem, 64, postInc, v)
-		case src.Kind == OpMem && dst.Kind == OpReg && strings.HasPrefix(string(dst.Reg), "F"):
-			v, err := c.loadMem(src.Mem, 64, postInc, false)
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeFReg(dst.Reg, v)
-		case src.Kind == OpReg && strings.HasPrefix(string(src.Reg), "F") && dst.Kind == OpReg && strings.HasPrefix(string(dst.Reg), "F"):
-			v, err := c.loadFReg(src.Reg)
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeFReg(dst.Reg, v)
-		default:
-			return true, false, fmt.Errorf("arm MOVD unsupported operands: %q", ins.Raw)
-		}
+	case "MOVF", "MOVD":
+		return c.lowerARMFloatMove(op, cond, ins)
 	case "MOVW":
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("arm MOVW expects 2 operands: %q", ins.Raw)
 		}
 		src, dst := ins.Args[0], ins.Args[1]
+		srcF := src.Kind == OpReg && isARMFReg(src.Reg)
+		dstF := dst.Kind == OpReg && isARMFReg(dst.Reg)
+		if srcF || dstF {
+			if err := armRequireConditionOnlySuffix(ins); err != nil {
+				return true, false, err
+			}
+			srcR := src.Kind == OpReg && isARMGeneralReg(src.Reg) && !srcF
+			dstR := dst.Kind == OpReg && isARMGeneralReg(dst.Reg) && !dstF
+			if (!srcR || !dstF) && (!srcF || !dstR) {
+				return true, false, fmt.Errorf("arm MOVW R/F bit transfer expects Rsrc,Fdst or Fsrc,Rdst: %q", ins.Raw)
+			}
+			if cond != "" && !strings.EqualFold(cond, "AL") {
+				err := c.emitConditionalEffect(cond, func() error {
+					_, _, innerErr := c.lowerData(op, "", postInc, ins)
+					return innerErr
+				})
+				return true, false, err
+			}
+			if srcR {
+				value, loadErr := c.loadReg(src.Reg)
+				if loadErr != nil {
+					return true, false, loadErr
+				}
+				return true, false, c.selectFRegWrite(dst.Reg, "", c.normalizeARMFloatBits(value, 32))
+			}
+			value, loadErr := c.loadFReg(src.Reg)
+			if loadErr != nil {
+				return true, false, loadErr
+			}
+			narrow := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", narrow, value)
+			return true, false, c.storeReg(dst.Reg, "%"+narrow)
+		}
 		if cond != "" && (dst.Kind == OpMem || dst.Kind == OpFP || dst.Kind == OpSym || dst.Kind == OpIdent) {
 			err := c.emitConditionalEffect(cond, func() error {
 				_, _, err := c.lowerData(op, "", postInc, ins)
@@ -56,7 +67,7 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins Instr) (ok bool, t
 			return true, false, err
 		}
 		return true, false, c.storeARMValue(dst, v, 32, cond, postInc, ins.Raw)
-	case "MOVB", "MOVBU", "MOVH", "MOVHU":
+	case "MOVB", "MOVBS", "MOVBU", "MOVH", "MOVHS", "MOVHU":
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("arm %s expects 2 operands: %q", op, ins.Raw)
 		}
@@ -70,13 +81,20 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins Instr) (ok bool, t
 		}
 		v := ""
 		bits := 8
-		if op == "MOVH" || op == "MOVHU" {
+		if op == "MOVH" || op == "MOVHS" || op == "MOVHU" {
 			bits = 16
 		}
 		if src.Kind == OpMem {
-			v, err = c.loadMem(src.Mem, bits, postInc, op == "MOVB" || op == "MOVH")
+			v, err = c.loadMem(src.Mem, bits, postInc, op == "MOVB" || op == "MOVBS" || op == "MOVH" || op == "MOVHS")
 		} else {
 			v, err = c.eval32(src, false)
+			if err == nil && (op == "MOVBS" || op == "MOVHS") {
+				narrow := c.newTmp()
+				extended := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i32 %s to i%d\n", narrow, v, bits)
+				fmt.Fprintf(c.b, "  %%%s = sext i%d %%%s to i32\n", extended, bits, narrow)
+				v = "%" + extended
+			}
 		}
 		if err != nil {
 			return true, false, err

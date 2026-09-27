@@ -30,8 +30,10 @@ func arm64SplitBlocks(fn Func) []arm64Block {
 			op = op[:dot]
 		}
 		switch Op(op) {
+		case "BL", "BLR", "CALL":
+			return arm64IsLocalBranchLink(ins)
 		case "B", "JMP", "BEQ", "BNE", "BLO", "BHI", "BLT", "BGE", "BLE", "BGT", "BHS", "BLS", "BMI", "BPL", "BVS", "BVC",
-			"BCC", "CBZ", "CBNZ", "TBZ", "TBNZ":
+			"BCC", "BCS", "CBZ", "CBNZ", "CBZW", "CBNZW", "TBZ", "TBNZ":
 			return true
 		default:
 			return false
@@ -61,9 +63,33 @@ func arm64SplitBlocks(fn Func) []arm64Block {
 
 	// Drop trailing empty synthetic block if present.
 	if len(blocks) > 1 && len(blocks[len(blocks)-1].instrs) == 0 && strings.HasPrefix(blocks[len(blocks)-1].name, "anon_") {
-		blocks = blocks[:len(blocks)-1]
+		previous := blocks[len(blocks)-2]
+		if len(previous.instrs) == 0 || !arm64IsLocalBranchLink(previous.instrs[len(previous.instrs)-1]) {
+			blocks = blocks[:len(blocks)-1]
+		}
 	}
 	return blocks
+}
+
+func arm64IsLocalBranchLink(ins Instr) bool {
+	op := strings.ToUpper(string(ins.Op))
+	if dot := strings.IndexByte(op, '.'); dot >= 0 {
+		op = op[:dot]
+	}
+	if op != "BL" && op != "BLR" && op != "CALL" || len(ins.Args) != 1 {
+		return false
+	}
+	target := ins.Args[0]
+	switch target.Kind {
+	case OpIdent:
+		return true
+	case OpSym:
+		return !strings.HasSuffix(target.Sym, "(SB)")
+	case OpMem:
+		return target.Mem.Base == PC
+	default:
+		return false
+	}
 }
 
 func arm64LLVMBlockName(src string) string {

@@ -127,16 +127,16 @@ func TestClusterOfAndTopFiles(t *testing.T) {
 func TestShortStdPath(t *testing.T) {
 	goroot := runtime.GOROOT()
 	if goroot == "" {
-		t.Skip("GOROOT not available")
+		t.Fatal("GOROOT not available")
 	}
 
 	inRoot := filepath.Join(goroot, "src", "runtime", "sys_arm64.s")
-	if got := shortStdPath(inRoot); got != "runtime/sys_arm64.s" {
+	if got := shortStdPath(inRoot, goroot); got != "runtime/sys_arm64.s" {
 		t.Fatalf("shortStdPath(inRoot) = %q", got)
 	}
 
 	outside := filepath.Join(t.TempDir(), "local.s")
-	if got := shortStdPath(outside); got != filepath.ToSlash(outside) {
+	if got := shortStdPath(outside, goroot); got != filepath.ToSlash(outside) {
 		t.Fatalf("shortStdPath(outside) = %q", got)
 	}
 }
@@ -325,7 +325,7 @@ GLOBL foo(SB), RODATA, $8
 		Dir:        dir,
 		SFiles:     []string{"good.s", "bad.s", "data.s"},
 	}}
-	ops, forms, parseErrs, pkgsWithS, asmFiles, err := scanPackages(pkgs, plan9asm.ArchAMD64, "amd64")
+	ops, forms, parseErrs, pkgsWithS, asmFiles, err := scanPackages(pkgs, plan9asm.ArchAMD64, "amd64", runtime.GOROOT())
 	if err != nil {
 		t.Fatalf("scanPackages() error = %v", err)
 	}
@@ -379,15 +379,97 @@ GLOBL foo(SB), RODATA, $8
 	}
 }
 
+func TestScanPackagesProbesContiguousX86RawDirectiveGroups(t *testing.T) {
+	t.Run("complete stream", func(t *testing.T) {
+		dir := t.TempDir()
+		src := `TEXT ·f(SB),NOSPLIT,$0-0
+	BYTE $0xEB
+	BYTE $0x00
+	RET
+`
+		if err := os.WriteFile(filepath.Join(dir, "raw.s"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, forms, parseErrs, _, _, err := scanPackages([]pkgJSON{{
+			ImportPath: "example/raw",
+			Dir:        dir,
+			SFiles:     []string{"raw.s"},
+		}}, plan9asm.ArchAMD64, "amd64", runtime.GOROOT())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(parseErrs) != 0 {
+			t.Fatalf("parse errors = %#v", parseErrs)
+		}
+		stat := forms["BYTE immediate"]
+		if stat == nil {
+			t.Fatalf("missing BYTE immediate form in %#v", forms)
+		}
+		if stat.Count != 2 || stat.SupportedCount != 1 || stat.UnsupportedCount != 0 {
+			t.Fatalf("BYTE stream stats = count %d, supported %d, unsupported %d; want 2, 1, 0",
+				stat.Count, stat.SupportedCount, stat.UnsupportedCount)
+		}
+	})
+
+	t.Run("truncated stream", func(t *testing.T) {
+		dir := t.TempDir()
+		src := `TEXT ·f(SB),NOSPLIT,$0-0
+	BYTE $0xEB
+	RET
+`
+		if err := os.WriteFile(filepath.Join(dir, "raw.s"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, forms, _, _, _, err := scanPackages([]pkgJSON{{
+			ImportPath: "example/raw",
+			Dir:        dir,
+			SFiles:     []string{"raw.s"},
+		}}, plan9asm.ArchAMD64, "amd64", runtime.GOROOT())
+		if err != nil {
+			t.Fatal(err)
+		}
+		stat := forms["BYTE immediate"]
+		if stat == nil || stat.UnsupportedCount != 1 {
+			t.Fatalf("truncated BYTE stream stats = %#v; want one unsupported probe", stat)
+		}
+	})
+}
+
+func TestScanPackagesProbesARMRawUndefinedInstruction(t *testing.T) {
+	dir := t.TempDir()
+	src := `TEXT ·f(SB),NOSPLIT,$0-0
+	WORD $0xe7f001f0
+`
+	if err := os.WriteFile(filepath.Join(dir, "raw.s"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, forms, parseErrs, _, _, err := scanPackages([]pkgJSON{{
+		ImportPath: "example/raw",
+		Dir:        dir,
+		SFiles:     []string{"raw.s"},
+	}}, plan9asm.ArchARM, "arm", runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parseErrs) != 0 {
+		t.Fatalf("parse errors = %#v", parseErrs)
+	}
+	stat := forms["WORD immediate"]
+	if stat == nil || stat.Count != 1 || stat.SupportedCount != 1 || stat.UnsupportedCount != 0 {
+		t.Fatalf("ARM WORD stats = %#v; want one supported probe", stat)
+	}
+}
+
 func TestAddFormStatCachesConcreteInstructionsWithoutCollapsingValues(t *testing.T) {
 	forms := map[string]*formStat{}
-	for _, imm := range []int64{1, 7, 7} {
+	for _, imm := range []int64{1, 256, 256} {
 		addFormStat(forms, plan9asm.ArchAMD64, "amd64", plan9asm.Instr{
-			Op:  "RCRQ",
-			Raw: "RCRQ immediate, AX",
+			Op:  "PALIGNR",
+			Raw: "PALIGNR immediate, X0, X1",
 			Args: []plan9asm.Operand{
 				{Kind: plan9asm.OpImm, Imm: imm},
-				{Kind: plan9asm.OpReg, Reg: plan9asm.AX},
+				{Kind: plan9asm.OpReg, Reg: "X0"},
+				{Kind: plan9asm.OpReg, Reg: "X1"},
 			},
 		}, "fixture.s")
 	}
@@ -429,6 +511,58 @@ func TestBuildOpcodeCatalogIncludesGeneratedTables(t *testing.T) {
 	}
 	if catalog[1].Family != "sve" {
 		t.Fatalf("ZADD family = %q, want sve", catalog[1].Family)
+	}
+}
+
+func TestExtractSupportedOpsFindsPackageLevelSpecTableWithoutOpcodeName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "amd64_table.go"), []byte(`package sample
+var packedFamilySpecs = map[string]int{
+	"VTABLEOP": 1,
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "parser.go"), []byte("package sample\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	supported, err := extractSupportedOps(dir, "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := supported["VTABLEOP"]; !ok {
+		t.Fatal("package-level table-driven opcode was not extracted")
+	}
+}
+
+func TestExtractSupportedOpsFindsSingleFamilyOpcodeComparison(t *testing.T) {
+	dir := t.TempDir()
+	src := `package sample
+
+func lowerSingleFamily(op string, unrelated string) bool {
+	if op != "VEXT" {
+		return false
+	}
+	if "PRFM" == op {
+		return true
+	}
+	return unrelated == "NOT_AN_OPCODE"
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "arm64_lower_single.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	supported, err := extractSupportedOps(dir, "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []string{"VEXT", "PRFM"} {
+		if _, ok := supported[op]; !ok {
+			t.Errorf("single-family opcode comparison omitted %s", op)
+		}
+	}
+	if _, ok := supported["NOT_AN_OPCODE"]; ok {
+		t.Fatal("unrelated string comparison was advertised as an opcode")
 	}
 }
 

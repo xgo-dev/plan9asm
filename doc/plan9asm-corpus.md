@@ -154,36 +154,52 @@ native-Go-accepted family subset:
 Discover public modules containing Go assembly from the official index:
 
     go run ./cmd/plan9asmdiscover \
-      -since 2025-01-01T00:00:00Z \
       -limit 2000 \
-      -out /tmp/plan9asm-discovery.json
+      -out-dir testdata/discovery/ledger
 
-Continue at the exact cursor returned by the previous batch:
+This starts at the current time and selects the newest records first. Continue
+backwards from the ledger-derived earliest covered endpoint, down to the fixed
+`2019-04-10T00:00:00Z` cutoff:
 
     go run ./cmd/plan9asmdiscover \
-      -since "$(jq -r .next_since /tmp/plan9asm-discovery.json)" \
       -limit 2000 \
-      -out /tmp/plan9asm-discovery-next.json
+      -out-dir testdata/discovery/ledger
 
-To resume or deliberately rescan an overlapping range without repeating
-completed work, load every earlier report as scan state:
+The range ledger is the cursor: every update must attach exactly to its earliest
+or latest endpoint, and reads/writes reject gaps, overlaps, and conflicting
+range counts. To reuse completed exact versions from an additional legacy
+report, load it as scan state:
 
     go run ./cmd/plan9asmdiscover \
-      -since 2025-01-01T00:00:00Z \
+      -before 2025-01-01T00:00:00Z \
       -limit 2000 \
       -seen-report /tmp/plan9asm-discovery.json \
-      -seen-report /tmp/plan9asm-discovery-next.json \
       -out /tmp/plan9asm-discovery-resumed.json
 
 Each report's `scanned` array records every successfully inspected exact
 `module@version`, including modules with no assembly. `-seen-report` skips only
-those exact versions, so a newly published version is still inspected. Failed
-versions are listed with their version in `failures`, are not added to
-`scanned`, and are retried on a later run. Reports are incremental rather than
-cumulative, hence every earlier report must be passed when ranges overlap.
+that exact version, so a newly published `@latest` version is still inspected
+and replaces the obsolete version. Failed versions are listed with their
+version in `failures`, are not added to `scanned`, and are retried on a later
+run. Sharded ledgers retain one exact, contiguous range chain and reject gaps,
+overlaps, or conflicting range counts.
 
-Use `-limit 0` to continue until the current end of the feed. The discovery
-step reads ZIP directory metadata with ranged requests, retries transient
+Within a logical module family, selection is ordered by module-path major and
+then Go semver. Thus an older index window can upgrade `/v2` to `/v3`, while
+subsequent `/v2` records are skipped. The same rule lets a future incremental
+window discover `/v4` or a newer version within the retained major.
+
+Use `-limit 0` to continue backwards to the 2019 cutoff. Scan newly published
+index records independently whenever needed with:
+
+    go run ./cmd/plan9asmdiscover \
+      -scan-mode incremental \
+      -out-dir testdata/discovery/ledger
+
+Incremental mode uses the greatest covered upper bound as its lower bound and
+always drains the full new head interval; `-limit` is ignored so a high-water
+mark cannot hide an unfinished gap.
+The discovery step reads ZIP directory metadata with ranged requests, retries transient
 index/proxy failures, ignores `testdata`, zero-byte, and comment-only assembly
 placeholders, and requires a `.go` file beside a `.s` file so vendored non-Go
 assembler trees are not reported as packages.
@@ -216,20 +232,24 @@ The currently tracked reports are:
 The ecosystem scan also pins these latest modules:
 
 - `github.com/RoaringBitmap/roaring v1.9.4`
+- `github.com/aead/siphash v1.0.1`
 - `github.com/anacrolix/mmsg v1.1.1`
 - `github.com/btcsuite/fastsha256 v0.0.0-20160815193821-637e65642941`
 - `github.com/cespare/xxhash v1.1.0`
 - `github.com/cespare/xxhash/v2 v2.3.0`
+- `github.com/chain/txvm v0.0.0-20190422181059-ff6bfbe53892`
 - `github.com/dchest/siphash v1.2.3`
 - `github.com/dgryski/go-bits v0.0.0-20180113010104-bd8a69a71dc2`
 - `github.com/dgryski/go-marvin32 v0.0.0-20240117220238-0d39e8c5a8a9`
 - `github.com/golang/snappy v1.0.0`
 - `github.com/klauspost/cpuid v1.3.1`
 - `github.com/klauspost/cpuid/v2 v2.4.0`
+- `github.com/klauspost/crc32 v1.3.0`
 - `github.com/klauspost/reedsolomon v1.14.2`
 - `github.com/minio/highwayhash v1.0.4`
 - `github.com/modern-go/gls v0.0.0-20250215024828-78308f6bb19d`
 - `github.com/pierrec/lz4/v4 v4.1.30`
+- `github.com/phuslu/log v1.0.134`
 - `github.com/stevvooe/resumable v0.0.0-20180830230917-22b14a53ba50`
 - `github.com/tmthrgd/go-bitwise v0.0.0-20190904053232-1430ee983fca`
 - `github.com/tmthrgd/go-popcount v0.0.0-20190904054823-afb1ace8b04f`
@@ -329,7 +349,7 @@ The Go 1.27 snapshot currently reports:
 | GOARCH | official names | encoder forms | observed ops | observed forms | supported | context | unsupported | runtime verified | parse failures |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 41 | 6 | 13 | 0 | 0 |
-| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 755 | 6 | 5981 | 35 | 0 |
+| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 804 | 6 | 5932 | 51 | 0 |
 | arm | 181 | 528 | 135 | 500 | 312 | 34 | 154 | 0 | 0 |
 | arm64 | 1417 including SVE | 2964 | 1281 | 1980 | 457 | 47 | 1476 | 62 | 0 |
 | wasm | 463 | 463 opcode-only rows | 71 | 120 | 0 | 120 | 0 | 0 | 0 |

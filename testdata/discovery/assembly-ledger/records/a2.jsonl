@@ -1,0 +1,15 @@
+{"module":"github.com/FiloSottile/nistec","version":"v0.0.4","status":"pending"}
+{"module":"github.com/KDE/syntax-highlighting","version":"v6.30.0+incompatible","status":"pending"}
+{"module":"github.com/allo-rs/xray-core","version":"v1.260327.0","status":"pending"}
+{"module":"github.com/cosmos/go-ethereum","version":"v1.17.2-cosmos-1","status":"pending"}
+{"module":"github.com/ethereum/Go-ethereum","version":"v1.17.5","status":"pending"}
+{"module":"github.com/h0rn3t/gopolars","version":"v0.5.0","status":"pending"}
+{"module":"github.com/lhyPingcap/tidb","version":"v1.0.8","status":"pending"}
+{"module":"github.com/liggitt/etcd","version":"v2.3.8+incompatible","status":"pending"}
+{"module":"github.com/nebulasio/go-nebulas","version":"v2.1.0+incompatible","status":"pending"}
+{"module":"github.com/ryt-io/libevm","version":"v1.16.2","status":"pending"}
+{"module":"github.com/tailscale/go/src/cmd","version":"v0.0.0-20260919225036-24ee2fd0610e","status":"pending"}
+{"module":"github.com/thanhminhmr/phuslu-log","version":"v0.0.0-20260606130551-bcad29f74736","status":"pending"}
+{"module":"github.com/windtalker/tidb","version":"v1.0.9","status":"pending"}
+{"module":"github.com/yawning/bsaes","version":"v0.0.0-20190320102049-26d1add596b6","status":"pending"}
+{"module":"golang.org/x/crypto","version":"v0.57.0","status":"pending"}

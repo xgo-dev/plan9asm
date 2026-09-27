@@ -783,6 +783,138 @@
           "packages": ["github.com/tmthrgd/go-popcount"]
         }
       }
+    },
+    {
+      "id": "aead-siphash",
+      "origin": "ecosystem-scan",
+      "module": "github.com/aead/siphash",
+      "version": "v1.0.1",
+      "inventory": {
+        "darwin/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/aead/siphash"]
+        },
+        "linux/386": {
+          "asm_files": 1,
+          "packages": ["github.com/aead/siphash"]
+        },
+        "linux/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/aead/siphash"]
+        },
+        "windows/386": {
+          "asm_files": 1,
+          "packages": ["github.com/aead/siphash"]
+        },
+        "windows/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/aead/siphash"]
+        }
+      }
+    },
+    {
+      "id": "chain-txvm",
+      "origin": "ecosystem-scan",
+      "module": "github.com/chain/txvm",
+      "version": "v0.0.0-20190422181059-ff6bfbe53892",
+      "inventory": {
+        "darwin/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/chain/txvm/crypto/sha3"]
+        },
+        "linux/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/chain/txvm/crypto/sha3"]
+        },
+        "windows/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/chain/txvm/crypto/sha3"]
+        }
+      }
+    },
+    {
+      "id": "klauspost-crc32",
+      "origin": "ecosystem-scan",
+      "module": "github.com/klauspost/crc32",
+      "version": "v1.3.0",
+      "inventory": {
+        "darwin/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/klauspost/crc32"]
+        },
+        "darwin/arm64": {
+          "asm_files": 1,
+          "packages": ["github.com/klauspost/crc32"]
+        },
+        "linux/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/klauspost/crc32"]
+        },
+        "linux/arm64": {
+          "asm_files": 1,
+          "packages": ["github.com/klauspost/crc32"]
+        },
+        "windows/amd64": {
+          "asm_files": 1,
+          "packages": ["github.com/klauspost/crc32"]
+        },
+        "windows/arm64": {
+          "asm_files": 1,
+          "packages": ["github.com/klauspost/crc32"]
+        }
+      }
+    },
+    {
+      "id": "phuslu-log",
+      "origin": "ecosystem-scan",
+      "module": "github.com/phuslu/log",
+      "version": "v1.0.134",
+      "inventory": {
+        "darwin/amd64": {
+          "asm_files": 2,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "darwin/arm64": {
+          "asm_files": 2,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "linux/386": {
+          "asm_files": 1,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "linux/amd64": {
+          "asm_files": 3,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "linux/arm": {
+          "asm_files": 1,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "linux/arm64": {
+          "asm_files": 3,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "windows/386": {
+          "asm_files": 1,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "windows/amd64": {
+          "asm_files": 2,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "windows/arm64": {
+          "asm_files": 2,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "js/wasm": {
+          "asm_files": 1,
+          "packages": ["github.com/phuslu/log"]
+        },
+        "wasip1/wasm": {
+          "asm_files": 1,
+          "packages": ["github.com/phuslu/log"]
+        }
+      }
     }
   ]
 }
