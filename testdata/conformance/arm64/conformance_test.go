@@ -102,3 +102,22 @@ func bool64(value bool) uint64 {
 	}
 	return 0
 }
+
+func TestPairStores(t *testing.T) {
+	data := [8]uint64{0x0123456789abcdef, 0xfedcba9876543210, 0x1122334455667788, 0x8877665544332211}
+	var got, want [20]uint64
+	for i := range got {
+		got[i], want[i] = 0xdeadbeef, 0xdeadbeef
+	}
+	want[0], want[1], want[6] = 0, 32, ^uint64(31)
+	copy(want[2:6], data[:4])
+	copy(want[8:10], data[2:4])
+	copy(want[10:12], data[:2])
+	copy(want[16:20], data[:4])
+	pairStores(&got, &data)
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("pairStores()[%d] = %#x, want %#x", i, got[i], want[i])
+		}
+	}
+}

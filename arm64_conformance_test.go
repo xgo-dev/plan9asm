@@ -51,6 +51,15 @@ func translateARM64Conformance(t *testing.T, triple string) string {
 		ResolveSym:   func(sym string) string { return strings.TrimPrefix(sym, "·") },
 		Goarch:       "arm64",
 		Sigs: map[string]FuncSig{
+			"pairStores": {
+				Name: "pairStores",
+				Args: []LLVMType{Ptr, Ptr},
+				Ret:  Void,
+				Frame: FrameLayout{Params: []FrameSlot{
+					{Offset: 0, Type: Ptr, Index: 0, Field: -1},
+					{Offset: 8, Type: Ptr, Index: 1, Field: -1},
+				}},
+			},
 			"families": {
 				Name: "families",
 				Args: []LLVMType{Ptr, Ptr},
@@ -96,6 +105,7 @@ func TestARM64ConformanceLLVMRuntime(t *testing.T) {
 	mainC := `
 #include <stdint.h>
 extern void families(uint64_t *out, uint64_t *data);
+extern void pairStores(uint64_t *out, uint64_t *data);
 int main(void) {
     uint64_t data[8] = {0x0123456789abcdefULL, 0xfedcba9876543210ULL, 0x1122334455667788ULL, 0x8877665544332211ULL};
     uint64_t want[76] = {
@@ -121,6 +131,20 @@ int main(void) {
     for (int i = 0; i < 76; i++)
         if (got[i] != want[i])
             return i + 1;
+    uint64_t pairs[20], expected[20];
+    for (int i = 0; i < 20; i++)
+        pairs[i] = expected[i] = 0xdeadbeef;
+    expected[0] = 0;
+    expected[1] = 32;
+    expected[6] = (uint64_t)-32;
+    for (int i = 0; i < 4; i++) {
+        expected[2 + i] = expected[16 + i] = data[i];
+        expected[8 + i] = data[(i + 2) % 4];
+    }
+    pairStores(pairs, data);
+    for (int i = 0; i < 20; i++)
+        if (pairs[i] != expected[i])
+            return 100 + i;
     return 0;
 }
 `

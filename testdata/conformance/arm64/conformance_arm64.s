@@ -185,3 +185,28 @@ TEXT ·families(SB), NOSPLIT, $0-16
 	FMOVD R2, F4
 	FMOVQ F4, 592(R0)
 	RET
+
+// Check full-width stores, offsets, and both writeback modes.
+TEXT ·pairStores(SB), NOSPLIT, $0-16
+	MOVD out+0(FP), R0
+	MOVD data+8(FP), R1
+	FMOVQ (R1), F0
+	FMOVQ 16(R1), F1
+
+	MOVD R0, R2
+	FSTPQ (F0, F1), 16(R2)
+	SUB R0, R2, R3
+	MOVD R3, (R0)
+
+	ADD $64, R0, R2
+	MOVD R2, R4
+	FSTPQ.P (F1, F0), 32(R2)
+	SUB R4, R2, R3
+	MOVD R3, 8(R0)
+
+	ADD $160, R0, R2
+	MOVD R2, R4
+	FSTPQ.W (F0, F1), -32(R2)
+	SUB R4, R2, R3
+	MOVD R3, 48(R0)
+	RET
