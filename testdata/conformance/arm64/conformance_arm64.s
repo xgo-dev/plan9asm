@@ -209,4 +209,7 @@ TEXT ·pairStores(SB), NOSPLIT, $0-16
 	FSTPQ.W (F0, F1), -32(R2)
 	SUB R4, R2, R3
 	MOVD R3, 48(R0)
+
+	FSTPQ (F0, F1), ·pairStoreData(SB)
+	FSTPQ (F1, F0), ·pairStoreData+40(SB)
 	RET

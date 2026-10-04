@@ -182,7 +182,8 @@
         "FMOVQ memory.gpr-base,floating-register",
         "FMOVQ memory.gpr-base.offset,floating-register",
         "FMOVQ floating-register,memory.gpr-base.offset",
-        "FSTPQ register-list,memory.gpr-base.offset"
+        "FSTPQ register-list,memory.gpr-base.offset",
+        "FSTPQ register-list,symbol"
       ]
     }
   ]

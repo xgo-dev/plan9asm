@@ -94,7 +94,7 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 		}
 
 	case "FSTPQ":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpRegList || len(ins.Args[0].RegList) != 2 || ins.Args[1].Kind != OpMem {
+		if len(ins.Args) != 2 || ins.Args[0].Kind != OpRegList || len(ins.Args[0].RegList) != 2 || (ins.Args[1].Kind != OpMem && ins.Args[1].Kind != OpSym) {
 			return true, false, fmt.Errorf("arm64 FSTPQ expects (Freg,Freg), mem: %q", ins.Raw)
 		}
 		for _, f := range ins.Args[0].RegList {

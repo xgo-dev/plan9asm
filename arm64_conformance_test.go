@@ -106,6 +106,7 @@ func TestARM64ConformanceLLVMRuntime(t *testing.T) {
 #include <stdint.h>
 extern void families(uint64_t *out, uint64_t *data);
 extern void pairStores(uint64_t *out, uint64_t *data);
+uint64_t pairStoreData[10];
 int main(void) {
     uint64_t data[8] = {0x0123456789abcdefULL, 0xfedcba9876543210ULL, 0x1122334455667788ULL, 0x8877665544332211ULL};
     uint64_t want[76] = {
@@ -141,10 +142,16 @@ int main(void) {
         expected[2 + i] = expected[16 + i] = data[i];
         expected[8 + i] = data[(i + 2) % 4];
     }
+    for (int i = 0; i < 10; i++)
+        pairStoreData[i] = 0xdeadbeef;
     pairStores(pairs, data);
     for (int i = 0; i < 20; i++)
         if (pairs[i] != expected[i])
             return 100 + i;
+    uint64_t symbolExpected[10] = {data[0], data[1], data[2], data[3], 0xdeadbeef, data[2], data[3], data[0], data[1], 0xdeadbeef};
+    for (int i = 0; i < 10; i++)
+        if (pairStoreData[i] != symbolExpected[i])
+            return 120 + i;
     return 0;
 }
 `

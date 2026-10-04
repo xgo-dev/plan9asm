@@ -114,10 +114,26 @@ func TestPairStores(t *testing.T) {
 	copy(want[8:10], data[2:4])
 	copy(want[10:12], data[:2])
 	copy(want[16:20], data[:4])
+	for i := range pairStoreData {
+		pairStoreData[i] = 0xdeadbeef
+	}
 	pairStores(&got, &data)
 	for i := range got {
 		if got[i] != want[i] {
 			t.Fatalf("pairStores()[%d] = %#x, want %#x", i, got[i], want[i])
 		}
+	}
+}
+
+func TestPairStoreSymbols(t *testing.T) {
+	data := [8]uint64{0x0123456789abcdef, 0xfedcba9876543210, 0x1122334455667788, 0x8877665544332211}
+	var out [20]uint64
+	for i := range pairStoreData {
+		pairStoreData[i] = 0xdeadbeef
+	}
+	pairStores(&out, &data)
+	want := [10]uint64{data[0], data[1], data[2], data[3], 0xdeadbeef, data[2], data[3], data[0], data[1], 0xdeadbeef}
+	if pairStoreData != want {
+		t.Fatalf("pairStoreData = %#x, want %#x", pairStoreData, want)
 	}
 }
