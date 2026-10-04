@@ -31,8 +31,9 @@ type amd64Ctx struct {
 	usedRegs map[Reg]bool
 	regSlot  map[Reg]string // gp reg -> alloca name
 
-	usedXRegs map[int]bool
-	xRegSlot  map[int]string // xmm reg index -> alloca name (<16 x i8>)
+	zeroUpperVector bool // VEX/EVEX writes clear the upper register bits
+	usedXRegs       map[int]bool
+	xRegSlot        map[int]string // xmm reg index -> alloca name (<16 x i8>)
 
 	usedYRegs map[int]bool
 	yRegSlot  map[int]string // ymm reg index -> alloca name (<32 x i8>)
@@ -334,40 +335,41 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", addr, spSlot)
 	}
 
-	xIdx := make([]int, 0, len(c.usedXRegs))
+	// XMM, YMM and ZMM are overlapping views of the same physical register.
+	// Allocate the widest view used by the function and share its low bytes.
+	widths := make(map[int]int)
 	for i := range c.usedXRegs {
-		xIdx = append(xIdx, i)
+		widths[i] = 16
 	}
-	sort.Ints(xIdx)
-	for _, i := range xIdx {
-		name := c.xSlotName(i)
-		c.xRegSlot[i] = name
-		fmt.Fprintf(c.b, "  %s = alloca <16 x i8>\n", name)
-		fmt.Fprintf(c.b, "  store <16 x i8> zeroinitializer, ptr %s\n", name)
-	}
-
-	yIdx := make([]int, 0, len(c.usedYRegs))
 	for i := range c.usedYRegs {
-		yIdx = append(yIdx, i)
+		widths[i] = 32
 	}
-	sort.Ints(yIdx)
-	for _, i := range yIdx {
-		name := fmt.Sprintf("%%y%d", i)
-		c.yRegSlot[i] = name
-		fmt.Fprintf(c.b, "  %s = alloca <32 x i8>\n", name)
-		fmt.Fprintf(c.b, "  store <32 x i8> zeroinitializer, ptr %s\n", name)
-	}
-
-	zIdx := make([]int, 0, len(c.usedZRegs))
 	for i := range c.usedZRegs {
-		zIdx = append(zIdx, i)
+		widths[i] = 64
 	}
-	sort.Ints(zIdx)
-	for _, i := range zIdx {
-		name := fmt.Sprintf("%%z%d", i)
-		c.zRegSlot[i] = name
-		fmt.Fprintf(c.b, "  %s = alloca <64 x i8>\n", name)
-		fmt.Fprintf(c.b, "  store <64 x i8> zeroinitializer, ptr %s\n", name)
+	indices := make([]int, 0, len(widths))
+	for i := range widths {
+		indices = append(indices, i)
+	}
+	sort.Ints(indices)
+	for _, i := range indices {
+		width := widths[i]
+		name := c.xSlotName(i)
+		if width == 32 {
+			name = fmt.Sprintf("%%y%d", i)
+		}
+		if width == 64 {
+			name = fmt.Sprintf("%%z%d", i)
+		}
+		c.xRegSlot[i] = name
+		if width >= 32 {
+			c.yRegSlot[i] = name
+		}
+		if width == 64 {
+			c.zRegSlot[i] = name
+		}
+		fmt.Fprintf(c.b, "  %s = alloca <%d x i8>\n", name, width)
+		fmt.Fprintf(c.b, "  store <%d x i8> zeroinitializer, ptr %s\n", width, name)
 	}
 
 	kIdx := make([]int, 0, len(c.usedKRegs))
@@ -998,6 +1000,21 @@ func (c *amd64Ctx) storeRegSized(r Reg, ty LLVMType, v string) error {
 	}
 }
 
+// clearVectorUpper clears bytes above the written width while leaving the
+// low view unchanged. Legacy SSE writes deliberately preserve those bytes.
+func (c *amd64Ctx) clearVectorUpper(idx, lowBytes int) {
+	slot, width := c.zRegSlot[idx], 64
+	if slot == "" {
+		slot, width = c.yRegSlot[idx], 32
+	}
+	if slot == "" || width <= lowBytes {
+		return
+	}
+	upper := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %d\n", upper, slot, lowBytes)
+	fmt.Fprintf(c.b, "  store <%d x i8> zeroinitializer, ptr %%%s, align 1\n", width-lowBytes, upper)
+}
+
 func (c *amd64Ctx) loadX(r Reg) (string, error) {
 	idx, ok := amd64ParseXReg(r)
 	if !ok {
@@ -1020,6 +1037,9 @@ func (c *amd64Ctx) storeX(r Reg, v string) error {
 	slot, ok := c.xRegSlot[idx]
 	if !ok {
 		return nil
+	}
+	if c.zeroUpperVector {
+		c.clearVectorUpper(idx, 16)
 	}
 	fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s\n", v, slot)
 	return nil
@@ -1047,6 +1067,9 @@ func (c *amd64Ctx) storeY(r Reg, v string) error {
 	slot, ok := c.yRegSlot[idx]
 	if !ok {
 		return nil
+	}
+	if c.zeroUpperVector {
+		c.clearVectorUpper(idx, 32)
 	}
 	fmt.Fprintf(c.b, "  store <32 x i8> %s, ptr %s\n", v, slot)
 	return nil

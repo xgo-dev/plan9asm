@@ -111,11 +111,16 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		}
 	}
 
-	if op == "VZEROUPPER" {
-		// No-op in LLVM IR. Kept for completeness.
-		return true, false, nil
-	}
-	if op == "VZEROALL" {
+	if op == "VZEROUPPER" || op == "VZEROALL" {
+		// These instructions affect registers 0-15, including their ZMM view.
+		for i := 0; i < 16; i++ {
+			c.clearVectorUpper(i, 16)
+			if op == "VZEROALL" {
+				if slot := c.xRegSlot[i]; slot != "" {
+					fmt.Fprintf(c.b, "  store <16 x i8> zeroinitializer, ptr %s\n", slot)
+				}
+			}
+		}
 		return true, false, nil
 	}
 

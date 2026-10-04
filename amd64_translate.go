@@ -241,6 +241,7 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 	c.allowSPWrite = models386SPWrite(ins)
 	defer func() { c.allowSPWrite = false }()
 	op := strings.ToUpper(string(ins.Op))
+	c.zeroUpperVector = strings.HasPrefix(op, "V")
 	if c.repeatPrefix != "" && op != "MOVSB" && op != "MOVSL" && op != "STOSL" && op != "SCASB" {
 		prefix := c.repeatPrefix
 		c.repeatPrefix = ""
