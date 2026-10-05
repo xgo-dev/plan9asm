@@ -93,6 +93,40 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 			return true, false, fmt.Errorf("arm64 FMOVQ expects memory and F register operands: %q", ins.Raw)
 		}
 
+	case "FSTPQ":
+		if len(ins.Args) != 2 || ins.Args[0].Kind != OpRegList || len(ins.Args[0].RegList) != 2 || (ins.Args[1].Kind != OpMem && ins.Args[1].Kind != OpSym) {
+			return true, false, fmt.Errorf("arm64 FSTPQ expects (Freg,Freg), mem: %q", ins.Raw)
+		}
+		for _, f := range ins.Args[0].RegList {
+			if _, ok := arm64ParseFReg(f); !ok {
+				return true, false, fmt.Errorf("arm64 FSTPQ expects FP register pair: %q", ins.Raw)
+			}
+		}
+		preInc := strings.Contains(strings.ToUpper(string(ins.Op)), ".W")
+		ptr, base, inc, update, err := c.arm64VectorMemoryPointer(ins.Args[1], preInc, postInc)
+		if err != nil {
+			return true, false, err
+		}
+		for i, f := range ins.Args[0].RegList {
+			value, err := c.loadVReg(f)
+			if err != nil {
+				return true, false, err
+			}
+			storePtr := ptr
+			if i != 0 {
+				next := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 16\n", next, ptr)
+				storePtr = "%" + next
+			}
+			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", value, storePtr)
+		}
+		if update {
+			if err := c.updatePostInc(base, inc); err != nil {
+				return true, false, err
+			}
+		}
+		return true, false, nil
+
 	case "FLDPQ":
 		if len(ins.Args) != 2 || ins.Args[0].Kind != OpMem || ins.Args[1].Kind != OpRegList || len(ins.Args[1].RegList) != 2 {
 			return true, false, fmt.Errorf("arm64 FLDPQ expects mem, (Freg,Freg): %q", ins.Raw)

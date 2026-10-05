@@ -1,4 +1,4 @@
-# ARM64 scalar opcode families completed by the issue #2552 fix.
+# ARM64 opcode families covered by the Go assembler conformance checks.
 # The Go assembler encoder tables and positive testdata define this list's
 # legal operand forms; external packages are regression consumers only.
 BFI
@@ -49,6 +49,7 @@ SUBSW
 TST
 TSTW
 FMOVQ
+FSTPQ
 MOVB
 MOVBU
 MOVH
