@@ -44,6 +44,7 @@ func TestPlan9asmOriginalStateSystemBackend(t *testing.T) {
 					PC                   int64
 					Encoding             []byte
 					Offset, Size, Kind   int
+					KindName             string
 					Symbol               string
 					Add                  int64
 				}{Arch: mode.name, Opcode: operation.name, Origin: "stock-backend",
@@ -62,6 +63,7 @@ func TestPlan9asmOriginalStateSystemBackend(t *testing.T) {
 						t.Fatal("original XBEGIN PC/width/type/symbol/addend differ", relocation)
 					}
 					record.Offset, record.Size, record.Kind = int(relocation.Off), int(relocation.Siz), int(relocation.Type)
+					record.KindName = relocation.Type.String()
 					record.Symbol, record.Add = relocation.Sym.Name, relocation.Add
 				}
 				encoded, err := json.Marshal(record)

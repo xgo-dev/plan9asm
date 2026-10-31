@@ -1,8 +1,10 @@
 package plan9asm
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -18,6 +20,105 @@ import (
 
 	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
+
+// The stock assembler's refusal and this original backend observation are
+// independent. Only this actual observer can turn a candidate backend byte
+// sequence into evidence; it grants no numerical or native-entry permission.
+func TestX86StateSystemMemoryOriginalBackend(t *testing.T) {
+	const root = "TestPlan9asmOriginalStateSystemBackend"
+	output := x86OriginalGoBackendOutput(t, "testdata/goasm/state_system_backend_test.go", root)
+	type record struct {
+		Arch, Opcode, Origin string
+		PC                   int64
+		Encoding             []byte
+		Offset, Size, Kind   int
+		KindName, Symbol     string
+		Add                  int64
+	}
+	runs, passes := map[string]int{}, map[string]int{}
+	records := map[string]record{}
+	packagePasses := 0
+	for _, line := range bytes.Split(bytes.TrimSpace(output), []byte{'\n'}) {
+		var event struct{ Action, Test, Output string }
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatal("original backend emitted non-JSON output", err, string(line))
+		}
+		switch event.Action {
+		case "run":
+			runs[event.Test]++
+		case "pass":
+			if event.Test == "" {
+				packagePasses++
+			} else {
+				passes[event.Test]++
+			}
+		case "fail", "skip", "build-fail":
+			t.Fatal("original backend did not complete every owned case", event)
+		}
+		const marker = "PLAN9ASM_STATE_SYSTEM_BACKEND "
+		if position := strings.Index(event.Output, marker); position >= 0 {
+			var actual record
+			if err := json.Unmarshal([]byte(strings.TrimSpace(event.Output[position+len(marker):])), &actual); err != nil {
+				t.Fatal("invalid actual backend record", err)
+			}
+			name := actual.Arch + "/" + actual.Opcode
+			if _, duplicate := records[name]; duplicate || event.Test != root+"/"+name {
+				t.Fatal("backend record lost its unique actual test owner", name, event.Test)
+			}
+			records[name] = actual
+		}
+	}
+	if len(runs) != 5 || len(passes) != 5 || packagePasses != 1 || len(records) != 4 || runs[root] != 1 || passes[root] != 1 {
+		t.Fatal("incomplete actual backend execution", runs, passes, packagePasses, records)
+	}
+	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	frontend, err := goasmrules.LoadX86UnaryDestinations(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arch := range []string{"amd64", "386"} {
+		rows, err := goasmrules.X86StateSystemMemoryRows(catalog, frontend, arch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, opcode := range []string{"FLDENV", "XBEGIN"} {
+			name := arch + "/" + opcode
+			t.Run(name, func(t *testing.T) {
+				actual, found := records[name]
+				if !found || runs[root+"/"+name] != 1 || passes[root+"/"+name] != 1 || actual.Origin != "stock-backend" || actual.PC != 13 {
+					t.Fatal("backend identity or execution differs", name, actual)
+				}
+				if opcode == "XBEGIN" {
+					// The fixture compares Type to the actual SDK objabi.R_CALL;
+					// never share a hard-coded relocation enum across SDKs.
+					if !bytes.Equal(actual.Encoding, []byte{0xc7, 0xf8, 0, 0, 0, 0}) || actual.Offset != 15 || actual.Size != 4 || actual.Kind <= 0 || actual.KindName != "R_CALL" || actual.Symbol != "plan9asm.backend.target" || actual.Add != 0 {
+						t.Fatal("actual external branch encoding or relocation differs", actual)
+					}
+				} else {
+					if !bytes.Equal(actual.Encoding, []byte{0xd9, 0x26}) || actual.Offset != 0 || actual.Size != 0 || actual.Kind != 0 || actual.KindName != "" || actual.Symbol != "" || actual.Add != 0 {
+						t.Fatal("actual FLDENV encoding or absent relocation differs", actual)
+					}
+					joined := 0
+					for _, row := range rows {
+						if row.Opcode == opcode {
+							if row.FrontendRejected == "" || row.ModeFiltered != "" || len(row.Witnesses) != 0 || len(row.BackendWitnesses) != 1 || !bytes.Equal(row.BackendWitnesses[0].Encoding, actual.Encoding) {
+								t.Fatal("backend bytes lost the original frontend boundary", row)
+							}
+							joined++
+						}
+					}
+					if joined != 1 {
+						t.Fatal("actual backend record did not join exactly one original source row", joined)
+					}
+				}
+				t.Logf("ACTUAL_STATE_SYSTEM_BACKEND arch=%s opcode=%s bytes=%x relocation=%s/%d pc=%d", arch, opcode, actual.Encoding, actual.KindName, actual.Kind, actual.PC)
+			})
+		}
+	}
+}
 
 func stateSystemOriginalUnaryDestinations(t *testing.T) map[string]bool {
 	t.Helper()
