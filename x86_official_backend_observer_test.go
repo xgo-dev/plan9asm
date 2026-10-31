@@ -19,9 +19,9 @@ import (
 	"time"
 )
 
-// The overlay only adds an owned test. Go 1.20 needs it appended to an existing
-// test file because its vet reads physical filenames. No original declaration
-// is changed; all physical SDK files remain byte-identical. This observes Go's encoder;
+// The overlay appends an owned test to an existing test file. Go 1.20's vet
+// reads physical filenames, while current Go resolves the overlay for vet.
+// No original declaration or physical SDK file changes. This observes Go's encoder;
 // it grants no translator, object-decoder or native-entry permission.
 func x86OriginalGoBackendOutput(t *testing.T, fixture, testRoot string) []byte {
 	t.Helper()
@@ -53,23 +53,17 @@ func x86OriginalGoBackendOutput(t *testing.T, fixture, testRoot string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	virtual := filepath.Join(directory, "plan9asm_"+filepath.Base(fixture))
-	if _, err := os.Stat(virtual); !os.IsNotExist(err) {
-		t.Fatal("SDK overlay must add a new test, never replace an existing file", virtual, err)
+	virtual := filepath.Join(directory, "asm_test.go")
+	original, err := os.ReadFile(virtual)
+	if err != nil {
+		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if strings.HasPrefix(runtime.Version(), "go1.20.") {
-		virtual = filepath.Join(directory, "asm_test.go")
-		original, err := os.ReadFile(virtual)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fixture = filepath.Join(dir, "appended_test.go")
-		if err := os.WriteFile(fixture, x86BackendAppendOriginalTest(t, original, fixtureBytes), 0600); err != nil {
-			t.Fatal(err)
-		}
-		t.Log("GO120_VET_BOUNDARY default vet reads the physical original test; appended fixture compilation/execution is observed separately")
+	fixture = filepath.Join(dir, "appended_test.go")
+	if err := os.WriteFile(fixture, x86BackendAppendOriginalTest(t, original, fixtureBytes), 0600); err != nil {
+		t.Fatal(err)
 	}
+	t.Log("SDK_VET_OVERLAY_BOUNDARY default vet remains enabled; legacy vet may read the physical original test, so fixture compilation/execution is observed independently")
 	overlay := filepath.Join(dir, "overlay.json")
 	data, err := json.Marshal(struct{ Replace map[string]string }{map[string]string{virtual: fixture}})
 	if err != nil {
@@ -181,6 +175,6 @@ func x86BackendAppendOriginalTest(t *testing.T, original, fixture []byte) []byte
 	if index != len(originals) {
 		t.Fatal("backend overlay dropped original declarations", index, len(originals))
 	}
-	t.Logf("GO120_APPENDED_TEST_ORIGINAL_DECLARATIONS count=%d sourceSHA=%x overlaySHA=%x", index, sha256.Sum256(original), sha256.Sum256(result))
+	t.Logf("APPENDED_TEST_ORIGINAL_DECLARATIONS count=%d sourceSHA=%x overlaySHA=%x", index, sha256.Sum256(original), sha256.Sum256(result))
 	return result
 }
