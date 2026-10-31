@@ -18,14 +18,22 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
 
-type x86TLSFallbackSourceObservation struct {
+type x86TLSFallbackSourceIdentity struct {
 	ID, Instruction, Origin, Target, SDKVersion string
-	SourceSHA, ObjectSHA, ListingSHA            string
+	SourceSHA                                   string
 	SDKSourceSHA                                map[string]string
 	Shared                                      bool
 	Encoding                                    []byte
 	Relocations                                 []string
-	sourceBytes, objectBytes, listingBytes      []byte
+}
+
+type x86TLSFallbackSourceObservation struct {
+	x86TLSFallbackSourceIdentity
+	ObjectSHA, ListingSHA                     string
+	sourceBytes, objectBytes, listingBytes    []byte
+	sourceDigest, objectDigest, listingDigest [32]byte
+	requestTarget                             string
+	requestShared                             bool
 }
 
 func x86TLSFallbackOriginalID(t *testing.T, catalog goasmrules.X86LegacyCatalog, opcode string) string {
@@ -59,15 +67,23 @@ func x86TLSFallbackOriginalID(t *testing.T, catalog goasmrules.X86LegacyCatalog,
 
 func x86TLSFallbackRelocationLines(t *testing.T, listing string) []string {
 	t.Helper()
-	source, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src/cmd/internal/objabi/reloctype_string.go"))
+	lines, err := x86TLSFallbackReadRelocations(listing)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return lines
+}
+
+func x86TLSFallbackReadRelocations(listing string) ([]string, error) {
+	source, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src/cmd/internal/objabi/reloctype_string.go"))
+	if err != nil {
+		return nil, err
 	}
 	kinds := map[string]string{}
 	for _, name := range []string{"R_CALL", "R_TLS_IE"} {
 		matches := regexp.MustCompile(`(?m)^[\t ]*_ = x\[`+name+`-([0-9]+)\][\t ]*$`).FindAllStringSubmatch(string(source), -1)
 		if len(matches) != 1 {
-			t.Fatal("selected SDK lacks one exact TLS relocation enum", name)
+			return nil, fmt.Errorf("selected SDK lacks one exact TLS relocation enum: %s", name)
 		}
 		kinds[matches[0][1]] = name
 	}
@@ -78,14 +94,14 @@ func x86TLSFallbackRelocationLines(t *testing.T, listing string) []string {
 			continue
 		}
 		if len(fields) != 4 || !strings.HasPrefix(fields[2], "t=") {
-			t.Fatal("incomplete actual TLS relocation", line)
+			return nil, fmt.Errorf("incomplete actual TLS relocation: %s", line)
 		}
 		if name := kinds[strings.TrimPrefix(fields[2], "t=")]; name != "" {
 			fields[2] = "t=" + name
 		}
 		result = append(result, strings.Join(fields, " "))
 	}
-	return result
+	return result, nil
 }
 
 func x86TLSFallbackDirectNOP(t *testing.T, listing string) {
@@ -138,11 +154,14 @@ func x86TLSFallbackActualProfile(t *testing.T, arch string, shared bool) x86TLSF
 		header[3] != arch || header[4] != runtime.Version() {
 		t.Fatal("actual original object target/SDK provenance changed", header)
 	}
-	observation := x86TLSFallbackSourceObservation{Instruction: instruction, Target: "linux/" + arch,
-		SDKVersion: header[4], Shared: shared, SourceSHA: fmt.Sprintf("%x", sha256.Sum256([]byte(source))),
+	observation := x86TLSFallbackSourceObservation{
+		x86TLSFallbackSourceIdentity: x86TLSFallbackSourceIdentity{Instruction: instruction, Target: "linux/" + arch,
+			SDKVersion: header[4], Shared: shared, SourceSHA: fmt.Sprintf("%x", sha256.Sum256([]byte(source))),
+			SDKSourceSHA: map[string]string{}, Relocations: x86TLSFallbackRelocationLines(t, listing)},
 		ObjectSHA: fmt.Sprintf("%x", sha256.Sum256(object)), ListingSHA: fmt.Sprintf("%x", sha256.Sum256([]byte(listing))),
-		SDKSourceSHA: map[string]string{}, Relocations: x86TLSFallbackRelocationLines(t, listing),
-		sourceBytes: []byte(source), objectBytes: append([]byte(nil), object...), listingBytes: []byte(listing)}
+		sourceBytes: []byte(source), objectBytes: append([]byte(nil), object...), listingBytes: []byte(listing),
+		sourceDigest: sha256.Sum256([]byte(source)), objectDigest: sha256.Sum256(object), listingDigest: sha256.Sum256([]byte(listing)),
+		requestTarget: "linux/" + arch, requestShared: shared}
 	if artifacts := os.Getenv("PLAN9ASM_TLS_FALLBACK_ARTIFACT_DIR"); artifacts != "" {
 		owner := filepath.Join(artifacts, strings.ReplaceAll(t.Name(), "/", "_"))
 		if err := os.MkdirAll(owner, 0700); err != nil {
@@ -213,15 +232,20 @@ func x86TLSFallbackValidateJoin(observation x86TLSFallbackSourceObservation, exp
 		len(observation.ListingSHA) != 64 || len(observation.SDKSourceSHA) != 3 {
 		return fmt.Errorf("incomplete actual TLS source/profile provenance")
 	}
+	if observation.Target != observation.requestTarget || observation.Shared != observation.requestShared {
+		return fmt.Errorf("TLS profile no longer matches the actual assembler request")
+	}
 	for _, receipt := range []struct {
-		data []byte
-		hash string
+		data   []byte
+		hash   string
+		digest [32]byte
 	}{
-		{observation.sourceBytes, observation.SourceSHA},
-		{observation.objectBytes, observation.ObjectSHA},
-		{observation.listingBytes, observation.ListingSHA},
+		{observation.sourceBytes, observation.SourceSHA, observation.sourceDigest},
+		{observation.objectBytes, observation.ObjectSHA, observation.objectDigest},
+		{observation.listingBytes, observation.ListingSHA, observation.listingDigest},
 	} {
-		if len(receipt.data) == 0 || fmt.Sprintf("%x", sha256.Sum256(receipt.data)) != receipt.hash {
+		if len(receipt.data) == 0 || sha256.Sum256(receipt.data) != receipt.digest ||
+			fmt.Sprintf("%x", receipt.digest) != receipt.hash {
 			return fmt.Errorf("TLS source receipt digest no longer matches its actual captured bytes")
 		}
 	}
@@ -262,6 +286,15 @@ func x86TLSFallbackValidateJoin(observation x86TLSFallbackSourceObservation, exp
 	}
 	if !bytes.Equal(code, observation.Encoding) || !reflect.DeepEqual(relocations, observation.Relocations) {
 		return fmt.Errorf("TLS metadata lacks its exact actual byte/relocation counterpart")
+	}
+	fixture := x86OfficialPackedCase{row: "actualTLSProfile", symbol: "TLSProfile", line: 2,
+		witness: goasmrules.X86PackedBinaryWitness{Instruction: observation.Instruction, Destination: "CX", Encoding: code}}
+	if err := x86OfficialPackedVerifyListing(string(observation.listingBytes), []x86OfficialPackedCase{fixture}); err != nil {
+		return fmt.Errorf("TLS source bytes and PC no longer match the actual saved listing: %w", err)
+	}
+	actualRelocations, err := x86TLSFallbackReadRelocations(string(observation.listingBytes))
+	if err != nil || !reflect.DeepEqual(actualRelocations, relocations) {
+		return fmt.Errorf("TLS relocations no longer match the actual saved listing: %v", err)
 	}
 	return nil
 }
@@ -333,10 +366,15 @@ func TestX86TLSFallbackCompleteSourceIDJoin(t *testing.T) {
 		if len(joined) != 112 {
 			t.Fatal("complete source union including actual contextual TLS observations changed", len(joined))
 		}
+		identities := make([]x86TLSFallbackSourceIdentity, len(observations))
+		for index, observation := range observations {
+			identities[index] = observation.x86TLSFallbackSourceIdentity
+		}
+		x86Legacy127SaveIdentity(t, "PLAN9ASM_TLS_FALLBACK_ACTUAL_OUTPUT", observations)
 		x86Legacy127SaveIdentity(t, "PLAN9ASM_TLS_FALLBACK_SOURCE_OUTPUT", struct {
 			Source   goasmrules.X86LegacyCatalog
-			Observed []x86TLSFallbackSourceObservation
-		}{catalog, observations})
+			Observed []x86TLSFallbackSourceIdentity
+		}{catalog, identities})
 	}
 }
 
