@@ -308,6 +308,9 @@ func TestX86TLSFallbackSourceProfileCounterfeits(t *testing.T) {
 		"wrong-relocation-addend": func(o *x86TLSFallbackSourceObservation) { o.Relocations = []string{"rel 3+4 t=R_TLS_IE +-3"} },
 		"wrong-relocation-PC":     func(o *x86TLSFallbackSourceObservation) { o.Relocations = []string{"rel 2+4 t=R_TLS_IE +-4"} },
 		"missing-object":          func(o *x86TLSFallbackSourceObservation) { o.ObjectSHA = "" },
+		"foreign-source-hash":     func(o *x86TLSFallbackSourceObservation) { o.SourceSHA = strings.Repeat("0", 64) },
+		"foreign-object-hash":     func(o *x86TLSFallbackSourceObservation) { o.ObjectSHA = strings.Repeat("0", 64) },
+		"foreign-listing-hash":    func(o *x86TLSFallbackSourceObservation) { o.ListingSHA = strings.Repeat("0", 64) },
 		"wrong-SDK":               func(o *x86TLSFallbackSourceObservation) { o.SDKVersion = "go0.0" },
 		"wrong-SDK-source": func(o *x86TLSFallbackSourceObservation) {
 			o.SDKSourceSHA = map[string]string{"foreign": "", "other": "", "third": ""}
@@ -321,6 +324,19 @@ func TestX86TLSFallbackSourceProfileCounterfeits(t *testing.T) {
 				t.Fatal("metadata/control evidence was counted as a passing source join", name)
 			}
 		})
+	}
+}
+
+func TestX86TLSFallbackSourceCannotRetagObservedWidth(t *testing.T) {
+	observed := x86TLSFallbackActualProfile(t, "amd64", true)
+	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := x86TLSFallbackOriginalID(t, catalog, "MOVL")
+	observed.ID = foreign
+	if err := x86TLSFallbackValidateJoin(observed, foreign); err == nil {
+		t.Fatal("actual MOVQ source observation was retagged as the MOVL fallback row")
 	}
 }
 
