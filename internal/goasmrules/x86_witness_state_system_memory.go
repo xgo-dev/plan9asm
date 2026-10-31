@@ -2,7 +2,6 @@ package goasmrules
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -74,16 +73,7 @@ func LoadX86UnaryDestinations(goroot string) (X86UnaryDestinations, error) {
 // Capture actual member metadata, never an independently maintained opcode
 // registry. Serialization owns its bytes and cannot alias caller catalog slices.
 func x86StateSystemMemoryMembers(catalog X86LegacyCatalog) ([]byte, error) {
-	var members []X86LegacyOpcode
-	for _, entry := range catalog.Optab {
-		if x86StateSystemMemorySchema(entry.Ytab) != nil {
-			members = append(members, entry)
-		}
-	}
-	return json.Marshal(struct {
-		Capacity int
-		Members  []X86LegacyOpcode
-	}{catalog.OpBytesSize, members})
+	return x86LegacySourceMembers(catalog, x86StateSystemMemorySchema)
 }
 
 func x86StateSystemMemorySchema(table string) []string {

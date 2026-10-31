@@ -29,6 +29,7 @@ type x86StackControlSourceWitness struct {
 	goasmrules.X86ScalarRMWWitness
 	Origin      string
 	Relocations []x86StackControlRelocation
+	padding     int
 }
 
 type x86StackControlSourceRow struct {
@@ -429,8 +430,8 @@ func TestX86StackControlOriginalGoBytesPCAndRelocations(t *testing.T) {
 	}
 }
 
-// The tests-only probe deliberately calls existing source views, so an absent
-// new view produces real FEATURE RED assertions, never undefined-symbol 0 RUN.
+// Preserve the existing source owners and add the separate control grammar.
+// Complete source transport supplies no stack or native caller permissions.
 func x86StackControlExistingSourceJoin(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) map[string]x86StackControlSourceRow {
 	t.Helper()
 	joined := map[string]x86StackControlSourceRow{}
@@ -449,6 +450,29 @@ func x86StackControlExistingSourceJoin(t *testing.T, catalog goasmrules.X86Legac
 			joined[row.ID] = observed
 		}
 	}
+	source, err := goasmrules.LoadX86StackControlSource(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := goasmrules.X86StackControlRows(catalog, source, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if _, duplicate := joined[row.ID]; duplicate {
+			t.Fatal("stack/control source widened an old scalar member", row.ID)
+		}
+		observed := x86StackControlSourceRow{Opcode: row.Opcode, ModeFiltered: row.ModeFiltered}
+		for _, witness := range row.Witnesses {
+			converted := x86StackControlSourceWitness{X86ScalarRMWWitness: witness.X86ScalarRMWWitness,
+				Origin: witness.Origin, padding: witness.BranchPadding}
+			for _, relocation := range witness.Relocations {
+				converted.Relocations = append(converted.Relocations, x86StackControlRelocation(relocation))
+			}
+			observed.Witnesses = append(observed.Witnesses, converted)
+		}
+		joined[row.ID] = observed
+	}
 	return joined
 }
 
@@ -457,6 +481,7 @@ func TestX86StackControlCompleteSourceJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	modes := map[string][]goasmrules.X86StackControlRow{}
 	for _, arch := range []string{"amd64", "386"} {
 		t.Run(arch, func(t *testing.T) {
 			joined := x86StackControlExistingSourceJoin(t, catalog, arch)
@@ -486,7 +511,7 @@ func TestX86StackControlCompleteSourceJoin(t *testing.T) {
 						fixture := fixtures[index]
 						if observed.Instruction != fixture.witness.Instruction || observed.Destination != fixture.witness.Destination ||
 							!bytes.Equal(observed.Encoding, fixture.witness.Encoding) || observed.Origin != fixture.origin ||
-							!reflect.DeepEqual(observed.Relocations, fixture.relocations) {
+							!reflect.DeepEqual(observed.Relocations, fixture.relocations) || observed.padding != fixture.padding {
 							t.Fatal("exact source instruction/bytes/destination/origin/relocations changed", observed, fixture)
 						}
 					}
@@ -495,7 +520,23 @@ func TestX86StackControlCompleteSourceJoin(t *testing.T) {
 			if len(expected) != 40 {
 				t.Fatal("source ID denominator changed", len(expected))
 			}
+			source, err := goasmrules.LoadX86StackControlSource(runtime.GOROOT())
+			if err != nil {
+				t.Fatal(err)
+			}
+			modes[arch], err = goasmrules.X86StackControlRows(catalog, source, arch)
+			if err != nil {
+				t.Fatal(err)
+			}
 		})
+	}
+	if !t.Failed() {
+		before, after := x86StackControlOriginalDuffFrame(t)
+		x86Legacy127SaveIdentity(t, "PLAN9ASM_STACK_CONTROL_IDENTITY_OUTPUT", struct {
+			Source                goasmrules.X86LegacyCatalog
+			Modes                 map[string][]goasmrules.X86StackControlRow
+			DuffBefore, DuffAfter []byte
+		}{catalog, modes, before, after})
 	}
 }
 

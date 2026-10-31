@@ -63,16 +63,19 @@ func TestX86StackControlCompleteOriginalSchemas(t *testing.T) {
 	}
 }
 
-// Keep this tests-only adapter on an existing symbol until actual RED is
-// recorded. A later separate source-control owner must retain the old scalar
-// owner's rejection and supply byte/relocation projections independently.
-func stackControlSourceProbe(entry X86LegacyOpcode, row X86LegacyOperand, arch string) ([]X86ScalarRMWWitness, error) {
-	return x86ScalarRMWRowWitnesses(entry, row, arch)
+// The separate source owner supplies byte/relocation projections while the
+// original scalar owner's refusal remains independently checked below.
+func stackControlSourceProbe(entry X86LegacyOpcode, row X86LegacyOperand, source X86StackControlSource, arch string, capacity int) ([]X86StackControlWitness, error) {
+	return x86StackControlWitnesses(entry, row, source, arch, capacity)
 }
 
 func TestX86StackControlFormatterFeature(t *testing.T) {
 	catalog := stackControlOriginalCatalog(t)
 	schemas := stackControlOriginalSchemas()
+	source, err := LoadX86StackControlSource(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, arch := range []string{"amd64", "386"} {
 		t.Run(arch, func(t *testing.T) {
 			for _, entry := range catalog.Optab {
@@ -82,7 +85,7 @@ func TestX86StackControlFormatterFeature(t *testing.T) {
 				}
 				for _, row := range entry.Rows {
 					t.Run(fmt.Sprintf("%s/%d", entry.Opcode, row.RowIndex), func(t *testing.T) {
-						witnesses, err := stackControlSourceProbe(entry, row, arch)
+						witnesses, err := stackControlSourceProbe(entry, row, source, arch, catalog.OpBytesSize)
 						if err != nil || len(witnesses) == 0 {
 							t.Fatal("STACK_CONTROL_FORMATTER_FEATURE_GAP", entry.Opcode, row, err)
 						}
@@ -100,6 +103,10 @@ func TestX86StackControlFormatterFeature(t *testing.T) {
 
 func TestX86StackControlCompleteMetadataBoundaries(t *testing.T) {
 	catalog := stackControlOriginalCatalog(t)
+	source, err := LoadX86StackControlSource(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var original X86LegacyOpcode
 	for _, entry := range catalog.Optab {
 		if entry.Opcode == "PUSHQ" {
@@ -125,7 +132,7 @@ func TestX86StackControlCompleteMetadataBoundaries(t *testing.T) {
 			changed.OpBytes = append([]string(nil), original.OpBytes...)
 			mutate(&changed)
 			selected := changed.Rows[len(changed.Rows)-1]
-			if witnesses, err := stackControlSourceProbe(changed, selected, "amd64"); err == nil {
+			if witnesses, err := stackControlSourceProbe(changed, selected, source, "amd64", catalog.OpBytesSize); err == nil {
 				t.Fatal("STACK_CONTROL_METADATA_ACCEPTED", name, witnesses)
 			}
 		})
@@ -147,5 +154,61 @@ func TestX86StackControlDoesNotWidenExistingScalarOwner(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestX86StackControlPublicSourceBoundaries(t *testing.T) {
+	original := stackControlOriginalCatalog(t)
+	source, err := LoadX86StackControlSource(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := X86StackControlRows(original, source, "amd64"); err != nil {
+		t.Fatal("actual complete source is a prerequisite", err)
+	}
+	for _, mutation := range []string{"missing-member", "duplicate-member", "retag-member", "changed-payload", "missing-enum", "capacity", "zero-source", "foreign-arch"} {
+		t.Run(mutation, func(t *testing.T) {
+			catalog := original
+			catalog.Optab = append([]X86LegacyOpcode(nil), original.Optab...)
+			captured, arch := source, "amd64"
+			index := -1
+			for position, entry := range catalog.Optab {
+				if entry.Opcode == "CALL" {
+					index = position
+				}
+			}
+			if index < 0 {
+				t.Fatal("original CALL source disappeared")
+			}
+			entry := catalog.Optab[index]
+			switch mutation {
+			case "missing-member":
+				entry.Ytab = "ynone"
+			case "duplicate-member":
+				for _, alternative := range original.Optab {
+					if alternative.Opcode == "JMP" {
+						entry = alternative
+						entry.TableIndex = index
+					}
+				}
+			case "retag-member":
+				entry.Opcode, entry.OpcodeExpression = "MOVL", "AMOVL"
+			case "changed-payload":
+				entry.OpBytes = append([]string(nil), entry.OpBytes...)
+				entry.OpBytes[0] = "0xfe"
+			case "missing-enum":
+				entry.OpcodeExpression = ""
+			case "capacity":
+				catalog.OpBytesSize++
+			case "zero-source":
+				captured = X86StackControlSource{}
+			case "foreign-arch":
+				arch = "arm64"
+			}
+			catalog.Optab[index] = entry
+			if rows, err := X86StackControlRows(catalog, captured, arch); err == nil {
+				t.Fatal("uncaptured source became a complete source view", mutation, rows)
+			}
+		})
 	}
 }
