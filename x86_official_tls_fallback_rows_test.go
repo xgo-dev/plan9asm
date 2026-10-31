@@ -396,6 +396,50 @@ func TestX86TLSFallbackSourceCannotRetagObservedWidth(t *testing.T) {
 	}
 }
 
+func TestX86TLSFallbackRejectsRetaggedActualControls(t *testing.T) {
+	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, control := range []struct {
+		name, arch string
+		shared     bool
+	}{
+		{"direct-NOP", "amd64", false},
+		{"shared-386", "386", true},
+		{"changed-actual-relocation", "amd64", true},
+	} {
+		t.Run(control.name, func(t *testing.T) {
+			observed := x86TLSFallbackActualProfile(t, control.arch, control.shared)
+			opcode := "MOVQ"
+			if control.arch == "386" {
+				opcode = "MOVL"
+			}
+			observed.ID = x86TLSFallbackOriginalID(t, catalog, opcode)
+			observed.Origin = "stock-asm/movTLSReg"
+			observed.Shared = control.arch == "amd64"
+			if control.arch == "amd64" {
+				observed.Encoding = []byte{0x48, 0x8b, 0x0d, 0, 0, 0, 0}
+				observed.Relocations = []string{"rel 3+4 t=R_TLS_IE +-4"}
+			} else {
+				observed.Encoding = []byte{0x65, 0x8b, 0x0d, 0, 0, 0, 0}
+				observed.Relocations = nil
+			}
+			if control.name == "changed-actual-relocation" {
+				listing := string(observed.listingBytes)
+				if strings.Count(listing, "+-4") != 1 {
+					t.Fatal("actual shared relocation seed must have one independently observed addend")
+				}
+				observed.listingBytes = []byte(strings.Replace(listing, "+-4", "+-3", 1))
+				observed.ListingSHA = fmt.Sprintf("%x", sha256.Sum256(observed.listingBytes))
+			}
+			if err := x86TLSFallbackValidateJoin(observed, observed.ID); err == nil {
+				t.Fatal("actual control or changed listing was retagged as a fallback source observation")
+			}
+		})
+	}
+}
+
 func TestX86TLSFallbackObservedSourceDoesNotGrantRuntime(t *testing.T) {
 	for _, source := range []struct{ instruction, arch string }{{"MOVL TLS,CX", "386"}, {"MOVQ TLS,CX", "amd64"}} {
 		instruction := x86PureGPUnknownInstruction(t, source.instruction)
