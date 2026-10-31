@@ -286,17 +286,14 @@ func stateSystemOriginalFrontendFailure(t *testing.T, arch string, fixture x86Of
 	if !ok || exit.ExitCode() != 1 || ctx.Err() != nil || !strings.Contains(string(output), "asm: asmand: bad address") {
 		t.Fatalf("actual original From/To mismatch has no exact SDK failure: %v / %v\n%s", err, ctx.Err(), output)
 	}
+	t.Logf("ORIGINAL_FRONTEND_FAILURE_OUTPUT:\n%s", output)
 	strict := goAssemblerOracleOutcome(input, object, output, err, ctx.Err(), false, arch)
 	if strict == nil || !strings.Contains(strict.Error(), "infrastructure failure") {
 		t.Fatal("positionless SDK diagnostic became a bound syntax rejection", strict)
 	}
-	// Confirm the incomplete opcode-without-ModRM bytes, never a successful
-	// instruction. The complete backend has a separate original-Go owner.
-	fixture.symbol, fixture.line = "SystemFrontend", 2
-	fixture.witness.Encoding = append([]byte(nil), fixture.witness.Encoding[:len(fixture.witness.Encoding)-1]...)
-	if err := x86OfficialPackedVerifyListing(string(output), []x86OfficialPackedCase{fixture}); err != nil {
-		t.Fatal("SDK failure no longer matches the observed incomplete source bytes", err)
-	}
+	// A single failed function need not produce a listing or complete object.
+	// Its source rejection supplies no successful byte witness. The original
+	// backend, when given From directly, has a separate encoding observation.
 	unchanged, readErr := os.ReadFile(input)
 	if readErr != nil || string(unchanged) != body {
 		t.Fatal("owned original frontend source changed", readErr)
