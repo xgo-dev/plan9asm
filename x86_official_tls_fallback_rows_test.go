@@ -440,6 +440,16 @@ func TestX86TLSFallbackRejectsRetaggedActualControls(t *testing.T) {
 	}
 }
 
+func TestX86TLSFallbackRejectsChangedActualObject(t *testing.T) {
+	observed := x86TLSFallbackActualProfile(t, "amd64", true)
+	observed.objectBytes = append([]byte(nil), observed.objectBytes...)
+	observed.objectBytes[len(observed.objectBytes)-1] ^= 1
+	observed.ObjectSHA = fmt.Sprintf("%x", sha256.Sum256(observed.objectBytes))
+	if err := x86TLSFallbackValidateJoin(observed, observed.ID); err == nil {
+		t.Fatal("changed actual object and recomputed public digest escaped the captured receipt")
+	}
+}
+
 func TestX86TLSFallbackObservedSourceDoesNotGrantRuntime(t *testing.T) {
 	for _, source := range []struct{ instruction, arch string }{{"MOVL TLS,CX", "386"}, {"MOVQ TLS,CX", "amd64"}} {
 		instruction := x86PureGPUnknownInstruction(t, source.instruction)
