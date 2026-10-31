@@ -163,7 +163,7 @@ func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
 	if _, err := X86StateSystemMemoryRows(original, frontend, "amd64"); err != nil {
 		t.Fatal("original complete source is a prerequisite", err)
 	}
-	for _, mutation := range []string{"duplicate-member", "missing-complete-table", "incomplete-frontend", "zero-frontend"} {
+	for _, mutation := range []string{"duplicate-member", "missing-complete-table", "incomplete-frontend", "zero-frontend", "missing-enum", "renamed-missing-enum"} {
 		t.Run(mutation, func(t *testing.T) {
 			catalog := original
 			catalog.Optab = append([]X86LegacyOpcode(nil), original.Optab...)
@@ -206,6 +206,21 @@ func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
 				roles = X86UnaryDestinations{roles: map[string]bool{"NOP": true}}
 			case "zero-frontend":
 				roles = X86UnaryDestinations{}
+			case "missing-enum", "renamed-missing-enum":
+				found := false
+				for index, entry := range catalog.Optab {
+					if entry.Opcode == "CLFLUSH" {
+						entry.OpcodeExpression = ""
+						if mutation == "renamed-missing-enum" {
+							entry.Opcode = "CAPTURED_FAKE_FLUSH"
+						}
+						catalog.Optab[index], found = entry, true
+						break
+					}
+				}
+				if !found {
+					t.Fatal("original CLFLUSH counterexample disappeared")
+				}
 			}
 			if rows, err := X86StateSystemMemoryRows(catalog, roles, "amd64"); err == nil {
 				t.Fatal("incomplete original source was admitted", mutation, len(rows))
