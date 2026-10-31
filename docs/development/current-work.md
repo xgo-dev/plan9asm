@@ -131,7 +131,8 @@ implementation file is replaced or modified.
 
 ## Source inventory and limits
 
-The final source union has 67 overlapping views and 64 canonical snapshots:
+The final source union has 67 overlapping views per SDK and 64 canonical
+snapshot files across both SDKs:
 
 | SDK | AVX | optab | ymovtab | Joined / denominator | Unjoined |
 |---|---:|---:|---:|---:|---:|
@@ -156,8 +157,8 @@ unexecuted forms never count as passing instruction coverage.
 1. Run final combined policies and all five architectures on both SDKs.
    The accepted controlled Translate comparison at `f0a64c2e3` retains all
    original 29 cases, MOV-dense cases, three ABBA blocks and actual outliers.
-   The subsequent library code is byte-exact; new source-table helpers are
-   consumed by the scanner, not translation. Keep this identity bridge
+   Subsequent source-table tooling remains outside the translator dependency
+   graph; the new source views are exercised by source tests. Keep this identity bridge
    separate from fresh execution or scanner performance measurements.
 2. Publish the completed source inventory only after those frozen integrated
    gates pass, then accept the new head's own CI, raw artifacts and coverage.
