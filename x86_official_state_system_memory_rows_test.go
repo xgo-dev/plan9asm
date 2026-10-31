@@ -195,8 +195,12 @@ func stateSystemOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCatalog,
 				} else if args[1] != "" {
 					instruction += " " + args[1]
 				}
+				destination := args[1]
+				if row.ZCase == "Zm_o" || row.ZCase == "Zib_" {
+					destination = ""
+				}
 				fixture := x86OfficialPackedCase{row: id, witness: goasmrules.X86PackedBinaryWitness{
-					Instruction: instruction, Encoding: encoding,
+					Instruction: instruction, Encoding: encoding, Destination: destination,
 				}}
 				if (row.ZCase == "Zm_o" || row.ZCase == "Zo_m") && unary[entry.Opcode] != (row.ZCase == "Zo_m") {
 					frontend = append(frontend, fixture)
@@ -306,6 +310,11 @@ func TestX86OfficialStateSystemMemoryOriginalGoBytesAndModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	roles, err := goasmrules.LoadX86UnaryDestinations(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	modes := map[string][]goasmrules.X86StateSystemMemoryRow{}
 	for _, arch := range []string{"amd64", "386"} {
 		t.Run(arch+"/XBEGIN-source-boundaries", func(t *testing.T) {
 			stateSystemOriginalXBEGINBoundary(t, arch)
@@ -328,6 +337,73 @@ func TestX86OfficialStateSystemMemoryOriginalGoBytesAndModes(t *testing.T) {
 				}
 			})
 		}
+		actual, err := goasmrules.X86StateSystemMemoryRows(catalog, roles, arch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stateSystemJoinOriginalCases(t, arch, actual, accepted, refused, frontend)
+		modes[arch] = actual
+	}
+	if !t.Failed() {
+		x86Legacy127SaveIdentity(t, "PLAN9ASM_STATE_SYSTEM_MEMORY_IDENTITY_OUTPUT", struct {
+			Source   goasmrules.X86LegacyCatalog
+			Frontend map[string]bool
+			Modes    map[string][]goasmrules.X86StateSystemMemoryRow
+		}{catalog, stateSystemOriginalUnaryDestinations(t), modes})
+	}
+}
+
+func stateSystemJoinOriginalCases(t *testing.T, arch string, rows []goasmrules.X86StateSystemMemoryRow, accepted, modeRefused, frontend []x86OfficialPackedCase) {
+	t.Helper()
+	expected := map[string]goasmrules.X86PackedBinaryWitness{}
+	for _, fixture := range accepted {
+		expected[fixture.row+"/"+fixture.witness.Instruction] = fixture.witness
+	}
+	filtered, rejected := map[string]bool{}, map[string]x86OfficialPackedCase{}
+	for _, fixture := range modeRefused {
+		filtered[fixture.row] = true
+	}
+	for _, fixture := range frontend {
+		rejected[fixture.row] = fixture
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if seen[row.ID] {
+			t.Fatal("duplicate original state source ID", arch, row.ID)
+		}
+		seen[row.ID] = true
+		if original, found := rejected[row.ID]; found {
+			if row.FrontendRejected == "" || row.ModeFiltered != "" || len(row.Witnesses) != 0 || len(row.BackendWitnesses) != 1 {
+				t.Fatal("frontend failure became a mode/target filter or a successful named-source witness", row)
+			}
+			candidate := row.BackendWitnesses[0]
+			if candidate.Instruction != original.witness.Instruction || candidate.Destination != original.witness.Destination || string(candidate.Encoding) != string(original.witness.Encoding) {
+				t.Fatal("backend candidate differs from the complete original encoding table", row, original)
+			}
+			delete(rejected, row.ID)
+			continue
+		}
+		if filtered[row.ID] {
+			if row.ModeFiltered == "" || row.FrontendRejected != "" || len(row.Witnesses) != 0 || len(row.BackendWitnesses) != 0 {
+				t.Fatal("original mode rejection became a successful source encoding", row)
+			}
+			delete(filtered, row.ID)
+			continue
+		}
+		if row.ModeFiltered != "" || row.FrontendRejected != "" || len(row.BackendWitnesses) != 0 || len(row.Witnesses) == 0 {
+			t.Fatal("valid original source disappeared or changed its origin", row)
+		}
+		for _, witness := range row.Witnesses {
+			key := row.ID + "/" + witness.Instruction
+			original, found := expected[key]
+			if !found || witness.Destination != original.Destination || string(witness.Encoding) != string(original.Encoding) {
+				t.Fatal("state source ID/instruction/encoding/destination differs from actual original Go", arch, row.ID, witness, original)
+			}
+			delete(expected, key)
+		}
+	}
+	if len(expected) != 0 || len(filtered) != 0 || len(rejected) != 0 {
+		t.Fatal("state source projection omitted original cases", arch, len(expected), len(filtered), len(rejected))
 	}
 }
 

@@ -155,10 +155,15 @@ func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for index := 0; index < reflect.TypeOf(frontend).NumField(); index++ {
+		if reflect.TypeOf(frontend).Field(index).PkgPath == "" {
+			t.Fatal("caller can modify captured frontend roles directly")
+		}
+	}
 	if _, err := X86StateSystemMemoryRows(original, frontend, "amd64"); err != nil {
 		t.Fatal("original complete source is a prerequisite", err)
 	}
-	for _, mutation := range []string{"duplicate-member", "missing-complete-table", "incomplete-frontend"} {
+	for _, mutation := range []string{"duplicate-member", "missing-complete-table", "incomplete-frontend", "zero-frontend"} {
 		t.Run(mutation, func(t *testing.T) {
 			catalog := original
 			catalog.Optab = append([]X86LegacyOpcode(nil), original.Optab...)
@@ -198,7 +203,9 @@ func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
 					}
 				}
 			case "incomplete-frontend":
-				roles = map[string]bool{"NOP": true}
+				roles = X86UnaryDestinations{roles: map[string]bool{"NOP": true}}
+			case "zero-frontend":
+				roles = X86UnaryDestinations{}
 			}
 			if rows, err := X86StateSystemMemoryRows(catalog, roles, "amd64"); err == nil {
 				t.Fatal("incomplete original source was admitted", mutation, len(rows))
@@ -210,6 +217,10 @@ func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
 // The first RED uses the existing helper. A refusal here identifies a missing
 // complete source projection, not a numerical or privileged execution bug.
 func TestX86StateSystemMemoryExistingTransportCompleteOriginalRows(t *testing.T) {
+	catalog, err := LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
 	unary := stateSystemOriginalUnaryDestinations(t)
 	frontend := 0
 	for _, entry := range stateSystemOriginalEntries(t) {
@@ -225,10 +236,12 @@ func TestX86StateSystemMemoryExistingTransportCompleteOriginalRows(t *testing.T)
 					continue
 				}
 				t.Run(fmt.Sprintf("%s/%s/%d", arch, entry.Opcode, row.RowIndex), func(t *testing.T) {
-					witnesses, err := x86ScalarRMWRowWitnesses(entry, row, arch)
+					witnesses, err := x86StateSystemMemoryWitnesses(entry, row, catalog.OpBytesSize)
 					if err != nil || len(witnesses) == 0 {
 						t.Fatal("complete source transport feature missing", entry.Ytab, row, err)
 					}
+					old, oldErr := x86ScalarRMWRowWitnesses(entry, row, arch)
+					t.Logf("STATE_SYSTEM_OLD_CONSUMER %s/%s/%d accepted=%t", arch, entry.Opcode, row.RowIndex, oldErr == nil && len(old) != 0)
 				})
 			}
 		}
@@ -251,6 +264,10 @@ func stateSystemClone(entry X86LegacyOpcode) X86LegacyOpcode {
 // malformed rejection alone is not evidence that the corresponding original
 // source row was accepted: the independent positive owner above supplies that.
 func TestX86StateSystemMemoryCompleteOriginalMetadataBoundaries(t *testing.T) {
+	catalog, err := LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, original := range stateSystemOriginalEntries(t) {
 		for _, selected := range original.Rows {
 			t.Run(fmt.Sprintf("%s/%d", original.Opcode, selected.RowIndex), func(t *testing.T) {
@@ -258,7 +275,7 @@ func TestX86StateSystemMemoryCompleteOriginalMetadataBoundaries(t *testing.T) {
 					"negative-escape", "overflow-escape", "negative-selected-index",
 					"past-selected-index", "original-index", "original-class",
 					"selected-class", "selected-arity", "selected-offset",
-					"original-stride", "nonbyte-tail", "enum-identity",
+					"original-stride", "nonbyte-tail", "enum-identity", "enum-missing",
 				} {
 					entry := stateSystemClone(original)
 					row := entry.Rows[selected.RowIndex]
@@ -294,6 +311,8 @@ func TestX86StateSystemMemoryCompleteOriginalMetadataBoundaries(t *testing.T) {
 						entry.OpBytes[len(entry.OpBytes)-1] = "256"
 					case "enum-identity":
 						entry.OpcodeExpression = "ANOP"
+					case "enum-missing":
+						entry.OpcodeExpression = ""
 					}
 					func() {
 						defer func() {
@@ -301,8 +320,11 @@ func TestX86StateSystemMemoryCompleteOriginalMetadataBoundaries(t *testing.T) {
 								t.Errorf("%s panicked: %v", mutation, value)
 							}
 						}()
-						if witnesses, err := x86ScalarRMWRowWitnesses(entry, row, "amd64"); err == nil {
+						if witnesses, err := x86ScalarRMWRowWitnesses(entry, row, "amd64"); mutation != "enum-missing" && err == nil {
 							t.Errorf("%s admitted damaged captured source: %+v", mutation, witnesses)
+						}
+						if witnesses, err := x86StateSystemMemoryWitnesses(entry, row, catalog.OpBytesSize); err == nil {
+							t.Errorf("%s admitted damaged source in the new projection: %+v", mutation, witnesses)
 						}
 					}()
 				}

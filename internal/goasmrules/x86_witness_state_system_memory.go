@@ -19,38 +19,43 @@ type X86StateSystemMemoryRow struct {
 	BackendWitnesses []X86ScalarRMWWitness `json:",omitempty"`
 }
 
+// X86UnaryDestinations is immutable to callers; only the source loader can
+// populate its complete role map. A zero value cannot classify source rows.
+type X86UnaryDestinations struct{ roles map[string]bool }
+
 // LoadX86UnaryDestinations captures the complete original frontend role map.
 // It does not change the legacy catalog or its existing serialized views.
-func LoadX86UnaryDestinations(goroot string) (map[string]bool, error) {
+func LoadX86UnaryDestinations(goroot string) (X86UnaryDestinations, error) {
+	var zero X86UnaryDestinations
 	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(goroot, "src/cmd/internal/obj/x86/obj6.go"), nil, 0)
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
 	variables, err := x86TableVariables(file)
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
 	literal := variables["unaryDst"]
 	if literal == nil || expression(literal.Type) != "map[obj.As]bool" {
-		return nil, fmt.Errorf("missing complete original unaryDst role map")
+		return zero, fmt.Errorf("missing complete original unaryDst role map")
 	}
 	result := map[string]bool{}
 	for _, element := range literal.Elts {
 		pair, ok := element.(*ast.KeyValueExpr)
 		if !ok {
-			return nil, fmt.Errorf("nonliteral unaryDst source role")
+			return zero, fmt.Errorf("nonliteral unaryDst source role")
 		}
 		name, err := x86SourceOpcodeName(strings.TrimPrefix(expression(pair.Key), "obj."))
 		setting := expression(pair.Value)
 		if _, exists := result[name]; exists || err != nil || setting != "true" && setting != "false" {
-			return nil, fmt.Errorf("invalid or duplicate unaryDst source role")
+			return zero, fmt.Errorf("invalid or duplicate unaryDst source role")
 		}
 		result[name] = setting == "true"
 	}
 	if len(result) == 0 {
-		return nil, fmt.Errorf("empty original unaryDst source roles")
+		return zero, fmt.Errorf("empty original unaryDst source roles")
 	}
-	return result, nil
+	return X86UnaryDestinations{roles: result}, nil
 }
 
 func x86StateSystemMemorySchema(table string) []string {
@@ -92,26 +97,34 @@ func x86StateSystemMemorySchema(table string) []string {
 // X86StateSystemMemoryRows retains all original rows, including source
 // frontend failures. Destination means the explicit To carrier; implicit
 // architectural outputs remain with their independent semantic consumers.
-func X86StateSystemMemoryRows(catalog X86LegacyCatalog, frontend map[string]bool, arch string) ([]X86StateSystemMemoryRow, error) {
-	if arch != "amd64" && arch != "386" || len(frontend) == 0 {
+func X86StateSystemMemoryRows(catalog X86LegacyCatalog, frontend X86UnaryDestinations, arch string) ([]X86StateSystemMemoryRow, error) {
+	if arch != "amd64" && arch != "386" || len(frontend.roles) == 0 {
 		return nil, fmt.Errorf("state source view requires an explicit x86 mode and frontend roles")
 	}
 	var result []X86StateSystemMemoryRow
+	counts, names := map[string]int{}, map[string]bool{}
 	for index, entry := range catalog.Optab {
 		if x86StateSystemMemorySchema(entry.Ytab) == nil {
 			continue
 		}
-		if entry.TableIndex != index {
-			return nil, fmt.Errorf("original state source table index changed")
+		if entry.TableIndex != index || names[entry.Opcode] {
+			return nil, fmt.Errorf("original state source index or unique opcode changed")
 		}
+		names[entry.Opcode] = true
 		for _, original := range entry.Rows {
+			counts[entry.Ytab]++
 			witnesses, err := x86StateSystemMemoryWitnesses(entry, original, catalog.OpBytesSize)
 			if err != nil {
 				return nil, fmt.Errorf("%s/%d: %w", entry.Opcode, original.RowIndex, err)
 			}
 			row := X86StateSystemMemoryRow{X86ScalarRMWRow: X86ScalarRMWRow{
 				ID: fmt.Sprintf("optab/%d/%s/%s/%d", index, entry.Opcode, entry.Ytab, original.RowIndex), Opcode: entry.Opcode}}
-			if (original.ZCase == "Zm_o" || original.ZCase == "Zo_m") && frontend[entry.Opcode] != (original.ZCase == "Zo_m") {
+			if original.ZCase == "Zo_m" {
+				if _, exists := frontend.roles[entry.Opcode]; !exists {
+					return nil, fmt.Errorf("missing original unary destination role for %s", entry.Opcode)
+				}
+			}
+			if (original.ZCase == "Zm_o" || original.ZCase == "Zo_m") && frontend.roles[entry.Opcode] != (original.ZCase == "Zo_m") {
 				row.FrontendRejected = "original unaryDst operand slot disagrees with " + original.ZCase + "; stock asm reports asmand: bad address"
 				row.BackendWitnesses = witnesses
 			} else if arch == "amd64" && entry.Prefix == "P32" || arch == "386" && (entry.Prefix == "Pw" || entry.Prefix == "Pfw") {
@@ -122,14 +135,29 @@ func X86StateSystemMemoryRows(catalog X86LegacyCatalog, frontend map[string]bool
 			result = append(result, row)
 		}
 	}
-	if len(result) != 135 && len(result) != 136 {
-		return nil, fmt.Errorf("incomplete state source tables: %d", len(result))
+	want := map[string]int{
+		"yclflush": 15, "ysvrs_mo": 9, "ysvrs_om": 6, "yin": 12,
+		"yint": 1, "ydivl": 20, "ydivb": 5, "ywrfsbase": 7,
+		"ycrc32l": 7, "yprefetch": 4, "yincq": 13, "yrdrand": 10,
+		"ym_rl": 12, "yrl_m": 2, "yrl_ml": 10, "yxbegin": 1, "yxabort": 1,
+	}
+	_, hasRDPID := frontend.roles["RDPID"]
+	if hasRDPID {
+		want["yrdrand"]++
+	}
+	if names["RDPID"] != hasRDPID || len(counts) != len(want) {
+		return nil, fmt.Errorf("state source/frontend inventory does not contain the complete tables")
+	}
+	for table, count := range want {
+		if counts[table] != count {
+			return nil, fmt.Errorf("incomplete state source table %s: %d/%d", table, counts[table], count)
+		}
 	}
 	return result, nil
 }
 
 func x86StateSystemMemoryWitnesses(entry X86LegacyOpcode, row X86LegacyOperand, capacity int) ([]X86ScalarRMWWitness, error) {
-	if entry.Kind != "encoding" || entry.Opcode == "" || entry.TableIndex < 0 || capacity <= 0 || len(entry.OpBytes) == 0 || len(entry.OpBytes) > capacity {
+	if entry.Kind != "encoding" || entry.Opcode == "" || entry.OpcodeExpression == "" || entry.TableIndex < 0 || capacity <= 0 || len(entry.OpBytes) == 0 || len(entry.OpBytes) > capacity {
 		return nil, fmt.Errorf("invalid complete state source entry")
 	}
 	if err := x86ScalarCompleteOperandSchema(entry, row, x86StateSystemMemorySchema(entry.Ytab)); err != nil {
