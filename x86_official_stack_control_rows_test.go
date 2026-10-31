@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -41,9 +44,78 @@ type x86StackControlOriginalCase struct {
 	refused     bool
 }
 
+// Older original backends surround AMD64 DUFF calls with their own BP
+// transport. Capture both the byte declarations and their actual use; their
+// presence is a source fact, not a hard-coded Go-version choice.
+func x86StackControlOriginalDuffFrame(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(runtime.GOROOT(), "src/cmd/internal/obj/x86/asm6.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, uses := map[string][]byte{}, map[string]int{}
+	for _, declaration := range file.Decls {
+		if group, ok := declaration.(*ast.GenDecl); ok && group.Tok == token.VAR {
+			for _, specification := range group.Specs {
+				specification, ok := specification.(*ast.ValueSpec)
+				if !ok || len(specification.Names) != 1 || len(specification.Values) != 1 {
+					continue
+				}
+				name := specification.Names[0].Name
+				if name != "bpduff1" && name != "bpduff2" {
+					continue
+				}
+				literal, ok := specification.Values[0].(*ast.CompositeLit)
+				if !ok || values[name] != nil {
+					t.Fatal("ambiguous original DUFF BP declaration", name)
+				}
+				for _, element := range literal.Elts {
+					atom, ok := element.(*ast.BasicLit)
+					if !ok || atom.Kind != token.INT {
+						t.Fatal("nonliteral original DUFF BP byte", name)
+					}
+					value, err := strconv.ParseUint(atom.Value, 0, 8)
+					if err != nil {
+						t.Fatal(err)
+					}
+					values[name] = append(values[name], byte(value))
+				}
+			}
+		}
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "doasm" {
+			continue
+		}
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "Put" {
+				return true
+			}
+			receiver, ok := selector.X.(*ast.Ident)
+			argument, named := call.Args[0].(*ast.Ident)
+			if ok && named && receiver.Name == "ab" && (argument.Name == "bpduff1" || argument.Name == "bpduff2") {
+				uses[argument.Name]++
+			}
+			return true
+		})
+	}
+	if len(values) == 0 && len(uses) == 0 {
+		return nil, nil
+	}
+	if len(values) != 2 || len(uses) != 2 || uses["bpduff1"] != 1 || uses["bpduff2"] != 1 {
+		t.Fatal("incomplete original DUFF BP source transport", values, uses)
+	}
+	return values["bpduff1"], values["bpduff2"]
+}
+
 func x86StackControlOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) []x86StackControlOriginalCase {
 	t.Helper()
 	var result []x86StackControlOriginalCase
+	duffBefore, duffAfter := x86StackControlOriginalDuffFrame(t)
 	rows := 0
 	for _, entry := range catalog.Optab {
 		switch entry.Ytab {
@@ -132,8 +204,9 @@ func x86StackControlOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCata
 				if arch == "386" {
 					kind = "R_ADDR"
 				}
-				add("*·Target+7(SB)", []byte{payload[offset], payload[offset+1], 0, 0, 0, 0}, 0,
-					rel(kind, "literal.Target", 7, 2, 4))
+				// checkaddr permits *name(SB), not *name+offset(SB).
+				add("*·Target(SB)", []byte{payload[offset], payload[offset+1], 0, 0, 0, 0}, 0,
+					rel(kind, "literal.Target", 0, 2, 4))
 			case "Zcall", "Zcallduff":
 				arguments, symbol := "·Target+7(SB)", "literal.Target"
 				addend := int64(7)
@@ -141,7 +214,12 @@ func x86StackControlOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCata
 					symbol, addend = "runtime."+strings.ToLower(entry.Opcode), 37
 					arguments = "$" + strings.Replace(symbol, ".", "·", 1) + "+37(SB)"
 				}
-				add(arguments, []byte{payload[offset], 0, 0, 0, 0}, 0, rel("R_CALL", symbol, addend, 1, 4))
+				code, displacement := []byte{payload[offset], 0, 0, 0, 0}, 1
+				if operand.ZCase == "Zcallduff" && arch == "amd64" {
+					code = append(append(append([]byte(nil), duffBefore...), code...), duffAfter...)
+					displacement += len(duffBefore)
+				}
+				add(arguments, code, 0, rel("R_CALL", symbol, addend, displacement, 4))
 			case "Zcallcon", "Zjmpcon":
 				opcode := payload[offset]
 				if operand.ZCase == "Zjmpcon" {

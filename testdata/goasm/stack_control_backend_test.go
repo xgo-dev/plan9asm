@@ -32,7 +32,9 @@ func TestPlan9asmOriginalDuffSource(t *testing.T) {
 				t.Fatal("actual DUFF encoder did not preserve its symbol relocation", owner.R)
 			}
 			relocation := owner.R[0]
-			if relocation.Type != objabi.R_CALL || relocation.Off != 14 || relocation.Siz != 4 ||
+			displacement := int(relocation.Off) - int(instruction.Pc)
+			if relocation.Type != objabi.R_CALL || displacement < 1 || displacement+4 > buffer.Len() ||
+				buffer.Bytes()[displacement-1] != 0xe8 || relocation.Siz != 4 ||
 				relocation.Sym.Name != operation.symbol || relocation.Add != 37 {
 				t.Fatal("actual original DUFF PC/symbol/addend changed", relocation)
 			}
