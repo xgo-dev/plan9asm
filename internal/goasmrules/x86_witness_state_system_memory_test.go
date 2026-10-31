@@ -146,6 +146,67 @@ func TestX86StateSystemMemoryCompleteOriginalInventory(t *testing.T) {
 	stateSystemOriginalEntries(t)
 }
 
+func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
+	original, err := LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	frontend, err := LoadX86UnaryDestinations(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := X86StateSystemMemoryRows(original, frontend, "amd64"); err != nil {
+		t.Fatal("original complete source is a prerequisite", err)
+	}
+	for _, mutation := range []string{"duplicate-member", "missing-complete-table", "incomplete-frontend"} {
+		t.Run(mutation, func(t *testing.T) {
+			catalog := original
+			catalog.Optab = append([]X86LegacyOpcode(nil), original.Optab...)
+			roles := frontend
+			first, replacement := -1, X86LegacyOpcode{}
+			for index, entry := range original.Optab {
+				if entry.Ytab == "yclflush" {
+					if first < 0 {
+						first = index
+					} else {
+						replacement = entry
+						break
+					}
+				}
+			}
+			if first < 0 || replacement.Opcode == "" {
+				t.Fatal("complete source counterexample lost its original members")
+			}
+			switch mutation {
+			case "duplicate-member":
+				replacement.TableIndex = first
+				catalog.Optab[first] = replacement
+			case "missing-complete-table":
+				for _, entry := range original.Optab {
+					if entry.Ytab == "ydivb" {
+						replacement = entry
+						break
+					}
+				}
+				for index, entry := range original.Optab {
+					if entry.Ytab == "yprefetch" {
+						copy := replacement
+						copy.TableIndex = index
+						copy.Opcode = fmt.Sprintf("SOURCE%d", index)
+						copy.OpcodeExpression = "A" + copy.Opcode
+						catalog.Optab[index] = copy
+					}
+				}
+			case "incomplete-frontend":
+				roles = map[string]bool{"NOP": true}
+			}
+			if rows, err := X86StateSystemMemoryRows(catalog, roles, "amd64"); err == nil {
+				t.Fatal("incomplete original source was admitted", mutation, len(rows))
+			}
+		})
+	}
+}
+
 // The first RED uses the existing helper. A refusal here identifies a missing
 // complete source projection, not a numerical or privileged execution bug.
 func TestX86StateSystemMemoryExistingTransportCompleteOriginalRows(t *testing.T) {
