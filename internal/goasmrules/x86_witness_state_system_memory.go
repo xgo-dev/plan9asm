@@ -1,6 +1,8 @@
 package goasmrules
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -21,7 +23,10 @@ type X86StateSystemMemoryRow struct {
 
 // X86UnaryDestinations is immutable to callers; only the source loader can
 // populate its complete role map. A zero value cannot classify source rows.
-type X86UnaryDestinations struct{ roles map[string]bool }
+type X86UnaryDestinations struct {
+	roles   map[string]bool
+	members []byte
+}
 
 // LoadX86UnaryDestinations captures the complete original frontend role map.
 // It does not change the legacy catalog or its existing serialized views.
@@ -55,7 +60,30 @@ func LoadX86UnaryDestinations(goroot string) (X86UnaryDestinations, error) {
 	if len(result) == 0 {
 		return zero, fmt.Errorf("empty original unaryDst source roles")
 	}
-	return X86UnaryDestinations{roles: result}, nil
+	catalog, err := LoadX86LegacyRules(goroot)
+	if err != nil {
+		return zero, err
+	}
+	members, err := x86StateSystemMemoryMembers(catalog)
+	if err != nil {
+		return zero, err
+	}
+	return X86UnaryDestinations{roles: result, members: members}, nil
+}
+
+// Capture actual member metadata, never an independently maintained opcode
+// registry. Serialization owns its bytes and cannot alias caller catalog slices.
+func x86StateSystemMemoryMembers(catalog X86LegacyCatalog) ([]byte, error) {
+	var members []X86LegacyOpcode
+	for _, entry := range catalog.Optab {
+		if x86StateSystemMemorySchema(entry.Ytab) != nil {
+			members = append(members, entry)
+		}
+	}
+	return json.Marshal(struct {
+		Capacity int
+		Members  []X86LegacyOpcode
+	}{catalog.OpBytesSize, members})
 }
 
 func x86StateSystemMemorySchema(table string) []string {
@@ -100,6 +128,10 @@ func x86StateSystemMemorySchema(table string) []string {
 func X86StateSystemMemoryRows(catalog X86LegacyCatalog, frontend X86UnaryDestinations, arch string) ([]X86StateSystemMemoryRow, error) {
 	if arch != "amd64" && arch != "386" || len(frontend.roles) == 0 {
 		return nil, fmt.Errorf("state source view requires an explicit x86 mode and frontend roles")
+	}
+	members, err := x86StateSystemMemoryMembers(catalog)
+	if err != nil || !bytes.Equal(members, frontend.members) {
+		return nil, fmt.Errorf("state members differ from the captured Go encoder source")
 	}
 	var result []X86StateSystemMemoryRow
 	counts, names := map[string]int{}, map[string]bool{}
