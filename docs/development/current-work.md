@@ -1,6 +1,6 @@
 # PR40 closeout
 
-Updated 2026-10-31. Finish amd64 correctness, typed instruction families and
+Updated 2026-11-01. Finish amd64 correctness, typed instruction families and
 translation efficiency before expanding another architecture. Retain the
 386, ARM, ARM64 and WASM gates. Read [architecture](architecture.md),
 [family development](instructions.md), [convergence](x86-convergence.md)
@@ -11,19 +11,23 @@ local inventory processes.
 ## Last accepted publication
 
 [PR40](https://github.com/xgo-dev/plan9asm/pull/40) remains draft.
-Head `0310af39b` completes its own
-[CI round](https://github.com/xgo-dev/plan9asm/actions/runs/41190856800)
-naturally: **325/325 successful jobs**, no reruns or cancellations.
-Independent checks close all 286 fresh source artifacts, 240 partitions,
+Head `2356e4291` completes its own
+[CI round](https://github.com/xgo-dev/plan9asm/actions/runs/41215084598):
+**325/325 successful checks**, comprising 314 retained first-attempt executions
+and eleven second-attempt executions. The first attempt naturally completed
+with 323 successes and two failures: an Ubuntu APT TLS failure before Go tests
+and its dependent module collector. Those failures remain recorded. Only failed
+work was rerun, after the whole first attempt ended.
+Independent checks join all 286 source artifacts to actual attempts, 240 partitions,
 23 groups and all 22 Windows/race packages with 168 raw streams each.
 Host-inapplicable test skips remain separate from passes.
 
-Official function coverage is 120,283 / 136,464 = **88.1%**.
-The 22-profile raw block union is 120,383 / 136,564 = 88.1513%.
+Official function coverage is 120,674 / 136,909 = **88.1%**.
+The 22-profile raw block union is 120,774 / 137,009 = 88.1504%.
 Exactly 100 covered initializer statements in 82 blocks outside function
 declarations explain the denominator difference. An independent Go AST
 observer reproduces the official algorithm; the original failed equality
-check remains recorded. Codecov patch coverage is **94.60% >= 87.83%**.
+check remains recorded. Codecov patch coverage is **93.73% >= 87.83%**.
 
 The fifteen-kernel native scalar-move owner actually runs on current
 Go 1.27.2 and minimum Go 1.20.14 Linux CI: ten RUN/PASS nodes per SDK,
@@ -34,13 +38,13 @@ These observations do not qualify every native instruction or ABI entry.
 Both historical review threads are resolved; no formal approval is recorded.
 Earlier `e04799ae8` remains a failed round: 302 successful and 23 failed jobs
 from two reproduced fixture defects and their dependent collectors.
-The `0310af39b` repairs have fresh evidence; they do not relabel that old run.
-[Earlier component history](https://github.com/cpunion/plan9asm/blob/0310af39bb51abbe3d3bd0b97c8ebc680fd6305a/docs/development/current-work.md)
+The accepted repairs have fresh evidence; they do not relabel that old run.
+[Earlier component history](https://github.com/cpunion/plan9asm/blob/2356e4291451c4f7a822a55bb35eb77b720a03af/docs/development/current-work.md)
 retains prior qualifications and failures.
 
 ## Current integrated batch
 
-The code snapshot is `6d350c633`, combining the following qualified components.
+The code snapshot is `20279acda`, combining the following qualified components.
 A later publication needs its own complete gates and CI; an older accepted
 head does not certify these changes.
 
@@ -62,11 +66,29 @@ head does not certify these changes.
 - Non-TLS ymovtab grammar joins 92 more source identities using five shared
   encoding cases. Literal, prefix and ModRM transport and complete-table
   structure validation are shared with existing consumers. The eighteen
-  double-shift rows stay unchanged; two TLS rows retain separate obligations.
+  double-shift rows stay unchanged.
 - CMOV runtime fixtures prepare their process-owned tool cache before source
   capture. The immutable reader still rejects files that change while read.
-  Resource/lifecycle regressions pass on both SDKs; native Linux confirmation
-  belongs to the candidate's own CI, not this host's seven explicit skips.
+  Resource/lifecycle regressions pass on both SDKs. All seven native batches
+  actually pass in accepted Linux CI; local host skips do not certify them.
+- State/system/memory grammar joins 94 additional source identities through
+  complete captured tables and shared encoding transport. Original enum, name,
+  operand classes and payload are validated before mode classification.
+  FLDENV's stock frontend rejection remains separate from its original-backend
+  encoding; external XBEGIN frontend and backend observations also stay distinct.
+- Stack/control grammar joins forty identities through five format groups:
+  register opcode, directional ModRM, immediate/literal, PC-relative and
+  symbol-indirect relocation. Thirty-eight stock-assembler rows and two DUFF
+  backend rows have separate original-source observations. Actual Go 1.20
+  frame-wrapper bytes and relocation offsets are preserved. This implementation
+  adds 321 net production lines and reuses the captured-member serializer.
+- Two contextual TLS fallback rows use real Linux/386 non-shared and
+  Linux/amd64 shared assembler outputs. Direct-TLS NOP and shared386 controls
+  grant neither fallback identity. Actual source/object/listing, SDK, profile,
+  bytes and relocations are joined. Canonical source identity omits only
+  path-dependent object/listing hashes; complete original dynamic artifacts
+  and their hashes remain retained. This completion is test-only and grants
+  no translator NUM, stack, caller, native or live TLS permission.
 
 Both SDKs pass the new alias grammar/effect tests (125 nodes and thirty
 five-target, three-API O0/O2 object modules each). Portable execution passes
@@ -94,22 +116,35 @@ The fallback batch passes nine roots / 489 nodes on each SDK. Complete rules
 pass 182 roots / 18,908 and 18,925 nodes; thirteen existing hooks pass 112 each.
 All previous 56 source snapshots remain byte-exact. Existing TLS, machine and
 segment boundaries pass 17 / 13 roots and 21,432 / 21,406 nodes respectively;
-these checks do not close the two contextual TLS encoding rows.
+these historical checks did not close the two contextual TLS encoding rows.
+
+The final combined source scope passes 242 roots / 41,562 nodes on current
+Go 1.27.3 and 238 roots / 41,550 nodes on minimum Go 1.20.14, without failures
+or skips. Prior thirty-row consumers pass fifteen roots per SDK. The TLS scope
+independently passes seven roots / 34 nodes per SDK. All 62 prior source
+snapshots are freshly byte-exact; repeated real TLS captures have identical
+canonical identities and retain distinct original objects/listings. Both SDKs
+pass vet and build, plus formatting and diff checks. Default vet stays enabled:
+Go 1.20 vets the physical original SDK test file; the appended owned backend
+fixture executes but legacy vet cannot see its overlay text. No SDK
+implementation file is replaced or modified.
 
 ## Source inventory and limits
 
-The current integrated source union has 64 overlapping views and 58 snapshots:
+The final source union has 67 overlapping views and 64 canonical snapshots:
 
-| SDK | AVX | optab | ymovtab | Joined | Legacy / denominator | Unjoined legacy |
-|---|---:|---:|---:|---:|---:|---:|
-| Current | 3,568 | 1,172 | 110 | 4,850 | 1,282 / 1,418 | 136 |
-| Minimum | 3,568 | 1,171 | 110 | 4,849 | 1,281 / 1,417 | 136 |
+| SDK | AVX | optab | ymovtab | Joined / denominator | Unjoined |
+|---|---:|---:|---:|---:|---:|
+| Current | 3,568 | 1,306 | 112 | 4,986 / 4,986 | 0 |
+| Minimum | 3,568 | 1,305 | 112 | 4,985 / 4,985 | 0 |
 
-These are independently joined source identities, not translated or executed
-instruction counts. The denominator excludes exactly thirteen Zpseudo and
+These are independently joined source identities, not IR, LLVM-object or
+executed instruction counts. The denominator excludes exactly thirteen Zpseudo and
 four Zbyte rows; their identities remain retained. The ymovtab sentinel
 remains separate from its 112 encoding rows. Preserve overlapping rows,
-first-match selection and actual mode refusals.
+first-match selection, frontend refusals, backend-only observations and actual
+mode restrictions. A complete source join does not establish initialized forms,
+successful LLVM compilation or numerical/native semantics.
 
 Source grammar grants no NUM, pointer extent, machine state or source lease.
 The newly observed MMX conversions and status forms still need their separate
@@ -124,11 +159,9 @@ unexecuted forms never count as passing instruction coverage.
    The subsequent library code is byte-exact; new source-table helpers are
    consumed by the scanner, not translation. Keep this identity bridge
    separate from fresh execution or scanner performance measurements.
-2. Finish the remaining 136 source identities as format groups:
-   forty stack/control optab rows, 94 state/system/memory optab rows and
-   two contextual TLS ymovtab rows. TLS zero payloads require real target/
-   shared/relocation observations. A direct-TLS NOP comes from progedit,
-   bypasses ymovtab and cannot qualify either fallback encoding row.
+2. Publish the completed source inventory only after those frozen integrated
+   gates pass, then accept the new head's own CI, raw artifacts and coverage.
+   The accepted `2356e4291` round does not certify a later revision.
 3. Continue initialized forms and semantic families alongside the inventory.
    Keep element, carrier, active/result and memory widths, operand direction,
    masks, alias writes, FLAGS and fault/order effects distinct. Reuse typed
@@ -141,7 +174,9 @@ unexecuted forms never count as passing instruction coverage.
 5. [LLGo2694](https://github.com/xgo-dev/llgo/pull/2694) remains
    `f1c1571a1`, based on `277e5b280`, pinning accepted D905. Its own CI
    passes 140 jobs plus two conditional publisher skips, with 97.06% patch
-   against 95.84%. The unresolved P1 requires a tagged upstream translator
+   against 95.84%. A local rebase onto main `9c7bf2197` is prepared; it needs
+   a verified translator pin and fresh integration checks before publishing.
+   The unresolved P1 requires a tagged upstream translator
    release; a fork replacement does not satisfy it.
 
 Use current Go 1.27, a complete immutable Go 1.20.14 SDK and LLVM 22 only.
