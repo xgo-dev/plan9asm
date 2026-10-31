@@ -25,6 +25,7 @@ type x86TLSFallbackSourceObservation struct {
 	Shared                                      bool
 	Encoding                                    []byte
 	Relocations                                 []string
+	sourceBytes, objectBytes, listingBytes      []byte
 }
 
 func x86TLSFallbackOriginalID(t *testing.T, catalog goasmrules.X86LegacyCatalog, opcode string) string {
@@ -140,7 +141,8 @@ func x86TLSFallbackActualProfile(t *testing.T, arch string, shared bool) x86TLSF
 	observation := x86TLSFallbackSourceObservation{Instruction: instruction, Target: "linux/" + arch,
 		SDKVersion: header[4], Shared: shared, SourceSHA: fmt.Sprintf("%x", sha256.Sum256([]byte(source))),
 		ObjectSHA: fmt.Sprintf("%x", sha256.Sum256(object)), ListingSHA: fmt.Sprintf("%x", sha256.Sum256([]byte(listing))),
-		SDKSourceSHA: map[string]string{}, Relocations: x86TLSFallbackRelocationLines(t, listing)}
+		SDKSourceSHA: map[string]string{}, Relocations: x86TLSFallbackRelocationLines(t, listing),
+		sourceBytes: []byte(source), objectBytes: append([]byte(nil), object...), listingBytes: []byte(listing)}
 	if artifacts := os.Getenv("PLAN9ASM_TLS_FALLBACK_ARTIFACT_DIR"); artifacts != "" {
 		owner := filepath.Join(artifacts, strings.ReplaceAll(t.Name(), "/", "_"))
 		if err := os.MkdirAll(owner, 0700); err != nil {
@@ -199,7 +201,9 @@ func x86TLSFallbackActualProfile(t *testing.T, arch string, shared bool) x86TLSF
 		}
 		observation.ID = x86TLSFallbackOriginalID(t, catalog, opcode)
 	}
-	t.Logf("ACTUAL_TLS_SOURCE_PROFILE %+v", observation)
+	t.Logf("ACTUAL_TLS_SOURCE_PROFILE id=%s origin=%s target=%s shared=%t SDK=%s sourceSHA=%s objectSHA=%s listingSHA=%s bytes=%x relocations=%q",
+		observation.ID, observation.Origin, observation.Target, observation.Shared, observation.SDKVersion,
+		observation.SourceSHA, observation.ObjectSHA, observation.ListingSHA, observation.Encoding, observation.Relocations)
 	return observation
 }
 
@@ -208,6 +212,36 @@ func x86TLSFallbackValidateJoin(observation x86TLSFallbackSourceObservation, exp
 		observation.SDKVersion != runtime.Version() || len(observation.SourceSHA) != 64 || len(observation.ObjectSHA) != 64 ||
 		len(observation.ListingSHA) != 64 || len(observation.SDKSourceSHA) != 3 {
 		return fmt.Errorf("incomplete actual TLS source/profile provenance")
+	}
+	for _, receipt := range []struct {
+		data []byte
+		hash string
+	}{
+		{observation.sourceBytes, observation.SourceSHA},
+		{observation.objectBytes, observation.ObjectSHA},
+		{observation.listingBytes, observation.ListingSHA},
+	} {
+		if len(receipt.data) == 0 || fmt.Sprintf("%x", sha256.Sum256(receipt.data)) != receipt.hash {
+			return fmt.Errorf("TLS source receipt digest no longer matches its actual captured bytes")
+		}
+	}
+	expectedSource := "TEXT ·TLSProfile(SB),516,$0-0\n" + observation.Instruction + "\nRET\n"
+	if string(observation.sourceBytes) != expectedSource {
+		return fmt.Errorf("TLS source receipt no longer matches the observed instruction")
+	}
+	end := bytes.IndexByte(observation.objectBytes, '\n')
+	if end < 0 {
+		return fmt.Errorf("TLS source receipt lacks an actual object header")
+	}
+	header := strings.Fields(string(observation.objectBytes[:end]))
+	if len(header) < 5 || header[0] != "go" || header[1] != "object" ||
+		header[2]+"/"+header[3] != observation.Target || header[4] != observation.SDKVersion {
+		return fmt.Errorf("TLS source receipt no longer matches the selected target and SDK")
+	}
+	id := strings.Split(expectedID, "/")
+	instruction := strings.Fields(observation.Instruction)
+	if len(id) != 4 || len(instruction) != 2 || id[0] != "ymovtab" || id[2] != instruction[0] || id[3] != "movTLSReg" {
+		return fmt.Errorf("TLS source identity no longer matches its observed instruction width")
 	}
 	for _, name := range []string{"cmd/internal/obj/x86/asm6.go", "cmd/internal/obj/x86/obj6.go", "cmd/internal/objabi/reloctype_string.go"} {
 		data, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src", name))
@@ -249,14 +283,27 @@ func TestX86TLSFallbackActualObjectProfiles(t *testing.T) {
 	}
 }
 
-// Initial adapter intentionally retains the qualified old110 ID union. The
-// real RED is the absent2 ID assertions after actual bytes/relocations pass.
-// After RED, only this tests-only adapter adds the two validated observations;
-// the production X86MovtabRemainderRows continues excluding unbound TLS.
-func x86TLSFallbackSourceUnion(t *testing.T, catalog goasmrules.X86LegacyCatalog, _ []x86TLSFallbackSourceObservation) map[string]bool {
+// Add only the independently validated contextual source observations.
+// The production source grammar still excludes unbound TLS and grants no
+// runtime, numerical or native authority.
+func x86TLSFallbackSourceUnion(t *testing.T, catalog goasmrules.X86LegacyCatalog, observed []x86TLSFallbackSourceObservation) map[string]bool {
 	t.Helper()
 	result := map[string]bool{}
 	for id := range movtabCompleteSourceJoin(t, catalog, "amd64") {
+		result[id] = true
+	}
+	if len(observed) != 2 {
+		t.Fatal("expected exactly two independently observed TLS fallback identities", len(observed))
+	}
+	for _, observation := range observed {
+		opcode := strings.Fields(observation.Instruction)[0]
+		id := x86TLSFallbackOriginalID(t, catalog, opcode)
+		if err := x86TLSFallbackValidateJoin(observation, id); err != nil {
+			t.Fatal(err)
+		}
+		if result[id] {
+			t.Fatal("duplicate contextual TLS source identity", id)
+		}
 		result[id] = true
 	}
 	return result
@@ -311,6 +358,9 @@ func TestX86TLSFallbackSourceProfileCounterfeits(t *testing.T) {
 		"foreign-source-hash":     func(o *x86TLSFallbackSourceObservation) { o.SourceSHA = strings.Repeat("0", 64) },
 		"foreign-object-hash":     func(o *x86TLSFallbackSourceObservation) { o.ObjectSHA = strings.Repeat("0", 64) },
 		"foreign-listing-hash":    func(o *x86TLSFallbackSourceObservation) { o.ListingSHA = strings.Repeat("0", 64) },
+		"changed-source-bytes":    func(o *x86TLSFallbackSourceObservation) { o.sourceBytes[0] ^= 1 },
+		"changed-object-bytes":    func(o *x86TLSFallbackSourceObservation) { o.objectBytes[0] ^= 1 },
+		"changed-listing-bytes":   func(o *x86TLSFallbackSourceObservation) { o.listingBytes[0] ^= 1 },
 		"wrong-SDK":               func(o *x86TLSFallbackSourceObservation) { o.SDKVersion = "go0.0" },
 		"wrong-SDK-source": func(o *x86TLSFallbackSourceObservation) {
 			o.SDKSourceSHA = map[string]string{"foreign": "", "other": "", "third": ""}
@@ -319,11 +369,17 @@ func TestX86TLSFallbackSourceProfileCounterfeits(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := original
+			changed.sourceBytes = append([]byte(nil), original.sourceBytes...)
+			changed.objectBytes = append([]byte(nil), original.objectBytes...)
+			changed.listingBytes = append([]byte(nil), original.listingBytes...)
 			mutate(&changed)
 			if err := x86TLSFallbackValidateJoin(changed, original.ID); err == nil {
 				t.Fatal("metadata/control evidence was counted as a passing source join", name)
 			}
 		})
+	}
+	if err := x86TLSFallbackValidateJoin(original, original.ID); err != nil {
+		t.Fatal("counterfeits must not modify the valid actual observation", err)
 	}
 }
 
