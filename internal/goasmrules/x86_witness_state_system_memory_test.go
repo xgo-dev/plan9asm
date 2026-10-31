@@ -163,7 +163,7 @@ func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
 	if _, err := X86StateSystemMemoryRows(original, frontend, "amd64"); err != nil {
 		t.Fatal("original complete source is a prerequisite", err)
 	}
-	for _, mutation := range []string{"duplicate-member", "missing-complete-table", "incomplete-frontend", "zero-frontend", "missing-enum", "renamed-missing-enum", "retag-member", "swap-member-names"} {
+	for _, mutation := range []string{"duplicate-member", "missing-complete-table", "incomplete-frontend", "zero-frontend", "missing-enum", "renamed-missing-enum", "retag-member", "swap-member-names", "changed-member-payload"} {
 		t.Run(mutation, func(t *testing.T) {
 			catalog := original
 			catalog.Optab = append([]X86LegacyOpcode(nil), original.Optab...)
@@ -221,7 +221,7 @@ func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
 				if !found {
 					t.Fatal("original CLFLUSH counterexample disappeared")
 				}
-			case "retag-member", "swap-member-names":
+			case "retag-member", "swap-member-names", "changed-member-payload":
 				prefetch, move := -1, -1
 				for index, entry := range catalog.Optab {
 					if entry.Opcode == "PREFETCHT0" {
@@ -235,6 +235,12 @@ func TestX86StateSystemMemoryRequiresCompleteSourceOrigin(t *testing.T) {
 					t.Fatal("original source member relabeling controls disappeared")
 				}
 				first, second := catalog.Optab[prefetch], catalog.Optab[move]
+				if mutation == "changed-member-payload" {
+					first = stateSystemClone(first)
+					first.OpBytes[0] = "0x19"
+					catalog.Optab[prefetch] = first
+					break
+				}
 				if mutation == "swap-member-names" {
 					second.Opcode, second.OpcodeExpression = first.Opcode, first.OpcodeExpression
 					catalog.Optab[move] = second
