@@ -2,11 +2,52 @@ package goasmrules
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func stateSystemOriginalUnaryDestinations(t *testing.T) map[string]bool {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(runtime.GOROOT(), "src/cmd/internal/obj/x86/obj6.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]bool{}
+	for _, declaration := range file.Decls {
+		group, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range group.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != 1 || value.Names[0].Name != "unaryDst" || len(value.Values) != 1 {
+				continue
+			}
+			literal, ok := value.Values[0].(*ast.CompositeLit)
+			if !ok {
+				t.Fatal("original unaryDst is not a complete source literal")
+			}
+			for _, element := range literal.Elts {
+				pair := element.(*ast.KeyValueExpr)
+				key, setting := pair.Key.(*ast.Ident), pair.Value.(*ast.Ident)
+				if !strings.HasPrefix(key.Name, "A") || setting.Name != "true" && setting.Name != "false" {
+					t.Fatal("original unaryDst key/value changed", element)
+				}
+				result[strings.TrimPrefix(key.Name, "A")] = setting.Name == "true"
+			}
+		}
+	}
+	if len(result) == 0 {
+		t.Fatal("actual SDK has no captured unaryDst source roles")
+	}
+	return result
+}
 
 // Inventory complete source tables, including their already joined numeric
 // users. Shared encodings supply no machine-state, memory or native permission.
@@ -108,12 +149,19 @@ func TestX86StateSystemMemoryCompleteOriginalInventory(t *testing.T) {
 // The first RED uses the existing helper. A refusal here identifies a missing
 // complete source projection, not a numerical or privileged execution bug.
 func TestX86StateSystemMemoryExistingTransportCompleteOriginalRows(t *testing.T) {
+	unary := stateSystemOriginalUnaryDestinations(t)
+	frontend := 0
 	for _, entry := range stateSystemOriginalEntries(t) {
 		for _, row := range entry.Rows {
 			for _, arch := range []string{"amd64", "386"} {
 				if arch == "amd64" && entry.Prefix == "P32" ||
 					arch == "386" && (entry.Prefix == "Pw" || entry.Prefix == "Pfw") {
 					continue // Original row retained; separate actual-Go mode refusals below.
+				}
+				if (row.ZCase == "Zm_o" || row.ZCase == "Zo_m") && unary[entry.Opcode] != (row.ZCase == "Zo_m") {
+					frontend++
+					t.Logf("ORIGINAL_FRONTEND_SLOT_REJECTION %s %s/%d: unaryDst disagrees with %s, retained in the complete inventory", arch, entry.Opcode, row.RowIndex, row.ZCase)
+					continue
 				}
 				t.Run(fmt.Sprintf("%s/%s/%d", arch, entry.Opcode, row.RowIndex), func(t *testing.T) {
 					witnesses, err := x86ScalarRMWRowWitnesses(entry, row, arch)
@@ -123,6 +171,9 @@ func TestX86StateSystemMemoryExistingTransportCompleteOriginalRows(t *testing.T)
 				})
 			}
 		}
+	}
+	if frontend != 2 {
+		t.Fatal("original per-mode frontend slot boundary changed", frontend)
 	}
 }
 

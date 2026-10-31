@@ -1,17 +1,60 @@
 package plan9asm
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
+
+func stateSystemOriginalUnaryDestinations(t *testing.T) map[string]bool {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(runtime.GOROOT(), "src/cmd/internal/obj/x86/obj6.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]bool{}
+	for _, declaration := range file.Decls {
+		group, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range group.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != 1 || value.Names[0].Name != "unaryDst" || len(value.Values) != 1 {
+				continue
+			}
+			literal, ok := value.Values[0].(*ast.CompositeLit)
+			if !ok {
+				t.Fatal("original unaryDst is not a complete source literal")
+			}
+			for _, element := range literal.Elts {
+				pair := element.(*ast.KeyValueExpr)
+				key, setting := pair.Key.(*ast.Ident), pair.Value.(*ast.Ident)
+				if !strings.HasPrefix(key.Name, "A") || setting.Name != "true" && setting.Name != "false" {
+					t.Fatal("original unaryDst key/value changed", element)
+				}
+				result[strings.TrimPrefix(key.Name, "A")] = setting.Name == "true"
+			}
+		}
+	}
+	if len(result) == 0 {
+		t.Fatal("actual SDK has no captured unaryDst source roles")
+	}
+	return result
+}
 
 func stateSystemSourceTable(table string) bool {
 	switch table {
@@ -27,9 +70,10 @@ func stateSystemSourceTable(table string) bool {
 // final REX insertion. It never calls a production witness formatter and none
 // of these assembled instructions is executed. Privileged and CPU-invalid
 // encodings remain source observations, not numerical/native positives.
-func stateSystemOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) ([]x86OfficialPackedCase, []x86OfficialPackedCase) {
+func stateSystemOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) ([]x86OfficialPackedCase, []x86OfficialPackedCase, []x86OfficialPackedCase) {
 	t.Helper()
-	var accepted, refused []x86OfficialPackedCase
+	var accepted, refused, frontend []x86OfficialPackedCase
+	unary := stateSystemOriginalUnaryDestinations(t)
 	for _, entry := range catalog.Optab {
 		if !stateSystemSourceTable(entry.Ytab) {
 			continue
@@ -154,6 +198,10 @@ func stateSystemOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCatalog,
 				fixture := x86OfficialPackedCase{row: id, witness: goasmrules.X86PackedBinaryWitness{
 					Instruction: instruction, Encoding: encoding,
 				}}
+				if (row.ZCase == "Zm_o" || row.ZCase == "Zo_m") && unary[entry.Opcode] != (row.ZCase == "Zo_m") {
+					frontend = append(frontend, fixture)
+					break // Retained separately: stock frontend and backend slots disagree.
+				}
 				filtered := arch == "amd64" && entry.Prefix == "P32" ||
 					arch == "386" && (entry.Prefix == "Pw" || entry.Prefix == "Pfw")
 				if filtered {
@@ -166,9 +214,9 @@ func stateSystemOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCatalog,
 			}
 		}
 	}
-	want, filtered := 188, 2
+	want, filtered := 187, 2
 	if arch == "386" {
-		want, filtered = 145, 31
+		want, filtered = 144, 31
 	}
 	hasRDPID := false
 	for _, entry := range catalog.Optab {
@@ -177,80 +225,83 @@ func stateSystemOriginalCases(t *testing.T, catalog goasmrules.X86LegacyCatalog,
 	if !hasRDPID {
 		want--
 	}
-	if len(accepted) != want || len(refused) != filtered {
-		t.Fatal("complete independent system source denominator changed", arch, len(accepted), len(refused), want, filtered)
+	if len(accepted) != want || len(refused) != filtered || len(frontend) != 1 {
+		t.Fatal("complete independent system source denominator changed", arch, len(accepted), len(refused), len(frontend), want, filtered)
 	}
-	return accepted, refused
+	return accepted, refused, frontend
 }
 
-func stateSystemOriginalXBEGINRelocation(t *testing.T, arch string) {
+func stateSystemOriginalXBEGINBoundary(t *testing.T, arch string) {
 	t.Helper()
-	const symbol = "SystemExternalBranch"
-	const instruction = "XBEGIN ·ExternalTarget(SB)"
-	source := "TEXT ·" + symbol + "(SB),4,$0-0\n" + instruction + "\nRET\n"
-	listing, _ := x86ScalarLiteralExpectedGoListing(t, arch, source, true)
-	fixture := x86OfficialPackedCase{
-		symbol: symbol, line: 2, row: "original-XBEGIN-external-rel32",
-		witness: goasmrules.X86PackedBinaryWitness{
-			Instruction: instruction, Encoding: []byte{0xc7, 0xf8, 0, 0, 0, 0},
-		},
+	const external = "XBEGIN ·ExternalTarget(SB)"
+	source := "TEXT ·SystemExternalBranch(SB),4,$0-0\n" + external + "\nRET\n"
+	listing, _ := x86ScalarLiteralExpectedGoListing(t, arch, source, false)
+	if !strings.Contains(listing, "XBEGIN") || !strings.Contains(listing, "invalid instruction") {
+		t.Fatal("original external XBEGIN lacks its concrete frontend rejection", listing)
 	}
-	if err := x86OfficialPackedVerifyListing(listing, []x86OfficialPackedCase{fixture}); err != nil {
-		t.Fatal("actual Go XBEGIN external opcode/rel32 bytes differ", err)
-	}
-	// Bind the older numeric spelling to this SDK's own generated assertion.
-	// The source-only relocation is not a callable/native-entry permission.
-	enum, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src", "cmd", "internal", "objabi", "reloctype_string.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	kinds := regexp.MustCompile(`x\[R_CALL-([0-9]+)\]`).FindAllStringSubmatch(string(enum), -1)
-	if len(kinds) != 1 {
-		t.Fatal("actual SDK must declare one exact R_CALL relocation value")
-	}
-	prefix := ""
-	for _, line := range strings.Split(listing, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[1] == "STEXT" {
-			for _, candidate := range []string{"literal.", `"".`} {
-				if fields[0] == candidate+symbol {
-					prefix = candidate
+	// Stock asm preserves an SB target as TYPE_MEM, which does not match Ybr.
+	// Local branches are distinct source positives, including relative fixups.
+	for _, row := range []struct {
+		name, instruction, tail string
+		encoding                []byte
+	}{
+		{"self", "XBEGIN 0(PC)", "", []byte{0xc7, 0xf8, 0xfa, 0xff, 0xff, 0xff}},
+		{"forward", "XBEGIN 2(PC)", "BYTE $0x90\n", []byte{0xc7, 0xf8, 1, 0, 0, 0}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			body := "TEXT ·LocalBranch(SB),4,$0-0\n" + row.instruction + "\n" + row.tail + "RET\n"
+			actual, _ := x86ScalarLiteralExpectedGoListing(t, arch, body, true)
+			fixture := x86OfficialPackedCase{symbol: "LocalBranch", line: 2, row: "original-XBEGIN-local-rel32",
+				witness: goasmrules.X86PackedBinaryWitness{Instruction: row.instruction, Encoding: row.encoding}}
+			if err := x86OfficialPackedVerifyListing(actual, []x86OfficialPackedCase{fixture}); err != nil {
+				t.Fatal("original local XBEGIN rel32 fixup differs", err)
+			}
+			for _, line := range strings.Split(actual, "\n") {
+				fields := strings.Fields(line)
+				if len(fields) > 0 && fields[0] == "rel" {
+					t.Fatal("local XBEGIN unexpectedly requires an external relocation", line)
 				}
 			}
-		}
+		})
 	}
-	if prefix == "" {
-		t.Fatal("original Go XBEGIN lacks its exact local package owner")
+}
+
+func stateSystemOriginalFrontendFailure(t *testing.T, arch string, fixture x86OfficialPackedCase) {
+	t.Helper()
+	// This known SDK slot mismatch is not an ordinary syntax rejection.
+	dir := t.TempDir()
+	input, object := filepath.Join(dir, "frontend.s"), filepath.Join(dir, "frontend.o")
+	body := "TEXT ·SystemFrontend(SB),4,$0-0\n" + fixture.witness.Instruction + "\nRET\n"
+	if err := os.WriteFile(input, []byte(body), 0600); err != nil {
+		t.Fatal(err)
 	}
-	pattern := regexp.MustCompile(`(?m)^\s*rel 2\+4 t=(?:R_CALL|` + kinds[0][1] + `) ` +
-		regexp.QuoteMeta(prefix+"ExternalTarget") + `\+0\s*$`)
-	complete := func(text string) bool {
-		count := 0
-		for _, line := range strings.Split(text, "\n") {
-			fields := strings.Fields(line)
-			if len(fields) > 0 && fields[0] == "rel" {
-				count++
-			}
-		}
-		return count == 1 && len(pattern.FindAllString(text, -1)) == 1
+	stage, stop := runtimeOracleStageContext(t)
+	defer stop()
+	ctx, cancel := context.WithTimeout(stage, 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"), "tool", "asm", "-S", "-p", "literal", "-o", object, input)
+	command.Env = append(os.Environ(), "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOOS=linux", "GOARCH="+arch)
+	output, err := runtimeOracleCombinedOutput(ctx, command)
+	exit, ok := err.(*exec.ExitError)
+	if !ok || exit.ExitCode() != 1 || ctx.Err() != nil || !strings.Contains(string(output), "asm: asmand: bad address") {
+		t.Fatalf("actual original From/To mismatch has no exact SDK failure: %v / %v\n%s", err, ctx.Err(), output)
 	}
-	if !complete(listing) {
-		t.Fatal("original Go XBEGIN lacks its unique offset2/width4/R_CALL/target/addend relocation", listing)
+	strict := goAssemblerOracleOutcome(input, object, output, err, ctx.Err(), false, arch)
+	if strict == nil || !strings.Contains(strict.Error(), "infrastructure failure") {
+		t.Fatal("positionless SDK diagnostic became a bound syntax rejection", strict)
 	}
-	valid := "rel 2+4 t=" + kinds[0][1] + " " + prefix + "ExternalTarget+0\n"
-	for _, damaged := range []string{
-		"", valid + valid,
-		strings.Replace(valid, "2+4", "3+4", 1),
-		strings.Replace(valid, "2+4", "2+8", 1),
-		strings.Replace(valid, "t="+kinds[0][1], "t=R_ADDR", 1),
-		strings.Replace(valid, "ExternalTarget", "ForeignTarget", 1),
-		strings.Replace(valid, "+0", "+1", 1),
-	} {
-		if complete(damaged) {
-			t.Fatal("damaged XBEGIN relocation satisfied the independent oracle", damaged)
-		}
+	// Confirm the incomplete opcode-without-ModRM bytes, never a successful
+	// instruction. The complete backend has a separate original-Go owner.
+	fixture.symbol, fixture.line = "SystemFrontend", 2
+	fixture.witness.Encoding = append([]byte(nil), fixture.witness.Encoding[:len(fixture.witness.Encoding)-1]...)
+	if err := x86OfficialPackedVerifyListing(string(output), []x86OfficialPackedCase{fixture}); err != nil {
+		t.Fatal("SDK failure no longer matches the observed incomplete source bytes", err)
 	}
-	t.Logf("STATE_SYSTEM_ORIGINAL_XBEGIN_RELOCATION arch=%s offset=2 width=4 SDK_R_CALL=%s target=%sExternalTarget addend=0; source-only", arch, kinds[0][1], prefix)
+	unchanged, readErr := os.ReadFile(input)
+	if readErr != nil || string(unchanged) != body {
+		t.Fatal("owned original frontend source changed", readErr)
+	}
+	t.Logf("STATE_SYSTEM_STOCK_FRONTEND_FAILURE arch=%s id=%s sourceSHA=%x outputSHA=%x; unaryDst and Z-case slots disagree; not assembled or translated", arch, fixture.row, sha256.Sum256([]byte(body)), sha256.Sum256(output))
 }
 
 func TestX86OfficialStateSystemMemoryOriginalGoBytesAndModes(t *testing.T) {
@@ -259,10 +310,15 @@ func TestX86OfficialStateSystemMemoryOriginalGoBytesAndModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, arch := range []string{"amd64", "386"} {
-		t.Run(arch+"/external-XBEGIN-relocation", func(t *testing.T) {
-			stateSystemOriginalXBEGINRelocation(t, arch)
+		t.Run(arch+"/XBEGIN-source-boundaries", func(t *testing.T) {
+			stateSystemOriginalXBEGINBoundary(t, arch)
 		})
-		accepted, refused := stateSystemOriginalCases(t, catalog, arch)
+		accepted, refused, frontend := stateSystemOriginalCases(t, catalog, arch)
+		for _, fixture := range frontend {
+			t.Run(arch+"/frontend-failure/"+fixture.row, func(t *testing.T) {
+				stateSystemOriginalFrontendFailure(t, arch, fixture)
+			})
+		}
 		x86LegacyLiteralSIMDCheckGoBatches(t, arch, accepted)
 		for _, fixture := range refused {
 			t.Run(arch+"/mode-refused/"+fixture.row, func(t *testing.T) {
@@ -284,7 +340,7 @@ func TestX86OfficialStateSystemMemoryOriginalImmediateBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, arch := range []string{"amd64", "386"} {
-		originals, _ := stateSystemOriginalCases(t, catalog, arch)
+		originals, _, _ := stateSystemOriginalCases(t, catalog, arch)
 		var accepted []x86OfficialPackedCase
 		observed := 0
 		for _, original := range originals {
