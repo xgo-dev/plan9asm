@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,6 +40,12 @@ func x86ScalarLiteralGoListing(t *testing.T, arch, source string) (string, error
 }
 
 func x86ScalarLiteralExpectedGoListing(t *testing.T, arch, source string, wantSuccess bool) (string, error) {
+	listing, _, err := x86ScalarLiteralGoProfileObject(t, arch, "linux", source, false, wantSuccess)
+	return listing, err
+}
+
+// A profile-aware test observer only; this never creates a production source lease.
+func x86ScalarLiteralGoProfileObject(t *testing.T, arch, goos, source string, shared, wantSuccess bool) (string, []byte, error) {
 	t.Helper()
 	dir := t.TempDir()
 	asm := filepath.Join(dir, "literal.s")
@@ -50,21 +57,28 @@ func x86ScalarLiteralExpectedGoListing(t *testing.T, arch, source string, wantSu
 	ctx, cancel := context.WithTimeout(stage, 30*time.Second)
 	defer cancel()
 	object := filepath.Join(dir, "literal.o")
-	command := exec.CommandContext(ctx, "go", "tool", "asm", "-S", "-p", "literal", "-o", object, asm)
-	command.Env = append(os.Environ(), "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOOS=linux", "GOARCH="+arch)
+	args := []string{"tool", "asm", "-S", "-p", "literal", "-o", object}
+	if shared {
+		args = append(args, "-shared")
+	}
+	args = append(args, asm)
+	command := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"), args...)
+	command.Env = append(os.Environ(), "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOOS="+goos, "GOARCH="+arch)
 	listing, err := runtimeOracleCombinedOutput(ctx, command)
 	if failure := goAssemblerOracleOutcome(asm, object, listing, err, ctx.Err(), wantSuccess, arch); failure != nil {
 		t.Fatalf("%v\n%s", failure, listing)
 	}
+	var objectBytes []byte
 	if wantSuccess {
 		bytes, readErr := os.ReadFile(object)
 		if readErr != nil || len(bytes) == 0 {
 			t.Fatalf("actual literal object receipt: %v", readErr)
 		}
+		objectBytes = bytes
 		t.Logf("ACTUAL_LITERAL_OBJECT arch=%s sourceSHA=%x objectSHA=%x bytes=%d listingSHA=%x", arch,
 			sha256.Sum256([]byte(source)), sha256.Sum256(bytes), len(bytes), sha256.Sum256(listing))
 	}
-	return string(listing), err
+	return string(listing), objectBytes, err
 }
 
 func TestX86ScalarLiteralActualGoRewriteInventory(t *testing.T) {
