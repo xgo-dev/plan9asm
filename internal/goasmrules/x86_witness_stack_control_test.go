@@ -166,7 +166,7 @@ func TestX86StackControlPublicSourceBoundaries(t *testing.T) {
 	if _, err := X86StackControlRows(original, source, "amd64"); err != nil {
 		t.Fatal("actual complete source is a prerequisite", err)
 	}
-	for _, mutation := range []string{"missing-member", "duplicate-member", "retag-member", "changed-payload", "missing-enum", "capacity", "zero-source", "foreign-arch"} {
+	for _, mutation := range []string{"missing-member", "duplicate-member", "retag-member", "swapped-names", "changed-class", "changed-payload", "missing-enum", "capacity", "zero-source", "foreign-arch"} {
 		t.Run(mutation, func(t *testing.T) {
 			catalog := original
 			catalog.Optab = append([]X86LegacyOpcode(nil), original.Optab...)
@@ -193,6 +193,18 @@ func TestX86StackControlPublicSourceBoundaries(t *testing.T) {
 				}
 			case "retag-member":
 				entry.Opcode, entry.OpcodeExpression = "MOVL", "AMOVL"
+			case "swapped-names":
+				for position, alternative := range catalog.Optab {
+					if alternative.Opcode == "JMP" {
+						entry.Opcode, alternative.Opcode = alternative.Opcode, entry.Opcode
+						entry.OpcodeExpression, alternative.OpcodeExpression = alternative.OpcodeExpression, entry.OpcodeExpression
+						catalog.Optab[position] = alternative
+					}
+				}
+			case "changed-class":
+				entry.Rows = append([]X86LegacyOperand(nil), entry.Rows...)
+				entry.Rows[0].Classes = append([]string(nil), entry.Rows[0].Classes...)
+				entry.Rows[0].Classes[0] = "Ynone"
 			case "changed-payload":
 				entry.OpBytes = append([]string(nil), entry.OpBytes...)
 				entry.OpBytes[0] = "0xfe"

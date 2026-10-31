@@ -610,6 +610,9 @@ func TestX86StackControlOriginalGoBackendDuffs(t *testing.T) {
 		if event.Action != "output" || position < 0 {
 			continue
 		}
+		if event.Test != "TestPlan9asmOriginalDuffSource" {
+			t.Fatal("backend source marker escaped its owned observer root", event.Test)
+		}
 		var record x86StackControlBackendRecord
 		if err := json.Unmarshal([]byte(strings.TrimSpace(event.Output[position+len(marker):])), &record); err != nil {
 			t.Fatal(err)
