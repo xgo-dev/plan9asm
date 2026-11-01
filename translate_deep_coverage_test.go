@@ -2,6 +2,7 @@ package plan9asm
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -84,20 +85,20 @@ TEXT foo(SB),NOSPLIT,$0-0 // trailing comment
 	}); !changed || !strings.Contains(got, "MOVQ AX, BX") {
 		t.Fatalf("expandInlineMacroCalls() = (%q, %v)", got, changed)
 	}
-	if got, changed := expandIdentMacros("MOVQ VALUE, AX", map[string]ppMacro{"VALUE": {body: "9"}}, []string{"VALUE"}); !changed || got != "MOVQ 9, AX" {
+	if got, changed := expandIdentMacros("MOVQ VALUE, AX", map[string]ppMacro{"VALUE": {body: "9"}}); !changed || got != "MOVQ 9, AX" {
 		t.Fatalf("expandIdentMacros() = (%q, %v)", got, changed)
 	}
-	if got := expandImmExprMacros("MOVQ $(VALUE+1), AX", map[string]ppMacro{"VALUE": {body: "9"}}); got != "MOVQ $(9+1), AX" {
-		t.Fatalf("expandImmExprMacros() = %q", got)
+	if got, changed := expandIdentMacros("MOVQ $(VALUE+1), AX", map[string]ppMacro{"VALUE": {body: "9"}}); !changed || got != "MOVQ $(9+1), AX" {
+		t.Fatalf("expandIdentMacros(immediate expression) = %q, %v", got, changed)
 	}
 	if got := replaceMacroParams("ADDQ a, b", []string{"a", "b"}, []string{"CX", "DX"}); got != "ADDQ CX, DX" {
 		t.Fatalf("replaceMacroParams() = %q", got)
 	}
-	if got := replaceMacroIdents("VALUE+KEEP", map[string]ppMacro{
+	if got, changed := expandIdentMacros("VALUE+KEEP", map[string]ppMacro{
 		"VALUE": {body: "5"},
 		"KEEP":  {body: "AX"},
-	}); got != "5+AX" {
-		t.Fatalf("replaceMacroIdents() = %q", got)
+	}); !changed || got != "5+AX" {
+		t.Fatalf("expandIdentMacros(expression) = %q, %v", got, changed)
 	}
 	if out := expandPPLine("WRAP(AX, BX)", map[string]ppMacro{
 		"WRAP": {body: "PAIR(a, b)", params: []string{"a", "b"}},
@@ -138,6 +139,15 @@ func TestTranslateIRTextCoverage(t *testing.T) {
 			"example.helper": {Name: "example.helper", Args: []LLVMType{I64}, Ret: Void},
 		},
 	}
+	if _, err := translateIRText(file, opt); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("unbound external numerical storage did not retain Context: %v", err)
+	}
+	// Preserve the original unbound counterexample above. The independent
+	// successful fixture reads all eight actual same-file numeric bytes;
+	// an unrelated DATA relocation still exercises external declarations.
+	file.Funcs[0].Instrs[1].Args[0].Sym = "tbl(SB)"
+	file.Funcs[0].Instrs[1].Raw = "MOVQ tbl(SB), AX"
+	file.Data = append(file.Data, DataStmt{Sym: "refs", Width: 8, Addr: "other+8(SB)"})
 	ir, err := translateIRText(file, opt)
 	if err != nil {
 		t.Fatalf("translateIRText() error = %v", err)
@@ -199,8 +209,8 @@ func TestTranslateIRTextCoverage(t *testing.T) {
 	}
 	if err := validateResolvedImmediates(ArchAMD64, Func{
 		Instrs: []Instr{{Args: []Operand{{Kind: OpImm, ImmRaw: "$(sym)"}}}},
-	}); err != nil {
-		t.Fatalf("validateResolvedImmediates(amd64) error = %v", err)
+	}); err == nil {
+		t.Fatal("validateResolvedImmediates(amd64) accepted an unresolved constant")
 	}
 
 	var dataIR strings.Builder
@@ -257,14 +267,31 @@ func TestTranslateHelpersCoverage(t *testing.T) {
 		Globl: []GloblStmt{{Sym: "data", Size: 8}},
 		Data:  []DataStmt{{Sym: "data", Off: 0, Width: 8, Value: 1}},
 	}
-	got, err := Translate(file, Options{
+	options := Options{
 		ResolveSym: resolve,
 		Goarch:     "amd64",
 		Sigs: map[string]FuncSig{
 			"example.entry":  {Name: "example.entry", Ret: I64},
 			"example.helper": {Name: "example.helper", Ret: Void},
 		},
-	})
+	}
+	if _, err := Translate(file, options); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("unbound local symbol/call-clobbered AX did not retain Context: %v", err)
+	}
+	// Independent helper-declaration and numeric-data entries: a void call
+	// does not promise to preserve an integer AX result, and data<> is not
+	// the separately defined non-local data object.
+	file.Funcs = []Func{
+		{Sym: "·entry", Instrs: []Instr{file.Funcs[0].Instrs[0], file.Funcs[0].Instrs[2], file.Funcs[0].Instrs[3]}},
+		{Sym: "·readData", Instrs: []Instr{
+			{Op: OpTEXT, Raw: "TEXT ·readData(SB),NOSPLIT,$0-0"},
+			{Op: OpMOVQ, Args: []Operand{{Kind: OpSym, Sym: "data(SB)"}, {Kind: OpReg, Reg: AX}}, Raw: "MOVQ data(SB), AX"},
+			{Op: OpRET, Raw: "RET"},
+		}},
+	}
+	options.Sigs["example.entry"] = FuncSig{Name: "example.entry", Ret: Void}
+	options.Sigs["example.readData"] = FuncSig{Name: "example.readData", Ret: I64}
+	got, err := Translate(file, options)
 	if err != nil {
 		t.Fatalf("Translate() error = %v", err)
 	}
@@ -369,7 +396,7 @@ func TestTranslateModuleDirectAndFallbackCoverage(t *testing.T) {
 		Data:  []DataStmt{{Sym: "blob", Off: 0, Width: 2, Value: 0x2211}},
 		Globl: []GloblStmt{{Sym: "blob", Size: 4}},
 	}
-	mod, err := translateModuleDirect(file, Options{
+	options := Options{
 		ResolveSym: resolve,
 		Goarch:     "amd64",
 		Sigs: map[string]FuncSig{
@@ -385,16 +412,76 @@ func TestTranslateModuleDirectAndFallbackCoverage(t *testing.T) {
 				},
 			},
 		},
-	})
+	}
+	if direct, err := translateModuleDirect(file, options); !errors.Is(err, errDirectModuleUnsupported) {
+		if !direct.IsNil() {
+			direct.Dispose()
+		}
+		t.Fatalf("typed x86 source bypassed complete lowering: %v", err)
+	}
+	if original, err := TranslateModule(file, options); !errors.Is(err, ErrProbeNeedsContext) {
+		if !original.IsNil() {
+			original.Dispose()
+		}
+		t.Fatalf("original query fixture acquired a missing scalar ABI0 declaration: %v", err)
+	}
+	// A separately initialized source uses the checked fallback, not the
+	// scalar prototype or its implicit zero-valued registers.
+	initialized := *file
+	initialized.Funcs = append([]Func(nil), file.Funcs...)
+	var instructions []Instr
+	for _, ins := range file.Funcs[0].Instrs {
+		if ins.Op == OpTEXT {
+			ins.Raw = "TEXT ·linear(SB),NOSPLIT,$0-8"
+		}
+		if ins.Op == OpCPUID {
+			instructions = append(instructions, Instr{Op: OpMOVL,
+				Args: []Operand{{Kind: OpImm, Imm: 0}, {Kind: OpReg, Reg: CX}}, Raw: "MOVL $0,CX"})
+		}
+		if ins.Op == OpRET {
+			instructions = append(instructions, Instr{Op: OpMOVQ,
+				Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpFP, FPOffset: 0}}, Raw: "MOVQ AX,ret+0(FP)"})
+		}
+		instructions = append(instructions, ins)
+	}
+	initialized.Funcs[0].Instrs = instructions
+	initialized.Funcs[0].ArgSize = 8
+	initializedOptions := options
+	initializedOptions.TargetTriple = "x86_64-unknown-linux-gnu"
+	initializedOptions.Sigs = make(map[string]FuncSig)
+	for name, signature := range options.Sigs {
+		initializedOptions.Sigs[name] = signature
+	}
+	initializedOptions.Sigs["example.linear"] = FuncSig{Name: "example.linear", Ret: I64,
+		Frame: FrameLayout{Results: []FrameSlot{{Offset: 0, Type: I64, Index: 0, Field: -1}}}}
+	mod, err := TranslateModule(&initialized, initializedOptions)
 	if err != nil {
-		t.Fatalf("translateModuleDirect(amd64) error = %v", err)
+		t.Fatalf("TranslateModule(checked initialized amd64 fallback) error = %v", err)
 	}
 	defer mod.Dispose()
 	modIR := mod.String()
 	for _, want := range []string{`@example.linear`, `@example.pair`, `@example.blob`} {
 		if !strings.Contains(modIR, want) {
-			t.Fatalf("missing %q in direct module:\n%s", want, modIR)
+			t.Fatalf("missing %q in checked fallback module:\n%s", want, modIR)
 		}
+	}
+	// Keep an actual independent positive owner for the supported direct
+	// prototype. It neither returns unknown AX nor consumes implicit CPU input.
+	directFile := &File{Arch: ArchAMD64, Funcs: []Func{{Sym: "·direct", Instrs: []Instr{
+		{Op: OpTEXT, Raw: "TEXT ·direct(SB),4,$0-0"},
+		{Op: OpMOVQ, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MOVQ $1,AX"},
+		{Op: OpRET, Raw: "RET"},
+	}}}}
+	directMod, err := translateModuleDirect(directFile, Options{
+		Goarch: "amd64", ResolveSym: resolve,
+		Sigs: map[string]FuncSig{"example.direct": {Name: "example.direct", Ret: Void}},
+	})
+	if err != nil {
+		t.Fatal("independent direct prototype fixture rejected", err)
+	}
+	defer directMod.Dispose()
+	if err := llvm.VerifyModule(directMod, llvm.ReturnStatusAction); err != nil {
+		t.Fatal("direct prototype produced invalid LLVM", err)
 	}
 
 	arm64File := &File{
@@ -409,13 +496,21 @@ func TestTranslateModuleDirectAndFallbackCoverage(t *testing.T) {
 			},
 		}},
 	}
-	armMod, err := translateModuleDirect(arm64File, Options{
+	armOptions := Options{
 		ResolveSym: resolve,
 		Goarch:     "arm64",
 		Sigs:       map[string]FuncSig{"example.arm64m": {Name: "example.arm64m", Ret: I64}},
-	})
+	}
+	if direct, err := translateModuleDirect(arm64File, armOptions); err == nil {
+		direct.Dispose()
+		t.Fatal("ARM64 direct prototype bypassed architecture-aware proof")
+	} else if !errors.Is(err, errDirectModuleUnsupported) {
+		t.Fatalf("ARM64 direct path must request checked fallback: %v", err)
+	}
+	armOptions.TargetTriple = "aarch64-unknown-linux-gnu"
+	armMod, err := TranslateModule(arm64File, armOptions)
 	if err != nil {
-		t.Fatalf("translateModuleDirect(arm64) error = %v", err)
+		t.Fatalf("TranslateModule(arm64 checked fallback) error = %v", err)
 	}
 	defer armMod.Dispose()
 	if !strings.Contains(armMod.String(), `@example.arm64m`) {
@@ -433,11 +528,24 @@ func TestTranslateModuleDirectAndFallbackCoverage(t *testing.T) {
 			},
 		}},
 	}
-	fallbackMod, err := TranslateModule(cfgFile, Options{
+	cfgOptions := Options{
 		ResolveSym: resolve,
 		Goarch:     "amd64",
-		Sigs:       map[string]FuncSig{"example.cfg": {Name: "example.cfg", Ret: I64}},
-	})
+		Sigs: map[string]FuncSig{"example.cfg": {Name: "example.cfg", Ret: I64,
+			Frame: FrameLayout{Results: []FrameSlot{{Offset: 0, Type: I64, Index: 0, Field: -1}}}}},
+	}
+	// This positive fallback fixture writes its declared result explicitly;
+	// it does not certify the old prototype's default-zero return behavior.
+	initializedCFG := *cfgFile
+	initializedCFG.Funcs = append([]Func(nil), cfgFile.Funcs...)
+	initializedCFG.Funcs[0].Instrs = append([]Instr(nil), cfgFile.Funcs[0].Instrs[:2]...)
+	initializedCFG.Funcs[0].Instrs = append(initializedCFG.Funcs[0].Instrs,
+		Instr{Op: OpMOVL, Args: []Operand{{Kind: OpImm, Imm: 9}, {Kind: OpReg, Reg: AX}}, Raw: "MOVL $9,AX"},
+		Instr{Op: OpMOVQ, Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpFP, FPOffset: 0}}, Raw: "MOVQ AX,ret+0(FP)"},
+		cfgFile.Funcs[0].Instrs[2])
+	initializedCFG.Funcs[0].ArgSize = 8
+	initializedCFG.Funcs[0].Instrs[0].Raw = "TEXT ·cfg(SB),NOSPLIT,$0-8"
+	fallbackMod, err := TranslateModule(&initializedCFG, cfgOptions)
 	if err != nil {
 		t.Fatalf("TranslateModule(fallback) error = %v", err)
 	}
@@ -580,49 +688,59 @@ func TestTranslateModuleDirectErrorCoverage(t *testing.T) {
 		}
 	}
 
-	ctx := llvm.GlobalContext()
+	ctx := llvm.NewContext()
+	defer ctx.Dispose()
 	for _, tc := range []struct {
 		name string
+		arch Arch
 		fn   Func
 		sig  FuncSig
 	}{
 		{
 			name: "mrs-arity",
+			arch: ArchARM64,
 			fn:   Func{Sym: "example.bad1", Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpIdent, Ident: "MIDR_EL1"}}}, {Op: OpRET}}},
 			sig:  FuncSig{Name: "example.bad1", Ret: I64},
 		},
 		{
 			name: "movd-bad-dst",
+			arch: ArchAMD64,
 			fn:   Func{Sym: "example.bad2", Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpIdent, Ident: "label"}}}, {Op: OpRET}}},
 			sig:  FuncSig{Name: "example.bad2", Ret: I64},
 		},
 		{
 			name: "movl-bad-dst",
+			arch: ArchAMD64,
 			fn:   Func{Sym: "example.bad3", Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVL, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpIdent, Ident: "label"}}}, {Op: OpRET}}},
 			sig:  FuncSig{Name: "example.bad3", Ret: I64},
 		},
 		{
 			name: "addq-bad-dst",
+			arch: ArchAMD64,
 			fn:   Func{Sym: "example.bad4", Instrs: []Instr{{Op: OpTEXT}, {Op: OpADDQ, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpIdent, Ident: "label"}}}, {Op: OpRET}}},
 			sig:  FuncSig{Name: "example.bad4", Ret: I64},
 		},
 		{
 			name: "invalid-op-kind",
+			arch: ArchAMD64,
 			fn:   Func{Sym: "example.bad5", Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVQ, Args: []Operand{{Kind: OpLabel, Sym: "x"}, {Kind: OpReg, Reg: AX}}}, {Op: OpRET}}},
 			sig:  FuncSig{Name: "example.bad5", Ret: I64},
 		},
 		{
 			name: "bad-result-index",
+			arch: ArchAMD64,
 			fn:   Func{Sym: "example.bad6", Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVQ, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpFP, FPOffset: 8}}}, {Op: OpRET}}},
 			sig:  FuncSig{Name: "example.bad6", Ret: I64, Frame: FrameLayout{Results: []FrameSlot{{Offset: 8, Type: I64, Index: 3}}}},
 		},
 		{
 			name: "bad-fp-read",
+			arch: ArchAMD64,
 			fn:   Func{Sym: "example.bad7", Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVQ, Args: []Operand{{Kind: OpFP, FPOffset: 8}, {Kind: OpReg, Reg: AX}}}, {Op: OpRET}}},
 			sig:  FuncSig{Name: "example.bad7", Ret: I64, Frame: FrameLayout{Params: []FrameSlot{{Offset: 8, Type: I64, Index: 9}}}},
 		},
 		{
 			name: "unsupported-insn",
+			arch: ArchAMD64,
 			fn:   Func{Sym: "example.bad8", Instrs: []Instr{{Op: OpTEXT}, {Op: "UNDEF"}, {Op: OpRET}}},
 			sig:  FuncSig{Name: "example.bad8", Ret: I64},
 		},
@@ -630,7 +748,7 @@ func TestTranslateModuleDirectErrorCoverage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mod := ctx.NewModule("direct-errors-" + tc.name)
 			defer mod.Dispose()
-			if err := translateFuncLinearModule(mod, ArchAMD64, tc.fn, tc.sig); !errors.Is(err, errDirectModuleUnsupported) {
+			if err := translateFuncLinearModule(mod, tc.arch, tc.fn, tc.sig); !errors.Is(err, errDirectModuleUnsupported) {
 				t.Fatalf("%s error = %v", tc.name, err)
 			}
 		})
@@ -1175,7 +1293,6 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 		}
 		out := b.String()
 		for _, want := range []string{
-			"add i32 0, 0",
 			"call { i32, i32, i32, i32 } asm sideeffect",
 			"call { i32, i32 } asm sideeffect",
 			"zext i32",
@@ -1184,11 +1301,27 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 				t.Fatalf("missing %q in cpux output:\n%s", want, out)
 			}
 		}
+		// The prototype's initial AX/CX values are zero. CPUID replaces CX,
+		// so the following XGETBV must consume that result, not a fabricated
+		// zero or an incidental old temporary-materialization instruction.
+		cpuid := regexp.MustCompile(`(?m)^\s*(%[[:alnum:]_.]+) = call \{ i32, i32, i32, i32 \} asm sideeffect "cpuid", "[^"]*"\(i32 0, i32 0\)`).FindAllStringSubmatch(out, -1)
+		if len(cpuid) != 1 {
+			t.Fatalf("CPUID must consume both prototype zero inputs exactly once:\n%s", out)
+		}
+		cx := regexp.MustCompile(`(?m)^\s*(%[[:alnum:]_.]+) = extractvalue \{ i32, i32, i32, i32 \} `+regexp.QuoteMeta(cpuid[0][1])+`, 2$`).FindAllStringSubmatch(out, -1)
+		if len(cx) != 1 {
+			t.Fatalf("CPUID must retain its actual implicit CX result:\n%s", out)
+		}
+		xgetbv := regexp.MustCompile(`call \{ i32, i32 \} asm sideeffect "xgetbv", "[^"]*"\(i32 `+regexp.QuoteMeta(cx[0][1])+`\)`).FindAllString(out, -1)
+		if len(xgetbv) != 1 {
+			t.Fatalf("XGETBV must consume CPUID's actual CX result exactly once:\n%s", out)
+		}
 	})
 }
 
 func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
-	ctx := llvm.GlobalContext()
+	ctx := llvm.NewContext()
+	defer ctx.Dispose()
 
 	t.Run("DirectSuccessAndFallbacks", func(t *testing.T) {
 		mod := ctx.NewModule("direct-edge-success")
@@ -1221,43 +1354,66 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 		}
 	})
 
-	t.Run("DirectCPUXGETBVAndMRS", func(t *testing.T) {
-		mod := ctx.NewModule("direct-edge-cpu-mrs")
-		defer mod.Dispose()
-
-		err := translateFuncLinearModule(mod, ArchARM64, Func{
-			Sym: "example.directcpumrs",
-			Instrs: []Instr{
-				{Op: OpTEXT},
-				{Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 7}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD $7, AX"},
-				{Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 11}, {Kind: OpReg, Reg: CX}}, Raw: "MOVD $11, CX"},
+	for _, tc := range []struct {
+		name   string
+		arch   Arch
+		instrs []Instr
+		want   []string
+	}{
+		{
+			name: "DirectCPUXGETBV",
+			arch: ArchAMD64,
+			instrs: []Instr{
+				{Op: OpMOVQ, Args: []Operand{{Kind: OpImm, Imm: 7}, {Kind: OpReg, Reg: AX}}, Raw: "MOVQ $7, AX"},
+				{Op: OpMOVQ, Args: []Operand{{Kind: OpImm, Imm: 11}, {Kind: OpReg, Reg: CX}}, Raw: "MOVQ $11, CX"},
 				{Op: OpCPUID, Raw: "CPUID"},
 				{Op: OpXGETBV, Raw: "XGETBV"},
+			},
+			want: []string{
+				"call { i32, i32, i32, i32 } asm sideeffect \"cpuid\"",
+				"call { i32, i32 } asm sideeffect \"xgetbv\"",
+			},
+		},
+		{
+			name: "DirectMRS",
+			arch: ArchARM64,
+			instrs: []Instr{
 				{Op: OpMRS, Args: []Operand{{Kind: OpIdent, Ident: "MIDR_EL1"}, {Kind: OpReg, Reg: "R0"}}, Raw: "MRS MIDR_EL1, R0"},
 				{Op: OpMRS, Args: []Operand{{Kind: OpIdent, Ident: "TPIDR_EL0"}, {Kind: OpReg, Reg: "R1"}}, Raw: "MRS TPIDR_EL0, R1"},
-				{Op: OpRET},
 			},
-		}, FuncSig{Name: "example.directcpumrs", Ret: I64})
-		if err != nil {
-			t.Fatalf("translateFuncLinearModule(cpu+mrs) error = %v", err)
-		}
+			want: []string{
+				"call i64 asm sideeffect \"mrs $0, S3_3_C13_C0_2\"",
+				"call i64 asm sideeffect \"mrs $0, S3_0_C0_C0_0\"",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mod := ctx.NewModule(tc.name)
+			defer mod.Dispose()
 
-		ir := mod.String()
-		for _, want := range []string{
-			"call { i32, i32, i32, i32 } asm sideeffect \"cpuid\"",
-			"call { i32, i32 } asm sideeffect \"xgetbv\"",
-			"call i64 asm \"mrs $0, TPIDR_EL0\"",
-			"ret i64 0",
-		} {
-			if !strings.Contains(ir, want) {
-				t.Fatalf("missing %q in module IR:\n%s", want, ir)
+			instrs := append([]Instr{{Op: OpTEXT}}, tc.instrs...)
+			instrs = append(instrs, Instr{Op: OpRET})
+			err := translateFuncLinearModule(mod, tc.arch, Func{
+				Sym:    "example.directnative",
+				Instrs: instrs,
+			}, FuncSig{Name: "example.directnative", Ret: I64})
+			if err != nil {
+				t.Fatalf("translateFuncLinearModule(%s) error = %v", tc.name, err)
 			}
-		}
-	})
+
+			ir := mod.String()
+			for _, want := range append(tc.want, "ret i64 %") {
+				if !strings.Contains(ir, want) {
+					t.Fatalf("missing %q in module IR:\n%s", want, ir)
+				}
+			}
+		})
+	}
 
 	t.Run("DirectErrors", func(t *testing.T) {
 		cases := []struct {
 			name string
+			arch Arch
 			fn   Func
 			sig  FuncSig
 		}{
@@ -1358,6 +1514,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			},
 			{
 				name: "BadMRSArgs",
+				arch: ArchARM64,
 				fn: Func{
 					Sym:    "badmrs",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 1}}, Raw: "MRS $1"}, {Op: OpRET}},
@@ -1366,6 +1523,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			},
 			{
 				name: "BadMRSKinds",
+				arch: ArchARM64,
 				fn: Func{
 					Sym:    "badmrskind",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MRS $1, AX"}, {Op: OpRET}},
@@ -1449,7 +1607,11 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				mod := ctx.NewModule("direct-" + tc.name)
 				defer mod.Dispose()
-				if err := translateFuncLinearModule(mod, ArchAMD64, tc.fn, tc.sig); !errors.Is(err, errDirectModuleUnsupported) {
+				arch := tc.arch
+				if arch == "" {
+					arch = ArchAMD64
+				}
+				if err := translateFuncLinearModule(mod, arch, tc.fn, tc.sig); !errors.Is(err, errDirectModuleUnsupported) {
 					t.Fatalf("translateFuncLinearModule(%s) error = %v", tc.name, err)
 				}
 			})

@@ -22,11 +22,14 @@ semi-abstract instruction set, and its accepted language evolves with the Go
 toolchain. Coverage therefore uses the union of Go 1.20 through the latest
 supported release, through these increasingly strong layers:
 
-1. Official opcode namespace
+1. Architecture-specific opcode namespace
    - `cmd/internal/obj/x86/anames*.go`
    - `cmd/internal/obj/arm/anames*.go`
    - `cmd/internal/obj/arm64/anames*.go`
    - `cmd/internal/obj/wasm/anames*.go`
+   - `official_opcodes` counts only normalized names in the registered `Anames`
+     arrays (including the registered ARM64 supplement), not operand classes,
+     portable `obj.Anames`, frontend aliases, or parser pseudo directives
 2. Official architecture encoder tables
    - x86 `optab`, `ytab`, `ymovtab`, and generated AVX/EVEX tables
    - ARM and ARM64 `optab` rows and their alias mappings
@@ -54,11 +57,12 @@ supported release, through these increasingly strong layers:
 6. Reduced real-world issue and pull-request regressions
    - each case links back to its report in the conformance manifest
    - the reduced instruction must first be accepted by the native Go assembler
-7. Public Go module ecosystem assembly
-   - `index.golang.org` supplies the chronological public module-version feed
-   - `proxy.golang.org/cached-only` supplies ZIP metadata without executing code
-   - discovered modules are resolved to `@latest`, then their complete package
-     and target matrix is checked before a version is pinned
+7. Reduced public Go module ecosystem regressions
+   - independent instruction-family cases retain their original report/source
+     provenance here, rather than requiring an external module download
+   - module discovery, version policy, ledgers and complete external-package
+     compatibility batches belong to
+     [llgo-compat/plan9asm](https://github.com/llgo-compat/plan9asm)
 8. Executable semantic conformance cases
    - `testdata/conformance`
    - the same assembly is run once with the native Go assembler and once after
@@ -69,6 +73,17 @@ a common inventory, not proof that every listed form is legal in both modes.
 Native assembly of generated concrete cases supplies that mode check. Positive
 testdata is useful but not complete: for example, the Go 1.27 386 corpus
 observes only 21 opcodes from the shared 1,600-name x86 namespace.
+
+The scanner's separate `frontend_inventory` records exact, case-sensitive
+spellings from portable and architecture name arrays, the selected `arch.Set`
+constructor's aliases, and `Parser.pseudo`. Entries carry `common`, `arch`,
+`alias`, `pseudo`, and explicit `sentinel` origins, numeric `obj.As` identities
+(null for directives without one), canonical namespaces, source positions and
+source hashes. WASM `Call` and portable `CALL`, for example, remain distinct.
+Unknown registration patterns fail closed. This is source enumeration only:
+neither presence nor a non-sentinel entry proves operand legality, lowering,
+LLVM object compilation, linking, or execution. Existing form baselines are
+independent of this inventory.
 
 `x/arch` is deliberately not treated as a second assembler specification. Its
 Plan 9 case files originate from instruction decoding and formatting, and can
@@ -151,111 +166,9 @@ native-Go-accepted family subset:
 
     scripts/check-arm64-plan9-corpus.sh
 
-Discover public modules containing Go assembly from the official index:
-
-    go run ./cmd/plan9asmdiscover \
-      -since 2025-01-01T00:00:00Z \
-      -limit 2000 \
-      -out /tmp/plan9asm-discovery.json
-
-Continue at the exact cursor returned by the previous batch:
-
-    go run ./cmd/plan9asmdiscover \
-      -since "$(jq -r .next_since /tmp/plan9asm-discovery.json)" \
-      -limit 2000 \
-      -out /tmp/plan9asm-discovery-next.json
-
-To resume or deliberately rescan an overlapping range without repeating
-completed work, load every earlier report as scan state:
-
-    go run ./cmd/plan9asmdiscover \
-      -since 2025-01-01T00:00:00Z \
-      -limit 2000 \
-      -seen-report /tmp/plan9asm-discovery.json \
-      -seen-report /tmp/plan9asm-discovery-next.json \
-      -out /tmp/plan9asm-discovery-resumed.json
-
-Each report's `scanned` array records every successfully inspected exact
-`module@version`, including modules with no assembly. `-seen-report` skips only
-those exact versions, so a newly published version is still inspected. Failed
-versions are listed with their version in `failures`, are not added to
-`scanned`, and are retried on a later run. Reports are incremental rather than
-cumulative, hence every earlier report must be passed when ranges overlap.
-
-Use `-limit 0` to continue until the current end of the feed. The discovery
-step reads ZIP directory metadata with ranged requests, retries transient
-index/proxy failures, ignores `testdata`, zero-byte, and comment-only assembly
-placeholders, and requires a `.go` file beside a `.s` file so vendored non-Go
-assembler trees are not reported as packages.
-Its architecture field is a filename-based triage hint; the corpus runner's
-`go list` result is the authoritative source-selection check.
-
-After discovery, run every pinned third-party library suite:
-
-    scripts/check-reported-library-corpus.sh
-
-The machine-readable manifest is
-`testdata/corpus/reported-libraries.json`. Each entry records whether it came
-from an llgo issue or the ecosystem scan, the module version, and the exact
-assembly package/file inventory for every target in the complete 386, amd64,
-ARM, ARM64, and WebAssembly matrix.
-The runner first verifies that the pinned version is still the module's
-`@latest`, then uses `<module>/...` so every package in the module is examined.
-It translates and LLVM-compiles every selected `.s` file. Missing target
-reports, newly added or removed assembly packages/files, package-load errors,
-translation errors, and object-compilation errors all fail the suite.
-Package ownership is matched by exact module path, so a v1 suite cannot
-silently include a nested `/v2` module that happens to share its import prefix.
-
-The currently tracked reports are:
-
-- `xgo-dev/llgo#2464`: `github.com/coder/websocket v1.8.15`
-- `xgo-dev/llgo#2552`: `github.com/klauspost/compress v1.20.0`
-- `xgo-dev/llgo#2576`: `github.com/tmthrgd/go-hex` at its latest pseudo-version
-
-The ecosystem scan also pins these latest modules:
-
-- `github.com/RoaringBitmap/roaring v1.9.4`
-- `github.com/anacrolix/mmsg v1.1.1`
-- `github.com/btcsuite/fastsha256 v0.0.0-20160815193821-637e65642941`
-- `github.com/cespare/xxhash v1.1.0`
-- `github.com/cespare/xxhash/v2 v2.3.0`
-- `github.com/dchest/siphash v1.2.3`
-- `github.com/dgryski/go-bits v0.0.0-20180113010104-bd8a69a71dc2`
-- `github.com/dgryski/go-marvin32 v0.0.0-20240117220238-0d39e8c5a8a9`
-- `github.com/golang/snappy v1.0.0`
-- `github.com/klauspost/cpuid v1.3.1`
-- `github.com/klauspost/cpuid/v2 v2.4.0`
-- `github.com/klauspost/reedsolomon v1.14.2`
-- `github.com/minio/highwayhash v1.0.4`
-- `github.com/modern-go/gls v0.0.0-20250215024828-78308f6bb19d`
-- `github.com/pierrec/lz4/v4 v4.1.30`
-- `github.com/stevvooe/resumable v0.0.0-20180830230917-22b14a53ba50`
-- `github.com/tmthrgd/go-bitwise v0.0.0-20190904053232-1430ee983fca`
-- `github.com/tmthrgd/go-popcount v0.0.0-20190904054823-afb1ace8b04f`
-- `github.com/zeebo/this v1.0.0`
-- `golang.org/x/net v0.59.0`
-- `golang.org/x/sys v0.48.0`
-
-Run one library independently by its manifest id:
-
-    scripts/check-reported-library-corpus.sh coder-websocket
-
-The compatibility wrappers remain available:
-
-    scripts/check-coder-websocket.sh
-    scripts/check-klauspost-compress.sh
-    scripts/check-go-hex.sh
-
-For an offline run against the reproducibly pinned versions, disable only the
-online `@latest` comparison; the complete package and target scan still runs:
-
-    PLAN9ASM_CORPUS_CHECK_LATEST=false \
-      scripts/check-reported-library-corpus.sh
-
-CI derives an independent, non-fail-fast matrix job for every manifest entry,
-so adding an issue-reported or ecosystem-discovered library automatically
-creates its own test suite.
+External module discovery, inventory and compatibility batches are maintained
+in [llgo-compat/plan9asm](https://github.com/llgo-compat/plan9asm). Its ledger and
+external-library CI are independent of these official instruction gates.
 
 Select an explicit cross-target subset with `PLAN9ASM_CORPUS_TARGETS`, for
 example:
@@ -324,15 +237,16 @@ union is intentional: operand-class names and generated SVE encoders evolve
 between releases, so using only the newest tree would lose forms that existed
 in earlier supported releases.
 
-The Go 1.27 snapshot currently reports:
+The committed `go1.27` snapshot in
+`testdata/coverage/go-asm-baseline.json` reports:
 
 | GOARCH | official names | encoder forms | observed ops | observed forms | supported | context | unsupported | runtime verified | parse failures |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 41 | 6 | 13 | 0 | 0 |
-| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 755 | 6 | 5981 | 35 | 0 |
-| arm | 181 | 528 | 135 | 500 | 312 | 34 | 154 | 0 | 0 |
-| arm64 | 1417 including SVE | 2964 | 1281 | 1980 | 457 | 47 | 1476 | 62 | 0 |
-| wasm | 463 | 463 opcode-only rows | 71 | 120 | 0 | 120 | 0 | 0 | 0 |
+| 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 57 | 24 | 33 | 0 | 0 | 0 |
+| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6736 | 1455 | 5281 | 0 | 51 | 0 |
+| arm | 137 | 528 | 135 | 499 | 455 | 44 | 0 | 0 | 0 |
+| arm64 | 1342 including SVE | 2964 | 1281 | 2048 | 1979 | 69 | 0 | 64 | 0 |
+| wasm | 463 | 463 opcode-only rows | 72 | 121 | 0 | 121 | 0 | 0 | 0 |
 
 These numbers describe current implementation progress, not completion.
 Encoder forms use Go's internal operand classes and are a complete machine-
@@ -340,10 +254,13 @@ readable inventory of the encoder rows; the wasm count is deliberately an
 opcode-only inventory because its Go backend has no such table. Observed forms
 use plan9asm's concrete shape classification and can outnumber encoder rows
 because generated testdata varies registers, address shapes, and concrete
-encodings. The large amd64 gap is mostly the exhaustive legacy/SIMD/AVX test
-matrix. Go 1.27 adds the ARM64 SVE corpus and encoder tables; SVE register
-lists are parsed and every currently unsupported lowering form is reported
-explicitly instead of being hidden as a parse failure.
+encodings. `supported` records IR generation for the supplied probe inputs;
+it does not establish LLVM object compilation or correct execution. `context`
+forms remain unproven until tested with justified initialized inputs. The
+absence of `unsupported` classifications does not establish complete coverage.
+The WASM probe's context-only result requires its separate complete-source
+and object tests. Go 1.27 also adds the ARM64 SVE corpus and encoder tables;
+parsing an SVE form is distinct from compiling and executing it.
 
 The machine-readable cross-version snapshots are in
 `testdata/coverage/go-asm-baseline.json`. A CI mismatch is blocking and

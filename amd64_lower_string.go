@@ -1,50 +1,45 @@
 package plan9asm
 
-import "fmt"
+import (
+	"fmt"
+)
 
-func (c *amd64Ctx) lowerString(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	if c.goarch != "386" {
+func (c *amd64Ctx) lowerString(ins Instr) (ok bool, terminated bool, err error) {
+	form, ok, err := x86StringInstructionProperties(ins, c.goarch)
+	if !ok {
 		return false, false, nil
 	}
-	switch op {
-	case "MOVSB", "MOVSL", "STOSL", "SCASB":
-	default:
-		return false, false, nil
+	if form.kind == "" {
+		return true, false, err
 	}
-
+	// Preserve the existing consumption order: a malformed opcode suffix has
+	// not consumed a prefix; mode/operand rejection after a valid head has.
 	prefix := c.repeatPrefix
 	c.repeatPrefix = ""
-	if len(ins.Args) != 0 {
-		return true, false, fmt.Errorf("386 %s takes no operands: %q", op, ins.Raw)
+	if err != nil {
+		return true, false, err
 	}
-	repeated := prefix != ""
-	if prefix == "REPN" && op != "SCASB" {
-		return true, false, fmt.Errorf("386 REPN is unsupported for %s", op)
-	}
-	if prefix == "REP" && op == "SCASB" {
-		return true, false, fmt.Errorf("386 REP SCASB is not yet supported")
-	}
+	kind, typ, width := form.kind, form.typ, form.width
 
 	count := "1"
-	if repeated {
-		cx32, err := c.evalIntSized(Operand{Kind: OpReg, Reg: CX}, I32)
+	if prefix != "" {
+		cx, err := c.loadReg(CX)
 		if err != nil {
 			return true, false, err
 		}
-		wide := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", wide, cx32)
-		count = "%" + wide
+		if c.goarch == "386" {
+			cx32 := c.truncI64(cx, I32)
+			wide := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", wide, cx32)
+			count = "%" + wide
+		} else {
+			count = cx
+		}
 	}
 	direction := c.loadDirectionFlag()
 
-	switch op {
-	case "MOVSB", "MOVSL":
-		width := 1
-		helper := "__plan9asm_movsb"
-		if op == "MOVSL" {
-			width = 4
-			helper = "__plan9asm_movsl"
-		}
+	switch kind {
+	case "movs":
 		si, err := c.loadReg(SI)
 		if err != nil {
 			return true, false, err
@@ -53,7 +48,7 @@ func (c *amd64Ctx) lowerString(op Op, ins Instr) (ok bool, terminated bool, err 
 		if err != nil {
 			return true, false, err
 		}
-		fmt.Fprintf(c.b, "  call void @%s(i64 %s, i64 %s, i64 %s, i1 %s)\n", helper, di, si, count, direction)
+		fmt.Fprintf(c.b, "  call void @%s(i64 %s, i64 %s, i64 %s, i1 %s)\n", x86StringHelperName(kind, width), di, si, count, direction)
 		bytes := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = mul i64 %s, %d\n", bytes, count, width)
 		if err := c.storeStringIndex(SI, si, "%"+bytes, direction); err != nil {
@@ -63,65 +58,184 @@ func (c *amd64Ctx) lowerString(op Op, ins Instr) (ok bool, terminated bool, err 
 			return true, false, err
 		}
 
-	case "STOSL":
+	case "stos":
 		di, err := c.loadReg(DI)
 		if err != nil {
 			return true, false, err
 		}
-		ax, err := c.evalIntSized(Operand{Kind: OpReg, Reg: AX}, I32)
+		value, err := c.evalIntSized(Operand{Kind: OpReg, Reg: AX}, typ)
 		if err != nil {
 			return true, false, err
 		}
-		fmt.Fprintf(c.b, "  call void @__plan9asm_rep_stosl(i64 %s, i32 %s, i64 %s, i1 %s)\n", di, ax, count, direction)
+		fmt.Fprintf(c.b, "  call void @%s(i64 %s, %s %s, i64 %s, i1 %s)\n", x86StringHelperName(kind, width), di, typ, value, count, direction)
 		bytes := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = mul i64 %s, 4\n", bytes, count)
+		fmt.Fprintf(c.b, "  %%%s = mul i64 %s, %d\n", bytes, count, width)
 		if err := c.storeStringIndex(DI, di, "%"+bytes, direction); err != nil {
 			return true, false, err
 		}
 
-	case "SCASB":
+	case "scas":
 		di, err := c.loadReg(DI)
 		if err != nil {
 			return true, false, err
 		}
-		needle, err := c.evalIntSized(Operand{Kind: OpReg, Reg: AL}, I8)
+		needle, err := c.evalIntSized(Operand{Kind: OpReg, Reg: AX}, typ)
 		if err != nil {
 			return true, false, err
 		}
+		whileEqual := prefix == "REP"
+		resultType := fmt.Sprintf("{ i64, i64, %s, i1 }", typ)
 		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call { i64, i64, i1 } @__plan9asm_repne_scasb(i64 %s, i8 %s, i64 %s, i1 %s)\n", call, di, needle, count, direction)
+		fmt.Fprintf(c.b, "  %%%s = call %s @%s(i64 %s, %s %s, i64 %s, i1 %s, i1 %t)\n", call, resultType, x86StringHelperName(kind, width), di, typ, needle, count, direction, whileEqual)
 		next := c.newTmp()
 		remaining := c.newTmp()
-		equal := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue { i64, i64, i1 } %%%s, 0\n", next, call)
-		fmt.Fprintf(c.b, "  %%%s = extractvalue { i64, i64, i1 } %%%s, 1\n", remaining, call)
-		fmt.Fprintf(c.b, "  %%%s = extractvalue { i64, i64, i1 } %%%s, 2\n", equal, call)
+		lastValue := c.newTmp()
+		executed := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 0\n", next, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 1\n", remaining, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 2\n", lastValue, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 3\n", executed, resultType, call)
 		if err := c.storeReg(DI, "%"+next); err != nil {
 			return true, false, err
 		}
-		zf := "%" + equal
-		if repeated {
-			oldZF := c.loadFlag(c.flagsZSlot)
-			executed := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %s, 0\n", executed, count)
-			preserved := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %%%s, i1 %s\n", preserved, executed, equal, oldZF)
-			zf = "%" + preserved
+		// SCAS sets all six status flags from accumulator minus the last
+		// element read, not just the equality flag used to control repetition.
+		c.setStringCompareFlags(typ, needle, "%"+lastValue, "%"+executed, prefix != "")
+		if prefix != "" {
+			if err := c.storeStringCount("%" + remaining); err != nil {
+				return true, false, err
+			}
 		}
-		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", zf, c.flagsZSlot)
-		if repeated {
-			if err := c.storeRegSized(CX, I32, c.truncI64("%"+remaining, I32)); err != nil {
+
+	case "cmps":
+		si, err := c.loadReg(SI)
+		if err != nil {
+			return true, false, err
+		}
+		di, err := c.loadReg(DI)
+		if err != nil {
+			return true, false, err
+		}
+		whileEqual := prefix == "REP"
+		resultType := fmt.Sprintf("{ i64, i64, i64, %s, %s, i1 }", typ, typ)
+		call := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call %s @%s(i64 %s, i64 %s, i64 %s, i1 %s, i1 %t)\n", call, resultType, x86StringHelperName(kind, width), si, di, count, direction, whileEqual)
+		nextSI := c.newTmp()
+		nextDI := c.newTmp()
+		remaining := c.newTmp()
+		left := c.newTmp()
+		right := c.newTmp()
+		executed := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 0\n", nextSI, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 1\n", nextDI, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 2\n", remaining, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 3\n", left, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 4\n", right, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 5\n", executed, resultType, call)
+		if err := c.storeReg(SI, "%"+nextSI); err != nil {
+			return true, false, err
+		}
+		if err := c.storeReg(DI, "%"+nextDI); err != nil {
+			return true, false, err
+		}
+		if prefix != "" {
+			if err := c.storeStringCount("%" + remaining); err != nil {
+				return true, false, err
+			}
+		}
+		c.setStringCompareFlags(typ, "%"+left, "%"+right, "%"+executed, prefix != "")
+
+	case "lods":
+		si, err := c.loadReg(SI)
+		if err != nil {
+			return true, false, err
+		}
+		resultType := fmt.Sprintf("{ i64, i64, %s, i1 }", typ)
+		call := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call %s @%s(i64 %s, i64 %s, i1 %s)\n", call, resultType, x86StringHelperName(kind, width), si, count, direction)
+		nextSI := c.newTmp()
+		remaining := c.newTmp()
+		loaded := c.newTmp()
+		executed := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 0\n", nextSI, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 1\n", remaining, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 2\n", loaded, resultType, call)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 3\n", executed, resultType, call)
+		if err := c.storeReg(SI, "%"+nextSI); err != nil {
+			return true, false, err
+		}
+		var oldAccumulator string
+		if prefix != "" {
+			old, err := c.loadReg(AX)
+			if err != nil {
+				return true, false, err
+			}
+			oldAccumulator = old
+		}
+		if err := c.storeRegSized(AX, typ, "%"+loaded); err != nil {
+			return true, false, err
+		}
+		if prefix != "" {
+			written, err := c.loadReg(AX)
+			if err != nil {
+				return true, false, err
+			}
+			// An empty repeat executes no accumulator write at all. Selecting
+			// only the low operand width before storeRegSized would still clear
+			// AMD64's high 32 bits for LODSL even on that empty path.
+			selected := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %s, i64 %s\n", selected, executed, written, oldAccumulator)
+			if err := c.storeReg(AX, "%"+selected); err != nil {
+				return true, false, err
+			}
+			if err := c.storeStringCount("%" + remaining); err != nil {
 				return true, false, err
 			}
 		}
 	}
 
-	if repeated && op != "SCASB" {
-		if err := c.storeRegSized(CX, I32, "0"); err != nil {
+	if prefix != "" && kind != "scas" && kind != "cmps" {
+		if err := c.storeStringCount("0"); err != nil {
 			return true, false, err
 		}
 	}
 	return true, false, nil
+}
+
+func x86StringHelperName(kind string, width int) string {
+	suffix := map[int]string{1: "b", 2: "w", 4: "l", 8: "q"}[width]
+	if kind == "movs" {
+		return "__plan9asm_movs" + suffix
+	}
+	return "__plan9asm_rep_" + kind + suffix
+}
+
+func (c *amd64Ctx) setStringCompareFlags(typ LLVMType, left, right, executed string, preserveEmpty bool) {
+	flags := c.x86StatusFlagSlots()
+	old := make([]string, len(flags))
+	if preserveEmpty {
+		for index, flag := range flags {
+			old[index] = c.loadFlag(flag.slot)
+		}
+	}
+	c.setCmpFlagsSized(typ, left, right)
+	if preserveEmpty {
+		// REP/REPN with a zero initial count performs no comparison and
+		// preserves all six status flags. The helper also performs no load.
+		for index, flag := range flags {
+			current := c.loadFlag(flag.slot)
+			selected := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %s\n", selected, executed, current, old[index])
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selected, flag.slot)
+		}
+	}
+}
+
+func (c *amd64Ctx) storeStringCount(value string) error {
+	if c.goarch == "386" {
+		return c.storeRegSized(CX, I32, c.truncI64(value, I32))
+	}
+	return c.storeRegSized(CX, I64, value)
 }
 
 func (c *amd64Ctx) loadDirectionFlag() string {

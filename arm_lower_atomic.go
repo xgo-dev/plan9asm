@@ -97,14 +97,34 @@ func (c *armCtx) lowerAtomic(op string, ins Instr) (ok bool, terminated bool, er
 		return true, false, c.storeReg(ins.Args[1].Reg, v)
 
 	case "LDREXD":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpMem || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("arm LDREXD expects mem, regLo: %q", ins.Raw)
+		var mem Operand
+		var loReg, hiReg Reg
+		switch {
+		case len(ins.Args) == 2 && ins.Args[0].Kind == OpMem && ins.Args[1].Kind == OpReg:
+			mem, loReg = ins.Args[0], ins.Args[1].Reg
+		case len(ins.Args) == 3 && ins.Args[0].Kind == OpMem && ins.Args[1].Kind == OpReg && ins.Args[2].Kind == OpReg:
+			// x/arch's raw ARM syntax prints the implicit pair explicitly as
+			// mem, regHi, regLo; Go source syntax prints mem, regLo.
+			mem, hiReg, loReg = ins.Args[0], ins.Args[1].Reg, ins.Args[2].Reg
+		default:
+			return true, false, fmt.Errorf("arm LDREXD expects mem, regLo (or decoded mem, regHi, regLo): %q", ins.Raw)
 		}
-		hiReg, err := armNextReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
+		if hiReg == "" {
+			var err error
+			hiReg, err = armNextReg(loReg)
+			if err != nil {
+				return true, false, err
+			}
+		} else {
+			wantHi, err := armNextReg(loReg)
+			if err != nil || hiReg != wantHi {
+				return true, false, fmt.Errorf("arm LDREXD register pair must be consecutive: %q", ins.Raw)
+			}
 		}
-		ptr, err := c.atomicMemPtr(ins.Args[0].Mem)
+		if loReg == "" {
+			return true, false, fmt.Errorf("arm LDREXD missing low register: %q", ins.Raw)
+		}
+		ptr, err := c.atomicMemPtr(mem.Mem)
 		if err != nil {
 			return true, false, err
 		}
@@ -120,7 +140,7 @@ func (c *armCtx) lowerAtomic(op string, ins Instr) (ok bool, terminated bool, er
 		fmt.Fprintf(c.b, "  store ptr %s, ptr %s\n", ptr, c.exclusivePtrSlot)
 		fmt.Fprintf(c.b, "  store i8 8, ptr %s\n", c.exclusiveSizeSlot)
 		fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", ld, c.exclusiveValueSlot)
-		if err := c.storeReg(ins.Args[1].Reg, "%"+lo); err != nil {
+		if err := c.storeReg(loReg, "%"+lo); err != nil {
 			return true, false, err
 		}
 		return true, false, c.storeReg(hiReg, "%"+hi)
@@ -152,14 +172,30 @@ func (c *armCtx) lowerAtomic(op string, ins Instr) (ok bool, terminated bool, er
 		return true, false, c.storeReg(ins.Args[2].Reg, status)
 
 	case "STREXD":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpMem || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm STREXD expects srcLoReg, mem, statusReg: %q", ins.Raw)
+		var loReg, hiReg, statusReg Reg
+		var mem Operand
+		switch {
+		case len(ins.Args) == 3 && ins.Args[0].Kind == OpReg && ins.Args[1].Kind == OpMem && ins.Args[2].Kind == OpReg:
+			loReg, mem, statusReg = ins.Args[0].Reg, ins.Args[1], ins.Args[2].Reg
+		case len(ins.Args) == 4 && ins.Args[0].Kind == OpMem && ins.Args[1].Kind == OpReg && ins.Args[2].Kind == OpReg && ins.Args[3].Kind == OpReg:
+			// x/arch's raw ARM syntax prints mem, regHi, regLo, status.
+			mem, hiReg, loReg, statusReg = ins.Args[0], ins.Args[1].Reg, ins.Args[2].Reg, ins.Args[3].Reg
+		default:
+			return true, false, fmt.Errorf("arm STREXD expects srcLoReg, mem, statusReg (or decoded mem, regHi, regLo, statusReg): %q", ins.Raw)
 		}
-		hiReg, err := armNextReg(ins.Args[0].Reg)
+		var err error
+		if hiReg == "" {
+			hiReg, err = armNextReg(loReg)
+		} else {
+			wantHi, pairErr := armNextReg(loReg)
+			if pairErr != nil || hiReg != wantHi {
+				err = fmt.Errorf("arm STREXD register pair must be consecutive: %q", ins.Raw)
+			}
+		}
 		if err != nil {
 			return true, false, err
 		}
-		lo, err := c.loadReg(ins.Args[0].Reg)
+		lo, err := c.loadReg(loReg)
 		if err != nil {
 			return true, false, err
 		}
@@ -173,7 +209,7 @@ func (c *armCtx) lowerAtomic(op string, ins Instr) (ok bool, terminated bool, er
 		new64 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = shl i64 %s, 32\n", hiShift, hi64)
 		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %s\n", new64, hiShift, lo64)
-		ptr, err := c.atomicMemPtr(ins.Args[1].Mem)
+		ptr, err := c.atomicMemPtr(mem.Mem)
 		if err != nil {
 			return true, false, err
 		}
@@ -181,7 +217,7 @@ func (c *armCtx) lowerAtomic(op string, ins Instr) (ok bool, terminated bool, er
 		if err != nil {
 			return true, false, err
 		}
-		return true, false, c.storeReg(ins.Args[2].Reg, status)
+		return true, false, c.storeReg(statusReg, status)
 	}
 	return false, false, nil
 }

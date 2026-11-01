@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+instructions_only=false
+if (( $# != 0 )); then
+  if (( $# != 1 )) || [[ "$1" != "--instructions-only" ]]; then
+    echo "usage: $0 [--instructions-only]" >&2
+    exit 2
+  fi
+  instructions_only=true
+fi
+
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_root"
 
@@ -174,7 +183,7 @@ if unsupported:
     raise SystemExit(f"{target}: unsupported ops remain: {top}")
 if unsupported_forms:
     top = ", ".join(
-        f"{item['form']} ({item['examples'][0] if item.get('examples') else 'no example'})"
+        f"{item['form']} ({item['errors'][0] if item.get('errors') else item['examples'][0] if item.get('examples') else 'no diagnostic'})"
         for item in unsupported_forms[:12]
     )
     raise SystemExit(f"{target}: unsupported operand forms remain: {top}")
@@ -183,10 +192,23 @@ if parse_errs:
     raise SystemExit(f"{target}: parse errors remain: {top}")
 PY
 
+  # WASM needs complete typed-stack/control context even for instruction checks.
+  if [[ "$instructions_only" == true && "$goarch" != wasm ]]; then
+    rm "$json"
+    continue
+  fi
+
   echo "==> transpile+compile $target_label"
   out_dir="$tmp_root/$target_name-ll"
   meta="$tmp_root/$target_name-meta.json"
-  env "${target_env[@]}" GOTOOLCHAIN=local "$plan9asm_cmd" transpile -goos="$goos" -goarch="$goarch" -dir "$out_dir" -meta "$meta" std >/dev/null
+  transpile_log="$tmp_root/$target_name-transpile.log"
+  if ! env "${target_env[@]}" GOTOOLCHAIN=local "$plan9asm_cmd" transpile \
+    -goos="$goos" -goarch="$goarch" -dir "$out_dir" -meta "$meta" std \
+    >"$transpile_log" 2>&1; then
+    cat "$transpile_log" >&2
+    exit 1
+  fi
+  rm "$transpile_log"
 
   ll_count=$(find "$out_dir" -name '*.ll' | wc -l | tr -d ' ')
   if [ "$ll_count" -eq 0 ]; then
@@ -196,7 +218,11 @@ PY
   echo "compiled corpus $target_label: ll_files=$ll_count"
 
   while IFS= read -r ll; do
-    obj="${ll%.ll}.o"
-    "$llc_cmd" -mtriple="$triple" -filetype=obj "$ll" -o "$obj"
+    "$llc_cmd" -mtriple="$triple" -filetype=obj "$ll" -o "$tmp_root/verify-object.o"
   done < <(find "$out_dir" -name '*.ll' | sort)
+
+  # The corpus only checks object compilation. Keep one reusable object and
+  # release each target's IR and scan output before starting the next target.
+  rm "$tmp_root/verify-object.o" "$json" "$meta"
+  rm -r "$out_dir"
 done

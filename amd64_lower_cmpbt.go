@@ -6,179 +6,87 @@ import (
 )
 
 func (c *amd64Ctx) lowerCmpBt(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	switch op {
-	case "CMPB", "CMPW", "CMPL", "CMPQ":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("amd64 CMPQ expects 2 operands: %q", ins.Raw)
-		}
-		ty := I64
-		switch op {
-		case "CMPB":
-			ty = I8
-		case "CMPW":
-			ty = I16
-		case "CMPL":
-			ty = I32
-		case "CMPQ":
-			ty = I64
-		}
-		a, err := c.evalIntSized(ins.Args[0], ty)
-		if err != nil {
-			return true, false, err
-		}
-		b, err := c.evalIntSized(ins.Args[1], ty)
-		if err != nil {
-			return true, false, err
-		}
-		c.setCmpFlagsSized(ty, a, b)
-		return true, false, nil
-
-	case "TESTB", "TESTW", "TESTL", "TESTQ":
-		// TEST* a,b sets flags based on (a & b) without storing the result.
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("amd64 %s expects 2 operands: %q", op, ins.Raw)
-		}
-		ty := I64
-		switch op {
-		case "TESTB":
-			ty = I8
-		case "TESTW":
-			ty = I16
-		case "TESTL":
-			ty = I32
-		case "TESTQ":
-			ty = I64
-		}
-		a, err := c.evalIntSized(ins.Args[0], ty)
-		if err != nil {
-			return true, false, err
-		}
-		b, err := c.evalIntSized(ins.Args[1], ty)
-		if err != nil {
-			return true, false, err
-		}
-		c.setTestFlagsSized(ty, a, b)
-		return true, false, nil
-
-	case "BTQ":
-		// BTQ $imm, reg (sets CF to selected bit)
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 BTQ expects $imm, reg: %q", ins.Raw)
-		}
-		v, err := c.loadReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		amt := ins.Args[0].Imm & 63
-		sh := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", sh, v, amt)
-		and := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", and, sh)
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, and)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		return true, false, nil
-
-	case "BTSQ", "BTRQ":
-		// BTSQ/BTRQ src, dstReg|dstMem: CF = old bit, then set or
-		// clear the selected destination bit.
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("amd64 %s expects src, dst: %q", op, ins.Raw)
-		}
-		var amt string
-		var registerIndex string
-		switch ins.Args[0].Kind {
-		case OpImm:
-			amt = fmt.Sprintf("%d", ins.Args[0].Imm&63)
-		case OpReg:
-			av, err := c.loadReg(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			m := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 63\n", m, av)
-			amt = "%" + m
-			registerIndex = av
-		default:
-			return true, false, fmt.Errorf("amd64 %s expects imm/reg bit index: %q", op, ins.Raw)
-		}
-
-		var dst string
-		var storeDst func(string) error
-		switch ins.Args[1].Kind {
-		case OpReg:
-			dv, err := c.loadReg(ins.Args[1].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			dst = dv
-			storeDst = func(v string) error { return c.storeReg(ins.Args[1].Reg, v) }
-		case OpMem:
-			addr, err := c.addrFromMem(ins.Args[1].Mem)
-			if err != nil {
-				return true, false, err
-			}
-			// A register bit index on a memory operand selects a bit in an
-			// unbounded bit string, not merely within the first qword. Adjust
-			// the address by floor(index/64)*8 and retain index&63 within it.
-			if registerIndex != "" {
-				word := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = ashr i64 %s, 6\n", word, registerIndex)
-				byteOff := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, 3\n", byteOff, word)
-				adjusted := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %%%s\n", adjusted, addr, byteOff)
-				addr = "%" + adjusted
-			}
-			p := c.ptrFromAddrI64(addr)
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
-			dst = "%" + ld
-			storeDst = func(v string) error {
-				fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
-				return nil
-			}
-		default:
-			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
-		}
-
-		sh := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %s\n", sh, dst, amt)
-		and := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", and, sh)
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, and)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		one := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i64 1, %s\n", one, amt)
-		out := c.newTmp()
-		if op == "BTSQ" {
-			fmt.Fprintf(c.b, "  %%%s = or i64 %s, %%%s\n", out, dst, one)
-		} else {
-			mask := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i64 %%%s, -1\n", mask, one)
-			fmt.Fprintf(c.b, "  %%%s = and i64 %s, %%%s\n", out, dst, mask)
-		}
-		if err := storeDst("%" + out); err != nil {
-			return true, false, err
-		}
-		return true, false, nil
+	if ok, terminated, err := c.lowerBitTestFamily(op, ins); ok {
+		return ok, terminated, err
 	}
-	return false, false, nil
+	arch := c.goarch
+	if arch == "" {
+		arch = "amd64"
+	}
+	form, known, err := x86ScalarCompareProperties(op, ins, arch)
+	if !known || err != nil {
+		return known, false, err
+	}
+	for index, operand := range form.args {
+		if operand.Kind == OpReg && operand.Reg == SP && ins.Args[index].Reg != SP {
+			return true, false, fmt.Errorf("%w: Go REX byte view needs the original physical SP", ErrProbeNeedsContext)
+		}
+	}
+	native := form.memory >= 0 && (x86OrdinaryNativeMemoryOperand(form.args[form.memory], arch) ||
+		x86CallerMemoryCertified(ins, form.memory) || c.fixedLocalMemoryCertified(ins, form.memory))
+	if native && (ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride) {
+		return true, false, fmt.Errorf("%w: scalar comparison needs its original native address size", ErrProbeNeedsContext)
+	}
+	typ := LLVMType(fmt.Sprintf("i%d", form.bits))
+	var values [2]string
+	for index, operand := range form.args {
+		if index == form.memory && native {
+			if source := c.goReadOnlyStorage; source != nil {
+				address, named := x86StaticSBSourceAddress(operand, arch)
+				if named && source.object(address.symbol).variable != nil &&
+					!source.allows(operand, int64(form.bits/8), arch) {
+					return true, false, goReadOnlyContext("comparison exceeds the declared numerical span")
+				}
+			}
+			pointer, pointerType, _, pointerErr := c.packedVectorMemoryPointer(operand)
+			if pointerErr != nil {
+				return true, false, pointerErr
+			}
+			loaded := c.newTmp()
+			// A compare whose flags are dead must still perform the exact
+			// native read (and fault). No backing/alignment assumption follows.
+			fmt.Fprintf(c.b, "  %%%s = load volatile %s, %s %s, align 1\n", loaded, typ, pointerType, pointer)
+			values[index] = "%" + loaded
+		} else {
+			values[index], err = c.evalIntSized(operand, typ)
+			if err != nil {
+				return true, false, err
+			}
+		}
+	}
+	if form.test {
+		c.setTestFlagsSized(typ, values[0], values[1])
+	} else {
+		c.setCmpFlagsSized(typ, values[0], values[1])
+	}
+	return true, false, nil
 }
 
 func (c *amd64Ctx) setCmpFlagsSized(ty LLVMType, a, b string) {
 	// Unlike most Plan 9 x86 instructions, CMP spells its operands in
 	// comparison order: CMP a,b sets flags for a-b.
+	result := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = sub %s %s, %s\n", result, ty, a, b)
+	c.setAuxiliaryCarryFlag(ty, a, b, "%"+result)
 	zt := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", zt, ty, a, b)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zt, c.flagsZSlot)
-	slt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, %s\n", slt, ty, a, b)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", slt, c.flagsSltSlot)
+	sign := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", sign, ty, result)
+	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sign, c.flagsSltSlot)
 	ult := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp ult %s %s, %s\n", ult, ty, a, b)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", ult, c.flagsCFSlot)
+	xorOperands := c.newTmp()
+	xorResult := c.newTmp()
+	overflowBits := c.newTmp()
+	overflow := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", xorOperands, ty, a, b)
+	fmt.Fprintf(c.b, "  %%%s = xor %s %s, %%%s\n", xorResult, ty, a, result)
+	fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %%%s\n", overflowBits, ty, xorOperands, xorResult)
+	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", overflow, ty, overflowBits)
+	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", overflow, c.flagsOFSlot)
+	c.setParityFlagSized(ty, "%"+result)
 }
 
 func (c *amd64Ctx) setTestFlagsSized(ty LLVMType, a, b string) {
@@ -192,9 +100,23 @@ func (c *amd64Ctx) setTestFlagsSized(ty LLVMType, a, b string) {
 	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", slt, ty, and)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", slt, c.flagsSltSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+	c.setParityFlagSized(ty, "%"+and)
 }
 
 func (c *amd64Ctx) evalIntSized(op Operand, ty LLVMType) (string, error) {
+	if err := unresolvedSymbolicImmediateErrorForArch(op, ArchAMD64); err != nil {
+		return "", err
+	}
+	if read := c.goReadOnlyOperand; read != nil && ty == LLVMType(fmt.Sprintf("i%d", read.width*8)) && read.allows(op, read.width) {
+		pointer, pointerType, _, err := c.packedVectorMemoryPointer(op)
+		if err != nil {
+			return "", err
+		}
+		value := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load volatile %s, %s %s, align 1\n", value, ty, pointerType, pointer)
+		return "%" + value, nil
+	}
 	switch op.Kind {
 	case OpImm:
 		// LLVM will interpret the literal in the destination integer width.
@@ -233,6 +155,18 @@ func (c *amd64Ctx) evalIntSized(op Operand, ty LLVMType) (string, error) {
 		s := strings.TrimSpace(op.Sym)
 		if strings.HasPrefix(s, "$") {
 			address := strings.TrimSpace(strings.TrimPrefix(s, "$"))
+			if memory, matched, err := parseX86SymbolIndexedMemory(address); matched {
+				if err != nil {
+					return "", err
+				}
+				wide, err := c.addrFromSymbolIndexedAddress(memory)
+				if err != nil || ty == I64 {
+					return wide, err
+				}
+				value := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", value, wide, ty)
+				return "%" + value, nil
+			}
 			if strings.HasSuffix(address, "(SB)") {
 				p, err := c.ptrFromSB(address)
 				if err != nil {
@@ -247,10 +181,14 @@ func (c *amd64Ctx) evalIntSized(op Operand, ty LLVMType) (string, error) {
 				fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to %s\n", value, wide, ty)
 				return "%" + value, nil
 			}
-			// Macro-style symbolic immediates (e.g. $const_avxSupported) may
-			// survive preprocessing when include constants are unavailable.
-			// Keep translation progressing with a conservative zero value.
-			return "0", nil
+			return "", fmt.Errorf("unresolved symbolic immediate %q", op.Sym)
+		}
+		// Go's x86 syntax treats a bare integer as absolute memory. Keep
+		// this distinct from the '$' immediate spelling above.
+		if address, parseErr := parseInt(s); parseErr == nil {
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", t, ty, c.ptrFromAddrI64(fmt.Sprintf("%d", address)))
+			return "%" + t, nil
 		}
 		if strings.HasSuffix(s, "(SB)") {
 			p, err := c.ptrFromSB(s)

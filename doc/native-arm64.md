@@ -1,7 +1,7 @@
 # Native physical-register backend
 
 `TranslateNativeModule` takes an LLVM context and explicit `NativeOptions`
-(`GOOS`, `GOARCH`, `PackagePath`, and `Imports`). It lowers each restricted Plan 9
+(`GOOS`, `GOARCH`, `PackagePath`, `Imports`, and optional `CodeEntries`). It lowers each restricted Plan 9
 TEXT to a naked LLVM function containing function-local inline assembly, and
 DATA/GLOBL to LLVM global definitions. Linux and Darwin on amd64 and arm64 are
 supported. The caller owns the returned module. LLGo serializes it as LLVM IR
@@ -29,6 +29,17 @@ native translation errors rather than retrying with invented signatures.
 Package-visible Go functions remain on the typed LLVM path. An unresolved local
 function on that path now requires `ManualSig` or a supported inferred signature;
 it no longer silently receives `void()`.
+
+An explicit `CodeEntries` binding may instead identify a bare source-native
+TEXT address token. It supplies a distinct object-code symbol, not a Go/C
+signature or a pointer-variable initializer. This bounded role accepts only
+`NOSPLIT|NOFRAME`, `$0`/`$0-0`, and an exact direct `JMP` (`B` also on ARM64) to
+a declared native import, optionally followed by an unreachable operand-free
+`RET`. No data instruction, register operation, local call or implicit frame is
+admitted, even on a dead path. Missing bindings remain errors. Import identities,
+import aliases, DATA and other exported entries cannot collide with the bound
+code symbol. Consumers must bind a real source declaration's address to this
+entry; ordinary Go functions still require their declaration-driven ABI.
 
 ## Source contract
 

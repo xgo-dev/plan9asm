@@ -5,10 +5,6 @@ inputs:
   go-version:
     description: Go version accepted by actions/setup-go
     required: true
-  cache:
-    description: Whether actions/setup-go should cache dependencies
-    required: false
-    default: "true"
 
 runs:
   using: composite
@@ -22,7 +18,45 @@ runs:
         echo "GOCACHE=${RUNNER_TEMP}/go-build-cache" >> "$GITHUB_ENV"
 
     - name: Set up Go
+      id: install_go
       uses: actions/setup-go@v7
       with:
         go-version: ${{ inputs.go-version }}
-        cache: ${{ inputs.cache }}
+        # Account cache egress exhaustion must not block compiler installation.
+        # The writable job-local Go caches above remain available.
+        cache: false
+
+    # Some self-hosted runner interruptions report a successful action before
+    # its download completes. Neither that outcome nor an ambient Go is proof
+    # that the requested compiler was installed.
+    - name: Verify Go installation
+      shell: bash
+      env:
+        REQUESTED_GO_VERSION: ${{ inputs.go-version }}
+        INSTALLED_GO_VERSION: ${{ steps.install_go.outputs.go-version }}
+      run: |
+        set -euo pipefail
+
+        if [[ ! "$INSTALLED_GO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Go installer did not report a complete stable version" >&2
+          exit 1
+        fi
+
+        if [[ "$REQUESTED_GO_VERSION" =~ ^[0-9]+\.[0-9]+\.x$ ]]; then
+          minor="${REQUESTED_GO_VERSION%.x}"
+          if [[ "$INSTALLED_GO_VERSION" != "$minor."* ]]; then
+            echo "Requested Go $REQUESTED_GO_VERSION, installed $INSTALLED_GO_VERSION" >&2
+            exit 1
+          fi
+        elif [[ "$REQUESTED_GO_VERSION" != "$INSTALLED_GO_VERSION" ]]; then
+          echo "Requested Go $REQUESTED_GO_VERSION, installed $INSTALLED_GO_VERSION" >&2
+          exit 1
+        fi
+
+        actual="$(GOTOOLCHAIN=local go env GOVERSION)"
+        if [[ "$actual" != "go$INSTALLED_GO_VERSION" ]]; then
+          echo "Installed Go $INSTALLED_GO_VERSION, but PATH selects $actual" >&2
+          exit 1
+        fi
+        printf 'Verified Go %s: %s\n' "$INSTALLED_GO_VERSION" "$(command -v go)"
+        GOTOOLCHAIN=local go version

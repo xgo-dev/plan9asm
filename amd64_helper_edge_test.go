@@ -1,6 +1,8 @@
 package plan9asm
 
 import (
+	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -154,13 +156,28 @@ func TestAMD64CtxHelperEdges(t *testing.T) {
 				t.Fatalf("evalFPToI64(%d) = (%q, %v)", off, got, err)
 			}
 		}
+		if got, err := c.evalFPToF32(56); err != nil || got == "" {
+			t.Fatalf("evalFPToF32(float) = (%q, %v)", got, err)
+		}
+		if got, err := c.evalFPToF32(32); err != nil || got == "" {
+			t.Fatalf("evalFPToF32(i32 bits) = (%q, %v)", got, err)
+		}
+		if _, err := c.evalFPToF32(999); err == nil {
+			t.Fatal("evalFPToF32(missing slot) unexpectedly succeeded")
+		}
 		c.fpParams[64] = FrameSlot{Offset: 64, Type: LLVMType("v4i32"), Index: 0}
 		if _, err := c.evalFPToI64(64); err == nil {
 			t.Fatalf("evalFPToI64(unsupported type) unexpectedly succeeded")
 		}
+		if _, err := c.evalFPToF32(64); err == nil {
+			t.Fatal("evalFPToF32(unsupported type) unexpectedly succeeded")
+		}
 		c.fpParams[72] = FrameSlot{Offset: 72, Type: I64, Index: 99}
 		if _, err := c.evalFPToI64(72); err == nil {
 			t.Fatalf("evalFPToI64(invalid index) unexpectedly succeeded")
+		}
+		if _, err := c.evalFPToF32(72); err == nil {
+			t.Fatal("evalFPToF32(invalid index) unexpectedly succeeded")
 		}
 
 		if err := c.storeFPResult(80, I64, "11"); err != nil {
@@ -285,8 +302,8 @@ func TestAMD64CtxHelperEdges(t *testing.T) {
 		"alloca <64 x i8>",
 		"alloca i64",
 		"ptrtoint ptr %arg0 to i64",
-		"bitcast double %arg6 to i64",
-		"bitcast float %arg7 to i32",
+		"load double, ptr %fp_arg_48",
+		"load float, ptr %fp_arg_56",
 		"trunc i64 11 to i32",
 		"inttoptr i64 12 to ptr",
 		"bitcast i64 13 to double",
@@ -356,8 +373,13 @@ func TestAMD64AtomicAndBranchEdges(t *testing.T) {
 	c.blockBase = []int{0, 1, 2}
 	c.blockByIdx = map[int]int{0: 0, 1: 1, 2: 2}
 
-	if ok, term, err := c.lowerAtomic("LOCK", Instr{Raw: "LOCK"}); !ok || term || err != nil {
+	beforeStandaloneLock := b.Len()
+	beforeLockTemporary, beforeLockPrefix := c.tmp, c.namedAtomicLock
+	if ok, term, err := c.lowerAtomic("LOCK", Instr{Raw: "LOCK"}); !ok || term || !errors.Is(err, ErrProbeNeedsContext) {
 		t.Fatalf("lowerAtomic(LOCK) = (%v, %v, %v)", ok, term, err)
+	}
+	if b.Len() != beforeStandaloneLock || c.tmp != beforeLockTemporary || c.namedAtomicLock != beforeLockPrefix {
+		t.Fatal("standalone LOCK changed IR or temporary state without a complete adjacent source operation")
 	}
 	if ok, _, err := c.lowerAtomic("CMPXCHGL", Instr{
 		Raw: "CMPXCHGL CX, 8(BX)",
@@ -395,14 +417,14 @@ func TestAMD64AtomicAndBranchEdges(t *testing.T) {
 	}); !ok || err != nil {
 		t.Fatalf("lowerAtomic(XCHGQ sym) = (%v, %v)", ok, err)
 	}
-	if ok, _, err := c.lowerAtomic("ANDB", Instr{
+	if ok, _, err := c.lowerScalarMemoryRMW("ANDB", Instr{
 		Raw: "ANDB $1, 4(BX)",
 		Args: []Operand{
 			{Kind: OpImm, Imm: 1},
 			{Kind: OpMem, Mem: MemRef{Base: BX, Off: 4}},
 		},
 	}); !ok || err != nil {
-		t.Fatalf("lowerAtomic(ANDB) = (%v, %v)", ok, err)
+		t.Fatalf("lowerScalarMemoryRMW(ANDB) = (%v, %v)", ok, err)
 	}
 	if ok, term, err := c.lowerAtomic("ORQ", Instr{
 		Raw: "ORQ AX, BX",
@@ -505,16 +527,41 @@ func TestAMD64AtomicAndBranchEdges(t *testing.T) {
 	if err := c.tailCallAndRet(Operand{Kind: OpReg, Reg: AX}); err == nil {
 		t.Fatalf("tailCallAndRet(non-sym) unexpectedly succeeded")
 	}
+
+	var b386 strings.Builder
+	c386 := newX86Ctx(&b386, Func{}, FuncSig{Name: "example.ptr386", Ret: Ptr}, testResolveSym("example"), map[string]FuncSig{
+		"example.word386": {Name: "example.word386", Ret: I32},
+	}, "386", "i386-unknown-linux-gnu", false)
+	if err := c386.emitEntryAllocas(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c386.tailCallAndRet(Operand{Kind: OpSym, Sym: "word386(SB)"}); err != nil {
+		t.Fatalf("386 tailCallAndRet(i32 -> ptr) error = %v", err)
+	}
+	if got := b386.String(); !strings.Contains(got, "inttoptr i32") || !strings.Contains(got, "ret ptr") {
+		t.Fatalf("386 tailCallAndRet(i32 -> ptr) output:\n%s", got)
+	}
 	if err := c.tailCallIndirectAddrAndRet("123"); err != nil {
 		t.Fatalf("tailCallIndirectAddrAndRet() error = %v", err)
 	}
 
 	out := b.String()
+	if strings.Contains(out, "cmpxchg ptr") {
+		t.Fatal("native CMPXCHGL silently acquired software atomic alignment or LOCK semantics")
+	}
+	if strings.Contains(out, "atomicrmw and ptr") {
+		t.Fatal("ordinary ANDB silently acquired implicit LOCK semantics")
+	}
+	if strings.Contains(out, "lock; xadd") {
+		t.Fatal("bare XADD borrowed LOCK from the rejected standalone prefix")
+	}
 	for _, want := range []string{
-		"cmpxchg ptr",
-		"atomicrmw add ptr",
-		"atomicrmw xchg ptr",
-		"atomicrmw and ptr",
+		"asm sideeffect \"cmpxchgl $3, $2; sete $1\"",
+		"asm sideeffect \"xadd",
+		"asm sideeffect \"xchg",
+		"load volatile i8",
+		"and i8",
+		"store volatile i8",
 		"icmp eq i8",
 		"icmp slt i8",
 		"call i64",
@@ -556,13 +603,20 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 			t.Fatalf("lowerArith(%s) = (%v, %v, %v)", op, ok, term, err)
 		}
 	}
+	if ok, term, err := c.lowerScalarShiftRotate("RCRQ", Instr{Raw: "RCRQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}}); !ok || term || err != nil {
+		t.Fatalf("lowerScalarShiftRotate(RCRQ) = (%v, %v, %v)", ok, term, err)
+	}
 
 	mustLower("PUSHQ", Instr{Raw: "PUSHQ $1", Args: []Operand{{Kind: OpImm, Imm: 1}}})
 	mustLower("POPQ", Instr{Raw: "POPQ CX", Args: []Operand{{Kind: OpReg, Reg: CX}}})
 	mustLower("PUSHFQ", Instr{Raw: "PUSHFQ"})
 	mustLower("POPFQ", Instr{Raw: "POPFQ"})
 	mustLower("LFENCE", Instr{Raw: "LFENCE"})
-	mustLower("UNDEF", Instr{Raw: "UNDEF"})
+	trap, trapOutput := newAMD64CtxWithFuncForTest(t, fn, FuncSig{Ret: Void}, nil)
+	if known, terminated, err := trap.lowerArith("UNDEF", Instr{Raw: "UNDEF"}); !known || !terminated || err != nil ||
+		!strings.Contains(trapOutput.String(), "asm sideeffect \"ud2\"") {
+		t.Fatalf("UNDEF must terminate with its architectural fault: %t/%t/%v", known, terminated, err)
+	}
 	mustLower("RDTSC", Instr{Raw: "RDTSC"})
 	mustLower(OpCPUID, Instr{Raw: "CPUID"})
 	mustLower(OpXGETBV, Instr{Raw: "XGETBV"})
@@ -572,7 +626,6 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("STOSQ", Instr{Raw: "STOSQ"})
 	mustLower("NEGL", Instr{Raw: "NEGL AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
 	mustLower("NEGL", Instr{Raw: "NEGL 4(BX)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 4}}}})
-	mustLower("RCRQ", Instr{Raw: "RCRQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ADDQ", Instr{Raw: "ADDQ $2, AX", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: AX}}})
 	mustLower("SUBQ", Instr{Raw: "SUBQ CX, 8(BX)", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}}})
 	mustLower("XORQ", Instr{Raw: "XORQ $3, AX", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: AX}}})
@@ -581,8 +634,8 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("ADCQ", Instr{Raw: "ADCQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ADCB", Instr{Raw: "ADCB $1, AL", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AL}}})
 	mustLower("SBBQ", Instr{Raw: "SBBQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("ADCXQ", Instr{Raw: "ADCXQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("ADOXQ", Instr{Raw: "ADOXQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLower("ADCXQ", Instr{Raw: "ADCXQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLower("ADOXQ", Instr{Raw: "ADOXQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ADDL", Instr{Raw: "ADDL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ADDB", Instr{Raw: "ADDB CL, DX", Args: []Operand{{Kind: OpReg, Reg: CL}, {Kind: OpReg, Reg: DX}}})
 	mustLower("SUBL", Instr{Raw: "SUBL CX, 12(BX)", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 12}}}})
@@ -601,16 +654,26 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("LEAQ", Instr{Raw: "LEAQ 8(BX)(CX*2), DI", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Index: CX, Scale: 2, Off: 8}}, {Kind: OpReg, Reg: DI}}})
 	mustLower("LEAL", Instr{Raw: "LEAL 4(BX), SI", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 4}}, {Kind: OpReg, Reg: SI}}})
 	mustLower("LEAQ", Instr{Raw: "LEAQ ret+16(FP), R8", Args: []Operand{{Kind: OpFP, FPOffset: 16}, {Kind: OpReg, Reg: Reg("R8")}}})
-	mustLower("LEAQ", Instr{Raw: "LEAQ $ret+16(FP), R9", Args: []Operand{{Kind: OpFPAddr, FPOffset: 16}, {Kind: OpReg, Reg: Reg("R9")}}})
+	// TYPE_ADDR is not Go's LEA Ym source; retain the former false-positive
+	// spelling as a rejection, independently checked by the full LEA oracle.
+	if _, _, err := c.lowerArith("LEAQ", Instr{Raw: "LEAQ $ret+16(FP), R9", Args: []Operand{{Kind: OpFPAddr, FPOffset: 16}, {Kind: OpReg, Reg: Reg("R9")}}}); err == nil {
+		t.Fatal("LEAQ accepted a TYPE_ADDR operand outside Go's Ym/Yrl row")
+	}
 	mustLower("LEAQ", Instr{Raw: "LEAQ global<>(SB), AX", Args: []Operand{{Kind: OpSym, Sym: "global<>(SB)"}, {Kind: OpReg, Reg: AX}}})
 	mustLower("POPCNTL", Instr{Raw: "POPCNTL AX, BX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}})
 	mustLower("POPCNTQ", Instr{Raw: "POPCNTQ AX, CX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: CX}}})
 	mustLower("TZCNTQ", Instr{Raw: "TZCNTQ BX, DX", Args: []Operand{{Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: DX}}})
+	// This is a fragment-shape test, not a module/native-entry certificate.
+	// Supply the compiler-local bridge name and its explicit target; complete
+	// public-API tests independently require the emitted no-red-zone helper.
+	oldScanNamespace, oldScanTarget := c.bitScanNS, c.targetTriple
+	c.bitScanNS, c.targetTriple = "__test_bitscan_", "x86_64-unknown-linux-gnu"
 	mustLower("BSFQ", Instr{Raw: "BSFQ AX, BX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}})
 	mustLower("BSRQ", Instr{Raw: "BSRQ AX, CX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: CX}}})
 	mustLower("BSWAPQ", Instr{Raw: "BSWAPQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
 	mustLower("BSFL", Instr{Raw: "BSFL AX, DX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: DX}}})
 	mustLower("BSRL", Instr{Raw: "BSRL AX, DI", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: DI}}})
+	c.bitScanNS, c.targetTriple = oldScanNamespace, oldScanTarget
 	mustLower("SETEQ", Instr{Raw: "SETEQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
 	mustLower("SETGT", Instr{Raw: "SETGT ret+8(FP)", Args: []Operand{{Kind: OpFP, FPOffset: 8}}})
 	mustLower("SETGE", Instr{Raw: "SETGE AH", Args: []Operand{{Kind: OpReg, Reg: AH}}})
@@ -648,9 +711,54 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("NOTQ", Instr{Raw: "NOTQ 20(BX)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 20}}}})
 	mustLower("BSWAPL", Instr{Raw: "BSWAPL AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
 	mustLower("MULQ", Instr{Raw: "MULQ CX", Args: []Operand{{Kind: OpReg, Reg: CX}}})
+	// MULX consumes a complete source proof. This broad fragment context has
+	// Void plus synthetic result slots, so give only MULX its own real source
+	// and matching signature. Do not lend that proof to the remaining table.
+	mulxSource, err := Parse(ArchAMD64, `TEXT mulxfragment(SB),4,$0-0
+MOVQ $7,BX
+MOVQ $3,DX
+MULXQ BX, CX, DI
+RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mulxContext, mulxOutput := newAMD64CtxWithFuncForTest(t, mulxSource.Funcs[0],
+		FuncSig{Name: "example.mulxfragment", Ret: Void}, nil)
+	if err := mulxContext.storeReg(BX, "7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mulxContext.storeReg(DX, "3"); err != nil {
+		t.Fatal(err)
+	}
+	fragmentContext := c
+	c = mulxContext
 	mustLower("MULXQ", Instr{Raw: "MULXQ BX, CX, DI", Args: []Operand{{Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: DI}}})
+	c = fragmentContext
+	if !strings.Contains(mulxOutput.String(), "mul i128") || !strings.Contains(mulxOutput.String(), "lshr i128") {
+		t.Fatal("complete MULX fragment lost either product half")
+	}
 	mustLower("MULL", Instr{Raw: "MULL CX", Args: []Operand{{Kind: OpReg, Reg: CX}}})
+	// This direct emitter fragment has no public entry/NUM certificate. Its
+	// trapping DIV still requires an explicit physical instruction target;
+	// missing target must fail without emitting a partial native operation.
+	beforeDivideBytes, beforeDivideTemporary := b.Len(), c.tmp
+	divide := Instr{Raw: "DIVL CX", Args: []Operand{{Kind: OpReg, Reg: CX}}}
+	known, terminated, err := c.lowerArith("DIVL", divide)
+	if !known || terminated || !errors.Is(err, ErrProbeNeedsContext) ||
+		b.Len() != beforeDivideBytes || c.tmp != beforeDivideTemporary {
+		t.Fatal("untargeted direct division acquired a native operation or partial IR", known, terminated, err)
+	}
+	oldDivideTarget := c.targetTriple
+	c.targetTriple = "x86_64-unknown-linux-gnu"
 	mustLower("DIVL", Instr{Raw: "DIVL CX", Args: []Operand{{Kind: OpReg, Reg: CX}}})
+	divideIR := b.String()[beforeDivideBytes:]
+	for _, forbidden := range []string{"udiv ", "urem ", "sdiv ", "srem "} {
+		if strings.Contains(divideIR, forbidden) {
+			t.Fatal("native division was replaced by LLVM poison-producing arithmetic", forbidden)
+		}
+	}
+	c.targetTriple = oldDivideTarget
 	mustLower("IMULQ", Instr{Raw: "IMULQ CX", Args: []Operand{{Kind: OpReg, Reg: CX}}})
 	mustLower("IMULQ", Instr{Raw: "IMULQ CX, DX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: DX}}})
 	mustLower("IMUL3Q", Instr{Raw: "IMUL3Q $3, CX, DI", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: DI}}})
@@ -663,12 +771,11 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 		"call i32 @llvm.ctpop.i32",
 		"call i64 @llvm.ctpop.i64",
 		"call i64 @llvm.cttz.i64",
-		"call i32 @llvm.ctlz.i32",
+		"@__test_bitscan_amd64_bsrl(",
 		"call i64 @llvm.bswap.i64",
 		"call i32 @llvm.bswap.i32",
 		"mul i128",
-		"udiv i64",
-		"urem i64",
+		`asm sideeffect "divl ${4:k}", "=&{ax},=&{dx},0,1,r,~{flags}"`,
 		"select i1",
 		"ptrtoint ptr @\"example.global\" to i64",
 		"store i8",
@@ -715,8 +822,8 @@ func TestAMD64EcosystemScalarValidationCoverage(t *testing.T) {
 			{Raw: string(op) + " X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}},
 			{Raw: string(op) + " AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}},
 		} {
-			if ok, term, err := c.lowerArith(op, ins); ok || term || err != nil {
-				t.Fatalf("lowerArith(%s) invalid form = (%v, %v, %v), want unsupported", op, ok, term, err)
+			if ok, term, err := c.lowerArith(op, ins); !ok || term || err == nil {
+				t.Fatalf("lowerArith(%s) invalid form = (%v, %v, %v), want recognized validation error", op, ok, term, err)
 			}
 		}
 	}
@@ -814,7 +921,7 @@ func TestAMD64ADCBUsesCarryFlag(t *testing.T) {
 		"store i1 true, ptr %flags_cf",
 		"load i1, ptr %flags_cf",
 		"zext i1 %",
-		"add i8",
+		"add i16",
 		"zext i8",
 		"icmp ugt i16",
 		"shl i64",
@@ -824,6 +931,21 @@ func TestAMD64ADCBUsesCarryFlag(t *testing.T) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
 		}
 	}
+}
+
+// Exercise the actual typed owners before the residual vector dispatcher, in
+// the same order as lowerInstr. The old fixtures remain emitter-only checks.
+func lowerAMD64PackedArithmeticOrVectorForTest(c *amd64Ctx, op Op, ins Instr) (bool, bool, error) {
+	if known, terminated, err := c.lowerPackedWordMultiply(op, ins); known {
+		return known, terminated, err
+	}
+	if known, terminated, err := c.lowerPackedIntegerAdd(op, ins); known {
+		return known, terminated, err
+	}
+	if known, terminated, err := c.lowerPackedIntegerSubtract(op, ins); known {
+		return known, terminated, err
+	}
+	return c.lowerVec(op, ins)
 }
 
 func TestAMD64VectorCoverage(t *testing.T) {
@@ -844,17 +966,31 @@ func TestAMD64VectorCoverage(t *testing.T) {
 		},
 	}
 	c, b := newAMD64CtxWithFuncForTest(t, fn, FuncSig{Name: "example.vec", Ret: Void}, nil)
+	// Emitter-only native vector formats still need their actual x86 backend.
+	// Complete initialized public programs have separate object owners.
+	c.targetTriple = "x86_64-unknown-linux-gnu"
 	mustLower := func(op Op, ins Instr) {
 		t.Helper()
-		if ok, term, err := c.lowerVec(op, ins); !ok || term || err != nil {
-			t.Fatalf("lowerVec(%s) = (%v, %v, %v)", op, ok, term, err)
+		if ok, term, err := lowerAMD64PackedArithmeticOrVectorForTest(c, op, ins); !ok || term || err != nil {
+			t.Fatalf("typed vector lowering(%s) = (%v, %v, %v)", op, ok, term, err)
+		}
+	}
+	mustLowerTransfer := func(op Op, ins Instr) {
+		t.Helper()
+		ins.Op = op
+		if ok, term, err := c.lowerVectorScalarIntegerMove(op, ins); !ok || term || err != nil {
+			t.Fatalf("lowerVectorScalarIntegerMove(%s) = (%v, %v, %v)", op, ok, term, err)
 		}
 	}
 
-	mustLower("MOVL", Instr{Raw: "MOVL $1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}}})
-	mustLower("MOVD", Instr{Raw: "MOVD AX, X1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X1")}}})
-	mustLower("MOVQ", Instr{Raw: "MOVQ BX, X2", Args: []Operand{{Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: Reg("X2")}}})
-	mustLower("MOVQ", Instr{Raw: "MOVQ X2, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X2")}, {Kind: OpReg, Reg: AX}}})
+	goAssemblerOracleOutput(t, "amd64", "TEXT f(SB),4,$0-0\nMOVL $1,AX\nMOVL AX,X0\nMOVD AX,X1\nMOVQ BX,X2\nMOVQ X2,AX\nRET\n", "", true)
+	if err := c.storeReg(AX, "1"); err != nil {
+		t.Fatal(err)
+	}
+	mustLowerTransfer("MOVL", Instr{Raw: "MOVL AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}})
+	mustLowerTransfer("MOVD", Instr{Raw: "MOVD AX, X1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLowerTransfer("MOVQ", Instr{Raw: "MOVQ BX, X2", Args: []Operand{{Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: Reg("X2")}}})
+	mustLowerTransfer("MOVQ", Instr{Raw: "MOVQ X2, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X2")}, {Kind: OpReg, Reg: AX}}})
 	mustLower("KXORQ", Instr{Raw: "KXORQ K1, K2, K3", Args: []Operand{{Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("K2")}, {Kind: OpReg, Reg: Reg("K3")}}})
 	mustLower("KMOVB", Instr{Raw: "KMOVB AX, K1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("K1")}}})
 	mustLower("KMOVW", Instr{Raw: "KMOVW K1, 8(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("K1")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}}})
@@ -923,7 +1059,9 @@ func TestAMD64VectorCoverage(t *testing.T) {
 	mustLower("MOVOU", Instr{Raw: "MOVOU X0, 112(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 112}}}})
 	mustLower("PXOR", Instr{Raw: "PXOR X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
 	mustLower("PAND", Instr{Raw: "PAND X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
-	mustLower("PANDN", Instr{Raw: "PANDN X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	if ok, term, err := c.lowerPackedAndNot("PANDN", Instr{Raw: "PANDN X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}); !ok || term || err != nil {
+		t.Fatalf("lowerPackedAndNot(PANDN) = (%v, %v, %v)", ok, term, err)
+	}
 	mustLower("PADDL", Instr{Raw: "PADDL X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
 	mustLower("PADDQ", Instr{Raw: "PADDQ X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
 	mustLower("PSUBL", Instr{Raw: "PSUBL X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
@@ -965,9 +1103,6 @@ func TestAMD64VectorCoverage(t *testing.T) {
 	}
 	if got := llvmShiftLeftBytesMask(3); !strings.Contains(got, "i32 16") {
 		t.Fatalf("llvmShiftLeftBytesMask(3) = %q", got)
-	}
-	if got := llvmAlignRightBytesMask(20); !strings.Contains(got, "i32 20") {
-		t.Fatalf("llvmAlignRightBytesMask(20) = %q", got)
 	}
 	if got := llvmAllOnesI8Vec(4); got != "<i8 -1, i8 -1, i8 -1, i8 -1>" {
 		t.Fatalf("llvmAllOnesI8Vec(4) = %q", got)
@@ -1085,17 +1220,18 @@ func TestAMD64TranslateReturnCoverage(t *testing.T) {
 }
 
 func TestAMD64FPMovCoverage(t *testing.T) {
-	fn := Func{
-		Instrs: []Instr{
-			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}},
-			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}},
-			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("X2")}, {Kind: OpReg, Reg: Reg("X3")}}},
-		},
+	fixture, err := Parse(ArchAMD64, "TEXT example.fpmov(SB),$0-65\n"+
+		"MOVQ arg+0(FP),AX\nMOVQ AX,BX\nPXOR X0,X0\nPXOR X2,X2\nMOVQ X0,X1\nMOVQ X2,X3\n"+
+		"MOVSD input+8(FP),X0\nMOVSD X0,ret+40(FP)\nMOVQ AX,ret+48(FP)\n"+
+		"MOVW AX,ret+56(FP)\nMOVB AX,ret+64(FP)\nRET\n")
+	if err != nil {
+		t.Fatal(err)
 	}
+	fn := fixture.Funcs[0]
 	sig := FuncSig{
 		Name: "example.fpmov",
 		Args: []LLVMType{I64, LLVMType("double"), I64, I64},
-		Ret:  Void,
+		Ret:  LLVMType("{ double, i64, i16, i8 }"),
 		Frame: FrameLayout{
 			Params: []FrameSlot{
 				{Offset: 0, Type: I64, Index: 0, Field: -1},
@@ -1112,6 +1248,7 @@ func TestAMD64FPMovCoverage(t *testing.T) {
 		},
 	}
 	c, b := newAMD64CtxWithFuncForTest(t, fn, sig, nil)
+	c.goarch, c.targetTriple = "amd64", "x86_64-unknown-linux-gnu"
 	check := func(kind string, ins Instr, ok bool, err error) {
 		t.Helper()
 		if err != nil {
@@ -1152,7 +1289,7 @@ func TestAMD64FPMovCoverage(t *testing.T) {
 		{Op: "ANDNPD", Args: []Operand{{Kind: OpReg, Reg: "X1"}, {Kind: OpReg, Reg: "X0"}}, Raw: "ANDNPD X1, X0"},
 		{Op: "ORPD", Args: []Operand{{Kind: OpReg, Reg: "X1"}, {Kind: OpReg, Reg: "X0"}}, Raw: "ORPD X1, X0"},
 		{Op: "XORPS", Args: []Operand{{Kind: OpReg, Reg: "X1"}, {Kind: OpReg, Reg: "X0"}}, Raw: "XORPS X1, X0"},
-		{Op: "MOVSD", Args: []Operand{{Kind: OpImm, Imm: 7}, {Kind: OpReg, Reg: "X0"}}, Raw: "MOVSD $7, X0"},
+		{Op: "MOVSD", Args: []Operand{{Kind: OpImm, Imm: int64(math.Float64bits(7)), ImmIsFloat: true}, {Kind: OpReg, Reg: "X0"}}, Raw: "MOVSD $7.0, X0"},
 		{Op: "MOVSD", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 16}}}, Raw: "MOVSD X0, 16(BX)"},
 		{Op: "MOVSD", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpSym, Sym: "example.f64(SB)"}}, Raw: "MOVSD X0, example.f64(SB)"},
 		{Op: "MOVSD", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpFP, FPOffset: 40}}, Raw: "MOVSD X0, ret+40(FP)"},
@@ -1174,14 +1311,27 @@ func TestAMD64FPMovCoverage(t *testing.T) {
 		{Op: "VFMADD213SD", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpReg, Reg: "X1"}, {Kind: OpReg, Reg: "X2"}}, Raw: "VFMADD213SD X0, X1, X2"},
 		{Op: "VFNMADD231SD", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpReg, Reg: "X1"}, {Kind: OpReg, Reg: "X2"}}, Raw: "VFNMADD231SD X0, X1, X2"},
 	} {
+		before := b.Len()
 		ok, _, err := c.lowerFP(ins.Op, ins)
 		check("lowerFP", ins, ok, err)
+		if ins.Op == "VFMADD213SD" || ins.Op == "VFNMADD231SD" {
+			// This fragment has an explicit native target. Preserve its
+			// original fused opcode/MXCSR effects rather than demanding the
+			// separate portable numerical lowerer's fneg/llvm.fma sequence.
+			fragment := b.String()[before:]
+			native := `asm sideeffect "` + strings.ToLower(string(ins.Op)) + " "
+			if strings.Count(fragment, native) != 1 || !strings.Contains(fragment, "~{fpsr}") ||
+				!strings.Contains(fragment, "~{memory}") || !strings.Contains(fragment, ",0,") ||
+				strings.Contains(fragment, "fneg double") || strings.Contains(fragment, "@llvm.fma.") {
+				t.Fatal("native scalar FMA lost its exact fused opcode or floating effects", ins.Raw)
+			}
+		}
 	}
 
 	c.setCmpFlags("1", "2")
 	for _, ins := range []Instr{
 		{Op: "CMOVQLT", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: DX}}, Raw: "CMOVQLT CX, DX"},
-		{Op: "MOVLQSX", Args: []Operand{{Kind: OpImm, Imm: 21}, {Kind: OpReg, Reg: AX}}, Raw: "MOVLQSX $21, AX"},
+		{Op: "MOVLQSX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}, Raw: "MOVLQSX AX, AX"},
 		{Op: "MOVLQSX", Args: []Operand{{Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: CX}}, Raw: "MOVLQSX BX, CX"},
 		{Op: "MOVLQSX", Args: []Operand{{Kind: OpFP, FPOffset: 16}, {Kind: OpReg, Reg: DX}}, Raw: "MOVLQSX arg+16(FP), DX"},
 		{Op: "MOVLQSX", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: SI, Off: 4}}, {Kind: OpReg, Reg: SI}}, Raw: "MOVLQSX 4(SI), SI"},
@@ -1245,27 +1395,29 @@ func TestAMD64FPMovCoverage(t *testing.T) {
 
 	out := b.String()
 	for _, want := range []string{
-		"fadd double",
-		"fsub double",
-		"fmul double",
-		"fdiv double",
-		"fneg double",
-		"fcmp ueq double",
+		"call double @llvm.experimental.constrained.fadd.f64",
+		"call double @__plan9asm_add_sub_special_f64",
+		"call double @llvm.experimental.constrained.fsub.f64",
+		"call double @llvm.experimental.constrained.fmul.f64",
+		"call double @llvm.experimental.constrained.fdiv.f64",
+		`call { i8, i8, i8 } asm sideeffect "comisd $3, $4; setb $0; sete $1; setp $2"`,
 		"fcmp ord double",
-		"call double @llvm.sqrt.f64",
-		"call double @llvm.rint.f64",
-		"sitofp i64",
-		"sitofp i32",
-		"fptosi double",
+		`asm sideeffect "sqrtsd $2, $0"`,
+		`call i32 asm sideeffect "cvtsd2sil $1, $0"`,
+		"@llvm.experimental.constrained.sitofp.f64.i64",
+		"@llvm.experimental.constrained.sitofp.f64.i32",
+		`call i64 asm sideeffect "cvttsd2siq $1, $0"`,
 		"select i1",
 		"bitcast i64",
 		"bitcast double",
 		"store double",
 		"store i64",
-		"store i32",
+		"store volatile i32",
 		"store i16",
 		"store i8",
-		`load <16 x i8>, ptr @"example.vec"`,
+		// Native MOVAPD must retain its aligned opcode and dead-read fault;
+		// an ordinary LLVM load is no longer the correct lowering contract.
+		`call <4 x float> asm sideeffect "movapd ($1), $0", "=x,r,~{memory}"(ptr @"example.vec")`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
@@ -1277,10 +1429,10 @@ func TestAMD64CmpBtCoverage(t *testing.T) {
 	sig := FuncSig{
 		Name: "example.cmpbt",
 		Args: []LLVMType{I64},
-		Ret:  Void,
+		Ret:  I64,
 		Frame: FrameLayout{
-			Params:  []FrameSlot{{Offset: 0, Type: I64, Index: 0}},
-			Results: []FrameSlot{{Offset: 8, Type: I64, Index: 0}},
+			Params:  []FrameSlot{{Offset: 0, Type: I64, Index: 0, Field: -1}},
+			Results: []FrameSlot{{Offset: 8, Type: I64, Index: 0, Field: -1}},
 		},
 	}
 	c, b := newAMD64CtxWithFuncForTest(t, Func{}, sig, nil)
@@ -1307,13 +1459,13 @@ func TestAMD64CmpBtCoverage(t *testing.T) {
 		}
 	}
 
-	check("CMPB", Instr{Raw: "CMPB $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	check("CMPB", Instr{Raw: "CMPB AX, $1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpImm, Imm: 1}}})
 	check("CMPW", Instr{Raw: "CMPW 4(BX), CX", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 4}}, {Kind: OpReg, Reg: CX}}})
 	check("CMPL", Instr{Raw: "CMPL arg+0(FP), DI", Args: []Operand{{Kind: OpFP, FPOffset: 0}, {Kind: OpReg, Reg: DI}}})
 	check("CMPQ", Instr{Raw: "CMPQ example.global(SB), SI", Args: []Operand{{Kind: OpSym, Sym: "example.global(SB)"}, {Kind: OpReg, Reg: SI}}})
 	check("TESTB", Instr{Raw: "TESTB AX, BX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}})
 	check("TESTW", Instr{Raw: "TESTW $7, arg+0(FP)", Args: []Operand{{Kind: OpImm, Imm: 7}, {Kind: OpFP, FPOffset: 0}}})
-	check("TESTL", Instr{Raw: "TESTL $const, 8(BX)", Args: []Operand{{Kind: OpSym, Sym: "$const"}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}}})
+	check("TESTL", Instr{Raw: "TESTL $7, 8(BX)", Args: []Operand{{Kind: OpImm, Imm: 7}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}}})
 	check("TESTQ", Instr{Raw: "TESTQ example.global(SB), DI", Args: []Operand{{Kind: OpSym, Sym: "example.global(SB)"}, {Kind: OpReg, Reg: DI}}})
 	check("BTQ", Instr{Raw: "BTQ $3, AX", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: AX}}})
 	check("BTSQ", Instr{Raw: "BTSQ DX, AX", Args: []Operand{{Kind: OpReg, Reg: DX}, {Kind: OpReg, Reg: AX}}})
@@ -1329,7 +1481,7 @@ func TestAMD64CmpBtCoverage(t *testing.T) {
 	if _, _, err := c.lowerCmpBt("TESTQ", Instr{Raw: "TESTQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}}); err == nil {
 		t.Fatalf("short TESTQ unexpectedly succeeded")
 	}
-	if _, _, err := c.lowerCmpBt("BTQ", Instr{Raw: "BTQ AX, BX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}}); err == nil {
+	if _, _, err := c.lowerCmpBt("BTQ", Instr{Raw: "BTQ (AX), BX", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX}}, {Kind: OpReg, Reg: BX}}}); err == nil {
 		t.Fatalf("bad BTQ unexpectedly succeeded")
 	}
 	if _, _, err := c.lowerCmpBt("BTSQ", Instr{Raw: "BTSQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}}); err == nil {
@@ -1338,8 +1490,8 @@ func TestAMD64CmpBtCoverage(t *testing.T) {
 	if _, _, err := c.lowerCmpBt("BTRQ", Instr{Raw: "BTRQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}}); err == nil {
 		t.Fatalf("short BTRQ unexpectedly succeeded")
 	}
-	if got, err := c.evalIntSized(Operand{Kind: OpSym, Sym: "$const"}, I32); err != nil || got != "0" {
-		t.Fatalf("evalIntSized($const) = (%q, %v)", got, err)
+	if _, err := c.evalIntSized(Operand{Kind: OpSym, Sym: "$const"}, I32); err == nil {
+		t.Fatal("evalIntSized($const) invented a value for an unresolved constant")
 	}
 	if _, err := c.evalIntSized(Operand{Kind: OpSym, Sym: "bad"}, I32); err == nil {
 		t.Fatalf("evalIntSized(bad sym) unexpectedly succeeded")
@@ -1358,7 +1510,7 @@ func TestAMD64CmpBtCoverage(t *testing.T) {
 		"store i1 false, ptr %flags_cf",
 		"lshr i64",
 		"shl i64 1",
-		"load i64, ptr @\"example.global\"",
+		"load volatile i64, ptr @\"example.global\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
@@ -1370,13 +1522,20 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 	sig := FuncSig{
 		Name: "example.mov",
 		Args: []LLVMType{I64},
-		Ret:  Void,
+		Ret:  LLVMType("{ i64, i16, i8 }"),
 		Frame: FrameLayout{
-			Params:  []FrameSlot{{Offset: 0, Type: I64, Index: 0}},
-			Results: []FrameSlot{{Offset: 8, Type: I64, Index: 0}, {Offset: 16, Type: I16, Index: 1}, {Offset: 24, Type: I8, Index: 2}},
+			Params:  []FrameSlot{{Offset: 0, Type: I64, Index: 0, Field: -1}},
+			Results: []FrameSlot{{Offset: 8, Type: I64, Index: 0, Field: -1}, {Offset: 16, Type: I16, Index: 1, Field: -1}, {Offset: 24, Type: I8, Index: 2, Field: -1}},
 		},
 	}
-	c, b := newAMD64CtxWithFuncForTest(t, Func{}, sig, nil)
+	// Fragment-level emitter assertions still need a complete source when a
+	// partial logical FP view asks for the independent whole-byte proof.
+	fixture, err := Parse(ArchAMD64, "TEXT example.mov(SB),$0-25\nMOVQ arg+0(FP),AX\nMOVQ AX,ret+8(FP)\nMOVW AX,ret+16(FP)\nMOVB AX,ret+24(FP)\nRET\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := fixture.Funcs[0]
+	c, b := newAMD64CtxWithFuncForTest(t, fn, sig, nil)
 	for _, tc := range []struct {
 		r Reg
 		v string
@@ -1403,7 +1562,7 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 		}
 	}
 
-	checkMov("MOVLQSX", Instr{Raw: "MOVLQSX $7, AX", Args: []Operand{{Kind: OpImm, Imm: 7}, {Kind: OpReg, Reg: AX}}})
+	checkMov("MOVLQSX", Instr{Raw: "MOVLQSX AX, AX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}})
 	checkMov("MOVLQSX", Instr{Raw: "MOVLQSX BX, CX", Args: []Operand{{Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: CX}}})
 	checkMov("MOVLQSX", Instr{Raw: "MOVLQSX arg+0(FP), DX", Args: []Operand{{Kind: OpFP, FPOffset: 0}, {Kind: OpReg, Reg: DX}}})
 	checkMov("MOVLQSX", Instr{Raw: "MOVLQSX 8(BX), SI", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}, {Kind: OpReg, Reg: SI}}})
@@ -1456,9 +1615,9 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 		t.Fatalf("MOVQ yreg dst = (%v, %v, %v)", ok, term, err)
 	}
 
-	cBadReg, _ := newAMD64CtxWithFuncForTest(t, Func{}, sig, nil)
-	if ok, term, err := cBadReg.lowerMov("MOVB", Instr{Raw: "MOVB BAD, ret+24(FP)", Args: []Operand{{Kind: OpReg, Reg: Reg("BAD")}, {Kind: OpFP, FPOffset: 24}}}); !ok || term || err != nil {
-		t.Fatalf("MOVB missing src reg = (%v, %v, %v)", ok, term, err)
+	cBadReg, _ := newAMD64CtxWithFuncForTest(t, fn, sig, nil)
+	if ok, term, err := cBadReg.lowerMov("MOVB", Instr{Raw: "MOVB BAD, ret+24(FP)", Args: []Operand{{Kind: OpReg, Reg: Reg("BAD")}, {Kind: OpFP, FPOffset: 24}}}); !ok || term || err == nil {
+		t.Fatalf("MOVB invalid src reg = (%v, %v, %v), want handled error", ok, term, err)
 	}
 	if ok, term, err := cBadReg.lowerMov("CMOVQLT", Instr{Raw: "CMOVQLT BAD, BX", Args: []Operand{{Kind: OpReg, Reg: Reg("BAD")}, {Kind: OpReg, Reg: BX}}}); !ok || term || err != nil {
 		t.Fatalf("CMOVQLT missing regs = (%v, %v, %v)", ok, term, err)
@@ -1470,21 +1629,21 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 		t.Fatalf("MOVL missing reg = (%v, %v, %v)", ok, term, err)
 	}
 
-	cBadMem, _ := newAMD64CtxWithFuncForTest(t, Func{}, sig, nil)
-	if ok, term, err := cBadMem.lowerMov("MOVLQSX", Instr{Raw: "MOVLQSX 8(BAD), SI", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: Reg("BAD"), Off: 8}}, {Kind: OpReg, Reg: SI}}}); !ok || term || err != nil {
+	cBadMem, _ := newAMD64CtxWithFuncForTest(t, fn, sig, nil)
+	if ok, term, err := cBadMem.lowerMov("MOVLQSX", Instr{Raw: "MOVLQSX 8(BAD), SI", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: Reg("BAD"), Off: 8}}, {Kind: OpReg, Reg: SI}}}); !ok || term || err == nil {
 		t.Fatalf("MOVLQSX bad mem = (%v, %v, %v)", ok, term, err)
 	}
 	if ok, term, err := cBadMem.lowerMov("MOVW", Instr{Raw: "MOVW arg+0(FP), 8(BAD)", Args: []Operand{{Kind: OpFP, FPOffset: 0}, {Kind: OpMem, Mem: MemRef{Base: Reg("BAD"), Off: 8}}}}); !ok || term || err != nil {
 		t.Fatalf("MOVW bad dst mem = (%v, %v, %v)", ok, term, err)
 	}
-	if ok, term, err := cBadMem.lowerMov("MOVQ", Instr{Raw: "MOVQ 8(BAD), AX", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: Reg("BAD"), Off: 8}}, {Kind: OpReg, Reg: AX}}}); !ok || term || err != nil {
+	if ok, term, err := cBadMem.lowerMov("MOVQ", Instr{Raw: "MOVQ 8(BAD), AX", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: Reg("BAD"), Off: 8}}, {Kind: OpReg, Reg: AX}}}); !ok || term || err == nil {
 		t.Fatalf("MOVQ bad src mem = (%v, %v, %v)", ok, term, err)
 	}
 	if ok, term, err := cBadMem.lowerMov("MOVL", Instr{Raw: "MOVL 24(BAD), example.dest(SB)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: Reg("BAD"), Off: 24}}, {Kind: OpSym, Sym: "example.dest(SB)"}}}); !ok || term || err != nil {
 		t.Fatalf("MOVL bad src mem = (%v, %v, %v)", ok, term, err)
 	}
 
-	if ok, term, err := c.lowerMov("MOVLQSX", Instr{Raw: "MOVLQSX broken, AX", Args: []Operand{{Kind: OpSym, Sym: "broken"}, {Kind: OpReg, Reg: AX}}}); !ok || term || err != nil {
+	if ok, term, err := c.lowerMov("MOVLQSX", Instr{Raw: "MOVLQSX broken, AX", Args: []Operand{{Kind: OpSym, Sym: "broken"}, {Kind: OpReg, Reg: AX}}}); !ok || term || err == nil {
 		t.Fatalf("MOVLQSX bad sym = (%v, %v, %v)", ok, term, err)
 	}
 	if ok, term, err := c.lowerMov("MOVB", Instr{Raw: "MOVB broken, AX", Args: []Operand{{Kind: OpSym, Sym: "broken"}, {Kind: OpReg, Reg: AX}}}); !ok || term || err != nil {
@@ -1543,7 +1702,7 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 	if ok, term, err := sysc.lowerSyscall("BAD", Instr{}); ok || term || err != nil {
 		t.Fatalf("lowerSyscall(BAD) = (%v, %v, %v)", ok, term, err)
 	}
-	if _, _, err := sysc.lowerCrc32("CRC32B", Instr{Raw: "CRC32B AX, BX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}}); err == nil {
+	if _, _, err := sysc.lowerCrc32("CRC32B", Instr{Raw: "CRC32B $1, BX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: BX}}}); err == nil {
 		t.Fatalf("bad CRC32B unexpectedly succeeded")
 	}
 	if ok, term, err := sysc.lowerCrc32("BAD", Instr{}); ok || term || err != nil {
@@ -1654,7 +1813,7 @@ func TestAMD64BranchCoverageDeep(t *testing.T) {
 		"or i1",
 		"call i64 @\"example.tail\"",
 		"ret i64",
-		"br label %V1",
+		"br label %" + amd64LLVMBlockName("V1"),
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
@@ -1753,10 +1912,10 @@ func TestAMD64FPExtraCoverage(t *testing.T) {
 	if _, _, err := c.lowerFP("MOVSD", Instr{Raw: "MOVSD X0, label", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpIdent, Ident: "label"}}}); err == nil {
 		t.Fatalf("MOVSD bad dst unexpectedly succeeded")
 	}
-	if ok, term, err := c.lowerFP("ADDSD", Instr{Raw: "ADDSD X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerFP("ADDSD", Instr{Raw: "ADDSD X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}); !ok || term || err == nil {
 		t.Fatalf("ADDSD non-X dst = (%v, %v, %v)", ok, term, err)
 	}
-	if ok, term, err := c.lowerFP("SQRTSD", Instr{Raw: "SQRTSD X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerFP("SQRTSD", Instr{Raw: "SQRTSD X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}); !ok || term || err == nil {
 		t.Fatalf("SQRTSD non-X dst = (%v, %v, %v)", ok, term, err)
 	}
 	if _, _, err := c.lowerFP("COMISD", Instr{Raw: "COMISD X0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}}}); err == nil {
@@ -1768,10 +1927,10 @@ func TestAMD64FPExtraCoverage(t *testing.T) {
 	if _, _, err := c.lowerFP("CMPSD", Instr{Raw: "CMPSD X0, X1, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpReg, Reg: AX}}}); err == nil {
 		t.Fatalf("CMPSD reg predicate unexpectedly succeeded")
 	}
-	if ok, term, err := c.lowerFP("CVTSQ2SD", Instr{Raw: "CVTSQ2SD AX, AX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerFP("CVTSQ2SD", Instr{Raw: "CVTSQ2SD AX, AX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}}); !ok || term || err == nil {
 		t.Fatalf("CVTSQ2SD non-X dst = (%v, %v, %v)", ok, term, err)
 	}
-	if ok, term, err := c.lowerFP("CVTSL2SD", Instr{Raw: "CVTSL2SD AX, AX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerFP("CVTSL2SD", Instr{Raw: "CVTSL2SD AX, AX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}}); !ok || term || err == nil {
 		t.Fatalf("CVTSL2SD non-X dst = (%v, %v, %v)", ok, term, err)
 	}
 
@@ -1785,8 +1944,9 @@ func TestAMD64FPExtraCoverage(t *testing.T) {
 		"fcmp uno double",
 		"fcmp une double",
 		"fcmp ugt double",
-		"fadd double",
-		"fmul double",
+		"call double @llvm.experimental.constrained.fadd.f64",
+		"call double @__plan9asm_add_sub_special_f64",
+		"call double @llvm.fma.f64",
 		"fneg double",
 	} {
 		if !strings.Contains(out, want) {
@@ -1813,7 +1973,7 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		Args: []LLVMType{I64},
 		Ret:  Void,
 		Frame: FrameLayout{
-			Params: []FrameSlot{{Offset: 0, Type: I64, Index: 0}},
+			Params: []FrameSlot{{Offset: 0, Type: I64, Index: 0, Field: -1}},
 		},
 	}
 	c, b := newAMD64CtxWithFuncForTest(t, fn, sig, nil)
@@ -1845,6 +2005,13 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 			t.Fatalf("lowerVec(%s %q) = (%v, %v, %v)", op, ins.Raw, ok, term, err)
 		}
 	}
+	checkTransfer := func(op Op, ins Instr) {
+		t.Helper()
+		ins.Op = op
+		if ok, term, err := c.lowerVectorScalarIntegerMove(op, ins); !ok || term || err != nil {
+			t.Fatalf("lowerVectorScalarIntegerMove(%s %q) = (%v, %v, %v)", op, ins.Raw, ok, term, err)
+		}
+	}
 
 	check("VZEROUPPER", Instr{Raw: "VZEROUPPER"})
 	check("VZEROALL", Instr{Raw: "VZEROALL"})
@@ -1859,14 +2026,14 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 	check("MOVUPS", Instr{Raw: "MOVUPS 8(BX), X0", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}, {Kind: OpReg, Reg: Reg("X0")}}})
 	check("MOVAPS", Instr{Raw: "MOVAPS X0, 16(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 16}}}})
 	check("MOVO", Instr{Raw: "MOVO X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
-	check("MOVQ", Instr{Raw: "MOVQ arg+0(FP), X0", Args: []Operand{{Kind: OpFP, FPOffset: 0}, {Kind: OpReg, Reg: Reg("X0")}}})
-	check("MOVQ", Instr{Raw: "MOVQ 24(BX), X1", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 24}}, {Kind: OpReg, Reg: Reg("X1")}}})
-	check("MOVQ", Instr{Raw: "MOVQ example.global(SB), X2", Args: []Operand{{Kind: OpSym, Sym: "example.global(SB)"}, {Kind: OpReg, Reg: Reg("X2")}}})
-	check("MOVQ", Instr{Raw: "MOVQ X0, 32(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 32}}}})
+	checkTransfer("MOVQ", Instr{Raw: "MOVQ arg+0(FP), X0", Args: []Operand{{Kind: OpFP, FPOffset: 0}, {Kind: OpReg, Reg: Reg("X0")}}})
+	checkTransfer("MOVQ", Instr{Raw: "MOVQ 24(BX), X1", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 24}}, {Kind: OpReg, Reg: Reg("X1")}}})
+	checkTransfer("MOVQ", Instr{Raw: "MOVQ example.global(SB), X2", Args: []Operand{{Kind: OpSym, Sym: "example.global(SB)"}, {Kind: OpReg, Reg: Reg("X2")}}})
+	checkTransfer("MOVQ", Instr{Raw: "MOVQ X0, 32(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 32}}}})
 	check("MOVOU", Instr{Raw: "MOVOU example.global(SB), X0", Args: []Operand{{Kind: OpSym, Sym: "example.global(SB)"}, {Kind: OpReg, Reg: Reg("X0")}}})
 	check("MOVOA", Instr{Raw: "MOVOA X0, example.out(SB)", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpSym, Sym: "example.out(SB)"}}})
 	check("KMOVB", Instr{Raw: "KMOVB 8(BX), K1", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}, {Kind: OpReg, Reg: Reg("K1")}}})
-	check("KMOVQ", Instr{Raw: "KMOVQ 8(BX), AX", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}, {Kind: OpReg, Reg: AX}}})
+	check("KMOVD", Instr{Raw: "KMOVD K1, K7", Args: []Operand{{Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("K7")}}})
 	check("VMOVDQU64", Instr{Raw: "VMOVDQU64 example.zin(SB), Z0", Args: []Operand{{Kind: OpSym, Sym: "example.zin(SB)"}, {Kind: OpReg, Reg: Reg("Z0")}}})
 	check("VMOVDQU64", Instr{Raw: "VMOVDQU64 Z0, example.zout(SB)", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpSym, Sym: "example.zout(SB)"}}})
 	check("VMOVDQU", Instr{Raw: "VMOVDQU example.yin(SB), Y0", Args: []Operand{{Kind: OpSym, Sym: "example.yin(SB)"}, {Kind: OpReg, Reg: Reg("Y0")}}})
@@ -1875,16 +2042,16 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 	check("VMOVDQU", Instr{Raw: "VMOVDQU X0, example.xout(SB)", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpSym, Sym: "example.xout(SB)"}}})
 	check("PEXTRB", Instr{Raw: "PEXTRB $1, X1, example.byteout(SB)", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpSym, Sym: "example.byteout(SB)"}}})
 
-	if _, _, err := c.lowerVec("MOVL", Instr{Raw: "MOVL label, X0", Args: []Operand{{Kind: OpIdent, Ident: "label"}, {Kind: OpReg, Reg: Reg("X0")}}}); err == nil {
+	if _, _, err := c.lowerVectorScalarIntegerMove("MOVL", Instr{Op: "MOVL", Raw: "MOVL label, X0", Args: []Operand{{Kind: OpIdent, Ident: "label"}, {Kind: OpReg, Reg: Reg("X0")}}}); err == nil {
 		t.Fatalf("MOVL bad src unexpectedly succeeded")
 	}
-	if _, _, err := c.lowerVec("MOVQ", Instr{Raw: "MOVQ label, X0", Args: []Operand{{Kind: OpIdent, Ident: "label"}, {Kind: OpReg, Reg: Reg("X0")}}}); err == nil {
+	if _, _, err := c.lowerVectorScalarIntegerMove("MOVQ", Instr{Op: "MOVQ", Raw: "MOVQ label, X0", Args: []Operand{{Kind: OpIdent, Ident: "label"}, {Kind: OpReg, Reg: Reg("X0")}}}); err == nil {
 		t.Fatalf("MOVQ bad src unexpectedly succeeded")
 	}
-	if _, _, err := c.lowerVec("MOVQ", Instr{Raw: "MOVQ X0, label", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpIdent, Ident: "label"}}}); err == nil {
+	if _, _, err := c.lowerVectorScalarIntegerMove("MOVQ", Instr{Op: "MOVQ", Raw: "MOVQ X0, label", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpIdent, Ident: "label"}}}); err == nil {
 		t.Fatalf("MOVQ bad dst unexpectedly succeeded")
 	}
-	if ok, term, err := c.lowerVec("KXORQ", Instr{Raw: "KXORQ AX, K1, K2", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("K2")}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerVec("KXORQ", Instr{Raw: "KXORQ AX, K1, K2", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("K2")}}}); !ok || term || err == nil {
 		t.Fatalf("KXORQ non-k src = (%v, %v, %v)", ok, term, err)
 	}
 	if _, _, err := c.lowerVec("KMOVB", Instr{Raw: "KMOVB AX", Args: []Operand{{Kind: OpReg, Reg: AX}}}); err == nil {
@@ -1902,19 +2069,19 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 	if _, _, err := c.lowerVec("VPERMB", Instr{Raw: "VPERMB Z0, Z1, 7", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpImm, Imm: 7}}}); err == nil {
 		t.Fatalf("VPERMB non-reg dst unexpectedly succeeded")
 	}
-	if ok, term, err := c.lowerVec("VPERMB", Instr{Raw: "VPERMB Z0, Z1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerVec("VPERMB", Instr{Raw: "VPERMB Z0, Z1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}); !ok || term || err == nil {
 		t.Fatalf("VPERMB wrong dst reg = (%v, %v, %v)", ok, term, err)
 	}
 	if _, _, err := c.lowerVec("VPERMB", Instr{Raw: "VPERMB Z0, Z1, 7, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpImm, Imm: 7}, {Kind: OpReg, Reg: Reg("Z2")}}}); err == nil {
 		t.Fatalf("VPERMB non-reg mask unexpectedly succeeded")
 	}
-	if ok, term, err := c.lowerVec("VPERMB", Instr{Raw: "VPERMB Z0, Z1, AX, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Z2")}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerVec("VPERMB", Instr{Raw: "VPERMB Z0, Z1, AX, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Z2")}}}); !ok || term || err == nil {
 		t.Fatalf("VPERMB wrong mask reg = (%v, %v, %v)", ok, term, err)
 	}
 	if _, _, err := c.lowerVec("VGF2P8AFFINEQB", Instr{Raw: "VGF2P8AFFINEQB Z0, Z1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}}); err == nil {
 		t.Fatalf("VGF2P8AFFINEQB short form unexpectedly succeeded")
 	}
-	if ok, term, err := c.lowerVec("VGF2P8AFFINEQB", Instr{Raw: "VGF2P8AFFINEQB $1, Z0, Z1, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerVec("VGF2P8AFFINEQB", Instr{Raw: "VGF2P8AFFINEQB $1, Z0, Z1, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}); !ok || term || err == nil {
 		t.Fatalf("VGF2P8AFFINEQB wrong dst reg = (%v, %v, %v)", ok, term, err)
 	}
 	if _, _, err := c.lowerVec("VPERMI2B", Instr{Raw: "VPERMI2B Z0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}}}); err == nil {
@@ -1923,13 +2090,13 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 	if _, _, err := c.lowerVec("VPERMI2B", Instr{Raw: "VPERMI2B Z0, Z1, 7", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpImm, Imm: 7}}}); err == nil {
 		t.Fatalf("VPERMI2B non-reg dst unexpectedly succeeded")
 	}
-	if ok, term, err := c.lowerVec("VPERMI2B", Instr{Raw: "VPERMI2B Z0, Z1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerVec("VPERMI2B", Instr{Raw: "VPERMI2B Z0, Z1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}); !ok || term || err == nil {
 		t.Fatalf("VPERMI2B wrong dst reg = (%v, %v, %v)", ok, term, err)
 	}
 	if _, _, err := c.lowerVec("VPERMI2B", Instr{Raw: "VPERMI2B Z0, Z1, 7, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpImm, Imm: 7}, {Kind: OpReg, Reg: Reg("Z2")}}}); err == nil {
 		t.Fatalf("VPERMI2B non-reg mask unexpectedly succeeded")
 	}
-	if ok, term, err := c.lowerVec("VPERMI2B", Instr{Raw: "VPERMI2B Z0, Z1, AX, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Z2")}}}); ok || term || err != nil {
+	if ok, term, err := c.lowerVec("VPERMI2B", Instr{Raw: "VPERMI2B Z0, Z1, AX, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Z2")}}}); !ok || term || err == nil {
 		t.Fatalf("VPERMI2B wrong mask reg = (%v, %v, %v)", ok, term, err)
 	}
 	for _, tc := range []struct {
@@ -1938,53 +2105,60 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		want        string
 		wantHandled bool
 	}{
-		{"VPOPCNTB", Instr{Raw: "VPOPCNTB Z0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", false},
+		{"VPOPCNTB", Instr{Raw: "VPOPCNTB Z0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", true},
 		{"VPCMPUQ", Instr{Raw: "VPCMPUQ $3, Z0, Z1, K1", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("K1")}}}, "bad imm", true},
 		{"VPCMPUQ", Instr{Raw: "VPCMPUQ $1, Z0, Z1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: AX}}}, "wrong dst reg", false},
-		{"VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, AX, Z1", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Z1")}}}, "wrong mask", false},
-		{"VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, K1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", false},
+		{"VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, AX, Z1", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Z1")}}}, "wrong mask", true},
+		{"VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, K1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", true},
 		{"VPXORQ", Instr{Raw: "VPXORQ Z0, Z1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong z dst", true},
-		{"VPSHUFB", Instr{Raw: "VPSHUFB Y0, Y1, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: AX}}}, "wrong dst", false},
-		{"VPSHUFD", Instr{Raw: "VPSHUFD $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", false},
+		{"VPSHUFB", Instr{Raw: "VPSHUFB Y0, Y1, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: AX}}}, "wrong dst", true},
+		{"VPSHUFD", Instr{Raw: "VPSHUFD $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", true},
 		{"VPSLLD", Instr{Raw: "VPSLLD Y0, Y1", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}}, "short form", true},
-		{"VPERM2I128", Instr{Raw: "VPERM2I128 $1, Y0, Y1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst", false},
-		{"VINSERTI128", Instr{Raw: "VINSERTI128 $1, X0, Y0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong dst", false},
+		{"VPERM2I128", Instr{Raw: "VPERM2I128 $1, Y0, Y1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst", true},
+		{"VINSERTI128", Instr{Raw: "VINSERTI128 $1, X0, Y0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong dst", true},
 		{"VMOVNTDQ", Instr{Raw: "VMOVNTDQ Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}}, "bad dst", true},
 		{"AESKEYGENASSIST", Instr{Raw: "AESKEYGENASSIST X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "missing imm", true},
-		{"VPTEST", Instr{Raw: "VPTEST X0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", false},
-		{"PCMPESTRI", Instr{Raw: "PCMPESTRI $1, 8(BX), X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}, {Kind: OpReg, Reg: Reg("X0")}}}, "unsupported imm", true},
+		{"VPTEST", Instr{Raw: "VPTEST X0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", true},
+		{"PCMPESTRI", Instr{Raw: "PCMPESTRI $-1, 8(BX), X0", Args: []Operand{{Kind: OpImm, Imm: -1}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm", true},
 		{"PCMPESTRI", Instr{Raw: "PCMPESTRI $0x0c, AX, X0", Args: []Operand{{Kind: OpImm, Imm: 0x0c}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "bad mem operand", true},
 		{"VPBLENDD", Instr{Raw: "VPBLENDD $1, Y0, Y1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst", false},
 		{"VPBROADCASTB", Instr{Raw: "VPBROADCASTB Y0, Y1", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}}, "wrong src", false},
-		{"VPSRLDQ", Instr{Raw: "VPSRLDQ $2, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", false},
+		{"VPSRLDQ", Instr{Raw: "VPSRLDQ $2, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", true},
 		{"PUNPCKLBW", Instr{Raw: "PUNPCKLBW Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
-		{"PSHUFHW", Instr{Raw: "PSHUFHW $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", false},
+		{"PSHUFHW", Instr{Raw: "PSHUFHW $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", true},
 		{"SHUFPS", Instr{Raw: "SHUFPS $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", false},
 		{"MOVOU", Instr{Raw: "MOVOU AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", true},
 		{"MOVOU", Instr{Raw: "MOVOU X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}, "wrong dst class", false},
 		{"PXOR", Instr{Raw: "PXOR X0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}}}, "short form", true},
-		{"PADDL", Instr{Raw: "PADDL X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}, "wrong dst class", false},
+		{"PADDL", Instr{Raw: "PADDL X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}, "wrong dst class", true},
 		{"PSLLL", Instr{Raw: "PSLLL AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "non-imm shift", true},
 		{"PCMPEQL", Instr{Raw: "PCMPEQL Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
-		{"VPCLMULQDQ", Instr{Raw: "VPCLMULQDQ $1, Z0, Z1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst class", false},
-		{"VPTERNLOGD", Instr{Raw: "VPTERNLOGD $0x95, Z0, Z1, Z2", Args: []Operand{{Kind: OpImm, Imm: 0x95}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}}, "unsupported imm", true},
-		{"VEXTRACTF32X4", Instr{Raw: "VEXTRACTF32X4 $1, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong src class", false},
+		{"VPCLMULQDQ", Instr{Raw: "VPCLMULQDQ $1, Z0, Z1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst class", true},
+		{"VPTERNLOGD", Instr{Raw: "VPTERNLOGD $0x100, Z0, Z1, Z2", Args: []Operand{{Kind: OpImm, Imm: 0x100}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}}, "out-of-range imm", true},
+		{"VEXTRACTF32X4", Instr{Raw: "VEXTRACTF32X4 $1, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong src class", true},
 		{"PCLMULQDQ", Instr{Raw: "PCLMULQDQ AX, X0, X1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "missing imm", true},
 		{"PCMPEQB", Instr{Raw: "PCMPEQB Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
 		{"PMOVMSKB", Instr{Raw: "PMOVMSKB Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}}, "wrong src class", false},
 		{"PSHUFB", Instr{Raw: "PSHUFB Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong mask class", true},
 		{"PINSRQ", Instr{Raw: "PINSRQ AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "short form", true},
-		{"PINSRD", Instr{Raw: "PINSRD $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", false},
-		{"PINSRW", Instr{Raw: "PINSRW $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", false},
-		{"PINSRB", Instr{Raw: "PINSRB $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", false},
+		{"PINSRD", Instr{Raw: "PINSRD $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", true},
+		{"PINSRW", Instr{Raw: "PINSRW $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", true},
+		{"PINSRB", Instr{Raw: "PINSRB $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", true},
 		{"PEXTRB", Instr{Raw: "PEXTRB AX, X0, BX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: BX}}}, "missing imm", true},
-		{"PALIGNR", Instr{Raw: "PALIGNR $1, Y0, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
-		{"PSRLDQ", Instr{Raw: "PSRLDQ $17, X0", Args: []Operand{{Kind: OpImm, Imm: 17}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm", true},
-		{"PSLLDQ", Instr{Raw: "PSLLDQ $17, X0", Args: []Operand{{Kind: OpImm, Imm: 17}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm", true},
+		{"PALIGNR", Instr{Raw: "PALIGNR $1, Y0, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", true},
+		{"PSRLDQ", Instr{Raw: "PSRLDQ $128, X0", Args: []Operand{{Kind: OpImm, Imm: 128}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm", true},
+		{"PSLLDQ", Instr{Raw: "PSLLDQ $128, X0", Args: []Operand{{Kind: OpImm, Imm: 128}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm", true},
 		{"PSRLQ", Instr{Raw: "PSRLQ AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "non-imm shift", true},
 		{"PEXTRD", Instr{Raw: "PEXTRD $1, X0, label", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpIdent, Ident: "label"}}}, "bad dst kind", true},
 	} {
-		ok, term, err := c.lowerVec(tc.op, tc.ins)
+		before := b.String()
+		ok, term, err := lowerAMD64PackedArithmeticOrVectorForTest(c, tc.op, tc.ins)
+		if _, typed := x86InsertExtractSpecs[tc.op]; typed {
+			goAssemblerOracleOutput(t, "amd64", "TEXT f(SB),4,$0-0\n"+tc.ins.Raw+"\nRET\n", "", false)
+			if !ok || term || err == nil || b.String() != before {
+				t.Fatalf("typed insert/extract rejection emitted IR: %s: (%v, %v, %v)", tc.ins.Raw, ok, term, err)
+			}
+		}
 		if tc.wantHandled {
 			if !ok || err == nil {
 				t.Fatalf("%s %s = (%v, %v, %v), want handled error", tc.op, tc.want, ok, term, err)
@@ -1998,8 +2172,8 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 
 	out := b.String()
 	for _, want := range []string{
-		"load i64, ptr @\"example.global\"",
-		"load i8, ptr",
+		"load volatile i64, ptr @\"example.global\"",
+		"load volatile i8, ptr",
 		"and i64",
 		"store i64",
 		"zext i8",
@@ -2009,6 +2183,40 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
 		}
+	}
+}
+
+func TestAMD64RejectedLegacyVectorDestinationDoesNotMutateIR(t *testing.T) {
+	for _, test := range []struct {
+		op      Op
+		handled bool
+	}{
+		{op: "PSUBUSB", handled: true},
+		{op: "PABSD"},
+		{op: "PTEST", handled: true},
+	} {
+		t.Run(string(test.op), func(t *testing.T) {
+			ins := Instr{
+				Op: test.op, Raw: string(test.op) + " X0, AX",
+				Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}},
+			}
+			c, b := newAMD64CtxWithFuncForTest(t, Func{Instrs: []Instr{ins}}, FuncSig{Ret: Void}, nil)
+			beforeIR, beforeTmp := b.String(), c.tmp
+			ok, term, err := lowerAMD64PackedArithmeticOrVectorForTest(c, test.op, ins)
+			if test.handled {
+				if !ok || term || err == nil {
+					t.Fatalf("lowerVec(%s) = (%v, %v, %v), want handled rejection", test.op, ok, term, err)
+				}
+			} else if ok || term || err != nil {
+				t.Fatalf("lowerVec(%s) = (%v, %v, %v), want unhandled rejection", test.op, ok, term, err)
+			}
+			if got := b.String(); got != beforeIR {
+				t.Fatalf("lowerVec(%s) emitted IR before rejecting destination:\n%s", test.op, strings.TrimPrefix(got, beforeIR))
+			}
+			if c.tmp != beforeTmp {
+				t.Fatalf("lowerVec(%s) advanced temporary counter from %d to %d", test.op, beforeTmp, c.tmp)
+			}
+		})
 	}
 }
 
@@ -2055,7 +2263,7 @@ func TestAMD64CtxAliasAndFPFallbackCoverage(t *testing.T) {
 			t.Fatalf("storeRegSized(%s, %s) error = %v", tc.r, tc.ty, err)
 		}
 	}
-	for _, r := range []Reg{AL, AH, BL, BH, CL, CH, DL, DH} {
+	for _, r := range []Reg{AL, AH, BL, BH, CL, CH, DL, DH, BPB, SIB, DIB, R8B, R9B, R10B, R11B, R12B, R13B, R14B, R15B} {
 		if got, err := c.loadReg(r); err != nil || got == "" {
 			t.Fatalf("loadReg(%s) = (%q, %v)", r, got, err)
 		}
@@ -2075,6 +2283,17 @@ func TestAMD64CtxAliasAndFPFallbackCoverage(t *testing.T) {
 		{CH, "35"},
 		{DL, "20"},
 		{DH, "36"},
+		{BPB, "22"},
+		{SIB, "23"},
+		{DIB, "24"},
+		{R8B, "25"},
+		{R9B, "26"},
+		{R10B, "27"},
+		{R11B, "28"},
+		{R12B, "29"},
+		{R13B, "30"},
+		{R14B, "31"},
+		{R15B, "32"},
 	} {
 		if err := c.storeReg(tc.r, tc.v); err != nil {
 			t.Fatalf("storeReg(%s) error = %v", tc.r, err)

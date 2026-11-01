@@ -1,0 +1,256 @@
+name: Complete Windows module
+
+on:
+  workflow_call:
+    inputs:
+      module:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PLAN9ASM_AVX512_RUNTIME: auto
+
+jobs:
+  root-parts:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(inputs.module == 'root' && '[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]' || '[0,1,2,3]') }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.2'
+        timeout-minutes: 10
+      - uses: ./.github/actions/setup-windows-llvm22
+      - uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
+      - name: Execute disjoint root assignment
+        shell: bash
+        run: bash scripts/test-windows-module-ci.sh ${{ inputs.module }} execute 0 ${{ matrix.part }}
+      - name: Retain actual root evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-${{ matrix.part }}
+          path: _out/windows-module-${{ inputs.module }}/
+          if-no-files-found: error
+
+  other-owners:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        owner: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.2'
+        timeout-minutes: 10
+      - uses: ./.github/actions/setup-windows-llvm22
+      - uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
+      - name: Execute complete profile or remaining packages
+        shell: bash
+        run: bash scripts/test-windows-module-ci.sh ${{ inputs.module }} execute ${{ matrix.owner }} -1
+      - name: Retain actual package evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-owner-${{ matrix.owner }}
+          path: _out/windows-module-${{ inputs.module }}/
+          if-no-files-found: error
+
+  complete:
+    needs: [root-parts, other-owners]
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.2'
+        timeout-minutes: 10
+      - uses: ./.github/actions/setup-windows-llvm22
+      - uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
+      - name: Download root part 0
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-0
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0000
+      - name: Download root part 1
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-1
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0001
+      - name: Download root part 2
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-2
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0002
+      - name: Download root part 3
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-3
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0003
+      - name: Download root part 4
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-4
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0004
+      - name: Download root part 5
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-5
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0005
+      - name: Download root part 6
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-6
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0006
+      - name: Download root part 7
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-7
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0007
+      - name: Download root part 8
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-8
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0008
+      - name: Download root part 9
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-9
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0009
+      - name: Download root part 10
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-10
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0010
+      - name: Download root part 11
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-11
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0011
+      - name: Download root part 12
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-12
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0012
+      - name: Download root part 13
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-13
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0013
+      - name: Download root part 14
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-14
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0014
+      - name: Download root part 15
+        if: ${{ inputs.module == 'root' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-root-15
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0000/part-0015
+      - name: Download profile owner
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-owner-1
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0001
+      - name: Download remaining-package owner
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-owner-2
+          path: _out/windows-module-${{ inputs.module }}-owners/owner-0002
+      - name: Verify complete module and publish coverage
+        shell: bash
+        run: bash scripts/test-windows-module-ci.sh ${{ inputs.module }} complete
+      - name: Retain independent completion evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-module-${{ inputs.module }}-completion
+          path: _out/windows-module-${{ inputs.module }}-verified/
+          if-no-files-found: error
+      - name: Set up compatible Python for coverage upload
+        id: codecov_python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Check Codecov Python and pip ownership
+        shell: bash
+        env:
+          CODECOV_PYTHON: ${{ steps.codecov_python.outputs.python-path }}
+        run: |
+          python - <<'PY'
+          import os
+          import shutil
+          import subprocess
+          import sys
+          if sys.version_info[:2] != (3, 13):
+              raise SystemExit("Codecov upload requires Python 3.13")
+          if not os.path.samefile(sys.executable, os.environ["CODECOV_PYTHON"]):
+              raise SystemExit("Codecov Python differs from setup-python output")
+          pip = shutil.which("pip")
+          expected = os.path.join(os.path.dirname(sys.executable), "Scripts", "pip.exe")
+          if not pip or not os.path.samefile(pip, expected):
+              raise SystemExit("Codecov pip is not owned by the selected Python")
+          print("Codecov upload Python:", sys.version, sys.executable, flush=True)
+          print("Codecov upload pip:", pip, flush=True)
+          subprocess.run([pip, "--version"], check=True)
+          PY
+      - name: Upload verified complete Windows module coverage
+        uses: codecov/codecov-action@v7
+        with:
+          use_pypi: true
+          use_oidc: true
+          files: ./coverage-windows-${{ inputs.module }}.out
+          disable_search: true
+          flags: windows
+          name: windows-go1.27-${{ inputs.module }}
+          fail_ci_if_error: true
+          verbose: true
+      - name: Check installed Codecov CLI ownership
+        shell: bash
+        env:
+          CODECOV_PYTHON: ${{ steps.codecov_python.outputs.python-path }}
+        run: |
+          python - <<'PY'
+          import os
+          import shutil
+          import subprocess
+          import sys
+          if not os.path.samefile(sys.executable, os.environ["CODECOV_PYTHON"]):
+              raise SystemExit("Codecov Python changed during upload")
+          cli = shutil.which("codecovcli")
+          expected = os.path.join(os.path.dirname(sys.executable), "Scripts", "codecovcli.exe")
+          if not cli or not os.path.samefile(cli, expected):
+              raise SystemExit("Codecov CLI is not owned by the selected Python")
+          print("Codecov upload CLI:", cli, flush=True)
+          subprocess.run([cli, "--help"], check=True)
+          PY

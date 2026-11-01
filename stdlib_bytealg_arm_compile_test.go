@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -15,15 +12,15 @@ import (
 func TestStdlibInternalBytealg_ARM_Compile(t *testing.T) {
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 	goroot := runtime.GOROOT()
 	if goroot == "" {
-		t.Skip("GOROOT not available")
+		t.Fatal("GOROOT not available")
 	}
 	sfiles := stdlibBytealgARMSigs(goroot)
 	if len(sfiles) == 0 {
-		t.Skip("internal/bytealg arm asm files not present in this GOROOT")
+		t.Fatal("internal/bytealg arm asm files not present in this GOROOT")
 	}
 	resolve := func(sym string) string {
 		sym = goStripABISuffix(sym)
@@ -76,7 +73,7 @@ func TestStdlibInternalBytealg_ARM_Compile(t *testing.T) {
 				strings.Contains(s, "unknown target triple") ||
 				strings.Contains(s, "unknown target") ||
 				strings.Contains(s, "is not a registered target") {
-				t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+				t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 			}
 			t.Fatalf("llc failed for %s: %v\n%s", path, err, s)
 		}

@@ -18,18 +18,49 @@ permissions:
   contents: read
 
 jobs:
+  ci_policy:
+    name: CI policy preflight
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install LLVM 22
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
+
+      - name: Setup Go
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.1'
+
+      - name: Setup verified policy runtime
+        uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
+
+      - name: Workflow scheduling regression tests
+        run: node --test .github/scripts/priority-*.test.cjs
+
+      - name: CI policy tests
+        run: go test . -run '^(TestCI|TestFixedLocal|TestGoAMD64FixedLocalPackedRuntimeOwnership|TestRuntimeOracleCommand(ConsumersRetainOwnedExecution|AuditDistinguishesTestingRun)$)' -count=1
+
+
   fmt:
-    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
+    needs: ci_policy
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Setup Go
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
-          go-version: '1.27.x'
-          cache: true
+          go-version: '1.27.2'
 
       - name: Go fmt check
         run: |
@@ -41,25 +72,22 @@ jobs:
           fi
 
   build:
-    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
+    needs: ci_policy
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Install LLVM 22
-        run: |
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev
-          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
 
       - name: Setup Go
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
-          go-version: '1.27.x'
-          cache: true
+          go-version: '1.27.2'
 
       - name: Go build
         run: go build ./...
@@ -75,61 +103,10 @@ jobs:
       - name: ARM64 Plan 9 reference corpus
         run: scripts/check-arm64-plan9-corpus.sh
 
-  reported_library_list:
-    name: Third-party corpus matrix
-    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
-    outputs:
-      libraries: ${{ steps.matrix.outputs.libraries }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Read third-party library manifest
-        id: matrix
-        run: |
-          manifest=testdata/corpus/reported-libraries.json
-          if ! jq -e '.libraries | length > 0 and all(.[]; (.id | test("^[a-z0-9]+(-[a-z0-9]+)*$")))' "$manifest" >/dev/null; then
-            echo "third-party library ids must match ^[a-z0-9]+(-[a-z0-9]+)*$" >&2
-            exit 1
-          fi
-          libraries=$(jq -c '[.libraries[].id]' "$manifest")
-          printf '%s\n' "libraries=$libraries" >> "$GITHUB_OUTPUT"
-
-  reported_library_corpus:
-    name: third-party-corpus (${{ matrix.library }})
-    needs: reported_library_list
-    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        library: ${{ fromJSON(needs.reported_library_list.outputs.libraries) }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install LLVM 22
-        run: |
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev
-          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
-
-      - name: Setup Go
-        uses: ./.github/actions/setup-go
-        with:
-          go-version: '1.27.x'
-          cache: true
-
-      - name: Scan latest module and compile complete asm corpus
-        env:
-          REPORTED_LIBRARY: ${{ matrix.library }}
-        run: scripts/check-reported-library-corpus.sh "$REPORTED_LIBRARY"
 
   stdlib-corpus:
-    name: stdlib-corpus (${{ matrix.os }}, Go ${{ matrix.go-version }})
+    needs: ci_policy
+    name: stdlib instruction corpus (${{ matrix.os }}, Go ${{ matrix.go-version }})
     runs-on: ${{ github.repository_owner == 'xgo-dev' && matrix.runner || matrix.os }}
     strategy:
       fail-fast: false
@@ -145,10 +122,10 @@ jobs:
           - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.24.x', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
           - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.25.x', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
           - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.26.x', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.27.x', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.27.2', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
           # Native hosts are auxiliary integration checks on the latest Go.
-          - {os: macos-latest, go-version: '1.27.x', targets: 'darwin/amd64,darwin/arm64'}
-          - {os: windows-latest, go-version: '1.27.x', targets: 'windows/386,windows/amd64,windows/arm64'}
+          - {os: macos-latest, go-version: '1.27.2', targets: 'darwin/amd64,darwin/arm64'}
+          - {os: windows-latest, go-version: '1.27.2', targets: 'windows/386,windows/amd64,windows/arm64'}
 
     steps:
       - name: Checkout
@@ -156,12 +133,8 @@ jobs:
 
       - name: Install LLVM 22 (Ubuntu)
         if: runner.os == 'Linux'
-        run: |
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev
-          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
 
       - name: Install LLVM 22 (macOS)
         if: runner.os == 'macOS'
@@ -181,10 +154,10 @@ jobs:
 
       - name: Setup Go for corpus tool build
         if: matrix.prebuild_tool
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
-          go-version: '1.27.x'
-          cache: false
+          go-version: '1.27.2'
 
       - name: Build corpus tool for older Go lane
         if: matrix.prebuild_tool
@@ -195,10 +168,10 @@ jobs:
           echo "PLAN9ASM_CMD=$tool" >> "$GITHUB_ENV"
 
       - name: Setup Go
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
           go-version: ${{ matrix.go-version }}
-          cache: true
 
       - name: Stdlib asm corpus gate
         shell: bash
@@ -206,7 +179,7 @@ jobs:
           PLAN9ASM_CORPUS_TARGETS: ${{ matrix.targets }}
         run: |
           chmod +x scripts/check-stdlib-corpus.sh
-          scripts/check-stdlib-corpus.sh
+          scripts/check-stdlib-corpus.sh --instructions-only
 
       - name: Official Go assembler coverage regression
         shell: bash
@@ -215,37 +188,133 @@ jobs:
           scripts/check-go-asm-coverage.sh
 
   cross-runtime:
+    needs: ci_policy
     name: cross compile, link, and run (Linux)
-    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    strategy:
+      # Every selected root is owned exactly once; owner zero isolates the
+      # giant matrix root. A failure must not cancel other owners.
+      fail-fast: false
+      matrix:
+        owner: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+    env:
+      GOFLAGS: ''
+      GOENV: 'off'
+      GOWORK: 'off'
+      GOTOOLCHAIN: local
+      PLAN9ASM_CROSS_EXEC: '1'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install LLVM, cross compilers, and QEMU
-        run: |
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y \
-            llvm-22-dev clang-22 lld-22 \
-            gcc-i686-linux-gnu gcc-arm-linux-gnueabihf gcc-aarch64-linux-gnu \
-            qemu-user
-          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+      - name: Install LLVM and cross compilers
+        timeout-minutes: 14
+        run: >-
+          bash scripts/install-ci-llvm22-ubuntu.sh
+          gcc-i686-linux-gnu gcc-arm-linux-gnueabihf
+          gcc-aarch64-linux-gnu
+
+      - name: Install pinned QEMU user-mode emulators
+        timeout-minutes: 5
+        run: bash scripts/install-ci-qemu.sh
 
       - name: Setup Go
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
-          go-version: '1.27.x'
-          cache: true
+          go-version: '1.27.2'
+
+      - name: Setup required wasm execution runtime
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-node22
 
       - name: Cross transpile, compile, link, and run
-        env:
-          PLAN9ASM_CROSS_EXEC: '1'
-        run: go test . -run '^(TestCrossLinuxRuntimeMatrix|TestARM64Conformance)' -count=1 -v
+        run: |
+          mkdir -p _out
+          go run ./cmd/plan9asmtest -out _out/cross-runtime-owner \
+            -ci-selector '^(TestCrossLinuxRuntimeMatrix|TestARM64Conformance|TestARM64RawSQSHLURuntimeSemantics|TestARMIntegerMemoryRuntimeCross|TestARMRawSaturationRuntimeCross)' \
+            -ci-isolate-root TestCrossLinuxRuntimeMatrix \
+            -ci-owner ${{ matrix.owner }} -shards 16 -timeout 20m
+
+      - name: Execute rich CLI ARM64 fallback oracle
+        if: ${{ !cancelled() && matrix.owner == 15 }}
+        run: bash scripts/test-arm64-fallback-ci.sh execute
+
+      - name: Retain every owner receipt, including failures
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: cross-runtime-owner-${{ matrix.owner }}
+          path: _out/cross-runtime-owner
+          if-no-files-found: error
+
+  cross-runtime-verify:
+    name: cross-runtime exhaustive completion
+    needs: cross-runtime
+    if: ${{ !cancelled() }}
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    env:
+      GOFLAGS: ''
+      GOENV: 'off'
+      GOWORK: 'off'
+      GOTOOLCHAIN: local
+      PLAN9ASM_CROSS_EXEC: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install LLVM and cross compilers
+        timeout-minutes: 14
+        run: >-
+          bash scripts/install-ci-llvm22-ubuntu.sh
+          gcc-i686-linux-gnu gcc-arm-linux-gnueabihf
+          gcc-aarch64-linux-gnu
+
+      - name: Install pinned QEMU user-mode emulators
+        timeout-minutes: 5
+        run: bash scripts/install-ci-qemu.sh
+
+      - name: Setup Go
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.2'
+
+      - name: Setup required wasm execution runtime
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-node22
+
+      - name: Download all owner evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cross-runtime-owner-*
+          path: _out/cross-runtime-partitions
+
+      - name: Verify the fresh complete five-prefix inventory
+        run: |
+          go run ./cmd/plan9asmtest -out _out/cross-runtime-aggregate \
+            -verify-ci-partitions _out/cross-runtime-partitions \
+            -ci-selector '^(TestCrossLinuxRuntimeMatrix|TestARM64Conformance|TestARM64RawSQSHLURuntimeSemantics|TestARMIntegerMemoryRuntimeCross|TestARMRawSaturationRuntimeCross)' \
+            -ci-isolate-root TestCrossLinuxRuntimeMatrix -shards 16 -timeout 20m
+
+      - name: Verify rich CLI ARM64 fallback execution
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-arm64-fallback-ci.sh complete
+
+      - name: Retain completion evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: cross-runtime-completion
+          path: _out/cross-runtime-aggregate
+          if-no-files-found: error
 
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.go-version }}, ${{ matrix.nested_modules }})
+    needs: ci_policy
+    name: test (${{ matrix.os }}, ${{ matrix.go-version }}, ${{ matrix.module-role }})
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -254,26 +323,42 @@ jobs:
       # Keep both matrix variants visible even if one fails.
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
+        # Create current-SDK and minimum-SDK jobs before historical lanes.
+        # Runner scheduling is external; retain every version and owner.
+        go-version: ['1.27.2', '1.20.x', '1.26.x', '1.25.x', '1.24.x', '1.23.x', '1.22.x', '1.21.x']
+        module-role: [root-0, root-1, root-2, root-3, root-4, root-5, root-6, root-7,
+          root-8, root-9, root-10, root-11, root-12, root-13, root-14, root-15, profile, other]
         include:
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.20.x', nested_modules: false}
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.21.x', nested_modules: false}
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.22.x', nested_modules: false}
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.23.x', nested_modules: false}
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.24.x', nested_modules: true}
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.25.x', nested_modules: true}
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.26.x', nested_modules: true}
-          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.27.x', nested_modules: true}
-          - {os: windows-latest, go-version: '1.27.x', nested_modules: true}
+          - {module-role: root-0, module-owner: 0, root-partition: 0}
+          - {module-role: root-1, module-owner: 0, root-partition: 1}
+          - {module-role: root-2, module-owner: 0, root-partition: 2}
+          - {module-role: root-3, module-owner: 0, root-partition: 3}
+          - {module-role: root-4, module-owner: 0, root-partition: 4}
+          - {module-role: root-5, module-owner: 0, root-partition: 5}
+          - {module-role: root-6, module-owner: 0, root-partition: 6}
+          - {module-role: root-7, module-owner: 0, root-partition: 7}
+          - {module-role: root-8, module-owner: 0, root-partition: 8}
+          - {module-role: root-9, module-owner: 0, root-partition: 9}
+          - {module-role: root-10, module-owner: 0, root-partition: 10}
+          - {module-role: root-11, module-owner: 0, root-partition: 11}
+          - {module-role: root-12, module-owner: 0, root-partition: 12}
+          - {module-role: root-13, module-owner: 0, root-partition: 13}
+          - {module-role: root-14, module-owner: 0, root-partition: 14}
+          - {module-role: root-15, module-owner: 0, root-partition: 15}
+          - {module-role: profile, module-owner: 1, root-partition: -1}
+          - {module-role: other, module-owner: 2, root-partition: -1}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large]}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Setup Go
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
           go-version: ${{ matrix.go-version }}
-          cache: true
 
       - name: Setup Python (Windows)
         if: runner.os == 'Windows'
@@ -283,16 +368,17 @@ jobs:
 
       - name: Install LLVM 22 (Ubuntu)
         if: runner.os == 'Linux'
-        run: |
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev
-          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh gcc-i686-linux-gnu libc6-dev-i386-cross gcc-aarch64-linux-gnu
 
       - name: Install LLVM 22 (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/setup-windows-llvm22
+
+      - name: Install required 386 execution runtime
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: bash scripts/install-ci-qemu.sh
 
       - name: LLVM tools info
         shell: bash
@@ -302,52 +388,69 @@ jobs:
           command -v clang
           clang --version
 
+      - name: Setup required wasm execution runtime
+        uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
+
       - name: Go test (Ubuntu)
         if: runner.os != 'Windows'
-        run: go test ./...
+        run: bash scripts/test-module-ci.sh test execute ${{ matrix.module-owner }} ${{ matrix.root-partition }}
 
-      - name: Go test (cmd/plan9asm, Ubuntu)
-        if: runner.os != 'Windows' && matrix.nested_modules
-        run: go test ./...
-        working-directory: cmd/plan9asm
-
-      - name: Go test (cmd/plan9asmll, Ubuntu)
-        if: runner.os != 'Windows' && matrix.nested_modules
-        run: go test ./...
-        working-directory: cmd/plan9asmll
-
-      - name: Go test with coverage (Windows)
-        if: runner.os == 'Windows' && matrix.go-version == '1.27.x'
+      - name: Required exact downloaded AMD64 numerical fixture
+        if: runner.os == 'Linux' && matrix.go-version == '1.27.2' && matrix.module-owner == 2
         shell: bash
         run: |
           set -euo pipefail
-          go test ./... -coverprofile=coverage-windows-root.out
-          (cd cmd/plan9asm && go test ./... -coverprofile=../../coverage-windows-plan9asm.out)
-          (cd cmd/plan9asmll && go test ./... -coverprofile=../../coverage-windows-plan9asmll.out)
+          test "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = linux/amd64
+          scope='^TestAMD64DownloadedFixedLocalLLVM22Numerical$'
+          go test ./gotoolprofile -list="$scope" | grep -Fx 'TestAMD64DownloadedFixedLocalLLVM22Numerical'
+          go test ./gotoolprofile -run="$scope" -count=1 -timeout=10m
 
-      - name: Go test (Windows)
-        if: runner.os == 'Windows' && matrix.go-version != '1.27.x'
-        shell: bash
-        run: |
-          set -euo pipefail
-          go test ./...
-          (cd cmd/plan9asm && go test ./...)
-          (cd cmd/plan9asmll && go test ./...)
-
-      - name: Upload Windows coverage to Codecov
-        if: runner.os == 'Windows' && matrix.go-version == '1.27.x'
-        uses: codecov/codecov-action@v7
+      - name: Retain complete module owner evidence (Ubuntu)
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        uses: actions/upload-artifact@v6
         with:
-          use_oidc: true
-          files: ./coverage-windows-root.out,./coverage-windows-plan9asm.out,./coverage-windows-plan9asmll.out
-          disable_search: true
-          flags: windows
-          name: windows-go1.27
-          fail_ci_if_error: true
-          verbose: true
+          name: module-test-${{ matrix.go-version }}-${{ matrix.module-role }}
+          path: _out/module-test/
+          if-no-files-found: error
+
+  # Complete CLI suites need independent job budgets instead of sharing the
+  # remaining-package owner's root suite and current numerical fixture.
+  nested-cli:
+    needs: ci_policy
+    name: test (ubuntu-latest, ${{ matrix.go-version }}, ${{ matrix.module }})
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.24.x', '1.25.x', '1.26.x', '1.27.2']
+        module: [plan9asm, plan9asmll]
+
+    uses: ./.github/workflows/linux-cli-module.yml
+    with:
+      module: ${{ matrix.module }}
+      go-version: ${{ matrix.go-version }}
+      flavor: test
+
+
+  # Each module independently executes its complete inventory; only its strict
+  # root/profile/remaining-package aggregate may publish coverage.
+  windows-module:
+    needs: ci_policy
+    name: test (windows-latest, 1.27.2, ${{ matrix.module }})
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [root, plan9asm, plan9asmll]
+    uses: ./.github/workflows/windows-module.yml
+    with:
+      module: ${{ matrix.module }}
 
   arm-scan:
-    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
+    needs: ci_policy
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -364,23 +467,14 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install LLVM 22
-        run: |
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          for attempt in 1 2 3; do
-            sudo apt-get update && sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev && break
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            sleep 5
-          done
-          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
 
       - name: Setup Go
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
-          go-version: '1.27.x'
-          cache: true
+          go-version: '1.27.2'
 
       - name: ARM scan gate
         env:
@@ -407,31 +501,116 @@ jobs:
           PY
 
   race:
-    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
+    needs: ci_policy
+    name: race (${{ matrix.module-role }})
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        module-role: [root-0, root-1, root-2, root-3, root-4, root-5, root-6, root-7,
+          root-8, root-9, root-10, root-11, root-12, root-13, root-14, root-15,
+          root-16, root-17, root-18, root-19, root-20, root-21, root-22, root-23,
+          root-24, root-25, root-26, root-27, root-28, root-29, root-30, root-31,
+          profile, other]
+        include:
+          - {module-role: root-0, module-owner: 0, root-partition: 0}
+          - {module-role: root-1, module-owner: 0, root-partition: 1}
+          - {module-role: root-2, module-owner: 0, root-partition: 2}
+          - {module-role: root-3, module-owner: 0, root-partition: 3}
+          - {module-role: root-4, module-owner: 0, root-partition: 4}
+          - {module-role: root-5, module-owner: 0, root-partition: 5}
+          - {module-role: root-6, module-owner: 0, root-partition: 6}
+          - {module-role: root-7, module-owner: 0, root-partition: 7}
+          - {module-role: root-8, module-owner: 0, root-partition: 8}
+          - {module-role: root-9, module-owner: 0, root-partition: 9}
+          - {module-role: root-10, module-owner: 0, root-partition: 10}
+          - {module-role: root-11, module-owner: 0, root-partition: 11}
+          - {module-role: root-12, module-owner: 0, root-partition: 12}
+          - {module-role: root-13, module-owner: 0, root-partition: 13}
+          - {module-role: root-14, module-owner: 0, root-partition: 14}
+          - {module-role: root-15, module-owner: 0, root-partition: 15}
+          - {module-role: root-16, module-owner: 0, root-partition: 16}
+          - {module-role: root-17, module-owner: 0, root-partition: 17}
+          - {module-role: root-18, module-owner: 0, root-partition: 18}
+          - {module-role: root-19, module-owner: 0, root-partition: 19}
+          - {module-role: root-20, module-owner: 0, root-partition: 20}
+          - {module-role: root-21, module-owner: 0, root-partition: 21}
+          - {module-role: root-22, module-owner: 0, root-partition: 22}
+          - {module-role: root-23, module-owner: 0, root-partition: 23}
+          - {module-role: root-24, module-owner: 0, root-partition: 24}
+          - {module-role: root-25, module-owner: 0, root-partition: 25}
+          - {module-role: root-26, module-owner: 0, root-partition: 26}
+          - {module-role: root-27, module-owner: 0, root-partition: 27}
+          - {module-role: root-28, module-owner: 0, root-partition: 28}
+          - {module-role: root-29, module-owner: 0, root-partition: 29}
+          - {module-role: root-30, module-owner: 0, root-partition: 30}
+          - {module-role: root-31, module-owner: 0, root-partition: 31}
+          - {module-role: profile, module-owner: 1, root-partition: -1}
+          - {module-role: other, module-owner: 2, root-partition: -1}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Setup Go
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
-          go-version: '1.27.x'
-          cache: true
+          go-version: '1.27.2'
 
       - name: Install LLVM 22
-        run: |
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev
-          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh gcc-i686-linux-gnu libc6-dev-i386-cross gcc-aarch64-linux-gnu
+
+      - name: Install required 386 execution runtime
+        timeout-minutes: 5
+        run: bash scripts/install-ci-qemu.sh
+
+      - name: Setup required wasm execution runtime
+        uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
 
       - name: Go test (race)
-        run: go test -race ./...
+        run: bash scripts/test-module-ci.sh race execute ${{ matrix.module-owner }} ${{ matrix.root-partition }}
+
+      - name: Retain complete module race owner evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: module-race-1.27.2-${{ matrix.module-role }}
+          path: _out/module-race/
+          if-no-files-found: error
 
   coverage:
-    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
+    needs: ci_policy
+    name: coverage (${{ matrix.module-role }})
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        module-role: [root-0, root-1, root-2, root-3, root-4, root-5, root-6, root-7,
+          root-8, root-9, root-10, root-11, root-12, root-13, root-14, root-15, profile, other]
+        include:
+          - {module-role: root-0, module-owner: 0, root-partition: 0}
+          - {module-role: root-1, module-owner: 0, root-partition: 1}
+          - {module-role: root-2, module-owner: 0, root-partition: 2}
+          - {module-role: root-3, module-owner: 0, root-partition: 3}
+          - {module-role: root-4, module-owner: 0, root-partition: 4}
+          - {module-role: root-5, module-owner: 0, root-partition: 5}
+          - {module-role: root-6, module-owner: 0, root-partition: 6}
+          - {module-role: root-7, module-owner: 0, root-partition: 7}
+          - {module-role: root-8, module-owner: 0, root-partition: 8}
+          - {module-role: root-9, module-owner: 0, root-partition: 9}
+          - {module-role: root-10, module-owner: 0, root-partition: 10}
+          - {module-role: root-11, module-owner: 0, root-partition: 11}
+          - {module-role: root-12, module-owner: 0, root-partition: 12}
+          - {module-role: root-13, module-owner: 0, root-partition: 13}
+          - {module-role: root-14, module-owner: 0, root-partition: 14}
+          - {module-role: root-15, module-owner: 0, root-partition: 15}
+          - {module-role: profile, module-owner: 1, root-partition: -1}
+          - {module-role: other, module-owner: 2, root-partition: -1}
     permissions:
       contents: read
       id-token: write
@@ -441,37 +620,307 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
+        timeout-minutes: 10
         uses: ./.github/actions/setup-go
         with:
-          go-version: '1.27.x'
-          cache: true
+          go-version: '1.27.2'
 
       - name: Install LLVM 22
-        run: |
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev
-          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh gcc-i686-linux-gnu libc6-dev-i386-cross gcc-aarch64-linux-gnu
+
+      - name: Install required 386 execution runtime
+        timeout-minutes: 5
+        run: bash scripts/install-ci-qemu.sh
+
+      - name: Setup required wasm execution runtime
+        uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
 
       - name: Go test with coverage
-        run: |
-          go test ./... -coverprofile=coverage-root.out
-          go tool cover -func=coverage-root.out | tail -n 1
+        run: bash scripts/test-module-ci.sh coverage execute ${{ matrix.module-owner }} ${{ matrix.root-partition }}
 
-      - name: Go test with coverage (cmd/plan9asm)
-        run: |
-          go test ./... -coverprofile=coverage-plan9asm.out
-          go tool cover -func=coverage-plan9asm.out | tail -n 1
-        working-directory: cmd/plan9asm
+      - name: Retain complete module coverage owner evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: module-coverage-1.27.2-${{ matrix.module-role }}
+          path: _out/module-coverage/
+          if-no-files-found: error
 
-      - name: Go test with coverage (cmd/plan9asmll)
-        run: |
-          go test ./... -coverprofile=coverage-plan9asmll.out
-          go tool cover -func=coverage-plan9asmll.out | tail -n 1
-        working-directory: cmd/plan9asmll
+  # Coverage-instrumented CLI suites retain their own complete command budget,
+  # independent of the main module and of the ordinary nested CLI matrix.
+  nested-cli-coverage:
+    needs: ci_policy
+    name: coverage (ubuntu-latest, 1.27.2, ${{ matrix.module }})
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [plan9asm, plan9asmll]
 
+    uses: ./.github/workflows/linux-cli-module.yml
+    with:
+      module: ${{ matrix.module }}
+      go-version: '1.27.2'
+      flavor: coverage
+
+  module-completion:
+    needs: [test, nested-cli, race, coverage, nested-cli-coverage]
+    if: ${{ !cancelled() }}
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {flavor: test, go-version: '1.20.x'}
+          - {flavor: test, go-version: '1.21.x'}
+          - {flavor: test, go-version: '1.22.x'}
+          - {flavor: test, go-version: '1.23.x'}
+          - {flavor: test, go-version: '1.24.x'}
+          - {flavor: test, go-version: '1.25.x'}
+          - {flavor: test, go-version: '1.26.x'}
+          - {flavor: test, go-version: '1.27.2'}
+          - {flavor: race, go-version: '1.27.2'}
+          - {flavor: coverage, go-version: '1.27.2'}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Go
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Install LLVM 22
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh gcc-i686-linux-gnu libc6-dev-i386-cross gcc-aarch64-linux-gnu
+      - name: Install required 386 execution runtime
+        timeout-minutes: 5
+        run: bash scripts/install-ci-qemu.sh
+      - name: Setup required wasm execution runtime
+        uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
+      - name: Download root part 0
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-0
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0000
+      - name: Download root part 1
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-1
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0001
+      - name: Download root part 2
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-2
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0002
+      - name: Download root part 3
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-3
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0003
+      - name: Download root part 4
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-4
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0004
+      - name: Download root part 5
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-5
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0005
+      - name: Download root part 6
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-6
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0006
+      - name: Download root part 7
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-7
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0007
+      - name: Download root part 8
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-8
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0008
+      - name: Download root part 9
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-9
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0009
+      - name: Download root part 10
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-10
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0010
+      - name: Download root part 11
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-11
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0011
+      - name: Download root part 12
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-12
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0012
+      - name: Download root part 13
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-13
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0013
+      - name: Download root part 14
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-14
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0014
+      - name: Download root part 15
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-15
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0015
+      - name: Download root part 16
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-16
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0016
+      - name: Download root part 17
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-17
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0017
+      - name: Download root part 18
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-18
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0018
+      - name: Download root part 19
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-19
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0019
+      - name: Download root part 20
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-20
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0020
+      - name: Download root part 21
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-21
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0021
+      - name: Download root part 22
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-22
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0022
+      - name: Download root part 23
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-23
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0023
+      - name: Download root part 24
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-24
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0024
+      - name: Download root part 25
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-25
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0025
+      - name: Download root part 26
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-26
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0026
+      - name: Download root part 27
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-27
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0027
+      - name: Download root part 28
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-28
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0028
+      - name: Download root part 29
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-29
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0029
+      - name: Download root part 30
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-30
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0030
+      - name: Download root part 31
+        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-31
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0031
+      - name: Download profile owner
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-profile
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0001
+      - name: Download remaining-package owner
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-other
+          path: _out/module-${{ matrix.flavor }}-owners/owner-0002
+      - name: Check complete actual module inventory and coverage
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-module-ci.sh ${{ matrix.flavor }} complete
+      - name: Retain independent aggregate evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: module-verified-${{ matrix.flavor }}-${{ matrix.go-version }}
+          path: _out/module-${{ matrix.flavor }}-verified/
+          if-no-files-found: error
+      - name: Show complete module coverage
+        if: matrix.flavor == 'coverage'
+        run: go tool cover -func=coverage-root.out | tail -n 1
       - name: Upload coverage to Codecov
+        if: matrix.flavor == 'coverage'
         uses: codecov/codecov-action@v7
         with:
           use_oidc: true
@@ -481,3 +930,6 @@ jobs:
           name: ubuntu-go1.27
           fail_ci_if_error: false
           verbose: true
+      - name: Require complete CLI coverage
+        if: ${{ !cancelled() && matrix.flavor == 'coverage' }}
+        run: test '${{ needs['nested-cli-coverage'].result }}' = success

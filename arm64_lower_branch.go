@@ -5,22 +5,10 @@ import (
 	"strings"
 )
 
-func (c *arm64Ctx) resolveBranchTarget(bi int, op Operand) (string, bool) {
-	if tgt, ok := arm64BranchTarget(op); ok {
-		return tgt, true
-	}
-	// Plan9's n(PC) is instruction-relative. Our lowering is block-based, so
-	// use a conservative target to keep translation total.
-	if op.Kind == OpMem && op.Mem.Base == PC {
-		if op.Mem.Off <= 0 {
-			return c.blocks[bi].name, true
-		}
-		if bi+1 < len(c.blocks) {
-			return c.blocks[bi+1].name, true
-		}
-		return c.blocks[bi].name, true
-	}
-	return "", false
+func (c *arm64Ctx) resolveBranchTarget(_ int, op Operand) (string, bool) {
+	// Named n(PC) operands must have been normalized to exact source labels.
+	// A block index cannot recover their instruction-relative destination.
+	return arm64BranchTarget(op)
 }
 
 func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emitCondBr arm64EmitCondBr) (ok bool, terminated bool, err error) {
@@ -29,21 +17,36 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("arm64 %s expects 1 operand: %q", op, ins.Raw)
 		}
-		if ins.Args[0].Kind == OpReg {
-			addr, err := c.loadReg(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", "blr $0", "r,~{memory}", addr)
-			return true, false, nil
+		if strings.Contains(strings.ToUpper(string(ins.Op)), ".") {
+			return true, false, fmt.Errorf("arm64 %s does not accept a suffix: %q", op, ins.Raw)
 		}
-		if ins.Args[0].Kind == OpMem {
-			addr, _, _, err := c.addrI64(ins.Args[0].Mem, false)
-			if err != nil {
+		if arm64IsLocalBranchLink(ins) {
+			target, targetOK := c.resolveBranchTarget(bi, ins.Args[0])
+			if !targetOK {
+				return true, false, fmt.Errorf("arm64 %s invalid local target: %q", op, ins.Raw)
+			}
+			knownTarget := false
+			for _, block := range c.blocks {
+				if block.name == target {
+					knownTarget = true
+					break
+				}
+			}
+			if !knownTarget {
+				return true, false, fmt.Errorf("arm64 %s undefined local target %q: %q", op, target, ins.Raw)
+			}
+			if bi+1 >= len(c.blocks) {
+				return true, false, fmt.Errorf("arm64 %s local target has no continuation block: %q", op, ins.Raw)
+			}
+			if err := c.storeLocalLink(c.blocks[bi+1].name); err != nil {
 				return true, false, err
 			}
-			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", "blr $0", "r,~{memory}", addr)
-			return true, false, nil
+			emitBr(target)
+			return true, true, nil
+		}
+		if ins.Args[0].Kind == OpReg || ins.Args[0].Kind == OpMem {
+			term, err := c.lowerRegisterControl(bi, op, ins)
+			return true, term, err
 		}
 		if ins.Args[0].Kind != OpSym || !strings.HasSuffix(ins.Args[0].Sym, "(SB)") {
 			return true, false, fmt.Errorf("arm64 %s expects symbol(SB)|reg|mem: %q", op, ins.Raw)
@@ -51,40 +54,41 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 		if err := c.callSym(ins.Args[0]); err != nil {
 			return true, false, err
 		}
+		if bi+1 < len(c.blocks) {
+			if err := c.storeLocalLink(c.blocks[bi+1].name); err != nil {
+				return true, false, err
+			}
+		}
 		return true, false, nil
 
 	case "B", "JMP":
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("arm64 B expects 1 operand: %q", ins.Raw)
 		}
-		if ins.Args[0].Kind == OpReg {
-			addr, err := c.loadReg(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", "br $0", "r,~{memory}", addr)
-			c.lowerRetZero()
-			return true, true, nil
+		if strings.Contains(string(ins.Op), ".") {
+			return true, false, fmt.Errorf("arm64 %s does not accept a suffix: %q", op, ins.Raw)
 		}
-		if ins.Args[0].Kind == OpMem {
-			addr, _, _, err := c.addrI64(ins.Args[0].Mem, false)
-			if err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", "br $0", "r,~{memory}", addr)
-			c.lowerRetZero()
-			return true, true, nil
+		if ins.Args[0].Kind == OpReg || ins.Args[0].Kind == OpMem {
+			term, err := c.lowerRegisterControl(bi, op, ins)
+			return true, term, err
 		}
 		if ins.Args[0].Kind == OpSym && strings.HasSuffix(ins.Args[0].Sym, "(SB)") {
+			if c.lowerProvenUnreachableControl(bi) {
+				return true, true, nil
+			}
+			if c.sourceGoFrame.present {
+				return true, false, fmt.Errorf("%w: ARM64 symbol branch has no implicit Go frame epilogue: %q", ErrProbeNeedsContext, ins.Raw)
+			}
+			if err := c.requireCallerSPRestored(bi, ins); err != nil {
+				return true, false, err
+			}
+			if err := c.requireCallerLinkRestored(bi, ins); err != nil {
+				return true, false, err
+			}
 			return true, true, c.tailCallAndRet(ins.Args[0])
 		}
 		tgt, ok := arm64BranchTarget(ins.Args[0])
 		if !ok {
-			// Legacy loop form in runtime stubs: B 0(PC)
-			if ins.Args[0].Kind == OpMem && ins.Args[0].Mem.Base == PC {
-				emitBr(c.blocks[bi].name)
-				return true, true, nil
-			}
 			return true, false, fmt.Errorf("arm64 B invalid target: %q", ins.Raw)
 		}
 		emitBr(tgt)
@@ -95,15 +99,6 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 			return true, false, fmt.Errorf("arm64 %s expects label: %q", op, ins.Raw)
 		}
 		tgt, ok := arm64BranchTarget(ins.Args[0])
-		if !ok {
-			if ins.Args[0].Kind == OpMem && ins.Args[0].Mem.Base == PC {
-				// Relative PC branch in generated stubs; best-effort: use fallthrough.
-				if bi+1 < len(c.blocks) {
-					tgt = c.blocks[bi+1].name
-					ok = true
-				}
-			}
-		}
 		if !ok {
 			return true, false, fmt.Errorf("arm64 %s invalid target: %q", op, ins.Raw)
 		}
@@ -179,7 +174,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 		if fall == "" {
 			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
 		}
-		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", t, arm64LLVMBlockName(tgt), arm64LLVMBlockName(fall))
+		c.emitPredicateBranch("%"+t, tgt, fall)
 		return true, true, nil
 
 	case "TBZ", "TBNZ":
@@ -187,6 +182,9 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 			return true, false, fmt.Errorf("arm64 %s expects $bit, reg, label: %q", op, ins.Raw)
 		}
 		bit := ins.Args[0].Imm
+		if bit < 0 || bit > 63 {
+			return true, false, fmt.Errorf("arm64 %s bit index must be in [0, 63]: %q", op, ins.Raw)
+		}
 		rv, err := c.loadReg(ins.Args[1].Reg)
 		if err != nil {
 			return true, false, err
@@ -212,7 +210,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 		if fall == "" {
 			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
 		}
-		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", condT, arm64LLVMBlockName(tgt), arm64LLVMBlockName(fall))
+		c.emitPredicateBranch("%"+condT, tgt, fall)
 		return true, true, nil
 
 	case "CBZW", "CBNZW":
@@ -242,7 +240,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 		if fall == "" {
 			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
 		}
-		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", t, arm64LLVMBlockName(tgt), arm64LLVMBlockName(fall))
+		c.emitPredicateBranch("%"+t, tgt, fall)
 		return true, true, nil
 	}
 	return false, false, nil
@@ -289,6 +287,105 @@ func (c *arm64Ctx) structArgFromSequentialRegs(aggTy LLVMType, regCursor *int) (
 	return agg, nil
 }
 
+func (c *arm64Ctx) abi0CallStackPtr(off int64) (string, error) {
+	sp, err := c.loadReg(SP)
+	if err != nil {
+		return "", fmt.Errorf("ABI0 call stack: %w", err)
+	}
+	// Go's arm64 ABI0 outgoing call frame reserves the first pointer-sized
+	// slot for the saved link register. Callee FP offset zero is therefore
+	// caller RSP+8, as emitted by the Go compiler before ABI0 wrapper calls.
+	const linkSlotSize = int64(8)
+	next := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", next, sp, off+linkSlotSize)
+	addr := "%" + next
+	ptr := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, addr)
+	return "%" + ptr, nil
+}
+
+func (c *arm64Ctx) abi0CallArgs(callee string, sig FuncSig) ([]string, error) {
+	slotsByArg := make([][]FrameSlot, len(sig.Args))
+	for _, slot := range sig.Frame.Params {
+		if slot.Index < 0 || slot.Index >= len(sig.Args) {
+			return nil, fmt.Errorf("arm64 call %q: ABI0 parameter at +%d has invalid argument index %d", callee, slot.Offset, slot.Index)
+		}
+		slotsByArg[slot.Index] = append(slotsByArg[slot.Index], slot)
+	}
+	args := make([]string, 0, len(sig.Args))
+	for argIndex, argType := range sig.Args {
+		slots := slotsByArg[argIndex]
+		if len(slots) == 0 {
+			return nil, fmt.Errorf("arm64 call %q: ABI0 argument %d has no frame slot", callee, argIndex)
+		}
+		if len(slots) == 1 && len(frameSlotFields(slots[0])) == 0 {
+			if slots[0].Type != argType {
+				return nil, fmt.Errorf("arm64 call %q: ABI0 argument %d frame type %s does not match %s", callee, argIndex, slots[0].Type, argType)
+			}
+			ptr, err := c.abi0CallStackPtr(slots[0].Offset)
+			if err != nil {
+				return nil, err
+			}
+			value := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", value, argType, ptr)
+			args = append(args, fmt.Sprintf("%s %%%s", argType, value))
+			continue
+		}
+		aggregate := "undef"
+		for _, slot := range slots {
+			if len(frameSlotFields(slot)) == 0 {
+				return nil, fmt.Errorf("arm64 call %q: ABI0 aggregate argument %d has a scalar frame slot", callee, argIndex)
+			}
+			ptr, err := c.abi0CallStackPtr(slot.Offset)
+			if err != nil {
+				return nil, err
+			}
+			value := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", value, slot.Type, ptr)
+			inserted := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = insertvalue %s %s, %s %%%s%s\n", inserted, argType, aggregate, slot.Type, value, frameSlotExtractSuffix(slot))
+			aggregate = "%" + inserted
+		}
+		args = append(args, fmt.Sprintf("%s %s", argType, aggregate))
+	}
+	return args, nil
+}
+
+func (c *arm64Ctx) storeABI0CallResult(callee string, sig FuncSig, result string) error {
+	if len(sig.Frame.Results) == 0 {
+		return fmt.Errorf("arm64 call %q: ABI0 result %s has no frame slot", callee, sig.Ret)
+	}
+	fields, aggregate := parseLiteralStructFields(sig.Ret)
+	for _, slot := range sig.Frame.Results {
+		value := result
+		if aggregate {
+			if slot.Index < 0 || slot.Index >= len(fields) || fields[slot.Index] != slot.Type {
+				return fmt.Errorf("arm64 call %q: ABI0 result slot %d does not match %s", callee, slot.Index, sig.Ret)
+			}
+			extracted := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", extracted, sig.Ret, result, slot.Index)
+			value = "%" + extracted
+		} else if slot.Index != 0 || slot.Type != sig.Ret {
+			return fmt.Errorf("arm64 call %q: ABI0 scalar result frame does not match %s", callee, sig.Ret)
+		}
+		ptr, err := c.abi0CallStackPtr(slot.Offset)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", slot.Type, value, ptr)
+	}
+	return nil
+}
+
+// This finite lowering contract is not a general native-call effect proof.
+// LLGo's syscall bridge elides these scheduler hooks entirely. Its source BL
+// still produces the Go continuation/prologue, but no emitted call can observe
+// the virtual frame or change its GP/FP contents. Control and availability
+// analysis must use the same boundary as callSym, not an unknown native call.
+func arm64ElidesSchedulerHook(callee string) bool {
+	return callee == "runtime.entersyscall" || callee == "runtime.exitsyscall"
+}
+
 func (c *arm64Ctx) callSym(symOp Operand) error {
 	if symOp.Kind != OpSym {
 		return fmt.Errorf("arm64 call expects sym operand, got %s", symOp.String())
@@ -297,95 +394,83 @@ func (c *arm64Ctx) callSym(symOp Operand) error {
 	if !strings.HasSuffix(s, "(SB)") {
 		return fmt.Errorf("arm64 call expects (SB) symbol, got %q", s)
 	}
+	internalABI := strings.HasSuffix(strings.TrimSuffix(s, "(SB)"), "<ABIInternal>")
 	s = strings.TrimSuffix(s, "(SB)")
 	callee := c.resolve(s)
 	// Syscall stubs invoke runtime entersyscall/exitsyscall around SVC.
 	// llgo runtime does not require these scheduler hooks at this layer.
-	if callee == "runtime.entersyscall" || callee == "runtime.exitsyscall" {
+	if arm64ElidesSchedulerHook(callee) {
 		return nil
 	}
 	csig, ok := c.sigs[callee]
+	if csig.ARM64ClosureABI != nil {
+		return arm64GoABIContext("call %q requires a matching typed closure carrier", callee)
+	}
 	if !ok {
 		// Default for external runtime helpers not discovered in this asm file.
 		csig = FuncSig{Name: callee, Ret: Void}
 	}
+	if internalABI {
+		if csig.ARM64GoRegisterABI != nil {
+			if err := arm64ValidateGoRegisterABI(csig); err != nil {
+				return err
+			}
+		} else if len(csig.ArgRegs) == 0 || len(csig.ArgRegs) != len(csig.Args) {
+			return fmt.Errorf("%w: ARM64 ABIInternal call %q requires an explicit complete register-entry contract", ErrProbeNeedsContext, callee)
+		}
+	}
 	callee = funcSigSymbol(callee, csig)
-	args := make([]string, 0, len(csig.Args))
-	regCursor := 0
-	for i := 0; i < len(csig.Args); i++ {
-		argTy := csig.Args[i]
-		if len(csig.ArgRegs) == 0 {
-			if fields, ok := parseLiteralStructFields(argTy); ok && literalFieldsAllScalar(fields) {
-				agg, err := c.structArgFromSequentialRegs(argTy, &regCursor)
-				if err != nil {
-					return fmt.Errorf("arm64 call %q: %w", callee, err)
-				}
-				args = append(args, fmt.Sprintf("%s %s", argTy, agg))
-				continue
-			}
-		}
-
-		r := Reg("")
-		if len(csig.ArgRegs) > 0 {
-			r = Reg(fmt.Sprintf("R%d", i))
-			if i < len(csig.ArgRegs) {
-				r = csig.ArgRegs[i]
-			}
-		} else {
-			r = Reg(fmt.Sprintf("R%d", regCursor))
-			regCursor++
-		}
-		v, err := c.loadReg(r)
+	stackABI := !internalABI && len(csig.ArgRegs) == 0 && len(csig.Frame.Params) != 0
+	var args []string
+	if internalABI && csig.ARM64GoRegisterABI != nil {
+		var err error
+		args, err = c.goABIRegisterCallArgs(csig)
 		if err != nil {
 			return err
 		}
-		val, err := c.castI64RegToArg(v, argTy)
+	} else if stackABI {
+		var err error
+		args, err = c.abi0CallArgs(callee, csig)
 		if err != nil {
-			return fmt.Errorf("arm64 call %q unsupported arg type %s", callee, argTy)
+			return err
 		}
-		args = append(args, fmt.Sprintf("%s %s", argTy, val))
+	} else {
+		var err error
+		args, err = c.abiRegisterCallArgs(callee, csig)
+		if err != nil {
+			return err
+		}
 	}
 	if csig.Ret == Void {
 		fmt.Fprintf(c.b, "  call void %s(%s)\n", llvmGlobal(callee), strings.Join(args, ", "))
+		if internalABI {
+			c.recordMachineCall(csig.ARM64GoRegisterABI, s)
+		} else {
+			c.recordMachineCall(nil, s)
+		}
 		return nil
 	}
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = call %s %s(%s)\n", t, csig.Ret, llvmGlobal(callee), strings.Join(args, ", "))
-	switch csig.Ret {
-	case I64:
-		return c.storeReg(Reg("R0"), "%"+t)
-	case I32, I16, I8, I1:
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to i64\n", z, csig.Ret, t)
-		return c.storeReg(Reg("R0"), "%"+z)
-	case Ptr:
-		p := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i64\n", p, t)
-		return c.storeReg(Reg("R0"), "%"+p)
-	default:
-		fields, ok := parseLiteralStructFields(csig.Ret)
-		if !ok || !literalFieldsAllScalar(fields) {
-			return fmt.Errorf("arm64 call %q unsupported return type %s", callee, csig.Ret)
+	if internalABI && csig.ARM64GoRegisterABI != nil {
+		if err := c.storeGoABIRegisterResult(csig, "%"+t); err != nil {
+			return err
 		}
-		for i, fieldTy := range fields {
-			if i >= 8 {
-				return fmt.Errorf("arm64 call %q has %d scalar return fields, maximum is 8", callee, len(fields))
-			}
-			extracted := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, %d\n", extracted, csig.Ret, t, i)
-			value, scalar, err := arm64ValueAsI64(c, fieldTy, "%"+extracted)
-			if err != nil {
-				return err
-			}
-			if !scalar {
-				return fmt.Errorf("arm64 call %q unsupported return field type %s", callee, fieldTy)
-			}
-			if err := c.storeReg(Reg(fmt.Sprintf("R%d", i)), value); err != nil {
-				return err
-			}
-		}
+		c.recordMachineCall(csig.ARM64GoRegisterABI, s)
 		return nil
 	}
+	if !internalABI && len(csig.ArgRegs) == 0 && len(csig.Frame.Results) != 0 {
+		if err := c.storeABI0CallResult(callee, csig, "%"+t); err != nil {
+			return err
+		}
+		c.recordMachineCall(nil, s)
+		return nil
+	}
+	if err := c.storeABIRegisterResult(callee, csig.Ret, "%"+t); err != nil {
+		return err
+	}
+	c.recordMachineCall(nil, s)
+	return nil
 }
 
 func (c *arm64Ctx) tailCallAndRet(symOp Operand) error {
@@ -396,96 +481,69 @@ func (c *arm64Ctx) tailCallAndRet(symOp Operand) error {
 	if !strings.HasSuffix(s, "(SB)") {
 		return fmt.Errorf("arm64 tailcall expects (SB) symbol, got %q", s)
 	}
+	internalABI := strings.HasSuffix(strings.TrimSuffix(s, "(SB)"), "<ABIInternal>")
 	s = strings.TrimSuffix(s, "(SB)")
 	callee := c.resolve(s)
 	csig, ok := c.sigs[callee]
+	if csig.ARM64ClosureABI != nil {
+		return arm64GoABIContext("tail call %q requires a matching typed closure carrier", callee)
+	}
+	if err := arm64ValidatePrivateTailTransport(symOp.Sym, csig, ok); err != nil {
+		return err
+	}
 	if !ok {
 		// Cross-package trampoline (e.g. sync/atomic -> internal/runtime/atomic).
 		// If we don't have an explicit signature, fall back to caller signature.
 		csig = c.sig
 		csig.Name = callee
+		csig.ARM64GoRegisterABI = nil
+	}
+	if c.goRegisterEntry && !internalABI && len(csig.ArgRegs) == 0 {
+		return arm64GoABIContext("register entry tail to %q needs an explicit target register or cross-ABI frame contract", callee)
+	}
+	if internalABI {
+		if csig.ARM64GoRegisterABI != nil {
+			if err := arm64ValidateGoRegisterABI(csig); err != nil {
+				return err
+			}
+		} else if len(csig.ArgRegs) == 0 || len(csig.ArgRegs) != len(csig.Args) {
+			return fmt.Errorf("%w: ARM64 ABIInternal tail call %q requires an explicit complete register-entry contract", ErrProbeNeedsContext, callee)
+		}
 	}
 	callee = funcSigSymbol(callee, csig)
 
+	useLLVMArgs := !c.goRegisterEntry && !internalABI && len(csig.ArgRegs) == 0 && len(csig.Args) == len(c.sig.Args) && csig.Ret == c.sig.Ret
+	if useLLVMArgs {
+		for i := range csig.Args {
+			if csig.Args[i] != c.sig.Args[i] {
+				useLLVMArgs = false
+				break
+			}
+		}
+	}
 	args := make([]string, 0, len(csig.Args))
-	regCursor := 0
-	for i := 0; i < len(csig.Args); i++ {
-		// If ArgRegs is empty, default to register-based passing (ABIInternal-ish)
-		// because most intra-asm tailcalls depend on explicit register setup.
-		//
-		// Exception: for tailcalls to Go functions with an identical signature,
-		// use the current function's LLVM args. This matches stdlib patterns like
-		// "B ·fooGeneric(SB)" that happen before any register shuffling and are
-		// stack-ABI tailcalls in the original asm.
-		useLLVMArgs := false
-		if len(csig.ArgRegs) == 0 && len(csig.Args) == len(c.sig.Args) && csig.Ret == c.sig.Ret {
-			same := true
-			for j := 0; j < len(csig.Args); j++ {
-				if csig.Args[j] != c.sig.Args[j] {
-					same = false
-					break
-				}
-			}
-			useLLVMArgs = same
+	if useLLVMArgs {
+		for i, typ := range csig.Args {
+			args = append(args, fmt.Sprintf("%s %%arg%d", typ, i))
 		}
-		if useLLVMArgs {
-			if i >= len(c.sig.Args) {
-				return fmt.Errorf("arm64 tailcall %q: need %d args, caller has %d", callee, len(csig.Args), len(c.sig.Args))
-			}
-			fromTy := c.sig.Args[i]
-			fromVal := fmt.Sprintf("%%arg%d", i)
-			toTy := csig.Args[i]
-			if fromTy == toTy {
-				args = append(args, fmt.Sprintf("%s %s", toTy, fromVal))
-				continue
-			}
-			t := c.newTmp()
-			switch {
-			case fromTy == I64 && (toTy == I1 || toTy == I8 || toTy == I16 || toTy == I32):
-				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", t, fromVal, toTy)
-				args = append(args, fmt.Sprintf("%s %%%s", toTy, t))
-			case (fromTy == I1 || fromTy == I8 || fromTy == I16 || fromTy == I32) && toTy == I64:
-				fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", t, fromTy, fromVal)
-				args = append(args, "i64 %"+t)
-			case fromTy == I64 && toTy == Ptr:
-				fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", t, fromVal)
-				args = append(args, "ptr %"+t)
-			case fromTy == Ptr && toTy == I64:
-				fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, fromVal)
-				args = append(args, "i64 %"+t)
-			default:
-				return fmt.Errorf("arm64 tailcall %q: unsupported arg cast %s -> %s", callee, fromTy, toTy)
-			}
-			continue
-		}
-
-		if len(csig.ArgRegs) == 0 {
-			if fields, ok := parseLiteralStructFields(csig.Args[i]); ok && literalFieldsAllScalar(fields) {
-				agg, err := c.structArgFromSequentialRegs(csig.Args[i], &regCursor)
-				if err != nil {
-					return fmt.Errorf("arm64 tailcall %q: %w", callee, err)
-				}
-				args = append(args, fmt.Sprintf("%s %s", csig.Args[i], agg))
-				continue
-			}
-		}
-
-		r := Reg("")
-		if i < len(csig.ArgRegs) {
-			r = csig.ArgRegs[i]
-		} else {
-			r = Reg(fmt.Sprintf("R%d", regCursor))
-			regCursor++
-		}
-		v, err := c.loadReg(r)
+	} else if internalABI && csig.ARM64GoRegisterABI != nil {
+		var err error
+		args, err = c.goABIRegisterCallArgs(csig)
 		if err != nil {
 			return err
 		}
-		val, err := c.castI64RegToArg(v, csig.Args[i])
+	} else if !internalABI && len(csig.ArgRegs) == 0 && len(csig.Frame.Params) != 0 {
+		var err error
+		args, err = c.abi0CallArgs(callee, csig)
 		if err != nil {
-			return fmt.Errorf("arm64 tailcall unsupported arg type %q", csig.Args[i])
+			return fmt.Errorf("arm64 tailcall: %w", err)
 		}
-		args = append(args, fmt.Sprintf("%s %s", csig.Args[i], val))
+	} else {
+		var err error
+		args, err = c.abiRegisterCallArgs(callee, csig)
+		if err != nil {
+			return fmt.Errorf("arm64 tailcall: %w", err)
+		}
 	}
 
 	if csig.Ret == Void {
@@ -512,7 +570,23 @@ func (c *arm64Ctx) tailCallAndRet(symOp Operand) error {
 		return nil
 	}
 	if csig.Ret != c.sig.Ret {
-		return fmt.Errorf("arm64 tailcall return mismatch: caller %s callee %s", c.sig.Ret, csig.Ret)
+		conv := c.newTmp()
+		calleeBits, calleeInteger := armIntegerTypeWidth(csig.Ret)
+		callerBits, callerInteger := armIntegerTypeWidth(c.sig.Ret)
+		switch {
+		case calleeInteger && callerInteger && calleeBits > callerBits:
+			fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", conv, csig.Ret, call, c.sig.Ret)
+		case calleeInteger && callerInteger && calleeBits < callerBits:
+			fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to %s\n", conv, csig.Ret, call, c.sig.Ret)
+		case csig.Ret == Ptr && c.sig.Ret == I64:
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i64\n", conv, call)
+		case csig.Ret == I64 && c.sig.Ret == Ptr:
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %%%s to ptr\n", conv, call)
+		default:
+			return fmt.Errorf("arm64 tailcall return mismatch: caller %s callee %s", c.sig.Ret, csig.Ret)
+		}
+		fmt.Fprintf(c.b, "  ret %s %%%s\n", c.sig.Ret, conv)
+		return nil
 	}
 	fmt.Fprintf(c.b, "  ret %s %%%s\n", c.sig.Ret, call)
 	return nil

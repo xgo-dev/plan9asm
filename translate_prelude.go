@@ -1,18 +1,21 @@
 package plan9asm
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string, goarch string, wasmABI WASMABI) {
 	switch file.Arch {
 	case ArchARM:
 		emitARMPrelude(b)
 	case ArchARM64:
-		emitARM64Prelude(b)
+		// Emit only referenced declarations after lowering the complete body.
 	case ArchAMD64:
 		// Keep historical gating to avoid injecting x86-only prelude when
 		// parsing x86 syntax for unrelated targets in tests.
 		if goarch == "amd64" || goarch == "386" {
-			emitAMD64Prelude(b, goarch, file)
+			emitAMD64SourcePrelude(b, file, goarch)
 		}
 	case ArchWASM:
 		emitWASMPrelude(b, file, resolve, wasmABI)
@@ -43,15 +46,22 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 		b.WriteString("\n")
 	}
 	want := make(map[string]bool)
+	wantFloatUnary := make(map[string]bool)
+	wantFloatBinary := make(map[string]bool)
+	wantIntegerCount := make(map[string]bool)
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
-			switch normalizeInstructionOpcode(ins.Op) {
-			case "F64FLOOR":
-				want["floor"] = true
-			case "F64CEIL":
-				want["ceil"] = true
-			case "F64TRUNC":
-				want["trunc"] = true
+			op := normalizeInstructionOpcode(ins.Op)
+			if spec, ok := wasmIntegerCountOps[op]; ok {
+				wantIntegerCount[spec.intrinsic+"."+string(spec.typ)] = true
+			}
+			if spec, ok := wasmFloatUnaryOps[op]; ok && spec.intrinsic != "" {
+				wantFloatUnary[string(spec.typ)+"|"+spec.intrinsic] = true
+			}
+			if spec, ok := wasmFloatBinaryOps[op]; ok && spec.intrinsic != "" {
+				wantFloatBinary[string(spec.typ)+"|"+spec.intrinsic] = true
+			}
+			switch op {
 			case "MEMORYCOPY":
 				want["memmove"] = true
 			case "MEMORYFILL":
@@ -66,6 +76,18 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	if want["memmove"] {
 		b.WriteString("declare void @llvm.memmove.p0.p0.i32(ptr, ptr, i32, i1 immarg)\n")
 	}
+	for _, typ := range []LLVMType{I32, I64} {
+		for _, intrinsic := range []string{"ctlz", "cttz", "ctpop"} {
+			name := intrinsic + "." + string(typ)
+			if wantIntegerCount[name] {
+				fmt.Fprintf(b, "declare %s @llvm.%s(%s", typ, name, typ)
+				if intrinsic != "ctpop" {
+					b.WriteString(", i1 immarg")
+				}
+				b.WriteString(")\n")
+			}
+		}
+	}
 	if want["memset"] {
 		b.WriteString("declare void @llvm.memset.p0.i32(ptr, i8, i32, i1 immarg)\n")
 	}
@@ -75,12 +97,23 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	if want["memory.grow"] {
 		b.WriteString("declare i32 @llvm.wasm.memory.grow.i32(i32, i32)\n")
 	}
-	for _, name := range []string{"floor", "ceil", "trunc"} {
-		if want[name] {
-			b.WriteString("declare double @llvm." + name + ".f64(double)\n")
+	for _, typ := range []LLVMType{LLVMType("float"), LLVMType("double")} {
+		bits := "32"
+		if typ == LLVMType("double") {
+			bits = "64"
+		}
+		for _, name := range []string{"fabs", "ceil", "floor", "trunc", "roundeven", "sqrt"} {
+			if wantFloatUnary[string(typ)+"|"+name] {
+				fmt.Fprintf(b, "declare %s @llvm.%s.f%s(%s)\n", typ, name, bits, typ)
+			}
+		}
+		for _, name := range []string{"minimum", "maximum"} {
+			if wantFloatBinary[string(typ)+"|"+name] {
+				fmt.Fprintf(b, "declare %s @llvm.%s.f%s(%s, %s)\n", typ, name, bits, typ, typ)
+			}
 		}
 	}
-	if len(want) != 0 {
+	if len(want) != 0 || len(wantFloatUnary) != 0 || len(wantFloatBinary) != 0 {
 		b.WriteString("\n")
 	}
 }

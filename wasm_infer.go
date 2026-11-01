@@ -76,6 +76,43 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 
 	for _, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
+		if spec, found, err := parseWASMIntegerCount(ins); found {
+			if err != nil {
+				return FuncSig{}, err
+			}
+			if len(stack) == 0 {
+				return FuncSig{}, fmt.Errorf("%s: %s requires one stack operand", name, op)
+			}
+			for reg := range stack[len(stack)-1].regs {
+				typ := wasmDefaultRegisterType(reg)
+				if typ != I32 && typ != I64 {
+					return FuncSig{}, fmt.Errorf("%s: %s register %s is not an integer", name, op, reg)
+				}
+			}
+			if err := typedUnary(op, spec.typ, spec.typ); err != nil {
+				return FuncSig{}, err
+			}
+			continue
+		}
+		if spec, found, err := parseWASMFloatBinary(ins); found {
+			if err != nil {
+				return FuncSig{}, err
+			}
+			if len(stack) < 2 {
+				return FuncSig{}, fmt.Errorf("%s: %s requires two stack operands", name, op)
+			}
+			for _, value := range stack[len(stack)-2:] {
+				for reg := range value.regs {
+					if wasmDefaultRegisterType(reg) != spec.typ {
+						return FuncSig{}, fmt.Errorf("%s: %s register %s does not carry %s", name, op, reg, spec.typ)
+					}
+				}
+			}
+			if err := typedBinary(op, spec.typ, spec.resultType()); err != nil {
+				return FuncSig{}, err
+			}
+			continue
+		}
 		switch op {
 		case "TEXT", "NOP", "NO_LOCAL_POINTERS", "LABEL":
 		case "GET":

@@ -35,6 +35,8 @@ func TestInstructionFamiliesAreArchitectureAware(t *testing.T) {
 		{ArchAMD64, "POPCNTQ", "bit-shift"},
 		{ArchAMD64, "PREFETCHT0", "cache-memory"},
 		{ArchAMD64, "VGF2P8AFFINEQB", "crypto-carryless"},
+		{ArchAMD64, "PCALIGN", "directive"},
+		{ArchAMD64, "PCALIGNMAX", "directive"},
 		{ArchARM64, "VLD1", "neon"},
 		{ArchARM64, "ZADD", "sve"},
 		{ArchARM64, "CASAL", "atomic-memory"},
@@ -166,12 +168,29 @@ func TestDescribeInstructionClassifiesOperands(t *testing.T) {
 
 func TestProbeInstructionChecksFormsThroughLowerer(t *testing.T) {
 	cases := []Instr{
-		{Op: "XORB", Raw: "XORB SI, (AX)", Args: []Operand{{Kind: OpReg, Reg: SI}, {Kind: OpMem, Mem: MemRef{Base: AX}}}},
 		{Op: "PUNPCKLQDQ", Raw: "PUNPCKLQDQ X0, X0", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpReg, Reg: "X0"}}},
 	}
 	for _, ins := range cases {
 		if err := ProbeInstruction(ArchAMD64, "amd64", ins); err != nil {
 			t.Errorf("ProbeInstruction(%q) error = %v", ins.Raw, err)
+		}
+	}
+
+	// An isolated memory RMW has neither a reaching address nor source bytes.
+	// The same form must still lower when actual typed source supplies both.
+	rmw := Instr{Op: "XORB", Raw: "XORB SI, (AX)", Args: []Operand{
+		{Kind: OpReg, Reg: SI}, {Kind: OpMem, Mem: MemRef{Base: AX}},
+	}}
+	if err := ProbeInstruction(ArchAMD64, "amd64", rmw); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("unbound memory RMW probe error = %v, want ErrProbeNeedsContext", err)
+	}
+	const source = "TEXT ·probe(SB),4,$0-16\nMOVQ p+0(FP),AX\nMOVQ value+8(FP),SI\nXORB SI,(AX)\nRET\n"
+	goAssemblerOracleOutput(t, "amd64", source, "", true)
+	for _, api := range []string{"text", "module", "Go"} {
+		ir, err := x86ScalarFPBitViewAPI(t, source, "func probe(p *byte,value uint64)",
+			"amd64", "x86_64-unknown-linux-gnu", api)
+		if err != nil || ir == "" {
+			t.Errorf("%s: initialized memory RMW failed: %v", api, err)
 		}
 	}
 

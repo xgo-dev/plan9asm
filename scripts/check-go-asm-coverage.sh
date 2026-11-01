@@ -70,6 +70,7 @@ if actual_versions != expected_versions:
         "coverage baseline versions differ: "
         f"expected {sorted(expected_versions)}, got {sorted(actual_versions)}"
     )
+latest_version = max(expected_versions, key=lambda item: int(item.split(".")[1]))
 
 fields = (
     "official_opcodes",
@@ -86,6 +87,8 @@ fields = (
     "encoder_opcodes_observed_in_corpus",
     "coverage_fingerprint",
     "encoder_fingerprint",
+    "encoder_rules",
+    "encoder_rule_fingerprint",
 )
 
 for report_path in report_paths:
@@ -121,6 +124,25 @@ for report_path in report_paths:
             f"missing coverage baseline for {version}/{arch}; "
             "inspect the full JSON report and update the baseline intentionally"
         )
+    # This fingerprints retained AVX table expressions, not resolved constants,
+    # encoder helper implementations, or runtime/ABI correctness.
+    # AVX metadata is independently retained only for x86 so far. Missing
+    # metadata is unknown, never an empty-rule or implementation certificate.
+    # Other architectures retain their existing class/namespace coverage;
+    # do not fabricate full encoding-rule coverage for them.
+    if arch in {"386", "amd64"}:
+        for role, entry in (("report", report), ("baseline", expected)):
+            count = entry.get("encoder_rules")
+            fingerprint = entry.get("encoder_rule_fingerprint")
+            if (
+                type(count) is not int or count <= 0
+                or not isinstance(fingerprint, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+            ):
+                raise SystemExit(
+                    f"{version}/{arch}: {role} is missing complete "
+                    "encoder_rules/encoder_rule_fingerprint metadata"
+                )
     changed = [
         field for field in fields
         if report.get(field) != expected.get(field)
@@ -154,13 +176,21 @@ for report_path in report_paths:
             if line.strip() and not line.lstrip().startswith("#")
         }
         catalog = {item["opcode"]: item for item in report["opcode_catalog"]}
-        missing_encoder = sorted(op for op in required if not catalog.get(op, {}).get("encoder_forms"))
-        missing_corpus = sorted(op for op in required if not catalog.get(op, {}).get("observed_in_corpus"))
-        unsupported = sorted(op for op in required if catalog.get(op, {}).get("unsupported_forms"))
-        if missing_encoder or missing_corpus or unsupported:
+        available = required.intersection(catalog)
+        unavailable = sorted(required.difference(available))
+        missing_encoder = sorted(op for op in available if not catalog[op].get("encoder_forms"))
+        missing_corpus = sorted(op for op in available if not catalog[op].get("observed_in_corpus"))
+        unsupported = sorted(op for op in available if catalog[op].get("unsupported_forms"))
+        missing_latest = unavailable if version == latest_version else []
+        if missing_latest or missing_encoder or missing_corpus or unsupported:
             raise SystemExit(
                 f"{version}/arm64: incomplete required Go assembler families: "
-                f"missing_encoder={missing_encoder}, missing_corpus={missing_corpus}, unsupported={unsupported}"
+                f"missing_from_latest={missing_latest}, missing_encoder={missing_encoder}, "
+                f"missing_corpus={missing_corpus}, unsupported={unsupported}"
             )
-        print(f"{version}/arm64: all {len(required)} required opcodes are encoder-defined, observed, and lowerable")
+        print(
+            f"{version}/arm64: all {len(available)} toolchain-available required opcodes "
+            f"are encoder-defined, observed, and lowerable"
+            + (f"; {len(unavailable)} future opcodes are absent from this Go release" if unavailable else "")
+        )
 PY

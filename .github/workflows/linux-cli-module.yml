@@ -1,0 +1,166 @@
+name: Complete Linux CLI module
+
+on:
+  workflow_call:
+    inputs:
+      module:
+        required: true
+        type: string
+      go-version:
+        required: true
+        type: string
+      flavor:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  root-parts:
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Go
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ inputs.go-version }}
+      - name: Install LLVM 22 and cross compilers
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh gcc-i686-linux-gnu libc6-dev-i386-cross gcc-aarch64-linux-gnu
+      - name: Install required execution runtimes
+        timeout-minutes: 5
+        run: bash scripts/install-ci-qemu.sh
+      - name: LLVM tools info
+        shell: bash
+        run: |
+          command -v llc
+          llc --version
+          command -v clang
+          clang --version
+      - name: Setup required wasm execution runtime
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-node22
+      - name: Execute disjoint root assignment
+        run: bash scripts/test-linux-cli-module-ci.sh ${{ inputs.module }} ${{ inputs.flavor }} execute 0 ${{ matrix.part }}
+      - name: Retain actual root evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-root-${{ matrix.part }}
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-root-${{ matrix.part }}/
+          if-no-files-found: error
+
+      # Both CLIs currently have only their root package. Keep the two real
+      # empty-role receipts without allocating separate empty runner jobs.
+      # Any future profile/rest packages still execute, never invent a pass.
+      - name: Execute complete profile owner
+        if: ${{ !cancelled() && matrix.part == 0 }}
+        run: bash scripts/test-linux-cli-module-ci.sh ${{ inputs.module }} ${{ inputs.flavor }} execute 1 -1
+      - name: Retain actual profile evidence
+        if: ${{ always() && matrix.part == 0 }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-owner-1
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-owner-1/
+          if-no-files-found: error
+      - name: Execute complete remaining-package owner
+        if: ${{ !cancelled() && matrix.part == 0 }}
+        run: bash scripts/test-linux-cli-module-ci.sh ${{ inputs.module }} ${{ inputs.flavor }} execute 2 -1
+      - name: Retain actual remaining-package evidence
+        if: ${{ always() && matrix.part == 0 }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-owner-2
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-owner-2/
+          if-no-files-found: error
+
+  complete:
+    needs: root-parts
+    if: ${{ !cancelled() }}
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Go
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ inputs.go-version }}
+      - name: Install LLVM 22 and cross compilers
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh gcc-i686-linux-gnu libc6-dev-i386-cross gcc-aarch64-linux-gnu
+      - name: Install required execution runtimes
+        timeout-minutes: 5
+        run: bash scripts/install-ci-qemu.sh
+      - name: LLVM tools info
+        shell: bash
+        run: |
+          command -v llc
+          llc --version
+          command -v clang
+          clang --version
+      - name: Setup required wasm execution runtime
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-node22
+      - name: Download root part 0
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-root-0
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-owners/owner-0000/part-0000
+      - name: Download root part 1
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-root-1
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-owners/owner-0000/part-0001
+      - name: Download root part 2
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-root-2
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-owners/owner-0000/part-0002
+      - name: Download root part 3
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-root-3
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-owners/owner-0000/part-0003
+      - name: Download profile owner
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-owner-1
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-owners/owner-0001
+      - name: Download remaining-package owner
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-owner-2
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-owners/owner-0002
+      - name: Verify complete CLI module
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-linux-cli-module-ci.sh ${{ inputs.module }} ${{ inputs.flavor }} complete
+      - name: Retain independent completion evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-cli-${{ inputs.module }}-${{ inputs.go-version }}-${{ inputs.flavor }}-completion
+          path: _out/linux-cli-${{ inputs.module }}-${{ inputs.flavor }}-verified/
+          if-no-files-found: error
+      - name: Show complete CLI coverage
+        if: inputs.flavor == 'coverage'
+        run: go tool cover -func=coverage-${{ inputs.module }}.out | tail -n 1
+        working-directory: cmd/${{ inputs.module }}
+      - name: Require successful CLI owners
+        if: ${{ !cancelled() }}
+        run: test '${{ needs.root-parts.result }}' = success

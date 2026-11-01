@@ -65,6 +65,9 @@ func TestARMParserFlagAndHelperEdges(t *testing.T) {
 		t.Fatalf("storeFlagCond(AL) error = %v", err)
 	}
 	c.flagsWritten = true
+	if err := c.storeFlagCond("EQ", c.flagsZSlot, "true"); err != nil {
+		t.Fatalf("single-flag storeFlagCond(EQ) error = %v", err)
+	}
 	for _, cond := range []string{"EQ", "NE", "CS", "CC", "HI", "LS", "LT", "GE", "GT", "LE", "MI", "PL", "VS", "VC", "AL"} {
 		if got, err := c.condValue(cond); err != nil || got == "" {
 			t.Fatalf("condValue(%s) = (%q, %v)", cond, got, err)
@@ -88,7 +91,7 @@ func TestARMParserFlagAndHelperEdges(t *testing.T) {
 	}
 
 	out := b.String()
-	for _, want := range []string{"store i1 true", "select i1", "icmp eq i1", "xor i1", "or i1"} {
+	for _, want := range []string{"store i1 true", "select i1", "br i1", "icmp eq i1", "xor i1", "or i1"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
 		}

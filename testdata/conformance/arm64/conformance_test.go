@@ -3,8 +3,11 @@
 package arm64conformance
 
 import (
+	"encoding/binary"
+	"math"
 	"math/bits"
 	"testing"
+	"unsafe"
 )
 
 func TestFamilies(t *testing.T) {
@@ -16,6 +19,207 @@ func TestFamilies(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("families()[%d] = %#x, want %#x", i, got[i], want[i])
 		}
+	}
+}
+
+func TestScalarFloatSquareRoots(t *testing.T) {
+	var got [16]byte
+	scalarFloatSquareRoots(&got)
+	if value := math.Float32frombits(binary.LittleEndian.Uint32(got[0:4])); value != 2 {
+		t.Fatalf("FSQRTS/FMOVS result = %v, want 2", value)
+	}
+	if value := math.Float32frombits(binary.LittleEndian.Uint32(got[4:8])); value != 2 {
+		t.Fatalf("FMOVS F<->R result = %v, want 2", value)
+	}
+	if value := math.Float64frombits(binary.LittleEndian.Uint64(got[8:16])); value != 4 {
+		t.Fatalf("FSQRTD/FMOVD result = %v, want 4", value)
+	}
+}
+
+func TestFusedMultiplyAddSemantics(t *testing.T) {
+	var got [48]byte
+	fusedMultiplyAddSemantics(&got)
+	want32 := [...]float32{11, -1, -11, 1}
+	for i, want := range want32 {
+		value := math.Float32frombits(binary.LittleEndian.Uint32(got[i*4 : i*4+4]))
+		if value != want {
+			t.Fatalf("fusedMultiplyAddSemantics() float32[%d] = %v, want %v", i, value, want)
+		}
+	}
+	want64 := [...]float64{11, -1, -11, 1}
+	for i, want := range want64 {
+		value := math.Float64frombits(binary.LittleEndian.Uint64(got[16+i*8 : 24+i*8]))
+		if value != want {
+			t.Fatalf("fusedMultiplyAddSemantics() float64[%d] = %v, want %v", i, value, want)
+		}
+	}
+}
+
+func TestVectorPermuteSemantics(t *testing.T) {
+	var n, m [16]byte
+	for i := range n {
+		n[i] = byte(i)
+		m[i] = byte(0x80 + i)
+	}
+	var got [96]byte
+	vectorPermuteSemantics(&got, &n, &m)
+	want := vectorPermuteOracle(n, m)
+	if got != want {
+		t.Fatalf("vectorPermuteSemantics() = %#v, want %#v", got, want)
+	}
+}
+
+func vectorPermuteOracle(n, m [16]byte) (out [96]byte) {
+	for i := 0; i < 8; i++ {
+		out[2*i], out[2*i+1] = n[i], m[i]
+		out[16+2*i], out[16+2*i+1] = n[8+i], m[8+i]
+		out[32+i], out[32+8+i] = n[2*i], m[2*i]
+		out[48+i], out[48+8+i] = n[2*i+1], m[2*i+1]
+		out[64+2*i], out[64+2*i+1] = n[2*i], m[2*i]
+		out[80+2*i], out[80+2*i+1] = n[2*i+1], m[2*i+1]
+	}
+	return out
+}
+
+func TestVectorWideningShiftSemantics(t *testing.T) {
+	source := [16]byte{0, 1, 0x7f, 0x80, 0xff, 2, 0x55, 0xaa, 3, 4, 0x40, 0xc0, 0xfe, 0x81, 0x11, 0xee}
+	var got [128]byte
+	vectorWideningShiftSemantics(&got, &source)
+	want := vectorWideningShiftOracle(source)
+	if got != want {
+		t.Fatalf("vectorWideningShiftSemantics() = %#v, want %#v", got, want)
+	}
+}
+
+func vectorWideningShiftOracle(source [16]byte) (out [128]byte) {
+	for lane := 0; lane < 8; lane++ {
+		low, high := uint16(source[lane]), uint16(source[8+lane])
+		signedLow, signedHigh := uint16(int16(int8(source[lane]))), uint16(int16(int8(source[8+lane])))
+		values := [...]uint16{
+			low, high, signedLow, signedHigh,
+			low << 7, high << 1, signedLow << 3, signedHigh << 2,
+		}
+		for group, value := range values {
+			binary.LittleEndian.PutUint16(out[group*16+lane*2:], value)
+		}
+	}
+	return out
+}
+
+func TestScalarExtendSemantics(t *testing.T) {
+	value := uint64(0x88776655fedcba98)
+	var got [10]uint64
+	scalarExtendSemantics(&got, value)
+	want := [10]uint64{
+		uint64(int64(int8(value))),
+		uint64(uint32(int32(int8(value)))),
+		uint64(int64(int16(value))),
+		uint64(uint32(int32(int16(value)))),
+		uint64(int64(int32(value))),
+		uint64(uint8(value)),
+		uint64(uint32(uint8(value))),
+		uint64(uint16(value)),
+		uint64(uint32(uint16(value))),
+		uint64(uint32(value)),
+	}
+	if got != want {
+		t.Fatalf("scalarExtendSemantics() = %#v, want %#v", got, want)
+	}
+}
+
+func TestVectorCountBitsSemantics(t *testing.T) {
+	source := [16]byte{0, 1, 2, 3, 7, 15, 31, 63, 127, 128, 129, 0xaa, 0x55, 0xfe, 0xff, 0x81}
+	var got, want [32]byte
+	vectorCountBitsSemantics(&got, &source)
+	for i, value := range source {
+		want[16+i] = byte(bits.OnesCount8(value))
+		if i < 8 {
+			want[i] = want[16+i]
+		}
+	}
+	if got != want {
+		t.Fatalf("vectorCountBitsSemantics() = %#v, want %#v", got, want)
+	}
+}
+
+func TestUnsignedWideningAddSemantics(t *testing.T) {
+	narrow := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0xf1, 0xe2, 0xd3, 0xc4, 0xb5, 0xa6, 0x97, 0x88}
+	addend := [16]byte{0xff, 0x00, 0xfe, 0xff, 0x78, 0x56, 0x34, 0x12, 0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12}
+	var got, want [96]byte
+	unsignedWideningAddSemantics(&got, &narrow, &addend)
+	for group, narrowBytes := range []int{1, 2, 4, 1, 2, 4} {
+		wideBytes := narrowBytes * 2
+		lanes := 16 / wideBytes
+		sourceOffset := 0
+		if group >= 3 {
+			sourceOffset = 8
+		}
+		for lane := 0; lane < lanes; lane++ {
+			narrowValue := readLittleEndianWidth(narrow[sourceOffset+lane*narrowBytes:], narrowBytes)
+			addendValue := readLittleEndianWidth(addend[lane*wideBytes:], wideBytes)
+			writeLittleEndianWidth(want[group*16+lane*wideBytes:], wideBytes, addendValue+narrowValue)
+		}
+	}
+	if got != want {
+		t.Fatalf("unsignedWideningAddSemantics() = %#v, want %#v", got, want)
+	}
+}
+
+func readLittleEndianWidth(data []byte, width int) uint64 {
+	switch width {
+	case 1:
+		return uint64(data[0])
+	case 2:
+		return uint64(binary.LittleEndian.Uint16(data))
+	case 4:
+		return uint64(binary.LittleEndian.Uint32(data))
+	case 8:
+		return binary.LittleEndian.Uint64(data)
+	default:
+		panic("invalid integer width")
+	}
+}
+
+func writeLittleEndianWidth(data []byte, width int, value uint64) {
+	switch width {
+	case 2:
+		binary.LittleEndian.PutUint16(data, uint16(value))
+	case 4:
+		binary.LittleEndian.PutUint32(data, uint32(value))
+	case 8:
+		binary.LittleEndian.PutUint64(data, value)
+	default:
+		panic("invalid integer width")
+	}
+}
+
+func TestPairedAtomicSemantics(t *testing.T) {
+	var storage [11]uint64
+	start := 0
+	if uintptr(unsafe.Pointer(&storage[0]))%16 != 0 {
+		start = 1
+	}
+	data := (*[9]uint64)(unsafe.Pointer(&storage[start]))
+	*data = [9]uint64{
+		0x11, 0x22,
+		0x33, 0x44,
+		0x0000002200000011,
+		0x0000004400000033,
+		0x55, 0x66,
+		0x0000008800000077,
+	}
+	var got [23]uint64
+	pairedAtomicSemantics(&got, data)
+	want := [23]uint64{
+		0x11, 0x22, 0xaa, 0xbb,
+		0x33, 0x44, 0x33, 0x44,
+		0x11, 0x22, 0x000000bb000000aa,
+		0x33, 0x44, 0x0000004400000033,
+		0x55, 0x66, 0, 0xcc, 0xdd,
+		0x77, 0x88, 1, 0x000000aa00000099,
+	}
+	if got != want {
+		t.Fatalf("pairedAtomicSemantics() = %#v, want %#v", got, want)
 	}
 }
 

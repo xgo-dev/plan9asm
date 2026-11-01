@@ -54,13 +54,36 @@ int main(void) {
 }`)
 }
 
+func TestNativeARM64SourceRequiresLLVM22(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(executable, "-test.run=^TestNativeARM64Source$", "-test.v")
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(strings.ToUpper(variable), "LLVM_CONFIG=") {
+			cmd.Env = append(cmd.Env, variable)
+		}
+	}
+	cmd.Env = append(cmd.Env, "LLVM_CONFIG="+filepath.Join(t.TempDir(), "missing-llvm-config"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("native ARM64 source test passed without required LLVM 22 tools:\n%s", output)
+	}
+	if !strings.Contains(string(output), "LLVM 22 clang not found") {
+		t.Fatalf("native ARM64 source test did not fail for missing LLVM 22: %v\n%s", err, output)
+	}
+}
+
 // Compile the generated Mach-O assembly on every LLVM host; only execution
 // needs Darwin/ARM64. No test or implementation reads a Go object format.
 func nativeCompileAndRun(t *testing.T, assembly, harness string) {
 	t.Helper()
-	clang, err := exec.LookPath("clang")
-	if err != nil {
-		t.Skip("clang not installed")
+	clang := findLLVM22Tool("clang")
+	if clang == "" {
+		t.Fatal("LLVM 22 clang not found")
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "native.s")
@@ -181,12 +204,13 @@ func TestNativeARM64RejectsUnsupportedSource(t *testing.T) {
 		{"empty", "", "no TEXT"},
 		{"data only", "GLOBL ·p(SB), RODATA, $8\n", "requires TEXT"},
 		{"invalid local name", "TEXT bad-name<>(SB), NOSPLIT, $0\nRET\n", "file-local"},
-		{"duplicate label", prefix + "here:\nRET\nhere:\nRET\n", "duplicate native label"},
+		{"duplicate label", prefix + "here:\nRET\nhere:\nRET\n", `label "here" multiply defined`},
 		{"invalid global name", prefix + "RET\nGLOBL p<>(SB), RODATA, $8\n", "package global"},
 		{"duplicate global", prefix + "RET\nGLOBL ·p(SB), RODATA, $8\nGLOBL ·p(SB), RODATA, $8\n", "duplicate native GLOBL"},
 		{"empty global", prefix + "RET\nGLOBL ·p(SB), RODATA, $0\n", "GLOBL size"},
 		{"huge global", prefix + "RET\nGLOBL ·p(SB), RODATA, $67108865\n", "GLOBL size"},
-		{"data width", prefix + "RET\nGLOBL ·p(SB), RODATA, $8\nDATA ·p(SB)/3, $1\n", "DATA width"},
+		// The shared DATA grammar rejects this before native lowering.
+		{"data width", prefix + "RET\nGLOBL ·p(SB), RODATA, $8\nDATA ·p(SB)/3, $1\n", "DATA integer requires width 1, 2, 4 or 8"},
 		{"data string", prefix + "RET\nGLOBL ·p(SB), RODATA, $8\nDATA ·p(SB)/3, $\"abc\"\n", "source syntax"},
 		{"block comment", prefix + "/* ignored */ RET\n", "source syntax"},
 		{"FP to FP integer move", prefix + "MOVD F0, R0\n", "unsupported native register"},

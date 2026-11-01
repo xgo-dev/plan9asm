@@ -40,16 +40,6 @@ func TestNeedCFGHelpers(t *testing.T) {
 		t.Fatalf("funcNeedsAMD64CFG(straight-line) = true")
 	}
 
-	if !funcNeedsARM64CFG(Func{Instrs: []Instr{{Op: "MOVD.P"}}}) {
-		t.Fatalf("funcNeedsARM64CFG(dot suffix) = false")
-	}
-	if !funcNeedsARM64CFG(Func{Instrs: []Instr{{Op: "B"}}}) {
-		t.Fatalf("funcNeedsARM64CFG(branch) = false")
-	}
-	if funcNeedsARM64CFG(Func{Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS}, {Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: "R0"}}}, {Op: OpRET}}}) {
-		t.Fatalf("funcNeedsARM64CFG(linear subset) = true")
-	}
-
 	if !funcNeedsARMCFG(Func{Instrs: []Instr{{Op: "ADD.EQ"}}}) {
 		t.Fatalf("funcNeedsARMCFG(cond exec) = false")
 	}
@@ -96,8 +86,8 @@ func TestAMD64EvalI64Coverage(t *testing.T) {
 	if got, err := c.evalI64(Operand{Kind: OpSym, Sym: "$value<>(SB)"}); err != nil || got == "" {
 		t.Fatalf("evalI64(addr sym) = (%q, %v)", got, err)
 	}
-	if got, err := c.evalI64(Operand{Kind: OpSym, Sym: "bad sym"}); err != nil || got != "0" {
-		t.Fatalf("evalI64(unresolved bare sym) = (%q, %v)", got, err)
+	if _, err := c.evalI64(Operand{Kind: OpSym, Sym: "bad sym"}); err == nil {
+		t.Fatal("evalI64(unresolved bare sym) invented a value")
 	}
 	if _, err := c.evalI64(Operand{Kind: OpLabel, Sym: "loop"}); err == nil {
 		t.Fatalf("evalI64(label) unexpectedly succeeded")

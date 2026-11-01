@@ -85,9 +85,9 @@ int main(void) {
 
 func nativeTargetCompileRun(t *testing.T, opts NativeOptions, asm, harness string) {
 	t.Helper()
-	clang, err := exec.LookPath("clang")
-	if err != nil {
-		t.Skip("clang unavailable")
+	clang := findLLVM22Tool("clang")
+	if clang == "" {
+		t.Fatal("LLVM 22 clang not found")
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "native.s")

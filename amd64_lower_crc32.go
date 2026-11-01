@@ -3,69 +3,60 @@ package plan9asm
 import "fmt"
 
 func (c *amd64Ctx) lowerCrc32(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	switch op {
-	case "CRC32B", "CRC32W", "CRC32L", "CRC32Q":
-		// ok
-	default:
-		return false, false, nil
+	form, known, err := x86CRC32Properties(op, ins, c.goarch)
+	if !known || err != nil {
+		return known, false, err
 	}
-	if len(ins.Args) != 2 || ins.Args[0].Kind != OpMem || ins.Args[1].Kind != OpReg {
-		return true, false, fmt.Errorf("amd64 %s expects mem, reg: %q", op, ins.Raw)
+	if form.source.Kind == OpReg && (form.source.Reg == SP || form.source.Reg == BP) &&
+		form.source.Reg != ins.Args[0].Reg {
+		return true, false, fmt.Errorf("%w: Go CRC32 REX byte view needs its original physical SP/BP input", ErrProbeNeedsContext)
 	}
-	src := ins.Args[0].Mem
-	dst := ins.Args[1].Reg
-
-	addr, err := c.addrFromMem(src)
+	sourceType := amd64IntegerTypeForBits(form.bits)
+	intrinsic := fmt.Sprintf("llvm.x86.sse42.crc32.32.%d", form.bits)
+	resultType := I32
+	if form.bits == 64 {
+		resultType = I64
+		intrinsic = "llvm.x86.sse42.crc32.64.64"
+	}
+	sourceValue, err := c.evalCRC32Source(ins, form, sourceType)
 	if err != nil {
 		return true, false, err
 	}
-	p := c.ptrFromAddrI64(addr)
-
-	dv, err := c.loadReg(dst)
+	crcValue, err := c.evalIntSized(form.destination, I32)
 	if err != nil {
 		return true, false, err
 	}
-
-	switch op {
-	case "CRC32Q":
-		ld := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.x86.sse42.crc32.64.64(i64 %s, i64 %%%s)\n", call, dv, ld)
-		return true, false, c.storeReg(dst, "%"+call)
-
-	case "CRC32L":
-		ld := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
-		crc32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", crc32, dv)
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse42.crc32.32.32(i32 %%%s, i32 %%%s)\n", call, crc32, ld)
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, call)
-		return true, false, c.storeReg(dst, "%"+z)
-
-	case "CRC32W":
-		ld := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i16, ptr %s, align 1\n", ld, p)
-		crc32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", crc32, dv)
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse42.crc32.32.16(i32 %%%s, i16 %%%s)\n", call, crc32, ld)
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, call)
-		return true, false, c.storeReg(dst, "%"+z)
-
-	case "CRC32B":
-		ld := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s, align 1\n", ld, p)
-		crc32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", crc32, dv)
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse42.crc32.32.8(i32 %%%s, i8 %%%s)\n", call, crc32, ld)
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, call)
-		return true, false, c.storeReg(dst, "%"+z)
+	if resultType == I64 {
+		extended := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", extended, crcValue)
+		crcValue = "%" + extended // Unknown old high32 never enter the intrinsic.
 	}
-	return true, false, fmt.Errorf("amd64: unknown CRC32 op %s", op)
+	call := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s @%s(%s %s, %s %s)\n", call, resultType, intrinsic, resultType, crcValue, sourceType, sourceValue)
+	return true, false, c.storeRegSized(form.destination.Reg, resultType, "%"+call)
+}
+
+func (c *amd64Ctx) evalCRC32Source(ins Instr, form x86CRC32Form, typ LLVMType) (string, error) {
+	if form.source.Kind == OpFP && x86ResultNamedPredicateInstruction(ins) {
+		if value, handled, err := c.loadIntegerFPBytesMode(form.source.FPOffset, typ, true); handled || err != nil {
+			return value, err
+		}
+	}
+	if isAMD64MemoryOperand(form.source) && form.source.Kind != OpFP &&
+		(x86OrdinaryNativeMemoryOperand(form.source, c.goarch) ||
+			x86CallerMemoryCertified(ins, 0) || c.fixedLocalMemoryCertified(ins, 0)) {
+		if ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride {
+			return "", fmt.Errorf("%w: CRC32 needs its original native address size", ErrProbeNeedsContext)
+		}
+		pointer, pointerType, _, err := c.packedVectorMemoryPointer(form.source)
+		if err != nil {
+			return "", err
+		}
+		value := c.newTmp()
+		// Even a zero accumulator or dead result retains the complete native
+		// source read. No backing, extent or alignment follows from continuing.
+		fmt.Fprintf(c.b, "  %%%s = load volatile %s, %s %s, align 1\n", value, typ, pointerType, pointer)
+		return "%" + value, nil
+	}
+	return c.evalIntSized(form.source, typ)
 }

@@ -1,10 +1,13 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/xgo-dev/llvm"
 )
 
 type LLVMType string
@@ -24,6 +27,12 @@ type FuncSig struct {
 	Args  []LLVMType
 	Ret   LLVMType // use Void for void-return
 	Attrs string   // optional function attributes group (e.g. "#0")
+
+	// ARMEntry explicitly selects an address-only physical ARM machine entry.
+	// Args/Frame must be empty and Ret must be Void; those fields describe the
+	// LLVM carrier, not a callable C/Go signature. The checked entry shim alone
+	// supplies its private typed machine-state body. Nil keeps ordinary lowering.
+	ARMEntry *ARMMachineEntry
 
 	// WASMContext is the physical closure-environment parameter carried in
 	// WebAssembly's CTXT pseudo-register. It precedes Args in the LLVM entry but
@@ -48,12 +57,41 @@ type FuncSig struct {
 	// where helper expects inputs in a custom register assignment.
 	ArgRegs []Reg
 
+	// ARM64GoRegisterABI is an explicit, complete Go ABIInternal register
+	// contract. Nil does not assert a register ABI, even with a classic Frame.
+	// The Go binding derives this only from an actual declaration combined
+	// with an explicit source ABIInternal selector. Manual callers must supply
+	// equivalent evidence. Stack-assigned values are not modeled by this
+	// register-only contract. ArgRegs retains its separate custom ABI meaning.
+	ARM64GoRegisterABI *ARM64GoRegisterABI
+
+	// ARM64ClosureABI is an explicit required hidden carrier. It does not add
+	// an Args element or permit calls which have no matching carrier producer.
+	ARM64ClosureABI *ARM64ClosureABI
+
 	// Frame provides a minimal stack-frame model for resolving name+off(FP)
 	// references in Go/Plan9 assembly into LLVM function args/returns.
 	//
 	// This is intentionally limited to the classic Go assembler convention used
 	// by stdlib .s files (e.g. internal/cpu/cpu_x86.s).
 	Frame FrameLayout
+
+	// Produced from complete actual typed Go callers, never from pointer types
+	// or a manual noalias option. Final normalization independently consumes it.
+	x86CallerRegions *x86GoCallerRegionProof
+	x86FixedLocal    *x86FixedLocalBinding
+	amd64GoArguments *amd64GoArgumentBinding
+
+	// A typed declaration snapshot, not permission to address padding. The
+	// complete original/normalized bit-use proof must independently consume it.
+	arm64FPReadDeclaration   *arm64FPReadDeclaration
+	arm64ABI0Declaration     *arm64ABI0Declaration
+	arm64ABI0TailDeclaration *arm64ABI0TailDeclaration
+	arm64NativeScratch       *arm64ScratchBinding
+
+	// Denial-only provenance: an unresolved 386 bool tail copied its caller's
+	// signature. This is not an independent target declaration or capability.
+	x86BorrowedBoolTail bool
 }
 
 // WASMABI selects the physical ABI used for WebAssembly Plan 9 assembly.
@@ -78,12 +116,42 @@ type FrameSlot struct {
 	Offset int64
 	Type   LLVMType
 	Index  int // index into LLVM function arguments (for Params) or results tuple (for Results)
+	// Name is the source-level Go parameter or result name when available.
+	// It is descriptive metadata, never permission to rewrite the explicit
+	// displacement in a source FP operand.
+	Name string
 	// Field is the index of the extracted field within the argument aggregate.
 	// It is used for classic Go asm slots like b_base+0(FP) when the Go-level
 	// parameter is passed as a struct (string/slice header).
 	//
 	// When Field < 0, the slot refers directly to %arg(Index).
 	Field int
+	// Fields carries a nested extractvalue path for arrays and structs. It is
+	// empty for direct values and one-level aggregates, which continue to use
+	// Field for compatibility with existing callers.
+	Fields []int
+}
+
+func frameSlotFields(slot FrameSlot) []int {
+	if len(slot.Fields) != 0 {
+		return slot.Fields
+	}
+	if slot.Field >= 0 {
+		return []int{slot.Field}
+	}
+	return nil
+}
+
+func frameSlotExtractSuffix(slot FrameSlot) string {
+	fields := frameSlotFields(slot)
+	if len(fields) == 0 {
+		return ""
+	}
+	parts := make([]string, len(fields))
+	for i, field := range fields {
+		parts[i] = fmt.Sprintf("%d", field)
+	}
+	return ", " + strings.Join(parts, ", ")
 }
 
 // X87Mode selects how explicit x87 instructions in 386 Plan 9 assembly are
@@ -106,6 +174,29 @@ func (m X87Mode) valid() bool {
 type Options struct {
 	TargetTriple string
 
+	// X86TLSMoves binds only actual source-encoder NOP effects. It grants no
+	// native TLS address, thread, entry-register, storage or caller contract.
+	X86TLSMoves *GoX86TLSMoveBinding
+
+	// NumericalReads is an opaque live source/object/typed-storage binding.
+	// Only GoX86NumericalReadSource.BindNumericalReads can construct it. It
+	// authorizes its exact scalar reads, never SB addresses, writes or pointers.
+	NumericalReads *GoX86NumericalReadBinding
+
+	// ARM64ByteCarrierSource is an actual sealed original-source owner, not a
+	// FrameLayout or report-derived permission. The bounded private consumer
+	// must independently close native effects and the shared caller backing.
+	ARM64ByteCarrierSource *GoARM64ByteCarrierSource
+
+	// X86TailGroups identifies closed, assembly-only continuation groups. Their
+	// helpers have no callable Go/native entry: the caller must establish that
+	// their addresses are used only for jumps within the group's root. The
+	// group's every indirect JMP must target one of its named helpers. No
+	// helper address may escape to other code or be read as machine-code bytes.
+	// helpers are folded into that root's CFG, preserving its entire machine
+	// state and FP frame. Ordinary TEXT tail calls must not use this option.
+	X86TailGroups []X86TailGroup
+
 	// ResolveSym maps the TEXT symbol (with (SB) trimmed) into the final linker
 	// symbol name to emit in LLVM IR. If nil, the symbol is used as-is.
 	ResolveSym func(sym string) string
@@ -113,7 +204,9 @@ type Options struct {
 	// Sigs maps resolved symbol name -> signature.
 	Sigs map[string]FuncSig
 
-	// Goarch is used for a few arch-specific translations (e.g. x86 CPUID).
+	// Goarch selects Go architecture rules independently of TargetTriple.
+	// An empty value retains the historical amd64 default for ArchAMD64;
+	// 32-bit Go assembly must explicitly select 386.
 	Goarch string
 
 	// WASMABI selects the WebAssembly physical ABI. Its zero value preserves
@@ -128,14 +221,23 @@ type Options struct {
 	// AnnotateSource emits source asm lines as IR comments before lowering each
 	// instruction, for translation debugging.
 	AnnotateSource bool
+
+	// Actual complete Go source before KeepFunc. Private logical CALL lookup;
+	// no source/native permission can be reconstructed through public Options.
+	x86OriginalFile   *File
+	x86BoolCallSource *x86ABI0BoolCallSource
+	goReadOnlyStorage *goReadOnlyStorage
 }
 
 // Translate converts a parsed Plan 9 asm File into LLVM IR text (`.ll`).
 //
 // The generated text is produced from an llvm.Module to keep textual emission
-// consistent with the LLVM printer.
+// consistent with the LLVM printer. Each text request owns a fresh context and
+// releases its module and context before returning, including failed requests.
 func Translate(file *File, opt Options) (string, error) {
-	mod, err := TranslateModule(file, opt)
+	ctx := llvm.NewContext()
+	defer ctx.Dispose()
+	mod, err := TranslateModuleInContext(ctx, file, opt)
 	if err != nil {
 		return "", err
 	}
@@ -144,9 +246,80 @@ func Translate(file *File, opt Options) (string, error) {
 }
 
 // translateIRText builds textual LLVM IR prior to module parsing.
-func translateIRText(file *File, opt Options) (string, error) {
+func translateIRText(file *File, opt Options) (resultText string, result error) {
+	return translateIRTextWithFixedLocalResult(file, opt, nil)
+}
+
+func translateIRTextWithFixedLocalResult(file *File, opt Options, fixedLocalResult *x86FixedLocalResultSnapshot) (resultText string, result error) {
 	if file == nil {
 		return "", fmt.Errorf("nil file")
+	}
+	if err := opt.goReadOnlyStorage.verify(); err != nil {
+		return "", err
+	}
+	defer func() {
+		if err := opt.goReadOnlyStorage.verify(); err != nil {
+			resultText, result = "", errors.Join(result, err)
+		}
+	}()
+	callOriginal := file
+	if opt.x86OriginalFile != nil {
+		callOriginal = opt.x86OriginalFile
+	}
+	boolCalls := opt.x86BoolCallSource
+	var err error
+	if boolCalls == nil {
+		boolCalls, err = prepareX86ABI0BoolCalls(callOriginal, opt)
+	} else {
+		err = boolCalls.verify()
+	}
+	if err != nil {
+		return "", err
+	}
+	if boolCalls != nil {
+		defer func() {
+			if err := boolCalls.verify(); err != nil {
+				resultText = ""
+				result = errors.Join(result, err)
+			}
+		}()
+	}
+	file, err = PrepareX86DirectTailSource(file, opt)
+	if err != nil {
+		return "", err
+	}
+	if file.x86DirectTails != nil {
+		graph, request := file.x86DirectTails, file
+		defer func() {
+			if err := graph.verify(request, opt); err != nil {
+				resultText = ""
+				result = errors.Join(result, err)
+			}
+		}()
+	}
+	arm64ScratchCalls, err := verifyARM64ScratchBindings(file, opt)
+	if err != nil {
+		return "", err
+	}
+	if len(arm64ScratchCalls) != 0 {
+		original := file
+		defer func() {
+			if _, err := verifyARM64ScratchBindings(original, opt); err != nil {
+				result = fmt.Errorf("%w: late native scratch closure guard: %v", ErrProbeNeedsContext, err)
+			}
+		}()
+	}
+	if file.Arch == ArchAMD64 && opt.Goarch == "" {
+		opt.Goarch = "amd64"
+	}
+	if err := validateARMMachineEntryArchitecture(file, opt); err != nil {
+		return "", err
+	}
+	if err := validateARMWordFloatNativeTarget(file, opt); err != nil {
+		return "", err
+	}
+	if err := validateARM64NativeTargets(file, opt); err != nil {
+		return "", err
 	}
 	if !opt.X87Mode.valid() {
 		return "", fmt.Errorf("invalid x87 mode %d", opt.X87Mode)
@@ -154,13 +327,77 @@ func translateIRText(file *File, opt Options) (string, error) {
 	if len(file.Funcs) == 0 && len(file.Data) == 0 && len(file.Globl) == 0 {
 		return "", fmt.Errorf("empty file")
 	}
+	if err := validateFileResolvedImmediates(file); err != nil {
+		return "", err
+	}
+	if err := validateX86TLSMoveFile(file, opt.Goarch); err != nil {
+		return "", err
+	}
+	if err := validateX86GPSIMDTransferFile(file, opt.Goarch); err != nil {
+		return "", err
+	}
+	if err := validateX86ScalarLaneFile(file, opt.Goarch); err != nil {
+		return "", err
+	}
+	file, err = normalizeX86RawFile(file, opt.Goarch, opt)
+	if err != nil {
+		return "", err
+	}
+	if err := validateX86ScalarFloatIntegerFile(file, opt); err != nil {
+		return "", err
+	}
+	if err := validateX86PackedConversionFile(file, opt); err != nil {
+		return "", err
+	}
+	if err := validateX86PackedPrecisionFile(file, opt); err != nil {
+		return "", err
+	}
+	if err := validateX86NamedHalfFile(file, opt); err != nil {
+		return "", err
+	}
+	if err := validateX86COMIFile(file, opt); err != nil {
+		return "", err
+	}
+	file, err = normalizeX86SourceIntegerAddresses(file, opt)
+	if err != nil {
+		return "", err
+	}
+	file, err = coalesceX86Continuations(file, opt)
+	if err != nil {
+		return "", err
+	}
+	if graph := file.x86ContinuationGraph; graph != nil {
+		request := file
+		defer func() {
+			if err := graph.verify(request, opt); err != nil {
+				resultText, result = "", errors.Join(result, err)
+			}
+		}()
+	}
+	file, err = prepareARMKernelHelpers(file, opt)
+	if err != nil {
+		return "", err
+	}
+	if err := verifyNormalizedNumericalReads(file, opt); err != nil {
+		return "", err
+	}
 
 	resolve := opt.ResolveSym
 	if resolve == nil {
 		resolve = func(s string) string { return s }
 	}
+	if err := validateARM64ClosureFile(file, opt, resolve); err != nil {
+		return "", err
+	}
+	arm64SourceCalls := captureARM64SourceNoopCalls(file, resolve, opt.Sigs)
+	for symbol, binding := range arm64ScratchCalls {
+		arm64SourceCalls[symbol] = arm64SourceNoopCall{native: binding}
+	}
 	if !opt.WASMABI.valid() {
 		return "", fmt.Errorf("invalid wasm ABI %d", opt.WASMABI)
+	}
+	if err := validateDataRelocations(file, opt.Goarch); err != nil {
+		return "", err
 	}
 	if file.Arch == ArchWASM && opt.WASMABI == WASMABIDirect {
 		for _, fn := range file.Funcs {
@@ -185,11 +422,19 @@ func translateIRText(file *File, opt Options) (string, error) {
 	// Keep translate.go as the cross-platform pipeline entry.
 	// Architecture-specific declarations live in arch-specific files.
 	emitArchPrelude(&b, file, resolve, opt.Goarch, opt.WASMABI)
+	lockScalarNamespace := ""
+	bitScanNamespace := ""
+	if file.Arch == ArchAMD64 {
+		lockScalarNamespace = x86LockScalarNamespace(file, opt.Goarch, resolve, opt.Sigs)
+		emitX86LockScalarRMWHelpers(&b, file, opt.Goarch, lockScalarNamespace)
+		bitScanNamespace = x86BitScanNamespace(file, opt.Goarch, resolve, opt.Sigs)
+		emitX86BitScanHelpers(&b, file, opt.Goarch, bitScanNamespace)
+	}
 
-	emitExternSBGlobals(&b, file, resolve, opt.Sigs)
+	emitExternSBGlobals(&b, file, resolve, opt.Sigs, opt.goReadOnlyStorage)
 
 	if len(file.Data) != 0 || len(file.Globl) != 0 {
-		if err := emitDataGlobals(&b, file, resolve); err != nil {
+		if err := emitDataGlobalsWithSigs(&b, file, resolve, opt.Sigs, opt.WASMABI); err != nil {
 			return "", err
 		}
 		b.WriteString("\n")
@@ -198,8 +443,24 @@ func translateIRText(file *File, opt Options) (string, error) {
 	emitExternFuncDecls(&b, file, resolve, opt.Sigs, opt.WASMABI)
 
 	attrRegistry := newFeatureAttrRegistry()
+	// Build the immutable emitted-storage directory once per file. Repeating
+	// the global/signature scan for each TEXT would be quadratic in a corpus.
+	scalarData := x86LoweredScalarDataReads(file, resolve, opt.Sigs, opt.Goarch)
+	staticAddressValues := x86LoweredStaticAddressValues(file, resolve, opt.Sigs, opt.Goarch)
+	shiftLiterals := x86LoweredShiftLiterals(file, resolve, staticAddressValues, opt.Goarch)
+	continuationBudget := &x86ResultFlowBudget{}
 	for i := range file.Funcs {
 		fn := &file.Funcs[i]
+		if file.x86DirectTailHelper(fn.Sym) {
+			continue // Original helper remains a graph node, never an entry.
+		}
+		function := *fn
+		if function.x86ContinuationFlow != nil {
+			function.x86ResultFlowBudget = continuationBudget
+		}
+		if view := file.x86DirectTailView(fn.Sym); view != nil && function.x86FixedLocal == nil {
+			function.x86DirectTailRoot = view
+		}
 		name := resolve(fn.Sym)
 		sig, ok := opt.Sigs[name]
 		if !ok {
@@ -214,35 +475,104 @@ func translateIRText(file *File, opt Options) (string, error) {
 		if sig.Ret == "" {
 			return "", fmt.Errorf("missing return type for %q", name)
 		}
+		if graph := file.x86DirectTails; graph != nil && graph.fixedLocal != nil && sig.x86FixedLocal != nil {
+			if sig.x86FixedLocal.context == nil {
+				return "", goAMD64FrameContext("deferred private root lacks its original context")
+			}
+			if err := sig.x86FixedLocal.context.Err(); err != nil {
+				return "", err
+			}
+			function, err = proveX86FixedLocalRoot(function, sig, graph)
+			if err != nil {
+				return "", err
+			}
+		}
+		if file.Arch == ArchAMD64 && fn.X86RawText != nil {
+			if err := emitX86AddressSensitiveRawText(&b, *fn, sig); err != nil {
+				return "", fmt.Errorf("%s: %w", name, err)
+			}
+			b.WriteString("\n")
+			continue
+		}
+		if file.Arch == ArchAMD64 && amd64IsRelocationAnchor(*fn, sig) {
+			if err := emitX86RelocationAnchor(&b, *fn, sig, resolve, opt.Sigs); err != nil {
+				return "", fmt.Errorf("%s: %w", name, err)
+			}
+			b.WriteString("\n")
+			continue
+		}
 		if err := validateResolvedImmediates(file.Arch, *fn); err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
-		if sig.Attrs == "" {
-			sig.Attrs = attrRegistry.ref(inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, *fn))
+		if file.Arch == ArchAMD64 {
+			if err := validateAMD64ScalarAddSubFunction(opt.Goarch, *fn); err != nil {
+				return "", fmt.Errorf("%s: %w", name, err)
+			}
 		}
-		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
+		sourceSig := sig
+		inferredAttrs := ""
+		if sig.Attrs == "" {
+			features := function
+			if function.x86DirectTailRoot != nil {
+				features = function.x86DirectTailRoot.features()
+			}
+			sig.Attrs = attrRegistry.ref(inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, features))
+			inferredAttrs = sig.Attrs
+		}
+		// ARM is a fully supported target. Always use its architecture-aware CFG
+		// lowerer so even straight-line functions receive the same operand-form
+		// validation; the legacy linear prototype silently accepts unknown forms.
+		if file.Arch == ArchARM {
+			if sig.ARMEntry != nil {
+				if err := translateFuncARMMachineEntry(&b, *fn, sig, resolve, opt.Sigs, opt.TargetTriple, opt.AnnotateSource); err != nil {
+					return "", fmt.Errorf("%s: %w", name, err)
+				}
+				b.WriteString("\n")
+				continue
+			}
 			if err := translateFuncARM(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")
 			continue
 		}
-		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
-			if err := translateFuncARM64(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+		// Even a tiny MOVD/RET body can replace the caller LR. Every ARM64
+		// function needs the same source-frame and reaching-definition proof;
+		// an opcode whitelist must not select an unchecked prototype.
+		if file.Arch == ArchARM64 {
+			if err := translateFuncARM64WithSourceCallsAndAttrs(&b, *fn, sourceSig, resolve, opt.Sigs, opt.TargetTriple, file.Data, opt.AnnotateSource, arm64SourceCalls, sig.Attrs); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")
 			continue
 		}
-		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && funcNeedsAMD64CFG(*fn))) {
-			if err := translateFuncX86(&b, *fn, sig, resolve, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.X87Mode, opt.AnnotateSource); err != nil {
+		// X86 is fully supported. Always use its architecture-aware CFG lowerer
+		// so straight-line amd64 functions receive the same memory-width and
+		// operand-form semantics as functions containing branches or vector ops.
+		// The old linear prototype could silently reinterpret wide FP-frame stores
+		// as numeric conversions and leave adjacent aggregate result slots unwritten.
+		if file.Arch == ArchAMD64 {
+			if err := translateFuncX86(&b, function, sig, resolve, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.X87Mode, opt.AnnotateSource,
+				x86FunctionSource{
+					goReadOnlyStorage: opt.goReadOnlyStorage,
+					inferredAttrs:     inferredAttrs,
+					fixedLocalResult:  fixedLocalResult,
+					scalarData:        scalarData,
+					shiftLiterals:     shiftLiterals,
+					lockNamespace:     lockScalarNamespace,
+					bitScanNamespace:  bitScanNamespace,
+					boolCalls:         boolCalls,
+					declaration:       sourceSig,
+
+					staticAddressValues: staticAddressValues,
+				}); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")
 			continue
 		}
 		if file.Arch == ArchWASM {
-			if err := translateFuncWASM(&b, *fn, sig, resolve, opt.Sigs, opt.WASMABI, opt.AnnotateSource); err != nil {
+			if err := translateFuncWASM(&b, file, *fn, sig, resolve, opt.Sigs, opt.WASMABI, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")
@@ -254,17 +584,38 @@ func translateIRText(file *File, opt Options) (string, error) {
 		b.WriteString("\n")
 	}
 	attrRegistry.emit(&b)
+	if fileUsesX86NonTemporalMetadata(file) {
+		b.WriteString("!0 = !{i32 1}\n\n")
+	}
+	if file.Arch == ArchARM64 {
+		emitUsedARM64Prelude(&b)
+	}
+	if file.Arch == ArchAMD64 && (opt.Goarch == "amd64" || opt.Goarch == "386") {
+		emitUsedAMD64Prelude(&b, opt.Goarch)
+	}
 	return b.String(), nil
 }
 
 func validateResolvedImmediates(arch Arch, fn Func) error {
-	if arch != ArchARM && arch != ArchWASM {
-		return nil
-	}
 	for _, ins := range fn.Instrs {
+		if arch == ArchAMD64 {
+			if err := x86SymbolIndexedControlError(ins); err != nil {
+				return err
+			}
+		}
 		for _, arg := range ins.Args {
-			if arch == ArchARM && arg.Kind == OpImm && arg.ImmRaw != "" {
-				return fmt.Errorf("unresolved symbolic immediate %q", arg.ImmRaw)
+			if arch == ArchAMD64 {
+				if err := validateX86SymbolDisplacement(arg); err != nil {
+					return err
+				}
+			}
+			if err := unresolvedSymbolicImmediateErrorForArch(arg, arch); err != nil {
+				return err
+			}
+			if arch == ArchAMD64 && arg.Kind == OpMem {
+				if err := unresolvedX86MemoryOffsetError(arg.Mem); err != nil {
+					return err
+				}
 			}
 			if arch == ArchWASM && arg.Kind == OpMem && arg.Mem.OffRaw != "" {
 				return fmt.Errorf("unresolved wasm memory offset %q", arg.Mem.OffRaw)
@@ -272,6 +623,78 @@ func validateResolvedImmediates(arch Arch, fn Func) error {
 		}
 	}
 	return nil
+}
+
+func validateFileResolvedImmediates(file *File) error {
+	if file == nil {
+		return fmt.Errorf("nil file")
+	}
+	if err := validateResolvedGloblSizes(file); err != nil {
+		return err
+	}
+	for _, fn := range file.Funcs {
+		if err := validateResolvedImmediates(file.Arch, fn); err != nil {
+			return fmt.Errorf("%s: %w", fn.Sym, err)
+		}
+	}
+	return nil
+}
+
+func validateResolvedGloblSizes(file *File) error {
+	for _, global := range file.Globl {
+		if global.SizeRaw != "" {
+			return fmt.Errorf("%w: GLOBL %s requires its generated size %q", ErrProbeNeedsContext, global.Sym, global.SizeRaw)
+		}
+		if global.Size < 0 {
+			return fmt.Errorf("GLOBL %s has a negative size", global.Sym)
+		}
+	}
+	return nil
+}
+
+// The parser preserves unresolved expressions for scanners and callers that
+// supply generated headers. A translator must never mistake that marker for
+// its zero-valued Imm field, even when a raw decoder runs before lowering.
+func unresolvedSymbolicImmediateError(op Operand) error {
+	if op.Kind == OpImm && op.ImmRaw != "" {
+		return fmt.Errorf("unresolved symbolic immediate %q", op.ImmRaw)
+	}
+	if op.Kind != OpSym || !strings.HasPrefix(op.Sym, "$") {
+		return nil
+	}
+	address := strings.TrimSpace(strings.TrimPrefix(op.Sym, "$"))
+	if strings.HasSuffix(address, "(SB)") {
+		return nil
+	}
+	if _, _, ok := parseFPAddr(op.Sym); ok {
+		return nil
+	}
+	if memory, matched, err := parseX86SymbolIndexedMemory(address); matched {
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(memory.Sym, "(FP)") || strings.HasSuffix(memory.Sym, "(SP)") {
+			return fmt.Errorf("%w: indexed FP/AUTO address needs original frame provenance", ErrProbeNeedsContext)
+		}
+		if _, legacyMemory := parseMem(address); legacyMemory {
+			return nil
+		}
+		return fmt.Errorf("%w: indexed symbol address needs an x86 operand consumer", ErrProbeNeedsContext)
+	}
+	if _, ok := parseMem(address); ok {
+		return nil
+	}
+	return fmt.Errorf("unresolved symbolic immediate %q", op.Sym)
+}
+
+func unresolvedSymbolicImmediateErrorForArch(op Operand, arch Arch) error {
+	if arch == ArchAMD64 && op.Kind == OpSym && strings.HasPrefix(op.Sym, "$") {
+		address := strings.TrimSpace(strings.TrimPrefix(op.Sym, "$"))
+		if memory, matched, err := parseX86SymbolIndexedMemory(address); matched && err == nil && strings.HasSuffix(memory.Sym, "(SB)") {
+			return nil // The final x86 consumer still validates native shape.
+		}
+	}
+	return unresolvedSymbolicImmediateError(op)
 }
 
 func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig, wasmABI WASMABI) {
@@ -283,7 +706,7 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 	// Deterministic order for tests/debugging.
 	names := make([]string, 0, len(sigs))
 	for name := range sigs {
-		if defined[name] {
+		if defined[name] || file.isX86Continuation(name, resolve) {
 			continue
 		}
 		names = append(names, name)
@@ -301,6 +724,10 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 		}
 		fmt.Fprintf(b, "declare %s %s(", sig.Ret, llvmGlobal(funcSigSymbol(name, sig)))
 		argIndex := 0
+		if sig.ARM64ClosureABI != nil {
+			fmt.Fprintf(b, "ptr %s", sig.ARM64ClosureABI.llvmAttribute())
+			argIndex++
+		}
 		if sig.WASMContext != "" {
 			b.WriteString(string(sig.WASMContext))
 			argIndex++
@@ -330,7 +757,7 @@ func funcSigSymbol(resolved string, sig FuncSig) string {
 	return resolved
 }
 
-func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig) {
+func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig, goStorage ...*goReadOnlyStorage) {
 	resolveSBBase := func(base string) string {
 		base = strings.TrimSpace(base)
 		if base == "" {
@@ -345,6 +772,19 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 	// Collect base symbols of SB refs with numeric offsets. These are almost always
 	// global variables whose address is computed via GEP in the lowering.
 	need := map[string]bool{}
+	numericalExtents := map[string]int64{}
+	if len(goStorage) == 1 && goStorage[0] != nil {
+		for _, object := range goStorage[0].objects {
+			numericalExtents[object.native] = object.size
+		}
+	}
+	for _, sig := range sigs {
+		if binding := sig.x86FixedLocal; binding != nil {
+			for _, object := range binding.globals {
+				numericalExtents[object.native] = object.size
+			}
+		}
+	}
 	defined := map[string]bool{}
 
 	// Anything in DATA/GLOBL will be defined in this module.
@@ -357,21 +797,66 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 	for _, fn := range file.Funcs {
 		defined[resolve(fn.Sym)] = true
 	}
+	for _, d := range file.Data {
+		if d.Addr == "" {
+			continue
+		}
+		base, _, err := dataAddress(d)
+		if err != nil {
+			continue // The relocation grammar gate reports this before emission.
+		}
+		name := resolveDataAddressSymbol(file, base, resolve, sigs)
+		resolved := resolveDataSymbol(base, resolve)
+		if !defined[name] && !defined[resolved] {
+			if !dataAddressIsFunction(file, base, resolve, sigs) {
+				need[name] = true
+			}
+		}
+	}
 
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
+			if cert := ins.x86NumericalRead; cert != nil {
+				if read, _, valid := numericalCertifiedRead(ins, cert.binding.options.Goarch); valid {
+					numericalExtents[read.Variable.NativeName] = read.Variable.Size
+				}
+			}
 			opName := strings.ToUpper(string(ins.Op))
 			for _, arg := range ins.Args {
-				if arg.Kind != OpSym {
+				var s string
+				switch arg.Kind {
+				case OpSym:
+					s = strings.TrimSpace(arg.Sym)
+				case OpMem:
+					s = strings.TrimSpace(arg.Mem.Sym)
+				default:
 					continue
 				}
-				s := strings.TrimSpace(arg.Sym)
+				indirect := strings.HasPrefix(s, "*")
+				if indirect {
+					s = strings.TrimSpace(strings.TrimPrefix(s, "*"))
+				}
+				s = strings.TrimSpace(strings.TrimPrefix(s, "$"))
+				if file.Arch == ArchAMD64 {
+					if memory, matched, err := parseX86SymbolIndexedMemory(s); matched {
+						if err != nil {
+							continue // The operand grammar reports this before emission.
+						}
+						s = memory.Sym
+					}
+				}
+				// A grouped PARAM/AUTO reference is not a bare external symbol.
+				// Collect only its named SB base; declaration does not grant
+				// a memory, frame, source-register or control-flow permission.
+				if strings.ContainsAny(s, "()") && !strings.HasSuffix(s, "(SB)") {
+					continue
+				}
 				base, off, ok := parseSBRef(s)
 				if !ok || base == "" {
 					continue
 				}
 				base = strings.TrimPrefix(base, "$")
-				if off == 0 {
+				if off == 0 && !indirect {
 					// Bare symbol refs are usually global data addresses
 					// (e.g. MOVQ runtime·vdsoGettimeofdaySym(SB), AX). Exclude only
 					// control-flow ops that use symbol operands as branch/call targets.
@@ -397,31 +882,49 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 	if len(need) == 0 {
 		return
 	}
+	names := make([]string, 0, len(need))
 	for name := range need {
-		fmt.Fprintf(b, "%s = external global i8\n", llvmGlobal(name))
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if extent, found := numericalExtents[name]; found {
+			fmt.Fprintf(b, "%s = external global [%d x i8]\n", llvmGlobal(name), extent)
+		} else {
+			fmt.Fprintf(b, "%s = external global i8\n", llvmGlobal(name))
+		}
 	}
 	b.WriteString("\n")
 }
 
 func emitDataGlobals(b *strings.Builder, file *File, resolve func(string) string) error {
+	return emitDataGlobalsWithSigs(b, file, resolve, nil, WASMABIDirect)
+}
+
+func emitDataGlobalsWithSigs(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig, wasmABI WASMABI) error {
+	if err := validateResolvedGloblSizes(file); err != nil {
+		return err
+	}
 	// Merge DATA and GLOBL into resolved symbol -> bytes.
 	type symData struct {
-		size  int64
-		bytes map[int64][]byte // off -> payload
+		size      int64
+		bytes     map[int64][]byte // off -> payload
+		addresses map[int64]DataStmt
+		readOnly  bool
+		local     bool
 	}
 
 	syms := map[string]*symData{}
 
 	resolveData := func(sym string) string {
-		// Heuristic: unqualified plain names in a stdlib .s are package-local.
-		// Reuse ResolveSym's local-name behavior by prefixing a Plan9 middle dot.
-		if strings.Contains(sym, "·") || strings.Contains(sym, "/") || strings.Contains(sym, ".") {
-			return resolve(sym)
-		}
-		return resolve("·" + sym)
+		return resolveAssemblyDataSymbol(sym, resolve)
 	}
 
 	for _, g := range file.Globl {
+		readOnly, err := globlReadOnly(g.Flags)
+		if err != nil {
+			return err
+		}
 		name := resolveData(g.Sym)
 		sd := syms[name]
 		if sd == nil {
@@ -431,6 +934,8 @@ func emitDataGlobals(b *strings.Builder, file *File, resolve func(string) string
 		if g.Size > sd.size {
 			sd.size = g.Size
 		}
+		sd.readOnly = readOnly
+		sd.local = strings.HasSuffix(g.Sym, "<>")
 	}
 
 	for _, d := range file.Data {
@@ -440,15 +945,23 @@ func emitDataGlobals(b *strings.Builder, file *File, resolve func(string) string
 			sd = &symData{bytes: map[int64][]byte{}}
 			syms[name] = sd
 		}
+		sd.local = strings.HasSuffix(d.Sym, "<>")
 		end, err := dataStmtEnd(d)
 		if err != nil {
 			return err
 		}
-		payload, err := dataStmtPayload(d)
-		if err != nil {
-			return err
+		if d.Addr != "" {
+			if sd.addresses == nil {
+				sd.addresses = make(map[int64]DataStmt)
+			}
+			sd.addresses[d.Off] = d
+		} else {
+			payload, err := dataStmtPayload(d)
+			if err != nil {
+				return err
+			}
+			sd.bytes[d.Off] = payload
 		}
-		sd.bytes[d.Off] = payload
 		if end > sd.size {
 			sd.size = end
 		}
@@ -480,14 +993,38 @@ func emitDataGlobals(b *strings.Builder, file *File, resolve func(string) string
 			}
 			copy(buf[off:], p)
 		}
-		align := bestAlign(int64(len(buf)))
-		fmt.Fprintf(b, "%s = constant [%d x i8] %s, align %d\n", llvmGlobal(name), len(buf), llvmI8ArrayInit(buf), align)
+		align := goAssemblyDataAlignment(file.Arch, int64(len(buf)))
+		kind := "global"
+		if sd.readOnly {
+			kind = "constant"
+		}
+		if sd.local {
+			kind = "internal " + kind
+		}
+		if len(sd.addresses) == 0 {
+			fmt.Fprintf(b, "%s = %s [%d x i8] %s, align %d\n", llvmGlobal(name), kind, len(buf), llvmI8ArrayInit(buf), align)
+			continue
+		}
+		if file.Arch == ArchWASM {
+			if err := emitWASMDataRelocations(b, file, name, buf, sd.addresses, resolve, sigs, wasmABI, sd.readOnly, sd.local, align); err != nil {
+				return err
+			}
+			continue
+		}
+		typ, initializer, err := dataRelocationInitializer(file, buf, sd.addresses, resolve, sigs)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(b, "%s = %s %s %s, align %d\n", llvmGlobal(name), kind, typ, initializer, align)
+	}
+	if file.Arch == ArchWASM {
+		return emitWASMDataRelocationRoots(b, file, resolve, sigs)
 	}
 	return nil
 }
 
 // Data globals are currently materialized as byte slices and then as LLVM
-// constant arrays. Bound their size so malformed input cannot exhaust the
+// initializer arrays. Bound their size so malformed input cannot exhaust the
 // translator's memory before LLVM sees it. The Go standard library's largest
 // assembly global is only a few KiB.
 const maxDataGlobalSize int64 = 64 << 20
@@ -510,6 +1047,9 @@ func makeDataGlobal(name string, size int64) ([]byte, error) {
 }
 
 func dataStmtPayload(d DataStmt) ([]byte, error) {
+	if d.Addr != "" {
+		return nil, fmt.Errorf("DATA %s: symbol address requires relocation-aware lowering, not a byte placeholder", d.Sym)
+	}
 	if d.Width <= 0 {
 		return nil, fmt.Errorf("DATA %s: invalid width %d", d.Sym, d.Width)
 	}
@@ -581,13 +1121,6 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 	}
 	b.WriteString(" {\n")
 	b.WriteString("entry:\n")
-
-	// Fast path: permissive void lowering for marker/stub functions.
-	if sig.Ret == Void {
-		b.WriteString("  ret void\n")
-		b.WriteString("}\n")
-		return nil
-	}
 
 	type ssaVal struct {
 		typ LLVMType
@@ -879,10 +1412,10 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 					return ssaVal{typ: I64, val: "0"}, nil
 				}
 				arg := fmt.Sprintf("%%arg%d", idx)
-				if slot.Field >= 0 {
+				if fields := frameSlotFields(slot); len(fields) != 0 {
 					aggTy := sig.Args[idx]
 					name := newTmp()
-					fmt.Fprintf(b, "  %%%s = extractvalue %s %s, %d\n", name, aggTy, arg, slot.Field)
+					fmt.Fprintf(b, "  %%%s = extractvalue %s %s%s\n", name, aggTy, arg, frameSlotExtractSuffix(slot))
 					return ssaVal{typ: slot.Type, val: "%" + name}, nil
 				}
 				return ssaVal{typ: slot.Type, val: arg}, nil
@@ -961,19 +1494,24 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 			continue
 		case OpMRS:
 			// ARM64: MRS <sysreg>, Rn
+			if arch != ArchARM64 {
+				return fmt.Errorf("MRS instruction requires an arm64 architecture")
+			}
+			if len(ins.Args) != 2 {
+				return fmt.Errorf("MRS expects 2 args: %q", ins.Raw)
+			}
 			src, dst := ins.Args[0], ins.Args[1]
 			if src.Kind != OpIdent || dst.Kind != OpReg {
 				return fmt.Errorf("MRS expects ident, reg: %q", ins.Raw)
 			}
-			sysreg := arm64CanonicalSysReg(src.Ident)
-			if v, ok := arm64CompileSafeMRSValue(sysreg); ok {
-				reg[dst.Reg] = ssaVal{typ: I64, val: v}
-				continue
+			sysreg, err := arm64CheckedSystemRegister(src.Ident, true)
+			if err != nil {
+				return err
 			}
 			name := newTmp()
 			// Read system register via inline asm.
 			// Example: call i64 asm "mrs $0, MIDR_EL1", "=r"()
-			fmt.Fprintf(b, "  %%%s = call i64 asm %q, %q()\n", name, "mrs $0, "+sysreg, "=r")
+			fmt.Fprintf(b, "  %%%s = call i64 asm sideeffect %q, %q()\n", name, "mrs $0, "+sysreg, "=r,~{memory}")
 			reg[dst.Reg] = ssaVal{typ: I64, val: "%" + name}
 			continue
 		case OpMOVD:
@@ -1084,9 +1622,14 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 			if err != nil {
 				return err
 			}
-			rhs, err := valueOf(src)
-			if err != nil {
-				return err
+			var rhs ssaVal
+			if (ins.Op == OpADDQ || ins.Op == OpSUBQ) && src.Kind == OpImm {
+				rhs = ssaVal{typ: I64, val: fmt.Sprintf("%d", amd64ScalarAddSubImmediateInt64(src.Imm, 64))}
+			} else {
+				rhs, err = valueOf(src)
+				if err != nil {
+					return err
+				}
 			}
 			lhs, err = emitCast(lhs, I64)
 			if err != nil {
@@ -1194,90 +1737,31 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 				continue
 			}
 
-		case OpCPUID:
-			// x86: CPUID reads EAX/ECX and writes EAX/EBX/ECX/EDX.
-			eax := reg[AX]
-			if eax.typ == "" {
-				z, _ := zero(I32)
-				eax = z
-			} else {
-				var err error
-				eax, err = emitCast(eax, I32)
+		case OpCPUID, OpXGETBV:
+			if arch != ArchAMD64 {
+				return fmt.Errorf("CPU-query instruction requires an x86 architecture")
+			}
+			spec, _, err := x86CPUQueryProperties(ins.Op, ins, "amd64")
+			if err != nil {
+				return err
+			}
+			inputs := make([]string, len(spec.inputs))
+			for index, register := range spec.inputs {
+				value := reg[register]
+				if value.typ == "" {
+					value, err = zero(I32)
+				} else {
+					value, err = emitCast(value, I32)
+				}
 				if err != nil {
 					return err
 				}
+				inputs[index] = value.val
 			}
-			ecx := reg[CX]
-			if ecx.typ == "" {
-				z, _ := zero(I32)
-				ecx = z
-			} else {
-				var err error
-				ecx, err = emitCast(ecx, I32)
-				if err != nil {
-					return err
-				}
+			outputs := emitX86CPUQuery(b, spec, inputs, newTmp)
+			for index, register := range spec.outputs {
+				reg[register] = ssaVal{typ: I32, val: outputs[index]}
 			}
-			if !isSSA(eax.val) {
-				if err := setReg(AX, eax); err != nil {
-					return err
-				}
-				eax = reg[AX]
-			}
-			if !isSSA(ecx.val) {
-				if err := setReg(CX, ecx); err != nil {
-					return err
-				}
-				ecx = reg[CX]
-			}
-			call := newTmp()
-			// Return 4x i32 in EAX/EBX/ECX/EDX.
-			fmt.Fprintf(b, "  %%%s = call { i32, i32, i32, i32 } asm sideeffect %q, %q(i32 %s, i32 %s)\n",
-				call,
-				"cpuid",
-				"={ax},={bx},={cx},={dx},{ax},{cx},~{dirflag},~{fpsr},~{flags}",
-				eax.val, ecx.val)
-			ext := func(i int) string {
-				n := newTmp()
-				fmt.Fprintf(b, "  %%%s = extractvalue { i32, i32, i32, i32 } %%%s, %d\n", n, call, i)
-				return "%" + n
-			}
-			reg[AX] = ssaVal{typ: I32, val: ext(0)}
-			reg[BX] = ssaVal{typ: I32, val: ext(1)}
-			reg[CX] = ssaVal{typ: I32, val: ext(2)}
-			reg[DX] = ssaVal{typ: I32, val: ext(3)}
-
-		case OpXGETBV:
-			// x86: XGETBV reads ECX and writes EAX/EDX.
-			ecx := reg[CX]
-			if ecx.typ == "" {
-				z, _ := zero(I32)
-				ecx = z
-			} else {
-				var err error
-				ecx, err = emitCast(ecx, I32)
-				if err != nil {
-					return err
-				}
-			}
-			if !isSSA(ecx.val) {
-				if err := setReg(CX, ecx); err != nil {
-					return err
-				}
-				ecx = reg[CX]
-			}
-			call := newTmp()
-			fmt.Fprintf(b, "  %%%s = call { i32, i32 } asm sideeffect %q, %q(i32 %s)\n",
-				call,
-				"xgetbv",
-				"={ax},={dx},{cx},~{dirflag},~{fpsr},~{flags}",
-				ecx.val)
-			eaxN := newTmp()
-			edxN := newTmp()
-			fmt.Fprintf(b, "  %%%s = extractvalue { i32, i32 } %%%s, 0\n", eaxN, call)
-			fmt.Fprintf(b, "  %%%s = extractvalue { i32, i32 } %%%s, 1\n", edxN, call)
-			reg[AX] = ssaVal{typ: I32, val: "%" + eaxN}
-			reg[DX] = ssaVal{typ: I32, val: "%" + edxN}
 
 		case OpRET:
 			// Return value comes either from explicit result slots (name+off(FP))

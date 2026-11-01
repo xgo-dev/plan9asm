@@ -6,8 +6,9 @@ import (
 )
 
 type armBlock struct {
-	name   string
-	instrs []Instr
+	name      string
+	instrs    []Instr
+	synthetic bool
 }
 
 var armCondCodes = map[string]bool{
@@ -31,13 +32,14 @@ var armCondCodes = map[string]bool{
 }
 
 func armSplitBlocks(fn Func) []armBlock {
-	blocks := []armBlock{{name: "entry"}}
+	names := newAssemblyBlockNames(fn)
+	blocks := []armBlock{{name: names.fresh("entry"), synthetic: true}}
 	cur := 0
 	anon := 0
 
 	startAnon := func() {
 		anon++
-		blocks = append(blocks, armBlock{name: fmt.Sprintf("anon_%d", anon)})
+		blocks = append(blocks, armBlock{name: names.fresh(fmt.Sprintf("anon_%d", anon)), synthetic: true})
 		cur = len(blocks) - 1
 	}
 
@@ -90,8 +92,9 @@ func armSplitBlocks(fn Func) []armBlock {
 	for _, ins := range fn.Instrs {
 		if ins.Op == OpLABEL && len(ins.Args) == 1 && ins.Args[0].Kind == OpLabel {
 			lbl := ins.Args[0].Sym
-			if len(blocks[cur].instrs) == 0 && strings.HasPrefix(blocks[cur].name, "anon_") {
+			if cur != 0 && len(blocks[cur].instrs) == 0 && blocks[cur].synthetic {
 				blocks[cur].name = lbl
+				blocks[cur].synthetic = false
 				continue
 			}
 			blocks = append(blocks, armBlock{name: lbl})
@@ -109,7 +112,7 @@ func armSplitBlocks(fn Func) []armBlock {
 		}
 	}
 
-	if len(blocks) > 1 && len(blocks[len(blocks)-1].instrs) == 0 && strings.HasPrefix(blocks[len(blocks)-1].name, "anon_") {
+	if len(blocks) > 1 && len(blocks[len(blocks)-1].instrs) == 0 && blocks[len(blocks)-1].synthetic {
 		blocks = blocks[:len(blocks)-1]
 	}
 	return blocks
@@ -161,7 +164,7 @@ func armDecodeOp(raw string) (base string, cond string, postInc bool, setFlags b
 	base = parts[0]
 	for _, p := range parts[1:] {
 		switch p {
-		case "P":
+		case "P", "PW", "WP":
 			postInc = true
 		case "S":
 			setFlags = true

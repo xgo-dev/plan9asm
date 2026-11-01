@@ -1,6 +1,8 @@
 package plan9asm
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,15 +36,13 @@ func TestTranslate386SymbolIndexedMemory(t *testing.T) {
 		t.Fatal("symbol-indexed address with an empty symbol unexpectedly succeeded")
 	}
 
-	file, err := Parse(ArchAMD64, `
+	const source = `
 GLOBL masks<>(SB), RODATA, $256
 TEXT lookup(SB),NOSPLIT,$0-0
 	PAND masks<>(SB)(BX*8), X1
 	RET
-`)
-	if err != nil {
-		t.Fatal(err)
-	}
+`
+	file, signatures := x86UnboundVoidFormatSource(t, source, "lookup", "386", "i386-pc-windows-gnu")
 	src := file.Funcs[0].Instrs[1].Args[0]
 	if src.Kind != OpMem || src.Mem.Sym != "masks<>(SB)" || src.Mem.Index != BX || src.Mem.Scale != 8 {
 		t.Fatalf("parse symbol-indexed memory = %#v", src)
@@ -50,21 +50,17 @@ TEXT lookup(SB),NOSPLIT,$0-0
 	if got := src.String(); got != "masks<>(SB)(BX*8)" {
 		t.Fatalf("symbol-indexed memory string = %q", got)
 	}
-	ir, err := Translate(file, Options{
-		TargetTriple: "i386-pc-windows-gnu",
-		Goarch:       "386",
-		Sigs: map[string]FuncSig{
-			"lookup": {Name: "lookup", Ret: Void},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ir := x86ScalarFormatObjectUnit(t, file, signatures, "386", "i386-pc-windows-gnu", 0)
 	if strings.Contains(ir, `masks<>(SB)(BX*8)`) ||
 		!strings.Contains(ir, "ptrtoint ptr @") ||
 		!strings.Contains(ir, "mul i64") {
 		t.Fatalf("symbol-indexed address was not lowered:\n%s", ir)
 	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc required")
+	}
+	compileLLVMToObject(t, llc, "i386-pc-windows-gnu", "symbol-indexed.ll", "symbol-indexed.o", ir)
 }
 
 func TestParse386MMXRegister(t *testing.T) {
@@ -155,8 +151,6 @@ func TestTranslate386RejectsInvalidInstructionForms(t *testing.T) {
 		{name: "cld operand", instruction: "CLD AX", want: "CLD takes no operands"},
 		{name: "std operand", instruction: "STD AX", want: "STD takes no operands"},
 		{name: "rep operand", instruction: "REP AX", want: "REP takes no operands"},
-		{name: "repne movs", instruction: "REPN; MOVSB", want: "REPN is unsupported for MOVSB"},
-		{name: "rep scas", instruction: "REP; SCASB", want: "REP SCASB is not yet supported"},
 		{name: "movsb operand", instruction: "MOVSB AX", want: "MOVSB takes no operands"},
 		{name: "rdtsc operand", instruction: "RDTSC AX", want: "RDTSC takes no operands"},
 		{name: "rdtscp operand", instruction: "RDTSCP AX", want: "RDTSCP takes no operands"},
@@ -170,41 +164,38 @@ func TestTranslate386RejectsInvalidInstructionForms(t *testing.T) {
 		{name: "pushal operand", instruction: "PUSHAL AX", want: "PUSHAL takes no operands"},
 		{name: "popal operand", instruction: "POPAL AX", want: "POPAL takes no operands"},
 		{name: "unmodeled direct sp write", instruction: "XORL AX, SP", want: "direct SP write is unsupported"},
-		{name: "cmpxchg8b destination", instruction: "CMPXCHG8B AX", want: "CMPXCHG8B expects mem"},
-		{name: "cmpxchg8b segment", instruction: "CMPXCHG8B 0(FS)", want: "does not support segment-relative memory"},
 		{name: "fmovd count", instruction: "FMOVD F0", want: "FMOVD expects src, dst"},
-		{name: "fmovd destination", instruction: "FMOVD F0, AX", want: "unsupported x87 double destination"},
-		{name: "fmovdp count", instruction: "FMOVDP F0", want: "FMOVDP expects src, dst"},
-		{name: "fmovdp destination", instruction: "FMOVDP F0, AX", want: "unsupported x87 double destination"},
+		{name: "fmovd destination", instruction: "FMOVD F0, AX", want: "FMOVD expects memory,F0"},
+		{name: "fmovdp count", instruction: "FMOVDP F0", want: "FMOVDP expects F0 source"},
+		{name: "fmovdp destination", instruction: "FMOVDP F0, AX", want: "FMOVDP expects F0 source"},
 		{name: "fmovv count", instruction: "FMOVV AX", want: "FMOVV expects src, dst"},
-		{name: "fmovv destination", instruction: "FMOVV AX, F1", want: "FMOVV expects F0 destination"},
+		{name: "fmovv destination", instruction: "FMOVV AX, F1", want: "FMOVV expects signed integer memory,F0"},
 		{name: "fmovvp count", instruction: "FMOVVP F0", want: "FMOVVP expects src, dst"},
 		{name: "fmovvp source", instruction: "FMOVVP F1, 0(SP)", want: "FMOVVP expects F0 source"},
-		{name: "fmovvp destination", instruction: "FMOVVP F0, AX", want: "unsupported x87 integer destination"},
+		{name: "fmovvp destination", instruction: "FMOVVP F0, AX", want: "FMOVVP expects F0 source"},
 		{name: "fxchd count", instruction: "FXCHD F0", want: "FXCHD expects Fsrc, Fdst"},
 		{name: "fxchd registers", instruction: "FXCHD AX, BX", want: "FXCHD expects x87 registers"},
 		{name: "fdivd count", instruction: "FDIVD F0", want: "FDIVD expects src, dst"},
-		{name: "fdivd destination", instruction: "FDIVD F0, $1", want: "unsupported x87 double destination"},
+		{name: "fdivd destination", instruction: "FDIVD F0, $1", want: "FDIVD expects memory,F0"},
 		{name: "fadddp count", instruction: "FADDDP F0", want: "FADDDP expects src, dst"},
-		{name: "fadddp destination", instruction: "FADDDP F0, $1", want: "unsupported x87 double destination"},
-		{name: "fstcw count", instruction: "FSTCW", want: "FSTCW expects dst"},
-		{name: "fstcw destination", instruction: "FSTCW ret+0(FP)", want: "unsupported x87 word destination"},
-		{name: "fldcw count", instruction: "FLDCW", want: "FLDCW expects src"},
+		{name: "fadddp destination", instruction: "FADDDP F0, $1", want: "FADDDP expects F0 source"},
+		{name: "fstcw count", instruction: "FSTCW", want: "FSTCW expects memory destination"},
+		{name: "fstcw undeclared FP destination", instruction: "FSTCW ret+0(FP)", want: "unsupported FP write slot"},
+		{name: "fldcw count", instruction: "FLDCW", want: "FLDCW expects memory source"},
 		{name: "frndint operand", instruction: "FRNDINT AX", want: "FRNDINT takes no operands"},
 		{name: "fabs operand", instruction: "FABS AX", want: "FABS takes no operands"},
 		{name: "fucomi count", instruction: "FUCOMI F0", want: "FUCOMI expects lhs, rhs"},
 		{name: "ftst operand", instruction: "FTST AX", want: "FTST takes no operands"},
-		{name: "fstsw count", instruction: "FSTSW", want: "FSTSW expects dst"},
-		{name: "fstsw destination", instruction: "FSTSW ret+0(FP)", want: "unsupported x87 word destination"},
+		{name: "fstsw count", instruction: "FSTSW", want: "FSTSW expects memory destination"},
+		{name: "fstsw undeclared FP destination", instruction: "FSTSW ret+0(FP)", want: "unsupported FP write slot"},
 		{name: "fld1 operand", instruction: "FLD1 AX", want: "FLD1 takes no operands"},
-		{name: "x87 on amd64", instruction: "FLD1", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushl on amd64", instruction: "PUSHL AX", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "popl on amd64", instruction: "POPL AX", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushfl on amd64", instruction: "PUSHFL", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "popfl on amd64", instruction: "POPFL", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushal on amd64", instruction: "PUSHAL", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "popal on amd64", instruction: "POPAL", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
-		{name: "vector low destination", instruction: "MOVL X0, $1", want: "MOVL from X reg unsupported dst"},
+		{name: "vector low destination", instruction: "MOVL X0, $1", want: "386 MOVL outside complete Go GP/X transfer grammar"},
 	}
 
 	for _, tt := range tests {
@@ -234,7 +225,7 @@ func TestTranslate386RejectsInvalidInstructionForms(t *testing.T) {
 }
 
 func TestTranslate386ModelsOfficialDirectSPWrites(t *testing.T) {
-	file, err := Parse(ArchAMD64, `TEXT stack(SB),NOSPLIT,$0-0
+	const source = `TEXT stack(SB),NOSPLIT,$0-0
 	MOVL AX, SP
 	SUBL $256, SP
 	ADDL AX, SP
@@ -243,27 +234,36 @@ func TestTranslate386ModelsOfficialDirectSPWrites(t *testing.T) {
 	LEAL 4(SP), SP
 	POPL SP
 	RET
-`)
+`
+	file, err := Parse(ArchAMD64, source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ir, err := Translate(file, Options{
-		TargetTriple: "i386-unknown-linux-gnu",
-		Goarch:       "386",
-		Sigs:         map[string]FuncSig{"stack": {Name: "stack", Ret: Void}},
-	})
-	if err != nil {
-		t.Fatal(err)
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM22 llc required")
 	}
-	for _, want := range []string{
-		"%local_stack = alloca [770 x i8]",
-		"sub i32",
-		"add i32",
-		"and i32",
-	} {
-		if !strings.Contains(ir, want) {
-			t.Fatalf("386 direct SP lowering missing %q:\n%s", want, ir)
-		}
+	for _, triple := range []string{"i386-unknown-linux-gnu", "i686-pc-windows-msvc"} {
+		t.Run(triple, func(t *testing.T) {
+			x86OriginalUnbalancedStackGoRejection(t, source, triple)
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source, "func stack()", "386", triple, api)
+				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("original unknown/unbalanced SP acquired a public frame", api, err)
+				}
+			}
+			ir := x86OriginalStackFormatObject(t, file.Funcs[0], Void, "386", triple)
+			for _, want := range []string{"%local_stack = alloca [770 x i8]", "sub i32", "add i32", "and i32"} {
+				if !strings.Contains(ir, want) {
+					t.Fatalf("386 direct SP format lowering missing %q:\n%s", want, ir)
+				}
+			}
+			for _, text := range []string{ir, x86DwordProductIROptimize(t, ir)} {
+				for _, level := range []string{"-O0", "-O2"} {
+					x86PackedStringCompileObject(t, llc, triple, text, level)
+				}
+			}
+		})
 	}
 }
 
@@ -420,10 +420,10 @@ func Test386LoweringErrorPaths(t *testing.T) {
 		return c.lowerAtomic("CMPXCHG8B", Instr{Raw: "CMPXCHG8B 0(BAD)", Args: []Operand{badMem}})
 	})
 	wantLowerError("vector memory destination", func() (bool, bool, error) {
-		return c.lowerVec("MOVL", Instr{Raw: "MOVL X0, 0(BAD)", Args: []Operand{{Kind: OpReg, Reg: "X0"}, badMem}})
+		return c.lowerVectorScalarIntegerMove("MOVL", Instr{Op: "MOVL", Raw: "MOVL X0, 0(BAD)", Args: []Operand{{Kind: OpReg, Reg: "X0"}, badMem}})
 	})
 	wantLowerError("vector symbol destination", func() (bool, bool, error) {
-		return c.lowerVec("MOVL", Instr{Raw: "MOVL X0, (SB)", Args: []Operand{{Kind: OpReg, Reg: "X0"}, badSym}})
+		return c.lowerVectorScalarIntegerMove("MOVL", Instr{Op: "MOVL", Raw: "MOVL X0, (SB)", Args: []Operand{{Kind: OpReg, Reg: "X0"}, badSym}})
 	})
 
 	for _, test := range []struct {
@@ -484,10 +484,23 @@ func Test386LoweringErrorPaths(t *testing.T) {
 	if got, err := resultCtx.evalFPToI64(4); err != nil || got == "" {
 		t.Fatalf("high-word result read = (%q, %v)", got, err)
 	}
-	ok, terminated, err := resultCtx.lowerArith("LEAL", Instr{Raw: "LEAL ret+0(FP), AX", Args: []Operand{{Kind: OpFPAddr, FPOffset: 0}, {Kind: OpReg, Reg: AX}}})
+	// LEA takes the address of a memory operand. OpFPAddr represents
+	// $ret+0(FP), an immediate address that Go does not accept as its source.
+	lea, err := Parse(ArchAMD64, "TEXT resultAddress(SB),$0-8\n\tLEAL ret+0(FP), AX\n\tRET\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ins := lea.Funcs[0].Instrs[1]
+	if ins.Args[0].Kind != OpFP {
+		t.Fatalf("LEAL FP source kind = %v, want memory FP operand", ins.Args[0].Kind)
+	}
+	ok, terminated, err := resultCtx.lowerArith("LEAL", ins)
 	if !ok || terminated || err != nil {
 		t.Fatalf("LEAL classic result address = (%v, %v, %v)", ok, terminated, err)
 	}
+	wantLowerError("LEAL immediate FP source", func() (bool, bool, error) {
+		return resultCtx.lowerArith("LEAL", Instr{Raw: "LEAL $ret+0(FP), AX", Args: []Operand{{Kind: OpFPAddr, FPOffset: 0}, {Kind: OpReg, Reg: AX}}})
+	})
 }
 
 func Test386FDirectiveDoesNotAllocateX87State(t *testing.T) {
@@ -532,8 +545,10 @@ func TestAMD64Ignores386ControlInstructions(t *testing.T) {
 }
 
 func TestTranslate386DestinationForms(t *testing.T) {
-	file, err := Parse(ArchAMD64, `
+	const source = `
 TEXT vectorResult(SB),NOSPLIT,$0-4
+	MOVL $1, AX
+	MOVL AX, X0
 	MOVL X0, ret+0(FP)
 	RET
 
@@ -564,11 +579,16 @@ TEXT x87IntegerMemory(SB),NOSPLIT,$0-0
 TEXT x87IntegerSymbol(SB),NOSPLIT,$0-0
 	FMOVVP F0, integerSink(SB)
 	RET
-`)
+`
+	// The standalone assembler helper has no textflag.h include. Resolve only
+	// its standard NOSPLIT flag; every original instruction and operand stays
+	// unchanged in this independent Go-386 object check.
+	goAssemblerOracleOutput(t, "386", strings.ReplaceAll(source, ",NOSPLIT,", ",4,"), "", true)
+	file, err := Parse(ArchAMD64, source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ir, err := Translate(file, Options{
+	options := Options{
 		TargetTriple: "i386-unknown-linux-gnu",
 		Goarch:       "386",
 		Sigs: map[string]FuncSig{
@@ -584,25 +604,17 @@ TEXT x87IntegerSymbol(SB),NOSPLIT,$0-0
 			"x87IntegerMemory": {Name: "x87IntegerMemory", Ret: Void},
 			"x87IntegerSymbol": {Name: "x87IntegerSymbol", Ret: Void},
 		},
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"store i32 %",
-		"vectorSink",
-		"store double",
-		"doubleSink",
-		"store i16",
-		"controlSink",
-		"store i64",
-		"integerSink",
-	} {
-		if !strings.Contains(ir, want) {
-			t.Fatalf("386 destination-form IR missing %q:\n%s", want, ir)
-		}
+	if _, err := Translate(file, options); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("original unbacked x87 source did not retain Context", err)
 	}
-	compile386IR(t, ir, "destination_forms")
+	ir := x86CompileOnlyDestinationEmitterModule(t, file, options)
+	check386DestinationFormsIR(t, ir)
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM22 llc required")
+	}
+	compileLLVMToObject(t, llc, "i386-unknown-linux-gnu", "destination_forms.ll", "destination_forms.o", ir)
 }
 
 func TestTranslate386ClassicAggregateFrame(t *testing.T) {
@@ -649,6 +661,14 @@ func TestTranslate386ClassicAggregateFrame(t *testing.T) {
 }
 
 func TestTranslate386InstructionFamilies(t *testing.T) {
+	// Go's 386 MMX-to-GP transfer is MOVL (the physical MOVD), not the
+	// MOVQ source family or its MOVD/MOVDQ2Q aliases. Check both actual
+	// encoder outcomes before using that transfer in the lowering fixture.
+	goAssemblerOracleOutput(t, "386", "TEXT ·valid(SB),4,$0-0\nMOVL M0,AX\nEMMS\nRET\n", "", true)
+	for _, opcode := range []string{"MOVQ", "MOVD", "MOVDQ2Q"} {
+		goAssemblerOracleOutput(t, "386", "TEXT ·invalid(SB),4,$0-0\n"+opcode+" M0,AX\nEMMS\nRET\n", "", false)
+	}
+
 	src := `
 TEXT arith(SB),NOSPLIT,$0-12
 	MOVL a+0(FP), AX
@@ -723,7 +743,7 @@ TEXT atomic64(SB),NOSPLIT,$0-0
 
 TEXT mmxload(SB),NOSPLIT,$0-0
 	MOVQ (SI), M0
-	MOVQ M0, AX
+	MOVL M0, AX
 	EMMS
 	RET
 
@@ -777,7 +797,7 @@ TEXT undefined(SB),NOSPLIT,$0-0
 
 TEXT rawret(SB),NOSPLIT,$0-0
 	BYTE $0xc2
-	WORD $4
+	WORD $0
 	RET
 
 TEXT cpuidProbe(SB),NOSPLIT,$0-0
@@ -839,7 +859,7 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 			Name: "atomic64", Args: []LLVMType{Ptr, I32, I32, I32, I32}, Ret: I1,
 			ArgRegs: []Reg{SI, AX, DX, BX, CX},
 		},
-		"mmxload":   {Name: "mmxload", Args: []LLVMType{Ptr}, Ret: I64, ArgRegs: []Reg{SI}},
+		"mmxload":   {Name: "mmxload", Args: []LLVMType{Ptr}, Ret: I32, ArgRegs: []Reg{SI}},
 		"vectorlow": {Name: "vectorlow", Args: []LLVMType{Ptr}, Ret: I32, ArgRegs: []Reg{SI}},
 		"split64": {
 			Name: "split64", Args: []LLVMType{I64}, Ret: I64,
@@ -886,27 +906,108 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 	if err != nil {
 		t.Fatal(err)
 	}
-	ir, err := Translate(file, Options{
+	options := Options{
 		TargetTriple: "i386-unknown-linux-gnu",
 		ResolveSym: func(sym string) string {
 			return strings.TrimPrefix(sym, "·")
 		},
 		Goarch: "386",
 		Sigs:   sigs,
+	}
+	t.Run("complete-original-physical-stack-remains-Context", func(t *testing.T) {
+		ir, err := Translate(file, options)
+		if !errors.Is(err, ErrProbeNeedsContext) || ir != "" || !strings.Contains(err.Error(), "result initialization AUTO") {
+			t.Fatalf("original zero-frame physical-SP/PUSHAL source gained backing: output=%t error=%v", ir != "", err)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
+	// Keep the complete original file and declarations. This explicitly
+	// selected counterpart does not certify arith's unbound physical stack,
+	// PUSHAL/POPAL or live-stack memory addressing. Nothing may reference it.
+	if len(file.Funcs) != 19 || len(sigs) != 19 {
+		t.Fatal("complete instruction-family TEXT/declaration inventory changed")
+	}
+	for _, fn := range file.Funcs {
+		if fn.Sym == "arith" {
+			continue
+		}
+		for _, ins := range fn.Instrs {
+			if strings.Contains(ins.Raw, "arith") {
+				t.Fatal("partial selection cannot discard a referenced arithmetic TEXT", ins.Raw)
+			}
+		}
+	}
+	var ir string
+	boundedCounterpart := x86X87InstructionFamiliesBoundedCounterpart(t, src)
+	// The old symbolAddress had an external declaration and a bare AX result.
+	// Its separate positive counterpart explicitly supplies same-module DATA
+	// and a complete ABI0 result slot. Do not infer either from a MOV opcode.
+	const oldAddress = "TEXT symbolAddress(SB),NOSPLIT,$0-0\n\tMOVL $someGlobal(SB), AX\n\tRET"
+	const boundedAddress = "TEXT symbolAddress(SB),NOSPLIT,$0-4\n\tMOVL $someGlobal(SB), AX\n\tMOVL AX, ret+0(FP)\n\tRET"
+	if strings.Count(boundedCounterpart, oldAddress) != 1 {
+		t.Fatal("original address counterpart lost its complete source anchor")
+	}
+	boundedCounterpart = "DATA someGlobal(SB)/4,$0\nGLOBL someGlobal(SB),8,$4\n" +
+		strings.Replace(boundedCounterpart, oldAddress, boundedAddress, 1)
+	boundedCounterpart = x86Legacy386StackCounterparts(t, boundedCounterpart)
+	boundedSigs := make(map[string]FuncSig, len(sigs))
+	for name, sig := range sigs {
+		boundedSigs[name] = sig
+	}
+	boundedCounterpart = x86Legacy386RegisterCounterparts(t, boundedCounterpart, boundedSigs)
+	addressSig := boundedSigs["symbolAddress"]
+	addressSig.Frame.Results = []FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}}
+	boundedSigs["symbolAddress"] = addressSig
+	boundedSigs["stackAdjust"] = FuncSig{
+		Name: "stackAdjust", Args: []LLVMType{I32}, Ret: I32,
+		Frame: FrameLayout{
+			Params:  []FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}},
+			Results: []FrameSlot{{Offset: 4, Type: I32, Index: 0, Field: -1}},
+		},
+	}
+	boundedSigs["cpuidProbe"] = FuncSig{
+		Name: "cpuidProbe", Ret: I32,
+		Frame: FrameLayout{
+			Results: []FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}},
+		},
+	}
+	t.Run("partial-selection-bounded-counterpart-other-18-TEXTs", func(t *testing.T) {
+		// KeepFunc belongs to the Go-module API. The empty package grants no
+		// Go declaration; every selected signature is exactly the original
+		// explicit manual contract, including custom register assignments,
+		// except the separately documented bounded scratch, DATA and stack
+		// counterparts. Those complete programs explicitly initialize their
+		// inputs and ABI0 outputs; they do not certify the original physical
+		// stack programs. arith and all other selected TEXTs stay intact.
+		pkg := mustGoPackage(t, "families", "package families")
+		result, err := TranslateGoModule(pkg, []byte(boundedCounterpart), GoModuleOptions{
+			GOOS: "linux", GOARCH: "386", TargetTriple: options.TargetTriple,
+			ResolveSym: options.ResolveSym,
+			KeepFunc:   func(text, resolved string) bool { return text != "arith" && resolved != "arith" },
+			ManualSig:  func(resolved string) (FuncSig, bool) { sig, found := boundedSigs[resolved]; return sig, found },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Module.Dispose()
+		if len(result.Functions) != 18 || len(result.Signatures) != 18 {
+			t.Fatal("partial selection changed the remaining TEXT/signature inventory")
+		}
+		ir = result.Module.String()
+	})
+	if ir == "" {
+		t.Fatal("partial selection did not emit its separate module")
 	}
 	for _, want := range []string{
-		"cmpxchg ptr",
+		`asm sideeffect "lock; cmpxchg8b`,
 		"@__plan9asm_rep_stosl",
-		"@__plan9asm_repne_scasb",
+		"@__plan9asm_rep_scasb",
 		"@__plan9asm_movsb",
 		"@__plan9asm_movsl",
 		`asm sideeffect "fnstcw $0"`,
 		`asm sideeffect "fldcw $0"`,
 		`asm sideeffect "fldl $1; frndint; fstpl $0"`,
-		`asm sideeffect "fldl $1; fistpll $0"`,
+		`asm sideeffect "cmpb $$0, $3; je 1f; fildll $2;`,
+		`1: fldl $1; 2: fistpll $0`,
 		"@llvm.sqrt.f64",
 		"%x87_control = alloca i16",
 		"%local_stack = alloca",
@@ -918,17 +1019,461 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 		"%flags_id = alloca i1",
 		"%classic_frame = alloca",
 		"ptrtoint ptr @someGlobal to i64",
-		"sub i64 %",
-		", 156",
 	} {
 		if !strings.Contains(ir, want) {
 			t.Fatalf("386 IR missing %q:\n%s", want, ir)
 		}
 	}
-	if strings.Contains(ir, "roundeven") {
+	if strings.Contains(ir, "call double @llvm.roundeven") || strings.Contains(ir, "call float @llvm.roundeven") {
 		t.Fatalf("386 x87 lowering unexpectedly depends on external roundeven:\n%s", ir)
 	}
 	compile386IR(t, ir, "instruction_families")
+	// ADJSP belongs to the original physical-stack format. Keep its complete
+	// emitter-only object separate from the public initialized counterpart.
+	formatIR := x86Legacy386StackFormatObject(t, options.TargetTriple)
+	for _, want := range []string{"sub i64 %", ", 156"} {
+		if !strings.Contains(formatIR, want) {
+			t.Fatalf("original 386 stack format IR missing %q", want)
+		}
+	}
+	compile386IR(t, formatIR, "original_stack_formats")
+	t.Run("independent-bounded-named-AUTO-product", func(t *testing.T) {
+		const bounded = "TEXT ·Bounded(SB),4,$16-12\nMOVL a+0(FP),AX\nMOVL b+4(FP),BX\nIMULL BX\nMOVL AX,spill-8(SP)\nMOVL spill-8(SP),AX\nMOVL AX,ret+8(FP)\nRET\n"
+		const declaration = "func Bounded(a,b uint32) uint32"
+		x86LEAActualTargetGoObject(t, "386", options.TargetTriple, bounded)
+		for _, api := range []string{"text", "module", "Go"} {
+			t.Run(api, func(t *testing.T) {
+				ir, err := x86ScalarFPBitViewAPI(t, bounded, declaration, "386", options.TargetTriple, api)
+				if err != nil {
+					t.Fatal(err)
+				}
+				x86ScalarFPNamedConstantResult(t, ir+"define i32 @Probe() { %r = call i32 @Bounded(i32 2,i32 3)\n ret i32 %r }\n", "Probe", []uint64{6})
+				compile386IR(t, ir, "bounded_product_"+api)
+				for name, invalid := range map[string]string{
+					"unknown-input":  strings.Replace(bounded, "MOVL b+4(FP),BX", "NOP", 1),
+					"unwritten-AUTO": strings.Replace(bounded, "MOVL AX,spill-8(SP)", "NOP", 1),
+					"physical-SP":    strings.ReplaceAll(bounded, "spill-8(SP)", "-8(SP)"),
+					"missing-frame":  strings.Replace(bounded, "$16-12", "$0-12", 1),
+					"past-frame":     strings.ReplaceAll(bounded, "spill-8(SP)", "spill-20(SP)"),
+				} {
+					t.Run(name, func(t *testing.T) {
+						output, err := x86ScalarFPBitViewAPI(t, invalid, declaration, "386", options.TargetTriple, api)
+						if !errors.Is(err, ErrProbeNeedsContext) || output != "" {
+							t.Fatal("bounded counterpart borrowed initialization or native backing", err)
+						}
+					})
+				}
+			})
+		}
+	})
+}
+
+func TestTranslate386X87MoveFamilyCompleteForms(t *testing.T) {
+	const source = `
+TEXT x87moves(SB),NOSPLIT,$0-0
+	FMOVB 0(SI), F0
+	FMOVBP F0, 0(DI)
+	FMOVD 0(SI), F0
+	FMOVD $(2.928932188134524e-01), F0
+	FMOVD F0, 0(DI)
+	FMOVD F1, F0
+	FMOVD F0, F1
+	FMOVDP F0, 0(DI)
+	FMOVDP F0, F1
+	FMOVF 0(SI), F0
+	FMOVF F0, 0(DI)
+	FMOVFP F0, 0(DI)
+	FMOVL 0(SI), F0
+	FMOVL F0, 0(DI)
+	FMOVLP F0, 0(DI)
+	FMOVV 0(SI), F0
+	FMOVVP F0, 0(DI)
+	FMOVW 0(SI), F0
+	FMOVW F0, 0(DI)
+	FMOVWP F0, 0(DI)
+	FMOVX 0(SI), F0
+	FMOVXP F0, 0(DI)
+	RET
+`
+	goAssemblerOracleOutput(t, "386", "#include \"textflag.h\"\n"+source, "", true)
+	file, err := Parse(ArchAMD64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87moves": {Name: "x87moves", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if !errors.Is(err, ErrProbeNeedsContext) || ir != "" || !strings.Contains(err.Error(), "FMOVB 0(SI), F0") {
+		t.Fatal("complete no-argument move source acquired SI/DI storage or initialized x87 inputs", err)
+	}
+	compile386IR(t, x86X87LowererObjectUnit(t, file, "386", "i386-unknown-linux-gnu"), "x87_move_family_emitter_only")
+}
+
+func TestTranslate386X87MoveFamilyRejectsNonGoForms(t *testing.T) {
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FMOVF F1, F0", want: "FMOVF expects memory,F0, Freg,F0, F0,memory, or F0,Freg"},
+		{instruction: "FMOVFP F1, 0(DI)", want: "FMOVFP expects F0 source and memory or x87-register destination"},
+		{instruction: "FMOVL 0(SI), F1", want: "FMOVL expects signed integer memory,F0 or the registered F0,memory store row"},
+		{instruction: "FMOVLP F0, F1", want: "FMOVLP expects F0 source and signed integer memory destination"},
+		{instruction: "FMOVX F0, F1", want: "FMOVX expects memory source and F0 destination"},
+		{instruction: "FMOVXP F1, 0(DI)", want: "FMOVXP expects F0 source and memory destination"},
+	} {
+		t.Run(test.instruction, func(t *testing.T) {
+			source := "TEXT bad(SB),NOSPLIT,$0-0\n" + test.instruction + "\nRET\n"
+			goAssemblerOracleOutput(t, "386", "#include \"textflag.h\"\n"+source, "", false)
+			file, err := Parse(ArchAMD64, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+			}
+		})
+	}
+}
+
+func TestTranslate386X87ConstantUnaryAndTranscendentalFamily(t *testing.T) {
+	const source = `
+TEXT x87transcendental(SB),NOSPLIT,$0-0
+	FBLD 0(SI)
+	FBSTP 0(DI)
+	FLD1
+	FLDL2E
+	FLDL2T
+	FLDLG2
+	FLDLN2
+	FLDPI
+	FLDZ
+	F2XM1
+	FABS
+	FCHS
+	FCLEX
+	FCOS
+	FDECSTP
+	FINCSTP
+	FINIT
+	FNOP
+	FPATAN
+	FPREM
+	FPREM1
+	FPTAN
+	FRNDINT
+	FSCALE
+	FSIN
+	FSINCOS
+	FSQRT
+	FTST
+	FXAM
+	FXTRACT
+	FYL2X
+	FYL2XP1
+	RET
+`
+	goAssemblerOracleOutput(t, "386", "#include \"textflag.h\"\n"+source, "", true)
+	file, err := Parse(ArchAMD64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87transcendental": {Name: "x87transcendental", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if !errors.Is(err, ErrProbeNeedsContext) || ir != "" || !strings.Contains(err.Error(), "FBLD 0(SI)") {
+		t.Fatal("complete no-argument transcendental source acquired SI/DI storage or initialized x87 inputs", err)
+	}
+	compile386IR(t, x86X87LowererObjectUnit(t, file, "386", "i386-unknown-linux-gnu"), "x87_transcendental_emitter_only")
+}
+
+func TestTranslate386X87ConstantUnaryAndTranscendentalFamilyRejectsOperands(t *testing.T) {
+	for _, op := range []string{
+		"F2XM1", "FABS", "FCHS", "FCLEX", "FCOS", "FDECSTP", "FINCSTP", "FINIT",
+		"FLD1", "FLDL2E", "FLDL2T", "FLDLG2", "FLDLN2", "FLDPI", "FLDZ", "FNOP",
+		"FPATAN", "FPREM", "FPREM1", "FPTAN", "FRNDINT", "FSCALE", "FSIN", "FSINCOS",
+		"FSQRT", "FTST", "FXAM", "FXTRACT", "FYL2X", "FYL2XP1",
+	} {
+		t.Run(op, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+op+" AX\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "takes no operands") {
+				t.Fatalf("Translate(%s AX) error = %v, want no-operand rejection", op, err)
+			}
+		})
+	}
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FBLD F0", want: "FBLD expects memory source"},
+		{instruction: "FBSTP AX", want: "FBSTP expects memory destination"},
+	} {
+		file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+test.instruction+"\nRET\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Translate(file, Options{
+			TargetTriple: "i386-unknown-linux-gnu",
+			Goarch:       "386",
+			Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+		})
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+		}
+	}
+}
+
+func TestTranslate386X87ArithmeticFamilyCompleteForms(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("TEXT x87arithmetic(SB),NOSPLIT,$0-0\n")
+	for _, stem := range []string{"FADD", "FMUL", "FSUB", "FSUBR", "FDIV", "FDIVR"} {
+		for _, width := range []string{"W", "L", "F"} {
+			fmt.Fprintf(&src, "\t%s%s 0(SI), F0\n", stem, width)
+		}
+		fmt.Fprintf(&src, "\t%sD 0(SI), F0\n", stem)
+		fmt.Fprintf(&src, "\t%sD F1, F0\n", stem)
+		fmt.Fprintf(&src, "\t%sD F0, F1\n", stem)
+		fmt.Fprintf(&src, "\t%sDP F0, F1\n", stem)
+	}
+	src.WriteString("\tRET\n")
+	file, err := Parse(ArchAMD64, src.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87arithmetic": {Name: "x87arithmetic", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if err != nil {
+		t.Fatalf("Translate(complete x87 arithmetic family) error = %v", err)
+	}
+	compile386IR(t, ir, "x87_arithmetic_family")
+}
+
+func TestTranslate386X87ArithmeticFamilyRejectsNonGoForms(t *testing.T) {
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FADDW F1, F0", want: "FADDW expects memory source and F0 destination"},
+		{instruction: "FMULL 0(SI), F1", want: "FMULL expects memory source and F0 destination"},
+		{instruction: "FSUBF F0, 0(DI)", want: "FSUBF expects memory source and F0 destination"},
+		{instruction: "FDIVD 0(SI), F1", want: "FDIVD expects memory,F0"},
+		{instruction: "FSUBRDP 0(SI), F0", want: "FSUBRDP expects F0 source and x87-register destination"},
+		{instruction: "FDIVRDP F1, F0", want: "FDIVRDP expects F0 source and x87-register destination"},
+	} {
+		t.Run(test.instruction, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+test.instruction+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+			}
+		})
+	}
+}
+
+func TestTranslate386X87CompareFamilyCompleteForms(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT x87compare(SB),NOSPLIT,$0-0
+	FCOMD 0(SI), F0
+	FCOMD F1, F0
+	FCOMD F0, F1
+	FCOMDP 0(SI), F0
+	FCOMDP F1, F0
+	FCOMDP F0, F1
+	FCOMDPP F0, F1
+	FCOMF 0(SI), F0
+	FCOMFP 0(SI), F0
+	FCOML 0(SI), F0
+	FCOMLP 0(SI), F0
+	FCOMW 0(SI), F0
+	FCOMWP 0(SI), F0
+	FCOMI F1, F0
+	FCOMIP F1, F0
+	FUCOM F0, F1
+	FUCOMP F0, F1
+	FUCOMPP F0, F1
+	FUCOMI F0, F1
+	FUCOMIP F0, F1
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87compare": {Name: "x87compare", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if err != nil {
+		t.Fatalf("Translate(complete x87 compare family) error = %v", err)
+	}
+	compile386IR(t, ir, "x87_compare_family")
+}
+
+func TestTranslate386X87CompareFamilyRejectsNonGoForms(t *testing.T) {
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FCOMF F1, F0", want: "FCOMF expects memory source or x87-register source and F0 destination"},
+		{instruction: "FCOMD 0(SI), F1", want: "FCOMD expects memory source or x87-register source and F0 destination"},
+		{instruction: "FCOMDPP F1, F0", want: "FCOMDPP expects F0 source and x87-register destination"},
+		{instruction: "FCOMI F0, F1", want: "FCOMI expects x87-register source and F0 destination"},
+		{instruction: "FUCOM F1, F0", want: "FUCOM expects F0 source and x87-register destination"},
+		{instruction: "FUCOMIP 0(SI), F0", want: "FUCOMIP expects F0 source and x87-register destination"},
+	} {
+		t.Run(test.instruction, func(t *testing.T) {
+			source := "TEXT bad(SB),NOSPLIT,$0-0\n" + test.instruction + "\nRET\n"
+			goAssemblerOracleOutput(t, "386", "#include \"textflag.h\"\n"+source, "", false)
+			file, err := Parse(ArchAMD64, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+			}
+		})
+	}
+}
+
+func TestTranslate386LAHFSAHFFamily(t *testing.T) {
+	const source = `
+TEXT flags386(SB),NOSPLIT,$0-0
+	LAHF
+	SAHF
+	RET
+`
+	goAssemblerOracleOutput(t, "386", "#include \"textflag.h\"\n"+source, "", true)
+	file, err := Parse(ArchAMD64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"flags386": {Name: "flags386", Ret: Void}},
+	}
+	if ir, err := Translate(file, options); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("original uninitialized FLAGS format invented input facts", err)
+	}
+	initialized := strings.Replace(source, "\tLAHF", "\tMOVL $0,AX\n\tCMPL AX,AX\n\tLAHF", 1)
+	goAssemblerOracleOutput(t, "386", "#include \"textflag.h\"\n"+initialized, "", true)
+	file, err = Parse(ArchAMD64, initialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, options)
+	if err != nil {
+		t.Fatalf("Translate(LAHF/SAHF) error = %v", err)
+	}
+	compile386IR(t, ir, "lahf_sahf_family")
+	for _, op := range []string{"LAHF", "SAHF"} {
+		bad, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+op+" AX\nRET\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Translate(bad, Options{
+			TargetTriple: "i386-unknown-linux-gnu",
+			Goarch:       "386",
+			Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "takes no operands") {
+			t.Fatalf("Translate(%s AX) error = %v, want no-operand rejection", op, err)
+		}
+	}
+}
+
+func TestTranslate386X87EnvironmentAndControlFamily(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT x87environment(SB),NOSPLIT,$0-0
+	FLDCW 0(SI)
+	FLDENV 0(SI)
+	FRSTOR 0(SI)
+	FSAVE 0(DI)
+	FSTCW 0(DI)
+	FSTENV 0(DI)
+	FSTSW 0(DI)
+	FSTSW AX
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "i386-unknown-linux-gnu",
+		Goarch:       "386",
+		Sigs:         map[string]FuncSig{"x87environment": {Name: "x87environment", Ret: Void}},
+		X87Mode:      X87Software,
+	})
+	if !errors.Is(err, ErrProbeNeedsContext) || ir != "" || !strings.Contains(err.Error(), "FLDCW 0(SI)") {
+		t.Fatalf("complete no-argument ENV source acquired native SI/DI storage: output=%t error=%v", ir != "", err)
+	}
+	// Typed syntax/object witnesses are independent of the original source's
+	// missing incoming pointers, restore image and native write contracts.
+}
+
+func TestTranslate386X87EnvironmentAndControlFamilyRejectsNonGoForms(t *testing.T) {
+	for _, test := range []struct {
+		instruction string
+		want        string
+	}{
+		{instruction: "FLDCW AX", want: "FLDCW expects memory source"},
+		{instruction: "FLDENV F0", want: "FLDENV expects memory source"},
+		{instruction: "FRSTOR AX", want: "FRSTOR expects memory source"},
+		{instruction: "FSAVE AX", want: "FSAVE expects memory destination"},
+		{instruction: "FSTCW AX", want: "FSTCW expects memory destination"},
+		{instruction: "FSTENV F0", want: "FSTENV expects memory destination"},
+		{instruction: "FSTSW BX", want: "FSTSW expects memory destination or AX"},
+	} {
+		t.Run(test.instruction, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT bad(SB),NOSPLIT,$0-0\n"+test.instruction+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				TargetTriple: "i386-unknown-linux-gnu",
+				Goarch:       "386",
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Translate(%q) error = %v, want %q", test.instruction, err, test.want)
+			}
+		})
+	}
 }
 
 func TestTranslate386X87Modes(t *testing.T) {
@@ -937,7 +1482,8 @@ func TestTranslate386X87Modes(t *testing.T) {
 		`asm sideeffect "fnstcw $0"`,
 		`asm sideeffect "fldcw $0"`,
 		`asm sideeffect "fldl $1; frndint; fstpl $0"`,
-		`asm sideeffect "fldl $1; fistpll $0"`,
+		`asm sideeffect "cmpb $$0, $3; je 1f; fildll $2;`,
+		`1: fldl $1; 2: fistpll $0`,
 	} {
 		if !strings.Contains(hardware, want) {
 			t.Fatalf("hardware x87 IR missing %q:\n%s", want, hardware)
@@ -986,7 +1532,7 @@ func TestTranslate386X87Modes(t *testing.T) {
 func TestTranslate386X87Codegen(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 	ir := translate386RoundingIR(t, X87Hardware)
 	dir := t.TempDir()
@@ -1013,7 +1559,7 @@ func TestTranslate386X87Codegen(t *testing.T) {
 			args = append(args, "-filetype=asm", llPath, "-o", asmPath)
 			if output, err := exec.Command(llc, args...).CombinedOutput(); err != nil {
 				if unsupported386Target(string(output)) {
-					t.Skipf("llc lacks 386 target: %s", output)
+					t.Fatalf("llc lacks 386 target: %s", output)
 				}
 				t.Fatalf("llc failed: %v\n%s", err, output)
 			}
@@ -1080,14 +1626,7 @@ func TestTranslate386X87Codegen(t *testing.T) {
 
 func translate386RoundingIR(t *testing.T, mode X87Mode) string {
 	t.Helper()
-	file, err := Parse(ArchAMD64, `TEXT round(SB),NOSPLIT,$0-16
-	FMOVD value+0(FP), F0
-	FSTCW -2(SP)
-	FLDCW -2(SP)
-	FRNDINT
-	FMOVVP F0, ret+8(FP)
-	RET
-`)
+	file, err := Parse(ArchAMD64, x86X87LegacyBoundedRoundingSource(mode))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1185,7 +1724,7 @@ func compile386IR(t *testing.T, ir, name string) {
 	t.Helper()
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 	tmp := t.TempDir()
 	llPath := filepath.Join(tmp, name+".ll")
@@ -1196,7 +1735,7 @@ func compile386IR(t *testing.T, ir, name string) {
 	cmd := exec.Command(llc, "-mtriple=i386-unknown-linux-gnu", "-filetype=obj", llPath, "-o", objPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		if unsupported386Target(string(out)) {
-			t.Skipf("llc does not support i386: %s", strings.TrimSpace(string(out)))
+			t.Fatalf("llc does not support i386: %s", strings.TrimSpace(string(out)))
 		}
 		t.Fatalf("llc failed: %v\n%s", err, out)
 	}
@@ -1209,246 +1748,15 @@ func TestRuntimeExec386Core(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	clang := findLLVM22Tool("clang")
 	if llc == "" || clang == "" {
-		t.Skip("llc/clang not found")
+		t.Fatal("llc/clang not found")
 	}
-	file, err := Parse(ArchAMD64, `
-TEXT addCarry(SB),NOSPLIT,$0-12
-	MOVL a+0(FP), AX
-	MOVL b+4(FP), BX
-	CMPL AX, $0
-	ADCL BX, AX
-	MOVL AX, ret+8(FP)
-	RET
-
-TEXT cpuidProbe(SB),NOSPLIT,$0-0
-	PUSHFL
-	PUSHFL
-	XORL $0x200000, 0(SP)
-	POPFL
-	PUSHFL
-	POPL AX
-	XORL 0(SP), AX
-	POPFL
-	TESTL $0x200000, AX
-	JNE cpuidAvailable
-	MOVL $0, AX
-	RET
-cpuidAvailable:
-	MOVL $1, AX
-	RET
-
-TEXT frameAddress(SB),NOSPLIT,$0-12
-	LEAL a+0(FP), SI
-	MOVL $41, 4(SI)
-	MOVL b+4(FP), AX
-	MOVL AX, ret+8(FP)
-	RET
-
-TEXT copyForward(SB),NOSPLIT,$0-12
-	MOVL dst+0(FP), DI
-	MOVL src+4(FP), SI
-	MOVL n+8(FP), CX
-	CLD
-	REP; MOVSB
-	RET
-
-TEXT copyBackward(SB),NOSPLIT,$0-12
-	MOVL dst+0(FP), DI
-	MOVL src+4(FP), SI
-	MOVL n+8(FP), CX
-	ADDL CX, DI
-	ADDL CX, SI
-	DECL DI
-	DECL SI
-	STD
-	REP; MOVSB
-	CLD
-	RET
-
-TEXT copyBackwardRestoredDF(SB),NOSPLIT,$0-12
-	MOVL dst+0(FP), DI
-	MOVL src+4(FP), SI
-	MOVL n+8(FP), CX
-	ADDL CX, DI
-	ADDL CX, SI
-	DECL DI
-	DECL SI
-	STD
-	PUSHFL
-	CLD
-	POPFL
-	REP; MOVSB
-	CLD
-	RET
-
-TEXT fillWords(SB),NOSPLIT,$0-12
-	MOVL dst+0(FP), DI
-	MOVL value+4(FP), AX
-	MOVL n+8(FP), CX
-	CLD
-	REP; STOSL
-	RET
-
-TEXT findByte(SB),NOSPLIT,$0-16
-	MOVL data+0(FP), DI
-	MOVL n+4(FP), CX
-	MOVL value+8(FP), AX
-	CLD
-	REPN; SCASB
-	MOVL CX, ret+12(FP)
-	RET
-
-TEXT zeroLengthScanPreservesZF(SB),NOSPLIT,$0-8
-	MOVL data+0(FP), DI
-	MOVL $0, CX
-	CMPL AX, AX
-	REPN; SCASB
-	JNE zfLost
-	MOVL $1, AX
-	MOVL AX, ret+4(FP)
-	RET
-zfLost:
-	MOVL $0, AX
-	MOVL AX, ret+4(FP)
-	RET
-
-TEXT negateHasCarry(SB),NOSPLIT,$0-8
-	MOVL value+0(FP), AX
-	NEGL AX
-	SETCS BX
-	MOVL BX, ret+4(FP)
-	RET
-
-TEXT floorValue(SB),NOSPLIT,$0-16
-	FMOVD value+0(FP), F0
-	FSTCW -2(SP)
-	MOVW -2(SP), AX
-	ANDW $0xf3ff, AX
-	ORW $0x0400, AX
-	MOVW AX, -4(SP)
-	FLDCW -4(SP)
-	FRNDINT
-	FLDCW -2(SP)
-	FMOVDP F0, ret+8(FP)
-	RET
-
-TEXT uint32ToFloat64(SB),NOSPLIT,$0-12
-	MOVL value+0(FP), AX
-	MOVL AX, 0(SP)
-	MOVL $0, 4(SP)
-	FMOVV 0(SP), F0
-	FMOVDP F0, ret+4(FP)
-	RET
-
-TEXT cas64(SB),NOSPLIT,$0-0
-	LOCK
-	CMPXCHG8B (SI)
-	SETEQ AX
-	RET
-
-TEXT xadd32(SB),NOSPLIT,$0-12
-	MOVL ptr+0(FP), BX
-	MOVL delta+4(FP), AX
-	MOVL AX, CX
-	LOCK
-	XADDL AX, 0(BX)
-	ADDL CX, AX
-	MOVL AX, ret+8(FP)
-	RET
-
-TEXT identity64(SB),NOSPLIT,$0-16
-	MOVL value_lo+0(FP), AX
-	MOVL AX, ret_lo+8(FP)
-	MOVL value_hi+4(FP), AX
-	MOVL AX, ret_hi+12(FP)
-	RET
-
-TEXT identityFloat64(SB),NOSPLIT,$0-16
-	MOVL value_lo+0(FP), AX
-	MOVL AX, ret_lo+8(FP)
-	MOVL value_hi+4(FP), AX
-	MOVL AX, ret_hi+12(FP)
-	RET
-
-TEXT readFS(SB),NOSPLIT,$0-4
-	MOVL 0x18(FS), AX
-	MOVL AX, ret+0(FP)
-	RET
-
-TEXT roundNearest(SB),NOSPLIT,$0-16
-	FMOVD value+0(FP), F0
-	FRNDINT
-	FMOVDP F0, ret+8(FP)
-	RET
-`)
+	// Keep all eighteen original operations and manual register transports.
+	// Only the separately verified counterpart supplies real local x87 scratch.
+	file, err := Parse(ArchAMD64, runtime386BoundedScratchAssembly(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig := FuncSig{
-		Name: "addCarry", Args: []LLVMType{I32, I32}, Ret: I32,
-		Frame: FrameLayout{
-			Params:  []FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}, {Offset: 4, Type: I32, Index: 1, Field: -1}},
-			Results: []FrameSlot{{Offset: 8, Type: I32, Index: 0, Field: -1}},
-		},
-	}
-	frameSig := func(name string, args []LLVMType, ret LLVMType, params, results []FrameSlot) FuncSig {
-		return FuncSig{
-			Name: name, Args: args, Ret: ret,
-			Frame: FrameLayout{Params: params, Results: results},
-		}
-	}
-	ir, err := Translate(file, Options{
-		TargetTriple: "i686-pc-windows-msvc",
-		Goarch:       "386",
-		Sigs: map[string]FuncSig{
-			"addCarry":   sig,
-			"cpuidProbe": {Name: "cpuidProbe", Ret: I32},
-			"frameAddress": frameSig("frameAddress", []LLVMType{I32, I32}, I32,
-				[]FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}, {Offset: 4, Type: I32, Index: 1, Field: -1}},
-				[]FrameSlot{{Offset: 8, Type: I32, Index: 0, Field: -1}}),
-			"copyForward": frameSig("copyForward", []LLVMType{Ptr, Ptr, I32}, Void,
-				[]FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}, {Offset: 4, Type: Ptr, Index: 1, Field: -1}, {Offset: 8, Type: I32, Index: 2, Field: -1}}, nil),
-			"copyBackward": frameSig("copyBackward", []LLVMType{Ptr, Ptr, I32}, Void,
-				[]FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}, {Offset: 4, Type: Ptr, Index: 1, Field: -1}, {Offset: 8, Type: I32, Index: 2, Field: -1}}, nil),
-			"copyBackwardRestoredDF": frameSig("copyBackwardRestoredDF", []LLVMType{Ptr, Ptr, I32}, Void,
-				[]FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}, {Offset: 4, Type: Ptr, Index: 1, Field: -1}, {Offset: 8, Type: I32, Index: 2, Field: -1}}, nil),
-			"fillWords": frameSig("fillWords", []LLVMType{Ptr, I32, I32}, Void,
-				[]FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}, {Offset: 4, Type: I32, Index: 1, Field: -1}, {Offset: 8, Type: I32, Index: 2, Field: -1}}, nil),
-			"findByte": frameSig("findByte", []LLVMType{Ptr, I32, I32}, I32,
-				[]FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}, {Offset: 4, Type: I32, Index: 1, Field: -1}, {Offset: 8, Type: I32, Index: 2, Field: -1}},
-				[]FrameSlot{{Offset: 12, Type: I32, Index: 0, Field: -1}}),
-			"zeroLengthScanPreservesZF": frameSig("zeroLengthScanPreservesZF", []LLVMType{Ptr}, I32,
-				[]FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}},
-				[]FrameSlot{{Offset: 4, Type: I32, Index: 0, Field: -1}}),
-			"negateHasCarry": frameSig("negateHasCarry", []LLVMType{I32}, I32,
-				[]FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}},
-				[]FrameSlot{{Offset: 4, Type: I32, Index: 0, Field: -1}}),
-			"floorValue": frameSig("floorValue", []LLVMType{LLVMType("double")}, LLVMType("double"),
-				[]FrameSlot{{Offset: 0, Type: LLVMType("double"), Index: 0, Field: -1}},
-				[]FrameSlot{{Offset: 8, Type: LLVMType("double"), Index: 0, Field: -1}}),
-			"uint32ToFloat64": frameSig("uint32ToFloat64", []LLVMType{I32}, LLVMType("double"),
-				[]FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}},
-				[]FrameSlot{{Offset: 4, Type: LLVMType("double"), Index: 0, Field: -1}}),
-			"cas64": {
-				Name: "cas64", Args: []LLVMType{Ptr, I32, I32, I32, I32}, Ret: I1,
-				ArgRegs: []Reg{SI, AX, DX, BX, CX},
-			},
-			"xadd32": frameSig("xadd32", []LLVMType{Ptr, I32}, I32,
-				[]FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}, {Offset: 4, Type: I32, Index: 1, Field: -1}},
-				[]FrameSlot{{Offset: 8, Type: I32, Index: 0, Field: -1}}),
-			"identity64": frameSig("identity64", []LLVMType{I64}, I64,
-				[]FrameSlot{{Offset: 0, Type: I64, Index: 0, Field: -1}},
-				[]FrameSlot{{Offset: 8, Type: I64, Index: 0, Field: -1}}),
-			"identityFloat64": frameSig("identityFloat64", []LLVMType{LLVMType("double")}, LLVMType("double"),
-				[]FrameSlot{{Offset: 0, Type: LLVMType("double"), Index: 0, Field: -1}},
-				[]FrameSlot{{Offset: 8, Type: LLVMType("double"), Index: 0, Field: -1}}),
-			"readFS": frameSig("readFS", nil, I32, nil,
-				[]FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}}),
-			"roundNearest": frameSig("roundNearest", []LLVMType{LLVMType("double")}, LLVMType("double"),
-				[]FrameSlot{{Offset: 0, Type: LLVMType("double"), Index: 0, Field: -1}},
-				[]FrameSlot{{Offset: 8, Type: LLVMType("double"), Index: 0, Field: -1}}),
-		},
-	})
+	ir, err := Translate(file, runtime386CoreOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1460,72 +1768,7 @@ TEXT roundNearest(SB),NOSPLIT,$0-16
 	if err := os.WriteFile(llPath, []byte(ir), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	const cSource = `
-int _fltused;
-extern int addCarry(int, int);
-extern int cpuidProbe(void);
-extern int frameAddress(int, int);
-extern void copyForward(unsigned char *, const unsigned char *, unsigned int);
-extern void copyBackward(unsigned char *, const unsigned char *, unsigned int);
-extern void copyBackwardRestoredDF(unsigned char *, const unsigned char *, unsigned int);
-extern void fillWords(unsigned int *, unsigned int, unsigned int);
-extern unsigned int findByte(const unsigned char *, unsigned int, unsigned int);
-extern unsigned int zeroLengthScanPreservesZF(const unsigned char *);
-extern unsigned int negateHasCarry(unsigned int);
-extern double floorValue(double);
-extern double uint32ToFloat64(unsigned int);
-extern _Bool cas64(unsigned long long *, unsigned int, unsigned int, unsigned int, unsigned int);
-extern unsigned int xadd32(unsigned int *, unsigned int);
-extern unsigned long long identity64(unsigned long long);
-extern double identityFloat64(double);
-extern unsigned int readFS(void);
-extern double roundNearest(double);
-int main(void) {
-    unsigned int i;
-    const unsigned char source[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-    unsigned char copied[8] = {0};
-    unsigned char overlap[9] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
-    unsigned char restoredOverlap[9] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
-    unsigned char forwardOverlap[5] = {1, 2, 3, 4, 5};
-    unsigned int words[4] = {0};
-    __declspec(align(8)) unsigned long long word = 0x1122334455667788ULL;
-    unsigned int atomicWord = 10;
-    if (addCarry(20, 22) != 42) return 11;
-    if (cpuidProbe() != 1) return 12;
-    if (frameAddress(20, 22) != 41) return 13;
-    copyForward(copied, source, 8);
-    for (i = 0; i < 8; i++) if (copied[i] != source[i]) return 14;
-    copyBackward(overlap + 1, overlap, 8);
-    for (i = 0; i < 8; i++) if (overlap[i + 1] != i) return 15;
-    copyBackwardRestoredDF(restoredOverlap + 1, restoredOverlap, 8);
-    for (i = 0; i < 8; i++) if (restoredOverlap[i + 1] != i) return 31;
-    fillWords(words, 0x89abcdefU, 4);
-    for (i = 0; i < 4; i++) if (words[i] != 0x89abcdefU) return 16;
-    if (findByte(source, 8, 4) != 4) return 17;
-    if (findByte(source, 8, 9) != 0) return 18;
-    if (zeroLengthScanPreservesZF(source) != 1) return 32;
-    if (negateHasCarry(0) != 0 || negateHasCarry(7) != 1) return 33;
-    if (floorValue(3.75) != 3.0 || floorValue(-3.25) != -4.0) return 19;
-    if (uint32ToFloat64(0xffffffffU) != 4294967295.0) return 20;
-    if (!cas64(&word, 0x55667788U, 0x11223344U, 0xaabbccddU, 0x99aabbccU)) return 21;
-    if (word != 0x99aabbccaabbccddULL) return 22;
-    if (cas64(&word, 0, 0, 1, 2) || word != 0x99aabbccaabbccddULL) return 23;
-    if (xadd32(&atomicWord, 5) != 15 || atomicWord != 15) return 24;
-    if (identity64(0x8877665544332211ULL) != 0x8877665544332211ULL) return 25;
-    if (identityFloat64(-123.75) != -123.75) return 26;
-    copyForward(forwardOverlap + 1, forwardOverlap, 4);
-    for (i = 0; i < 5; i++) if (forwardOverlap[i] != 1) return 27;
-    if (readFS() == 0) return 28;
-    if (roundNearest(2.5) != 2.0 || roundNearest(3.5) != 4.0 || roundNearest(-1.5) != -2.0) return 29;
-    {
-        union { double f; unsigned long long u; } rounded;
-        rounded.f = roundNearest(-0.5);
-        if (rounded.u != 0x8000000000000000ULL) return 30;
-    }
-    return 0;
-}
-`
-	if err := os.WriteFile(cPath, []byte(cSource), 0o644); err != nil {
+	if err := os.WriteFile(cPath, []byte(runtime386CoreCSource), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command(llc, "-mtriple=i686-pc-windows-msvc", "-filetype=obj", llPath, "-o", objPath).CombinedOutput(); err != nil {

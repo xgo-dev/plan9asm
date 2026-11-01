@@ -144,10 +144,10 @@ func arm64InstructionFamily(op string) string {
 	switch {
 	case isARM64BranchOpcode(op):
 		return "control-flow"
+	case strings.HasPrefix(op, "CAS") || strings.HasPrefix(op, "SWP") || strings.Contains(op, "XR") || strings.Contains(op, "XP"):
+		return "atomic-memory"
 	case strings.HasPrefix(op, "LD") || strings.HasPrefix(op, "ST") || strings.HasPrefix(op, "MOV"):
 		return "load-store-move"
-	case strings.HasPrefix(op, "CAS") || strings.HasPrefix(op, "SWP") || strings.Contains(op, "XR"):
-		return "atomic-memory"
 	case strings.HasPrefix(op, "AES") || strings.HasPrefix(op, "SHA"):
 		return "crypto"
 	case strings.HasPrefix(op, "V"):
@@ -233,7 +233,7 @@ func isARMBranchOpcode(op string) bool {
 
 func isInstructionDirective(op string) bool {
 	switch op {
-	case "TEXT", "DATA", "GLOBL", "BYTE", "WORD", "LONG", "QUAD", "PCALIGN", "FUNCDATA", "PCDATA":
+	case "TEXT", "DATA", "GLOBL", "BYTE", "WORD", "LONG", "QUAD", "PCALIGN", "PCALIGNMAX", "FUNCDATA", "PCDATA":
 		return true
 	default:
 		return false
@@ -314,6 +314,9 @@ func registerClass(arch Arch, goarch string, reg Reg) string {
 	if arch == ArchARM64 {
 		if r == "ZR" {
 			return "zero-register"
+		}
+		if r == "RSP" {
+			return "stack-pointer"
 		}
 		if prefix, index, _, ok := regRangeParts(Reg(r)); ok {
 			switch {
@@ -402,17 +405,47 @@ func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
 	if strings.HasPrefix(normalizeInstructionOpcode(ins.Op), "REP") {
 		return fmt.Errorf("%w: REP prefix must be probed with its following instruction", ErrProbeNeedsContext)
 	}
+	if arch == ArchAMD64 && goarch == "386" && normalizeInstructionOpcode(ins.Op) == "JMP" &&
+		len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
+		return fmt.Errorf("%w: %s uses the 386 assembler's legacy numeric branch relocation and requires final text layout", ErrProbeNeedsContext, ins.Raw)
+	}
+	if arch == ArchARM && normalizeInstructionOpcode(ins.Op) == "RFE" {
+		return fmt.Errorf("%w: %s returns through privileged exception state", ErrProbeNeedsContext, ins.Raw)
+	}
+	if arch == ArchARM64 {
+		op := normalizeInstructionOpcode(ins.Op)
+		if op == "ADR" || op == "ADRP" {
+			return fmt.Errorf("%w: %s requires the final function-local label layout", ErrProbeNeedsContext, ins.Raw)
+		}
+		switch op {
+		case "TLBI", "SYS", "SYSL", "DCPS1", "DCPS2", "DCPS3", "DRPS", "ERET", "HLT", "HVC", "SMC":
+			return fmt.Errorf("%w: %s depends on privileged ARM64 execution state", ErrProbeNeedsContext, ins.Raw)
+		}
+	}
 	for _, arg := range ins.Args {
+		if arch == ArchAMD64 {
+			if err := validateX86SymbolDisplacement(arg); err != nil {
+				return fmt.Errorf("%s: %w", ins.Raw, err)
+			}
+		}
+		if err := unresolvedSymbolicImmediateErrorForArch(arg, arch); err != nil {
+			return fmt.Errorf("%w: %s needs resolved assembler constants: %v", ErrProbeNeedsContext, ins.Raw, err)
+		}
 		switch arg.Kind {
 		case OpFP, OpFPAddr:
 			return fmt.Errorf("%w: %s uses an FP frame slot", ErrProbeNeedsContext, ins.Raw)
-		case OpImm:
-			if arg.ImmRaw != "" {
-				return fmt.Errorf("%w: %s uses a symbolic immediate", ErrProbeNeedsContext, ins.Raw)
-			}
 		case OpMem:
+			if arch == ArchAMD64 {
+				if err := unresolvedX86MemoryOffsetError(arg.Mem); err != nil {
+					return fmt.Errorf("%s: %w", ins.Raw, err)
+				}
+			}
 			if arg.Mem.Base == PC {
 				return fmt.Errorf("%w: %s uses a PC-relative target", ErrProbeNeedsContext, ins.Raw)
+			}
+			if arch == ArchARM && armMemoryOffsetNeedsContext(arg.Mem) ||
+				arch == ArchARM64 && arm64MemoryOffsetNeedsContext(arg.Mem) {
+				return fmt.Errorf("%w: %s uses an unresolved memory-offset macro", ErrProbeNeedsContext, ins.Raw)
 			}
 		case OpIdent:
 			if InstructionFamily(arch, string(ins.Op)) == "control-flow" {
@@ -421,24 +454,104 @@ func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
 		}
 	}
 
-	fn := Func{Sym: "plan9asm.probe", Instrs: []Instr{ins}}
+	instrs := []Instr{ins}
+	op, _, _, _ := armDecodeOp(string(ins.Op))
+	if arch == ArchARM && (op == "ADC" || op == "SBC" || op == "RSC") {
+		// A single-form coverage fixture may supply the ordinary implicit
+		// carry-family input with real source. CMP preserves every GPR
+		// and defines all NZCV bits, unlike invented entry flag slots.
+		// Do not apply this to other native predicates, a CPSR read, or full
+		// source sequences, which retain their independently checked context.
+		instrs = append([]Instr{{
+			Op: "CMP", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpReg, Reg: "R0"}},
+			Raw: "CMP R0,R0 // explicit single-instruction probe flags fixture",
+		}}, instrs...)
+	}
+	if arch == ArchARM64 {
+		_, handled, err := parseARM64CarryForm(Op(normalizeInstructionOpcode(ins.Op)), ins)
+		if handled {
+			if err != nil {
+				return err
+			}
+			// This is only the single-form coverage fixture. A real CMP
+			// preserves GP inputs and supplies C for the complete typed
+			// carry grammar; no entry flag slot or caller source is changed.
+			// Sequence and full-source consumers still require their own
+			// reaching flag definition on every original CFG path.
+			instrs = append([]Instr{{
+				Op: "CMP", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpReg, Reg: "R0"}},
+				Raw: "CMP R0,R0 // explicit single-instruction probe flags fixture",
+			}}, instrs...)
+		}
+	}
+	err := probeInstructionSequence(arch, goarch, instrs)
+	if arch == ArchARM && ins.Op == OpWORD && err != nil {
+		return fmt.Errorf("%w: %s requires surrounding instruction, register, and control-flow state: %v", ErrProbeNeedsContext, ins.Raw, err)
+	}
+	return err
+}
+
+// ProbeInstructionSequence runs a self-contained instruction sequence through
+// the real lowering pipeline. Coverage scanners use this for forms whose
+// meaning spans source directives, such as consecutive x86 BYTE/WORD/LONG/QUAD
+// directives that encode one or more machine instructions.
+func ProbeInstructionSequence(arch Arch, goarch string, instrs []Instr) error {
+	if len(instrs) == 0 {
+		return fmt.Errorf("empty instruction probe sequence")
+	}
+	if arch == ArchWASM {
+		return fmt.Errorf("%w: wasm instructions require their full function", ErrProbeNeedsContext)
+	}
+	return probeInstructionSequence(arch, goarch, instrs)
+}
+
+func probeInstructionSequence(arch Arch, goarch string, instrs []Instr) error {
+	fn := Func{Sym: "plan9asm.probe", Instrs: append([]Instr(nil), instrs...)}
+	if arch == ArchARM64 {
+		var err error
+		fn, err = arm64InstructionProbeFunc(instrs)
+		if err != nil {
+			return err
+		}
+	}
 	labels := map[string]struct{}{}
+	definedLabels := map[string]struct{}{}
 	sigs := map[string]FuncSig{
 		fn.Sym: {Name: fn.Sym, Ret: Void},
 	}
-	for _, arg := range ins.Args {
-		if arg.Kind == OpLabel {
-			labels[arg.Sym] = struct{}{}
-		}
-		if arg.Kind == OpSym && (ins.Op == OpCALL || ins.Op == OpJMP || normalizeInstructionOpcode(ins.Op) == "CALLNORESUME") {
-			name := strings.TrimSuffix(arg.Sym, "(SB)")
-			sigs[name] = FuncSig{Name: name, Ret: Void}
+	for _, ins := range instrs {
+		for _, arg := range ins.Args {
+			if err := unresolvedSymbolicImmediateErrorForArch(arg, arch); err != nil {
+				return fmt.Errorf("%w: %s needs resolved assembler constants: %v", ErrProbeNeedsContext, ins.Raw, err)
+			}
+			if arg.Kind == OpLabel {
+				labels[arg.Sym] = struct{}{}
+				if ins.Op == OpLABEL {
+					definedLabels[arg.Sym] = struct{}{}
+				}
+			}
+			if arg.Kind == OpSym && (ins.Op == OpCALL || ins.Op == OpJMP || normalizeInstructionOpcode(ins.Op) == "CALLNORESUME") {
+				name := strings.TrimSuffix(arg.Sym, "(SB)")
+				sigs[name] = FuncSig{Name: name, Ret: Void}
+			}
 		}
 	}
 	for label := range labels {
+		if _, ok := definedLabels[label]; ok {
+			continue
+		}
 		fn.Instrs = append(fn.Instrs, Instr{Op: OpLABEL, Args: []Operand{{Kind: OpLabel, Sym: label}}, Raw: label + ":"})
 	}
-	fn.Instrs = append(fn.Instrs, Instr{Op: OpRET, Raw: "RET"})
+	exit := Instr{Op: OpRET, Raw: "RET"}
+	if arch == ArchARM64 {
+		// Isolated data may overwrite LR or SP. A synthetic caller RET
+		// would incorrectly require that data to preserve return state.
+		// This compile-only harness ends with a real faulting zero branch;
+		// it is never executed or counted as runtime conformance. Original
+		// control instructions retain all their ABI and target checks.
+		exit = Instr{Op: "B", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: ZR}}}, Raw: "B (ZR)"}
+	}
+	fn.Instrs = append(fn.Instrs, exit)
 	file := &File{Arch: arch, Funcs: []Func{fn}}
 	triple := ""
 	switch goarch {

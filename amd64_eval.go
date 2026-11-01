@@ -6,6 +6,12 @@ import (
 )
 
 func (c *amd64Ctx) evalI64(op Operand) (string, error) {
+	if c.goReadOnlyOperand.allows(op, 8) {
+		return c.evalIntSized(op, I64)
+	}
+	if err := unresolvedSymbolicImmediateErrorForArch(op, ArchAMD64); err != nil {
+		return "", err
+	}
 	switch op.Kind {
 	case OpImm:
 		return fmt.Sprintf("%d", op.Imm), nil
@@ -26,18 +32,18 @@ func (c *amd64Ctx) evalI64(op Operand) (string, error) {
 		addrOnly := strings.HasPrefix(s, "$")
 		if addrOnly {
 			s = strings.TrimSpace(strings.TrimPrefix(s, "$"))
+			if mem, matched, err := parseX86SymbolIndexedMemory(s); matched {
+				if err != nil {
+					return "", err
+				}
+				return c.addrFromSymbolIndexedAddress(mem)
+			}
 			if mem, ok := parseMem(s); ok {
 				return c.addrFromMem(mem)
 			}
 		}
 		p, err := c.ptrFromSB(s)
 		if err != nil {
-			// Some runtime asm constants (e.g. $const_stackGuard) come from
-			// includes/macros that we don't fully materialize. Treat unresolved
-			// bare symbols as immediate zero to keep translation progressing.
-			if !strings.Contains(s, "(SB)") {
-				return "0", nil
-			}
 			return "", err
 		}
 		if addrOnly {

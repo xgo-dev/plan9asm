@@ -2,7 +2,6 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
-corpus_root="$repo_root/testdata/corpus"
 family_file="$repo_root/testdata/coverage/arm64-go-assembler-families.txt"
 baseline="$repo_root/testdata/coverage/arm64-xarch-plan9-baseline.json"
 cd "$repo_root"
@@ -19,7 +18,10 @@ fi
 tmp_root=$(mktemp -d)
 trap 'rm -rf "$tmp_root"' EXIT
 module_json="$tmp_root/xarch.json"
-go -C "$corpus_root" mod download -json golang.org/x/arch@v0.31.0 >"$module_json"
+# This official Go decoder corpus is independent of external-library manifests.
+# An explicit module@version can be downloaded outside a main module without
+# modifying the translator's go.mod/go.sum or recreating a compatibility ledger.
+GOWORK=off go -C "$tmp_root" mod download -json golang.org/x/arch@v0.31.0 >"$module_json"
 xarch_root=$("$python_cmd" - "$module_json" <<'PY'
 import json
 import sys
@@ -28,7 +30,9 @@ PY
 )
 source_cases="$xarch_root/arm64/arm64asm/testdata/plan9cases.txt"
 
-full_report="$tmp_root/full.json"
+mkdir -p "$repo_root/_out"
+oracle_parent=$(mktemp -d "$repo_root/_out/arm64-plan9-XXXXXX")
+full_report="$oracle_parent/full.json"
 go run "$repo_root/cmd/plan9asmscan" \
   -corpus=arm64-plan9 \
   -input="$source_cases" \
@@ -52,57 +56,26 @@ if changed:
 print(f"x/arch ARM64 Plan 9 decoder corpus: ops={actual['unique_ops']} forms={actual['unique_forms']} supported={actual['supported_forms']} context={actual['context_forms']} unsupported={actual['unsupported_forms']} parse_errors={actual['parse_err_count']}")
 PY
 
-accepted_cases="$tmp_root/accepted.txt"
-"$python_cmd" - "$source_cases" "$family_file" "$accepted_cases" "$(go env GOROOT)" "$tmp_root" <<'PY'
-import os
+go_path=$(command -v go)
+goroot=$("$go_path" env GOROOT)
+# The explicitly selected physical driver/SDK remain one observed role.
+readarray_inputs=$("$python_cmd" - "$go_path" "$goroot" "$source_cases" "$family_file" <<'PY'
 import pathlib
-import re
-import subprocess
 import sys
-
-source_path = pathlib.Path(sys.argv[1])
-family_path = pathlib.Path(sys.argv[2])
-accepted_path = pathlib.Path(sys.argv[3])
-goroot = pathlib.Path(sys.argv[4])
-tmp_root = pathlib.Path(sys.argv[5])
-families = {
-    line.strip()
-    for line in family_path.read_text(encoding="utf-8").splitlines()
-    if line.strip() and not line.lstrip().startswith("#")
-}
-selected = []
-for line in source_path.read_text(encoding="utf-8").splitlines():
-    if "|" not in line:
-        continue
-    _, asm = line.split("|", 1)
-    asm = asm.strip()
-    match = re.match(r"^([A-Z][A-Z0-9.]*)\s", asm)
-    if match and match.group(1).split(".", 1)[0] in families:
-        selected.append(line)
-
-env = os.environ.copy()
-env.update({"GOOS": "linux", "GOARCH": "arm64"})
-source = tmp_root / "probe.s"
-obj = tmp_root / "probe.o"
-accepted = []
-rejected = []
-for number, line in enumerate(selected):
-    _, asm = line.split("|", 1)
-    source.write_text(f'#include "textflag.h"\nTEXT ·probe{number}(SB),NOSPLIT,$0-0\n\t{asm.strip()}\n\tRET\n', encoding="utf-8")
-    result = subprocess.run(
-        ["go", "tool", "asm", "-I", str(goroot / "pkg" / "include"), "-o", str(obj), str(source)],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    (accepted if result.returncode == 0 else rejected).append(line)
-accepted_path.write_text("\n".join(accepted) + "\n", encoding="utf-8")
-print(f"x/arch required families: selected={len(selected)} native_go_accepted={len(accepted)} decoder_only_rejected={len(rejected)}")
-if not accepted or len(selected) < 300:
-    raise SystemExit("x/arch ARM64 Plan 9 family selection is unexpectedly small")
+for value in sys.argv[1:]:
+    print(pathlib.Path(value).resolve(strict=True))
 PY
+)
+go_path=$(printf '%s\n' "$readarray_inputs" | sed -n '1p')
+goroot=$(printf '%s\n' "$readarray_inputs" | sed -n '2p')
+source_cases=$(printf '%s\n' "$readarray_inputs" | sed -n '3p')
+family_file=$(printf '%s\n' "$readarray_inputs" | sed -n '4p')
+"$go_path" run "$repo_root/cmd/plan9asmgooracle" \
+  -cases="$source_cases" -families="$family_file" \
+  -go="$go_path" -goroot="$goroot" -out="$oracle_parent/go-oracle"
+accepted_cases="$oracle_parent/go-oracle/accepted.txt"
 
-accepted_report="$tmp_root/accepted.json"
+accepted_report="$oracle_parent/accepted.json"
 go run "$repo_root/cmd/plan9asmscan" \
   -corpus=arm64-plan9 \
   -input="$accepted_cases" \

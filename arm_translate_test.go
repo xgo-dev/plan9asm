@@ -8,7 +8,8 @@ import (
 func TestTranslateARMLinearAdd(t *testing.T) {
 	file, err := Parse(ArchARM, `TEXT ·Add(SB),NOSPLIT,$0-12
 	MOVW	a+0(FP), R0
-	ADD	b+4(FP), R0
+	MOVW	b+4(FP), R1
+	ADD	R1, R0
 	MOVW	R0, ret+8(FP)
 	RET
 `)
@@ -113,6 +114,8 @@ TEXT ·spin(SB),NOSPLIT,$0-0
 
 func TestTranslateARMSystemRegisterMoves(t *testing.T) {
 	ll := translateARMForTest(t, `TEXT ·systemregs(SB),NOSPLIT,$0-0
+	MOVW $0,R0
+	CMP R0,R0
 	MOVW CPSR, R0
 	MOVW R0, CPSR
 	MOVW FPCR, R1
@@ -121,7 +124,7 @@ func TestTranslateARMSystemRegisterMoves(t *testing.T) {
 `, map[string]FuncSig{"example.systemregs": {Name: "example.systemregs", Ret: Void}})
 	for _, want := range []string{
 		"mrs $0, cpsr",
-		"msr cpsr_fsxc, $0",
+		"msr cpsr_fs, $0",
 		"vmrs $0, fpscr",
 		"vmsr fpscr, $0",
 	} {

@@ -43,8 +43,12 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts NativeOptions) (mo
 	globals := map[string]llvm.Value{}
 	imports := map[string]llvm.Value{}
 	for i, fn := range f.Funcs {
-		v := llvm.AddFunction(mod, fmt.Sprintf("__plan9_native_%d", i), carrierTy)
-		v.SetLinkage(llvm.InternalLinkage)
+		name, linkage := fmt.Sprintf("__plan9_native_%d", i), llvm.InternalLinkage
+		if object, bound := opts.CodeEntries[fn.Sym]; bound {
+			name, linkage = object, llvm.ExternalLinkage
+		}
+		v := llvm.AddFunction(mod, name, carrierTy)
+		v.SetLinkage(linkage)
 		for _, attr := range []string{"naked", "noinline"} {
 			v.AddFunctionAttr(ctx.CreateEnumAttribute(llvm.AttributeKindID(attr), 0))
 		}

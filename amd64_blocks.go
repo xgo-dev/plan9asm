@@ -6,38 +6,91 @@ import (
 )
 
 type amd64Block struct {
-	name   string
-	instrs []Instr
+	name      string
+	instrs    []Instr
+	synthetic bool
+}
+
+func isAMD64ConditionalBranch(op Op) bool {
+	op = Op(strings.ToUpper(string(op)))
+	if _, known := x86CounterControlPropertiesForOpcode(op); known {
+		return true
+	}
+	return x86BranchCondition(op) != ""
+}
+
+// Branch lowering, byte dependencies and closed-loop predicates share the
+// complete condition-alias family. Counter-zero branches have a different role.
+func x86BranchCondition(op Op) string {
+	switch op {
+	case "JE", "JEQ", "JZ":
+		return "EQ"
+	case "JNE", "JNZ":
+		return "NE"
+	case "JL", "JLT", "JNGE":
+		return "LT"
+	case "JGE", "JNL":
+		return "GE"
+	case "JS", "JMI":
+		return "MI"
+	case "JNS", "JPL":
+		return "PL"
+	case "JLE", "JNG":
+		return "LE"
+	case "JG", "JGT", "JNLE":
+		return "GT"
+	case "JB", "JLO", "JC", "JCS", "JNAE":
+		return "CS"
+	case "JNC", "JCC", "JAE", "JHS", "JNB":
+		return "CC"
+	case "JBE", "JLS", "JNA":
+		return "LS"
+	case "JA", "JHI", "JNBE":
+		return "HI"
+	case "JO", "JOS":
+		return "OS"
+	case "JNO", "JOC":
+		return "OC"
+	case "JP", "JPE", "JPS":
+		return "PS"
+	case "JNP", "JPO", "JPC":
+		return "PC"
+	}
+	return ""
+}
+
+func isAMD64CounterZeroBranch(op Op) bool {
+	spec, known := x86CounterControlPropertiesForOpcode(op)
+	return known && !spec.decrement
 }
 
 func amd64SplitBlocks(fn Func) []amd64Block {
-	blocks := []amd64Block{{name: "entry"}}
+	names := newAssemblyBlockNames(fn)
+	blocks := []amd64Block{{name: names.fresh("entry"), synthetic: true}}
 	cur := 0
 	anon := 0
 
 	isPCRelTarget := func(ins Instr) (off int64, ok bool) {
 		op := strings.ToUpper(string(ins.Op))
-		switch Op(op) {
-		case "JMP",
-			"JE", "JEQ", "JZ", "JNE", "JNZ",
-			"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS", "JNA",
-			"JNC", "JC", "JCC":
-		default:
+		if op != "JMP" && op != "LOOP" && op != "XBEGIN" && !isAMD64ConditionalBranch(Op(op)) {
 			return 0, false
 		}
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpMem {
+		args := ins.Args
+		if op != "JMP" && len(args) == 2 && args[0].Kind == OpImm {
+			args = args[1:]
+		}
+		if len(args) != 1 || args[0].Kind != OpMem {
 			return 0, false
 		}
-		if !strings.EqualFold(string(ins.Args[0].Mem.Base), "PC") {
+		if !strings.EqualFold(string(args[0].Mem.Base), "PC") {
 			return 0, false
 		}
-		return ins.Args[0].Mem.Off, true
+		return args[0].Mem.Off, true
 	}
 
 	startAnon := func() {
 		anon++
-		blocks = append(blocks, amd64Block{name: fmt.Sprintf("anon_%d", anon)})
+		blocks = append(blocks, amd64Block{name: names.fresh(fmt.Sprintf("anon_%d", anon)), synthetic: true})
 		cur = len(blocks) - 1
 	}
 
@@ -46,16 +99,16 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 			return true
 		}
 		op := strings.ToUpper(string(ins.Op))
-		switch Op(op) {
-		case "JMP",
-			"JE", "JEQ", "JZ", "JNE", "JNZ",
-			"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS", "JNA",
-			"JNC", "JC", "JCC":
+		if _, ok := amd64FarReturnSpecs[Op(op)]; ok {
 			return true
-		default:
-			return false
 		}
+		if spec, ok := amd64SystemTransferSpecs[Op(op)]; ok && spec.terminates() {
+			return true
+		}
+		if op == "JMP" || op == "LOOP" || op == "XBEGIN" || isAMD64ConditionalBranch(Op(op)) {
+			return true
+		}
+		return false
 	}
 
 	linear := make([]Instr, 0, len(fn.Instrs))
@@ -79,8 +132,9 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 	for _, ins := range fn.Instrs {
 		if ins.Op == OpLABEL && len(ins.Args) == 1 && ins.Args[0].Kind == OpLabel {
 			lbl := ins.Args[0].Sym
-			if len(blocks[cur].instrs) == 0 && strings.HasPrefix(blocks[cur].name, "anon_") {
+			if cur != 0 && len(blocks[cur].instrs) == 0 && blocks[cur].synthetic {
 				blocks[cur].name = lbl
+				blocks[cur].synthetic = false
 				continue
 			}
 			blocks = append(blocks, amd64Block{name: lbl})
@@ -97,15 +151,22 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 		}
 	}
 
-	if len(blocks) > 1 && len(blocks[len(blocks)-1].instrs) == 0 && strings.HasPrefix(blocks[len(blocks)-1].name, "anon_") {
+	if len(blocks) > 1 && len(blocks[len(blocks)-1].instrs) == 0 && blocks[len(blocks)-1].synthetic {
 		blocks = blocks[:len(blocks)-1]
 	}
 	return blocks
 }
 
 func amd64LLVMBlockName(src string) string {
+	return "bb_" + amd64LLVMSafeName(src)
+}
+
+// Keep block names in a namespace distinct from SSA temporaries and register
+// allocas. Go permits local labels such as x1 and t1, which otherwise collide
+// with the translator's %x1 and %t1 values in LLVM IR.
+func amd64LLVMSafeName(src string) string {
 	if src == "" {
-		return "bb"
+		return "empty"
 	}
 	var out []byte
 	for i := 0; i < len(src); i++ {
@@ -115,16 +176,15 @@ func amd64LLVMBlockName(src string) string {
 			continue
 		}
 		out = append(out, '_')
+		out = append(out, "0123456789abcdef"[ch>>4])
+		out = append(out, "0123456789abcdef"[ch&0xf])
 	}
 	s := string(out)
 	if s == "" {
-		return "bb"
+		return "empty"
 	}
 	if s[0] >= '0' && s[0] <= '9' {
-		s = "bb_" + s
-	}
-	if s == "entry" {
-		s = "bb_entry"
+		s = "n_" + s
 	}
 	return s
 }

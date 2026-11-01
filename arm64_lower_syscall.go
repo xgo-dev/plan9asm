@@ -5,25 +5,22 @@ import "fmt"
 func (c *arm64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
 	case "SVC":
-		if len(ins.Args) > 1 || (len(ins.Args) == 1 && ins.Args[0].Kind != OpImm) {
-			return true, false, fmt.Errorf("arm64 SVC expects optional immediate operand: %q", ins.Raw)
+		form, err := parseARM64SyscallForm(c.targetTriple, ins)
+		if err != nil {
+			return true, false, err
 		}
-
-		darwinMode := false
-		if len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].Imm == 0x80 {
-			darwinMode = true
+		input, borrowed := c.nanosleepInputAt([2]int{c.currentBlock, c.currentInstruction})
+		if c.nanosleepInput != nil && (!borrowed || input.form != form) {
+			return true, false, fmt.Errorf("%w: changed Linux nanosleep input/emission", ErrProbeNeedsContext)
 		}
-
-		numReg := Reg("R8")
-		if _, ok := c.regSlot[numReg]; !ok {
-			// Darwin syscall asm passes trap number via R16.
-			numReg = Reg("R16")
-		}
-		num, err := c.loadReg(numReg)
+		num, err := c.loadReg(form.number)
 		if err != nil {
 			return true, false, err
 		}
 		loadArg := func(r Reg) (string, error) {
+			if borrowed && r != "R0" && r != "R1" {
+				return "0", nil // these registers are not nanosleep operand roles
+			}
 			if _, ok := c.regSlot[r]; !ok {
 				return "0", nil
 			}
@@ -56,15 +53,15 @@ func (c *arm64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err
 		}
 
 		r := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i64 @syscall(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n", r, num, a1, a2, a3, a4, a5, a6)
+		c.emitARM64SyscallIR(form, "  %%%s = call i64 @syscall(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n", r, num, a1, a2, a3, a4, a5, a6)
 		isErr := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, -1\n", isErr, r)
 		errno32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @cliteErrno()\n", errno32)
+		c.emitARM64SyscallIR(form, "  %%%s = call i32 @cliteErrno()\n", errno32)
 		errno64 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", errno64, errno32)
 
-		if darwinMode {
+		if form.os == arm64SyscallDarwinCarry {
 			// Darwin syscall asm checks carry flag (BCC) after SVC:
 			// - C=0 success, R0=r1
 			// - C=1 error,   R0=errno
@@ -73,18 +70,14 @@ func (c *arm64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err
 			if err := c.storeReg(Reg("R0"), "%"+r0); err != nil {
 				return true, false, err
 			}
-			if err := c.storeReg(Reg("R1"), "0"); err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsNSlot)
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", isErr, c.flagsCSlot)
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-			c.flagsWritten = true
+			c.recordMachineUnavailable("R1")
+			c.invalidateARM64Flags(form.flagsUnavailable)
+			c.storeFlag(c.flagsCSlot, "%"+isErr)
 			return true, false, nil
 		}
 
-		// Default path (Linux-like): return -errno on failure in R0.
+		// Linux's normal return writes R0 only. Other GP and existing NZCV
+		// values remain intact; SVC never supplies an uninitialized flag.
 		negErr := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = sub i64 0, %%%s\n", negErr, errno64)
 		r0 := c.newTmp()
@@ -92,15 +85,6 @@ func (c *arm64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err
 		if err := c.storeReg(Reg("R0"), "%"+r0); err != nil {
 			return true, false, err
 		}
-		// libc syscall has a single return value; keep R1 zero.
-		if err := c.storeReg(Reg("R1"), "0"); err != nil {
-			return true, false, err
-		}
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsNSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", isErr, c.flagsCSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-		c.flagsWritten = true
 		return true, false, nil
 	}
 	return false, false, nil
