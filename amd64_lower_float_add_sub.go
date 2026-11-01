@@ -2,22 +2,13 @@ package plan9asm
 
 import (
 	"fmt"
-	"strings"
 )
 
 func (c *amd64Ctx) lowerFloatAddSub(op Op, ins Instr) (bool, bool, error) {
-	base, _, _ := strings.Cut(strings.ToUpper(string(op)), ".")
-	if _, recognized := x86FloatAddSubSpecs[Op(base)]; !recognized {
-		return false, false, nil
-	}
-	if ins.Op != "" && !strings.EqualFold(string(ins.Op), string(op)) {
-		return true, false, fmt.Errorf("floating add/sub dispatch/source opcode mismatch: %s/%s", op, ins.Op)
-	}
-	ins.Op = op
-	form, recognized, err := x86FloatAddSubProperties(ins, c.goarch)
-	if err != nil || !recognized {
-		return recognized, false, err
-	}
+	return c.lowerFloatArithmetic(op, ins, x86FloatAddSubtract)
+}
+
+func (c *amd64Ctx) lowerFloatAddSubForm(ins Instr, form x86FloatAddSubForm) (bool, bool, error) {
 	return c.lowerFloatBinaryOperands(ins, form.x86FloatBinaryForm, func(lanes int, left, right, mask string) string {
 		return c.emitFloatAddSub(form, lanes, left, right, mask)
 	})
@@ -113,16 +104,16 @@ func (c *amd64Ctx) lowerFloatBinaryOperands(ins Instr, form x86FloatBinaryForm, 
 
 func (c *amd64Ctx) emitFloatAddSub(form x86FloatAddSubForm, lanes int, left, right, mask string) string {
 	if form.rounding != "" {
-		return c.emitRoundedFloatAddSub(lanes, form.spec.bits, left, right, form.spec.subtract, form.rounding)
+		return c.emitRoundedFloatAddSub(lanes, form.spec.bits, left, right, (form.spec.mode == amd64BinaryFloatingSub), form.rounding)
 	}
 	// Do not grant fast-math, reassociation or an ambient-rounding assumption.
 	// Dynamic strict operations retain x86 rounding/DAZ/FTZ/exception behavior.
 	operation := "fadd"
-	if form.spec.subtract {
+	if form.spec.mode == amd64BinaryFloatingSub {
 		operation = "fsub"
 	}
 	return c.emitStrictFloatBinary(form.x86FloatBinaryForm, operation, lanes, left, right, mask, func(lanes int, left, right, value string) string {
-		return c.emitFloatAddSubSpecial(form.spec.bits, lanes, left, right, form.spec.subtract, value)
+		return c.emitFloatAddSubSpecial(form.spec.bits, lanes, left, right, (form.spec.mode == amd64BinaryFloatingSub), value)
 	})
 }
 

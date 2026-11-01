@@ -6,24 +6,16 @@ import (
 )
 
 func (c *amd64Ctx) lowerFloatMulDiv(op Op, ins Instr) (bool, bool, error) {
-	base, _, _ := strings.Cut(strings.ToUpper(string(op)), ".")
-	if _, recognized := x86FloatMulDivSpecs[Op(base)]; !recognized {
-		return false, false, nil
-	}
-	if ins.Op != "" && !strings.EqualFold(string(ins.Op), string(op)) {
-		return true, false, fmt.Errorf("floating mul/div dispatch/source opcode mismatch: %s/%s", op, ins.Op)
-	}
-	ins.Op = op
-	form, recognized, err := x86FloatMulDivProperties(ins, c.goarch)
-	if err != nil || !recognized {
-		return recognized, false, err
-	}
+	return c.lowerFloatArithmetic(op, ins, x86FloatMultiplyDivide)
+}
+
+func (c *amd64Ctx) lowerFloatMulDivForm(ins Instr, form x86FloatMulDivForm) (bool, bool, error) {
 	return c.lowerFloatBinaryOperands(ins, form.x86FloatBinaryForm, func(lanes int, left, right, mask string) string {
 		if form.rounding != "" {
 			return c.emitRoundedFloatMulDiv(form, lanes, left, right)
 		}
 		operation := "fmul"
-		if form.spec.divide {
+		if form.spec.mode == amd64BinaryFloatingDiv {
 			operation = "fdiv"
 		}
 		return c.emitStrictFloatBinary(form.x86FloatBinaryForm, operation, lanes, left, right, mask, func(lanes int, left, right, value string) string {
@@ -97,7 +89,7 @@ func (c *amd64Ctx) emitRoundedFloatMulDiv(form x86FloatMulDivForm, lanes int, le
 			values[index] = "%" + raw
 		}
 		raw, value := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i%d @__plan9asm_mul_div_round_f%d(i%d %s, i%d %s, i1 %t, i32 %s, i32 %s)\n", raw, form.bits, form.bits, form.bits, values[0], form.bits, values[1], form.spec.divide, mode, mxcsr)
+		fmt.Fprintf(c.b, "  %%%s = call i%d @__plan9asm_mul_div_round_f%d(i%d %s, i%d %s, i1 %t, i32 %s, i32 %s)\n", raw, form.bits, form.bits, form.bits, values[0], form.bits, values[1], (form.spec.mode == amd64BinaryFloatingDiv), mode, mxcsr)
 		fmt.Fprintf(c.b, "  %%%s = bitcast i%d %%%s to %s\n", value, form.bits, raw, typ)
 		if lanes == 1 {
 			return "%" + value

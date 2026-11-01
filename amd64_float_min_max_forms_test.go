@@ -62,7 +62,7 @@ func TestX86FloatingMinMaxIndependentCompleteEncoderRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(x86FloatMinMaxSpecs) != len(x86FloatingMinMaxCases) {
+	if x86FloatArithmeticFamilyCount(x86FloatMinimumMaximum) != len(x86FloatingMinMaxCases) {
 		t.Fatal("incomplete typed MIN/MAX family")
 	}
 	for _, member := range x86FloatingMinMaxCases {

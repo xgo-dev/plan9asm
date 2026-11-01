@@ -84,10 +84,7 @@ func x86CallerVectorMoveKnown(ins Instr) bool {
 	if f, known, err := x86SignedPackedFloatProperties(ins, "amd64"); known {
 		return err == nil && !f.mmx
 	}
-	if _, recognized, err := x86FloatMulDivProperties(ins, "amd64"); recognized {
-		return err == nil
-	}
-	if _, recognized, err := x86FloatMinMaxProperties(ins, "amd64"); recognized {
+	if _, recognized, err := x86FloatArithmeticProperties(ins, "amd64", ""); recognized {
 		return err == nil
 	}
 	if form, recognized, err := x86PackedExtendProperties(ins, "amd64"); recognized {
@@ -110,9 +107,6 @@ func x86CallerVectorMoveKnown(ins Instr) bool {
 	}
 	if form, recognized, err := x86PackedUnpackProperties(ins, "amd64"); recognized {
 		return err == nil && !form.mmx
-	}
-	if _, recognized, err := x86FloatAddSubProperties(ins, "amd64"); recognized {
-		return err == nil
 	}
 	if form, recognized, err := x86PackedLogicalProperties(ins, "amd64"); recognized {
 		return err == nil && !form.mmx
@@ -245,10 +239,7 @@ func x86CallerVectorMoveStep(ins *Instr, state *x86SourceStackState, proof *x86G
 	if f, known, err := x86SignedPackedFloatProperties(*ins, "amd64"); known {
 		return err == nil && x86CallerSignedPackedFloatStep(ins, f, state, proof)
 	}
-	if form, recognized, err := x86FloatMulDivProperties(*ins, "amd64"); recognized {
-		return err == nil && x86CallerFloatBinaryStep(ins, form.x86FloatBinaryForm, state, proof)
-	}
-	if form, recognized, err := x86FloatMinMaxProperties(*ins, "amd64"); recognized {
+	if form, recognized, err := x86FloatArithmeticProperties(*ins, "amd64", ""); recognized {
 		return err == nil && x86CallerFloatBinaryStep(ins, form.x86FloatBinaryForm, state, proof)
 	}
 	if form, recognized, err := x86PackedExtendProperties(*ins, "amd64"); recognized {
@@ -272,9 +263,6 @@ func x86CallerVectorMoveStep(ins *Instr, state *x86SourceStackState, proof *x86G
 	}
 	if form, recognized, err := x86PackedUnpackProperties(*ins, "amd64"); recognized {
 		return err == nil && x86CallerPackedUnpackStep(ins, form, state, proof)
-	}
-	if form, recognized, err := x86FloatAddSubProperties(*ins, "amd64"); recognized {
-		return err == nil && x86CallerFloatAddSubStep(ins, form, state, proof)
 	}
 	if form, recognized, err := x86PackedLogicalProperties(*ins, "amd64"); recognized {
 		return err == nil && x86CallerPackedLogicalStep(ins, form, state, proof)
@@ -489,10 +477,7 @@ func x86InstructionMemoryShape(ins Instr, index int, arch string) (width int64, 
 	if f, recognized, err := x86UnsignedIntegerFloatProperties(ins, arch); recognized {
 		return int64(f.sourceBits / 8), false, err == nil && f.memory == index
 	}
-	if form, recognized, err := x86FloatMulDivProperties(ins, arch); recognized {
-		return int64(form.memoryBytes), false, err == nil && form.memory == index
-	}
-	if form, recognized, err := x86FloatMinMaxProperties(ins, arch); recognized {
+	if form, recognized, err := x86FloatArithmeticProperties(ins, arch, ""); recognized {
 		return int64(form.memoryBytes), false, err == nil && form.memory == index
 	}
 	if f, recognized, err := x86InsertExtractProperties(ins, arch); recognized {
@@ -506,9 +491,6 @@ func x86InstructionMemoryShape(ins Instr, index int, arch string) (width int64, 
 	}
 	if form, recognized, err := x86PackedUnpackProperties(ins, arch); recognized {
 		return int64(form.memoryBytes), false, err == nil && !form.mmx && !form.legacy && form.memory == index
-	}
-	if form, recognized, err := x86FloatAddSubProperties(ins, arch); recognized {
-		return int64(form.memoryBytes), false, err == nil && form.memory == index
 	}
 	if form, recognized, err := x86PackedLogicalProperties(ins, arch); recognized {
 		return int64(form.memoryBytes), false, err == nil && !form.mmx && form.memory == index

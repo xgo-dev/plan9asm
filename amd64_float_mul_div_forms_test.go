@@ -37,7 +37,7 @@ func x86FloatMulDivFormats(arch string) []string {
 }
 
 func TestX86FloatMulDivEveryGoOpcodeAttribute(t *testing.T) {
-	if len(x86FloatMulDivSpecs) != 16 {
+	if x86FloatArithmeticFamilyCount(x86FloatMultiplyDivide) != 16 {
 		t.Fatal("incomplete floating MUL/DIV family")
 	}
 	for _, opcode := range x86FloatMulDivOpcodes() {
@@ -45,9 +45,13 @@ func TestX86FloatMulDivEveryGoOpcodeAttribute(t *testing.T) {
 		if strings.HasSuffix(opcode, "PD") || strings.HasSuffix(opcode, "SD") {
 			bits = 64
 		}
-		want := x86FloatMulDivSpec{bits, !strings.HasPrefix(opcode, "V"),
-			strings.HasSuffix(opcode, "SS") || strings.HasSuffix(opcode, "SD"), strings.Contains(opcode, "DIV")}
-		if got, found := x86FloatMulDivSpecs[Op(opcode)]; !found || got != want {
+		mode := amd64BinaryFloatingMul
+		if strings.Contains(opcode, "DIV") {
+			mode = amd64BinaryFloatingDiv
+		}
+		want := x86FloatArithmeticSpec{bits, !strings.HasPrefix(opcode, "V"),
+			strings.HasSuffix(opcode, "SS") || strings.HasSuffix(opcode, "SD"), mode}
+		if got, found := x86FloatArithmeticSpecs[Op(opcode)]; !found || got != want {
 			t.Fatalf("%s typed specification differs from independent mnemonic: %+v/%+v", opcode, got, want)
 		}
 	}

@@ -16,19 +16,13 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 	if known, term, err := c.lowerLegacyPackedMove(op, ins); known {
 		return known, term, err
 	}
-	if ok, term, err := c.lowerFloatMulDiv(op, ins); ok {
+	if ok, term, err := c.lowerFloatArithmetic(op, ins, ""); ok {
 		return ok, term, err
 	}
 	if ok, terminated, err := c.lowerVectorZero(op, ins); ok {
 		return ok, terminated, err
 	}
 	if ok, term, err := c.lowerInsertExtractFamily(op, ins); ok {
-		return ok, term, err
-	}
-	if ok, term, err := c.lowerFloatAddSub(op, ins); ok {
-		return ok, term, err
-	}
-	if ok, term, err := c.lowerFloatMinMax(op, ins); ok {
 		return ok, term, err
 	}
 	if ok, term, err := c.lowerPackedLogicalFamily(op, ins); ok {

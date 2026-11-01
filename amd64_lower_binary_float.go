@@ -26,12 +26,8 @@ type amd64BinaryFloatingSpec struct {
 	rawOnly  bool
 }
 
-// amd64BinaryFloatingSpecs covers Go 1.27's complete V-prefixed binary
-// floating-point family and the raw-only AVX-512 FP16 packed/scalar binary family.
-// Packed Go forms use _yvaddpd, while scalar Go forms and VSQRTSS/VSQRTSD
-// use _yvaddsd. SCALEF uses the same source/destination shape through
-// _yvscalefpd/_yvgetexpsd. MAX/MIN enable SAE; arithmetic, square-root, and
-// scale operations enable explicit rounding.
+// The residual catalog owns raw FP16 and SCALEF. Named f32/f64 arithmetic
+// and SQRT dispatch through their complete typed source grammars first.
 var amd64BinaryFloatingSpecs = map[Op]amd64BinaryFloatingSpec{
 	"VADDPH":    {laneBits: 16, mode: amd64BinaryFloatingAdd, rawOnly: true},
 	"VSUBPH":    {laneBits: 16, mode: amd64BinaryFloatingSub, rawOnly: true},
@@ -45,32 +41,6 @@ var amd64BinaryFloatingSpecs = map[Op]amd64BinaryFloatingSpec{
 	"VDIVSH":    {laneBits: 16, mode: amd64BinaryFloatingDiv, scalar: true, rawOnly: true},
 	"VMINSH":    {laneBits: 16, mode: amd64BinaryFloatingMin, scalar: true, sae: true, rawOnly: true},
 	"VMAXSH":    {laneBits: 16, mode: amd64BinaryFloatingMax, scalar: true, sae: true, rawOnly: true},
-	"VADDPS":    {laneBits: 32, mode: amd64BinaryFloatingAdd},
-	"VADDPD":    {laneBits: 64, mode: amd64BinaryFloatingAdd},
-	"VADDSS":    {laneBits: 32, mode: amd64BinaryFloatingAdd, scalar: true},
-	"VADDSD":    {laneBits: 64, mode: amd64BinaryFloatingAdd, scalar: true},
-	"VSUBPS":    {laneBits: 32, mode: amd64BinaryFloatingSub},
-	"VSUBPD":    {laneBits: 64, mode: amd64BinaryFloatingSub},
-	"VSUBSS":    {laneBits: 32, mode: amd64BinaryFloatingSub, scalar: true},
-	"VSUBSD":    {laneBits: 64, mode: amd64BinaryFloatingSub, scalar: true},
-	"VMULPS":    {laneBits: 32, mode: amd64BinaryFloatingMul},
-	"VMULPD":    {laneBits: 64, mode: amd64BinaryFloatingMul},
-	"VMULSS":    {laneBits: 32, mode: amd64BinaryFloatingMul, scalar: true},
-	"VMULSD":    {laneBits: 64, mode: amd64BinaryFloatingMul, scalar: true},
-	"VDIVPS":    {laneBits: 32, mode: amd64BinaryFloatingDiv},
-	"VDIVPD":    {laneBits: 64, mode: amd64BinaryFloatingDiv},
-	"VDIVSS":    {laneBits: 32, mode: amd64BinaryFloatingDiv, scalar: true},
-	"VDIVSD":    {laneBits: 64, mode: amd64BinaryFloatingDiv, scalar: true},
-	"VMAXPS":    {laneBits: 32, mode: amd64BinaryFloatingMax, sae: true},
-	"VMAXPD":    {laneBits: 64, mode: amd64BinaryFloatingMax, sae: true},
-	"VMAXSS":    {laneBits: 32, mode: amd64BinaryFloatingMax, scalar: true, sae: true},
-	"VMAXSD":    {laneBits: 64, mode: amd64BinaryFloatingMax, scalar: true, sae: true},
-	"VMINPS":    {laneBits: 32, mode: amd64BinaryFloatingMin, sae: true},
-	"VMINPD":    {laneBits: 64, mode: amd64BinaryFloatingMin, sae: true},
-	"VMINSS":    {laneBits: 32, mode: amd64BinaryFloatingMin, scalar: true, sae: true},
-	"VMINSD":    {laneBits: 64, mode: amd64BinaryFloatingMin, scalar: true, sae: true},
-	"VSQRTSS":   {laneBits: 32, mode: amd64BinaryFloatingSqrt, scalar: true},
-	"VSQRTSD":   {laneBits: 64, mode: amd64BinaryFloatingSqrt, scalar: true},
 	"VSQRTSH":   {laneBits: 16, mode: amd64BinaryFloatingSqrt, scalar: true, rawOnly: true},
 	"VSCALEFPS": {laneBits: 32, mode: amd64BinaryFloatingScale},
 	"VSCALEFPD": {laneBits: 64, mode: amd64BinaryFloatingScale},
@@ -115,13 +85,7 @@ func (c *amd64Ctx) lowerBinaryFloating(op Op, ins Instr) (ok bool, terminated bo
 	if known, term, err := c.lowerSqrt(op, ins); known {
 		return known, term, err
 	}
-	if ok, term, err := c.lowerFloatMulDiv(op, ins); ok {
-		return ok, term, err
-	}
-	if ok, term, err := c.lowerFloatAddSub(op, ins); ok {
-		return ok, term, err
-	}
-	if ok, term, err := c.lowerFloatMinMax(op, ins); ok {
+	if ok, term, err := c.lowerFloatArithmetic(op, ins, ""); ok {
 		return ok, term, err
 	}
 	rawOp := strings.ToUpper(string(op))

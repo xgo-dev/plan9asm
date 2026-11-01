@@ -14,8 +14,18 @@ func x86FloatAddSubOpcodes() []string {
 	return []string{"ADDPS", "ADDPD", "ADDSS", "ADDSD", "SUBPS", "SUBPD", "SUBSS", "SUBSD", "VADDPS", "VADDPD", "VADDSS", "VADDSD", "VSUBPS", "VSUBPD", "VSUBSS", "VSUBSD"}
 }
 
+func x86FloatArithmeticFamilyCount(family x86FloatArithmeticFamily) int {
+	count := 0
+	for _, spec := range x86FloatArithmeticSpecs {
+		if spec.family() == family {
+			count++
+		}
+	}
+	return count
+}
+
 func TestX86FloatAddSubEveryGoOpcodeAttribute(t *testing.T) {
-	if len(x86FloatAddSubSpecs) != 16 {
+	if x86FloatArithmeticFamilyCount(x86FloatAddSubtract) != 16 {
 		t.Fatal("incomplete floating add/sub family")
 	}
 	if !goToolchainAtLeast(runtime.Version(), 1, 27) {
@@ -37,8 +47,12 @@ func TestX86FloatAddSubEveryGoOpcodeAttribute(t *testing.T) {
 			if filename == "asm6.go" != legacy {
 				continue
 			}
-			want := x86FloatAddSubSpec{bits, legacy, scalar, strings.Contains(opcode, "SUB")}
-			if got := x86FloatAddSubSpecs[Op(opcode)]; got != want {
+			mode := amd64BinaryFloatingAdd
+			if strings.Contains(opcode, "SUB") {
+				mode = amd64BinaryFloatingSub
+			}
+			want := x86FloatArithmeticSpec{bits, legacy, scalar, mode}
+			if got := x86FloatArithmeticSpecs[Op(opcode)]; got != want {
 				t.Fatalf("%s spec differs from independent mnemonic: %+v/%+v", opcode, got, want)
 			}
 			if legacy {

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func x86FloatAddSubLiteral(ins Instr, spec x86FloatAddSubSpec) bool {
+func x86FloatAddSubLiteral(ins Instr, spec x86FloatArithmeticSpec) bool {
 	return x86FloatArithmeticLiteral(ins, spec.legacy, spec.scalar)
 }
 

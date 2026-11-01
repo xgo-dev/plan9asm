@@ -14,6 +14,7 @@ type x86FloatBinaryForm struct {
 	byteWidth, memoryBytes                   int
 	broadcast, zeroing                       bool
 	literal                                  bool // family-authorized Go constant-pool rewrite
+	sae                                      bool // independently validated standalone suppression
 	rounding                                 string
 }
 

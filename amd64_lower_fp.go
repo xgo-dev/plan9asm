@@ -17,13 +17,7 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 	if ok, term, err := c.lowerSignedIntegerScalarFloat(op, ins); ok {
 		return ok, term, err
 	}
-	if ok, term, err := c.lowerFloatMulDiv(op, ins); ok {
-		return ok, term, err
-	}
-	if ok, term, err := c.lowerFloatAddSub(op, ins); ok {
-		return ok, term, err
-	}
-	if ok, term, err := c.lowerFloatMinMax(op, ins); ok {
+	if ok, term, err := c.lowerFloatArithmetic(op, ins, ""); ok {
 		return ok, term, err
 	}
 	if spec, recognized := amd64ScalarVectorMoveSpecs[op]; recognized && spec.legacy {

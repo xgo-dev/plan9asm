@@ -2,22 +2,13 @@ package plan9asm
 
 import (
 	"fmt"
-	"strings"
 )
 
 func (c *amd64Ctx) lowerFloatMinMax(op Op, ins Instr) (bool, bool, error) {
-	base, _, _ := strings.Cut(strings.ToUpper(string(op)), ".")
-	if _, known := x86FloatMinMaxSpecs[Op(base)]; !known {
-		return false, false, nil
-	}
-	if ins.Op != "" && !strings.EqualFold(string(ins.Op), string(op)) {
-		return true, false, fmt.Errorf("floating MIN/MAX dispatch/source opcode mismatch: %s/%s", op, ins.Op)
-	}
-	ins.Op = op
-	f, known, err := x86FloatMinMaxProperties(ins, c.goarch)
-	if err != nil || !known {
-		return known, false, err
-	}
+	return c.lowerFloatArithmetic(op, ins, x86FloatMinimumMaximum)
+}
+
+func (c *amd64Ctx) lowerFloatMinMaxForm(ins Instr, f x86FloatMinMaxForm) (bool, bool, error) {
 	if (ins.x86Encoded || ins.x86SourceRaw != nil) && !x86RawFloatMinMaxEncodingSource(ins, c.goarch) {
 		return true, false, fmt.Errorf("%w: MIN/MAX original physical source identity changed", ErrProbeNeedsContext)
 	}
@@ -45,7 +36,7 @@ func (c *amd64Ctx) lowerFloatMinMax(op Op, ins Instr) (bool, bool, error) {
 		func(lanes int, left, right, _ string) string {
 			typ := amd64FMA3LLVMType(lanes, f.bits)
 			predicate := "ogt"
-			if f.spec.minimum {
+			if f.spec.mode == amd64BinaryFloatingMin {
 				predicate = "olt"
 			}
 			condition, value := c.newTmp(), c.newTmp()
