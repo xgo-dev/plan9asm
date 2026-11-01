@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/xgo-dev/plan9asm/internal/nativeoracle"
+	"golang.org/x/arch/x86/x86asm"
 )
 
 // Legacy and VEX are independent of the still-pending EVEX hardware owner.
@@ -149,6 +150,37 @@ func x86MinMaxNativeDriver(t *testing.T, rows []x86MinMaxNativeCase, triple stri
 }
 
 func x86MinMaxNativeRuntime(t *testing.T, legacy bool) {
+	x86MinMaxNativeRuntimeEncoding(t, legacy, false)
+}
+
+// Preserve the same independent hardware/IEEE oracle for named and raw inputs.
+// Only the public translator's spelling of the instruction changes.
+func x86MinMaxNativeRawSource(t *testing.T, source string, rows []x86MinMaxNativeCase) string {
+	t.Helper()
+	encodings := make(map[string]string)
+	for _, row := range rows {
+		operation := row.operation("(BX)")
+		if _, exists := encodings[operation]; exists {
+			continue
+		}
+		code := x86OrderingHintGoBytes(t, "amd64", "TEXT original(SB),4,$0-0\n"+operation+"\nRET\n")
+		instruction, err := x86asm.Decode(code, 64)
+		if err != nil || instruction.Len <= 0 || instruction.Len >= len(code) || code[instruction.Len] != 0xc3 {
+			t.Fatal("original MIN/MAX encoding lacks an exact instruction/RET boundary", operation, err)
+		}
+		encodings[operation] = x86RawDisplacementDirectives(code[:instruction.Len])
+	}
+	for operation, encoded := range encodings {
+		source = strings.ReplaceAll(source, "\n"+operation+"\n", "\n"+encoded)
+	}
+	if strings.Contains(source, "MIN") || strings.Contains(source, "MAX") {
+		t.Fatal("raw MIN/MAX source retained a named instruction")
+	}
+	goAssemblerOracleOutput(t, "amd64", source, "", true)
+	return source
+}
+
+func x86MinMaxNativeRuntimeEncoding(t *testing.T, legacy, raw bool) {
 	t.Helper()
 	execution := x86FloatCompareExecutionTools(t)
 	if runtime.GOOS == "darwin" {
@@ -181,6 +213,9 @@ func x86MinMaxNativeRuntime(t *testing.T, legacy bool) {
 		t.Fatal("complete native alias owner lost rows", legacy, len(rows))
 	}
 	source, declarations, driver := x86MinMaxNativeDriver(t, rows, execution.triple)
+	if raw {
+		source = x86MinMaxNativeRawSource(t, source, rows)
+	}
 	for _, api := range []string{"text", "module", "Go"} {
 		t.Run(api, func(t *testing.T) {
 			ir, err := x86ScalarFPBitViewAPI(t, source, declarations, "amd64", execution.triple, api)
@@ -213,7 +248,24 @@ func TestCrossLinuxRuntimeMatrixX86FloatingMinMaxVEX(t *testing.T) {
 	x86MinMaxNativeRuntime(t, false)
 }
 
+func TestCrossLinuxRuntimeMatrixX86FloatingMinMaxRawLegacy(t *testing.T) {
+	x86MinMaxNativeRuntimeEncoding(t, true, true)
+}
+
+func TestCrossLinuxRuntimeMatrixX86FloatingMinMaxRawVEX(t *testing.T) {
+	x86MinMaxNativeRuntimeEncoding(t, false, true)
+}
+
 func TestX86FloatingMinMaxNativeAliasObjects(t *testing.T) {
+	x86MinMaxNativeAliasObjects(t, false)
+}
+
+func TestX86FloatingMinMaxRawNativeAliasObjects(t *testing.T) {
+	x86MinMaxNativeAliasObjects(t, true)
+}
+
+func x86MinMaxNativeAliasObjects(t *testing.T, raw bool) {
+	t.Helper()
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
 		t.Fatal("LLVM22 llc required")
@@ -223,6 +275,9 @@ func TestX86FloatingMinMaxNativeAliasObjects(t *testing.T) {
 		t.Fatal("complete native source alias inventory changed", len(rows))
 	}
 	source, declarations, _, _ := x86MinMaxNativeProgram(rows)
+	if raw {
+		source = x86MinMaxNativeRawSource(t, source, rows)
+	}
 	for _, triple := range []string{"x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"} {
 		t.Run(triple, func(t *testing.T) {
 			x86LEAActualTargetGoObject(t, "amd64", triple, source)
