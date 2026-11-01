@@ -113,6 +113,18 @@ the current SDK retains the exact executed baseline case IDs. The two original
 host-inapplicable native owners remain separate, without counting their local
 skips as passes. This cleanup adds no registry or cache and claims no speedup.
 
+The next floating normalization joins all 48 named ADD/SUB, MUL/DIV and MIN/MAX
+operations in one typed catalog. Encoding, precision and scalar/packed shape
+select the shared operand grammar; the operation tag selects the existing
+numerical lowerer. Caller admission, operand effects and memory shape consume
+that form. MIN/MAX source identity and guarded result transfer remain distinct
+from numerical arithmetic authority. Three dispatcher chains and the superseded
+f32/f64 binary entries are removed, for a net reduction of 87 production lines.
+Both SDK endpoints retain all 74 local roots and 2,183 case IDs. Paired ABBA
+complete-translation measurements retain allocation counts; median time differs
+by -0.13% on current Go and +1.03% on minimum Go. This is code convergence,
+not an observed speedup; native execution and full-head CI remain separate gates.
+
 For each batch record the exact revision, SDK, LLVM version, source fixture,
 successful/failed counts, production/test line delta and retained case IDs.
 Measure parsing, analysis, feature inference, IR generation and public

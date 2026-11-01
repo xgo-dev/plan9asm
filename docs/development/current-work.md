@@ -11,11 +11,11 @@ inventory processes.
 ## Accepted publications
 
 [PR40](https://github.com/xgo-dev/plan9asm/pull/40) remains draft at
-`3712b2bb563c9d2bf9dbba4a98f80445ae6f0ba6`. Its own
-[CI round](https://github.com/xgo-dev/plan9asm/actions/runs/41288014334)
+`c3a3fb8e74804558e9dd3e8fadfeadf4c7e5d2f3`. Its own
+[CI round](https://github.com/xgo-dev/plan9asm/actions/runs/41297943259)
 completed **325/325 SUCCESS**, attempt one, without reruns or cancellations.
-Official function coverage is **88.1%**; Codecov patch coverage is
-**91.80% >= 87.83%**. Independent acceptance joins 286 source artifacts,
+Official function coverage is **88.2%**; Codecov patch coverage is
+**92.48% >= 87.83%**. Independent acceptance joins 286 source artifacts,
 240 partitions, 23 groups and all 22 Windows/race packages with 168 raw streams
 each. Host-inapplicable skips remain distinct from passes. Two historical
 inline threads are resolved; no formal approval is recorded.
@@ -23,8 +23,9 @@ inline threads are resolved; no formal approval is recorded.
 [LLGo2694](https://github.com/xgo-dev/llgo/pull/2694) remains draft at
 `7be828f55b9005f13f768b4a8a07aae4c57e6798`, based on
 `610075be034817b0f386d109926fd9a93db41a48` and pinning the earlier accepted
-translator `9285ff89a` through the allowed fork. The 3712 follow-up changed only
-tests and documentation. LLGo's own thirteen workflows completed
+translator `9285ff89a` through the allowed fork. The subsequent translator
+follow-ups have separate qualifications; they are not execution evidence for
+this older LLGo pin. LLGo's own thirteen workflows completed
 **140 SUCCESS + two conditional publisher SKIPs**, with no failures, reruns or
 cancellations. Patch coverage is **97.06% >= 95.82%**.
 Independent acceptance includes all eight native profiles, 612 stages and
@@ -95,11 +96,28 @@ interrupted SDK was separately retried. Local ARM64 guest attempts are not
 native acceptance. This batch does not certify EVEX/AVX512, Go ABI0 wrapper
 execution or other floating-point families.
 
+## Floating arithmetic grammar follow-up
+
+`dc2936489` joins all 48 named ADD/SUB, MUL/DIV and MIN/MAX opcodes in one
+typed catalog and operand parser. Three dispatchers, caller syntax and memory
+shape queries now consume that grammar. Separate numerical lowerers retain
+rounding, source-order NaNs, machine state, raw-source verification and faults.
+The residual binary catalog owns FP16 and SCALEF only. Production shrinks by
+87 lines, including the replacement catalog.
+
+Both SDK endpoints retain exactly the same 74 roots and 2,183 unique PASS
+nodes before and after the change, with no failures or skips. An interrupted
+disk-guard attempt remains separate. Ten ABBA benchmark samples per revision
+and SDK retain the same allocation count: 12,106 current, 12,217 minimum.
+Median complete-translation time changes by -0.13% and +1.03% respectively;
+these observations establish no speedup. Native execution and the contribution
+head's own complete CI remain required for this new batch.
+
 ## Remaining work
 
-1. Publish this verified batch without the fork-only workflow. Accept
-   the contribution head's own complete CI, coverage and review; the accepted
-   3712 round does not certify a later head.
+1. Qualify the floating arithmetic grammar on native amd64 and publish the
+   verified batch without the fork-only workflow. Accept its own complete CI,
+   coverage and review; the accepted C3a round does not certify a later head.
 2. Continue initialized functions, LLVM 22 objects and independent semantics
    family by family. Preserve native 386, AVX512/AVX512ER, reciprocal/MXCSR,
    extended80/BCD, MMX-state and BF16 fault gaps until separately qualified.
