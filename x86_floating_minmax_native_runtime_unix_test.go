@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/xgo-dev/plan9asm/internal/nativeoracle"
-	"golang.org/x/arch/x86/x86asm"
 )
 
 // Legacy and VEX are independent of the still-pending EVEX hardware owner.
@@ -163,12 +162,13 @@ func x86MinMaxNativeRawSource(t *testing.T, source string, rows []x86MinMaxNativ
 		if _, exists := encodings[operation]; exists {
 			continue
 		}
-		code := x86OrderingHintGoBytes(t, "amd64", "TEXT original(SB),4,$0-0\n"+operation+"\nRET\n")
-		instruction, err := x86asm.Decode(code, 64)
-		if err != nil || instruction.Len <= 0 || instruction.Len >= len(code) || code[instruction.Len] != 0xc3 {
-			t.Fatal("original MIN/MAX encoding lacks an exact instruction/RET boundary", operation, err)
+		// NOSPLIT|NOFRAME leaves exactly this operation and its explicit RET.
+		// The x/arch decoder does not supply an independent VEX length oracle.
+		code := x86OrderingHintGoBytes(t, "amd64", "TEXT original(SB),516,$0-0\n"+operation+"\nRET\n")
+		if len(code) < 2 || len(code) > 16 || code[len(code)-1] != 0xc3 {
+			t.Fatal("original MIN/MAX encoding lacks its final RET", operation, code)
 		}
-		encodings[operation] = x86RawDisplacementDirectives(code[:instruction.Len])
+		encodings[operation] = x86RawDisplacementDirectives(code[:len(code)-1])
 	}
 	for operation, encoded := range encodings {
 		source = strings.ReplaceAll(source, "\n"+operation+"\n", "\n"+encoded)
