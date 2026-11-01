@@ -146,9 +146,19 @@ executed instruction. Initialized low-bank objects retain their separate owners.
 per SDK, zero FAIL/SKIP. Combined production reduction is 99 lines relative to
 C3a, excluding tests/documentation. Final paired ABBA medians change by -0.23%
 on current Go and -0.73% on minimum Go, with essentially unchanged allocations;
-no speedup is claimed. The repair still needs fresh native qualification and
-its own complete contribution CI. Let the existing round finish before pushing
-the repair batch; preserve its failures and all RED/GREEN reports.
+no speedup is claimed.
+
+The repair's [fresh native qualification](https://github.com/cpunion/plan9asm/actions/runs/41316060002)
+at `a824274f3` completed both SDK jobs without reruns/cancellations. Each SDK
+retains exactly 36 roots / 774 unique RUN/PASS nodes and zero FAIL/SKIP. The
+complete 5,490-file product manifest matches `e97ae1d32`, with only the fork
+diagnostic workflow differing. Its 24 MIN/MAX summaries retain the numerical,
+fault and exception counts above. Later documentation edits are inherited by
+explicit code identity; they are not another native execution.
+
+The repair still needs its own complete contribution CI. Let the existing
+round finish before pushing the batch; preserve its failures and all RED/GREEN
+reports.
 
 ## Remaining work
 

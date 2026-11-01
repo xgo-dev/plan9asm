@@ -136,6 +136,9 @@ every source row and explicitly partitions 44 contextual high-bank rows on 386.
 The local union passes 93 roots / 2,526 nodes per SDK. Final paired ABBA timing
 changes by -0.23%/-0.73%, with essentially unchanged allocation counts. This
 does not certify native386 execution or establish a measured speedup.
+The separate repair qualification at `a824274f3` retains the same 36 native
+Linux/amd64 roots / 774 PASS nodes per SDK, zero FAIL/SKIP, with the complete
+product source manifest bound to `e97ae1d32`.
 
 For each batch record the exact revision, SDK, LLVM version, source fixture,
 successful/failed counts, production/test line delta and retained case IDs.
