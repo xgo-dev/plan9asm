@@ -110,13 +110,23 @@ nodes before and after the change, with no failures or skips. An interrupted
 disk-guard attempt remains separate. Ten ABBA benchmark samples per revision
 and SDK retain the same allocation count: 12,106 current, 12,217 minimum.
 Median complete-translation time changes by -0.13% and +1.03% respectively;
-these observations establish no speedup. Native execution and the contribution
-head's own complete CI remain required for this new batch.
+these observations establish no speedup. Additional official-row and consumer
+tests bring each SDK's local union to 92 roots and 2,417 PASS nodes. This retains
+132 AVX encoding rows / 684 witnesses and both legacy source modes.
+
+The isolated [floating arithmetic qualification](https://github.com/cpunion/plan9asm/actions/runs/41310855146)
+at `cc196e8b1` completed both native Linux/amd64 jobs with LLVM 22.1.8. Each SDK
+has exactly 36 roots and 774 unique RUN/PASS nodes, zero FAIL/SKIP. Its complete
+5,489-file product manifest matches `899f2ba2a`; only the diagnostic workflow
+differs. The 24 MIN/MAX numerical/fault/exception summaries retain the counts
+above. ADD/SUB and MUL/DIV owners execute as additional checks, not additional
+MIN/MAX observations. Later documentation edits do not represent another native
+execution. The contribution head's own complete CI remains required.
 
 ## Remaining work
 
-1. Qualify the floating arithmetic grammar on native amd64 and publish the
-   verified batch without the fork-only workflow. Accept its own complete CI,
+1. Publish the qualified floating arithmetic grammar without the fork-only
+   workflow. Accept its own complete CI,
    coverage and review; the accepted C3a round does not certify a later head.
 2. Continue initialized functions, LLVM 22 objects and independent semantics
    family by family. Preserve native 386, AVX512/AVX512ER, reciprocal/MXCSR,
