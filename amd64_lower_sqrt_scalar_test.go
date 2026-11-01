@@ -83,7 +83,7 @@ func assertX86ScalarSqrtRejected(t *testing.T, goarch, triple, instruction strin
 	}
 }
 
-func TestAMD64ScalarSqrtRuntimeSemantics(t *testing.T) {
+func qualifyAMD64ScalarSqrtRuntimeSemantics(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skip("native AVX512 execution belongs to TestCrossLinuxRuntimeMatrixX86ScalarSqrtNativeSemantics")
 	}

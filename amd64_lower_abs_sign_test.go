@@ -113,7 +113,7 @@ func assertX86PackedAbsSignRejected(t *testing.T, goarch, triple, instruction st
 	}
 }
 
-func TestAMD64PackedAbsSignRuntimeSemantics(t *testing.T) {
+func qualifyAMD64PackedAbsSignRuntimeSemantics(t *testing.T) {
 	crossRosetta := runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" && rosettaAvailable()
 	if runtime.GOARCH != "amd64" && !crossRosetta {
 		t.Skip("runtime execution test only runs on amd64 host")

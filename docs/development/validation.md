@@ -27,9 +27,35 @@ export LLVM_CONFIG="$llvm22_root/bin/llvm-config"
 Missing required LLVM tools, linkers or backends fail, never skip.
 Host-inapplicable execution requires its cross-runtime CI counterpart.
 
-RCP14/RSQRT14 original-Go bit, MXCSR and masked native-memory execution has
-explicit hardware qualification owners. On direct Linux/amd64 with enabled
-AVX512F register state, use the F owner; packed X/Y additionally require VL:
+Native AVX512 execution has 65 explicit hardware qualification owners in
+[the pending inventory](../../testdata/native/avx512-roots.txt). Default CI
+retains grammar, original Go sources, LLVM 22 objects and available SSE/VEX
+execution. The policy preflight also compiles the tagged test binary and checks
+the complete default/tagged root difference. This is compilation and inventory
+evidence, not native execution. Missing hardware remains pending.
+
+On suitable direct Linux/amd64 hardware, run the complete explicit set:
+
+```sh
+native_roots="$(paste -sd '|' testdata/native/avx512-roots.txt)"
+GOFLAGS= GOENV=off GOWORK=off GOTOOLCHAIN=local \
+  PLAN9ASM_AVX512_RUNTIME=required go run ./cmd/plan9asmtest \
+  -out _out/native-avx512-qualification -ci-selector "^($native_roots)$" \
+  -ci-isolate-root TestAMD64FPClassRuntimeSemantics -ci-owner 0 -shards 16 -timeout 20m \
+  -- -tags=plan9asm_native_avx512
+```
+
+Run partitions 0 through 15 separately with the same source/tools/environment,
+then use the selected-CI verifier described in the runner README. A partition
+alone is not complete qualification. The strict reader still rejects every
+failure, skip or missing child. CPU/OS state and original-opcode preflights are
+unchanged. Full-bank fixtures may need AVX512 even for a low-width mnemonic;
+keep their complete original program pending rather than weakening its preflight.
+COMI's independent VEX owners remain mandatory; only the EVEX axes are tagged.
+ER, BF16 and FP16 need distinct hardware/owners and are not certified by this set.
+
+RCP14/RSQRT14 original-Go bit, MXCSR and masked native-memory owners are part of
+that inventory. For a focused F check (packed X/Y additionally require VL):
 
 ```sh
 PLAN9ASM_AVX512_RUNTIME=required go test . -tags=plan9asm_native_avx512 \
@@ -39,7 +65,7 @@ PLAN9ASM_AVX512_RUNTIME=required go test . -tags=plan9asm_native_avx512 \
 The tag does not affect ordinary source/trace/actual-Go/three-API object tests.
 Darwin and native Linux/amd64 additionally compile and link the C fixtures
 without executing them; their receipts identify the actual x86_64 target.
-Default CI does not execute these two native owners. Missing hardware, tools or
+Default CI does not execute these native owners. Missing hardware, tools or
 CPU/OS-state proof fails explicit qualification; `auto` cannot turn it into a
 passing skip. Until successful original-Go and every native pipeline/fault
 receipt exists, native RCP14 acceptance remains pending. These owners do not

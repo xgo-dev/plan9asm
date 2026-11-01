@@ -99,13 +99,15 @@ func x86PackedAbsSignOriginalProgramUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, declaration := range syntax.Decls {
-		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.Name == "TestAMD64PackedAbsSignRuntimeSemantics" {
+		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.Name == "qualifyAMD64PackedAbsSignRuntimeSemantics" {
 			start, end := set.Position(function.Pos()).Offset, set.Position(function.End()).Offset
 			// Exclude only the independently audited execution preflight. The
 			// original ASM, C, inputs and every other driver statement retain
 			// their unchanged fingerprint and separate literal-level pins.
 			original := strings.Replace(string(data[start:end]),
 				"\tx86OriginalFloatingRuntimeRequireCPU(t, \"packed-abs-sign\", clang, triple, runPrefix)\n", "", 1)
+			original = strings.Replace(original, "func qualifyAMD64PackedAbsSignRuntimeSemantics(",
+				"func TestAMD64PackedAbsSignRuntimeSemantics(", 1)
 			if fmt.Sprintf("%x", sha256.Sum256([]byte(original))) != "2f3f1858c33eaac4ffc0d298859629e18716b06fbec597aa2a84587d27cf9ed3" {
 				t.Fatal("original initialized ABS/sign source, C oracle or observations changed")
 			}

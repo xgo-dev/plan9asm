@@ -120,7 +120,7 @@ func TestTranslateX86FixupImmediateRejectsFormsOutsideGoTables(t *testing.T) {
 	}
 }
 
-func TestAMD64FixupImmediateRuntimeSemantics(t *testing.T) {
+func qualifyAMD64FixupImmediateRuntimeSemantics(t *testing.T) {
 	execution := x86FloatingHelperRuntimeTools(t)
 	const source = `TEXT fixupimmsemantics(SB),$0-64
 	MOVQ out+0(FP), AX

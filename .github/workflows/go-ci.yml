@@ -47,6 +47,9 @@ jobs:
       - name: CI policy tests
         run: go test . -run '^(TestCI|TestFixedLocal|TestGoAMD64FixedLocalPackedRuntimeOwnership|TestRuntimeOracleCommand(ConsumersRetainOwnedExecution|AuditDistinguishesTestingRun)$)' -count=1
 
+      - name: Compile explicit native AVX512 owners and verify their inventory
+        run: go test . -tags=plan9asm_native_avx512 -run '^TestCIAVX512NativeQualificationInventory$' -count=1
+
 
   fmt:
     needs: ci_policy

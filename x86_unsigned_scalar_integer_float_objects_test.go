@@ -30,7 +30,7 @@ func x86UnsignedScalarIntegerFloatOriginal(t *testing.T) (string, string) {
 	values, count := make(map[string]string), 0
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Name.Name != "TestAMD64ScalarIntegerFloatRuntimeSemantics" {
+		if !ok || function.Name.Name != "qualifyAMD64ScalarIntegerFloatRuntimeSemantics" {
 			continue
 		}
 		count++

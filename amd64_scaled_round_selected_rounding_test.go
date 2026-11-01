@@ -211,7 +211,7 @@ func x86ScaledRoundOriginalCReference(t *testing.T) string {
 	var reference string
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Name.Name != "TestAMD64ScaledRoundRuntimeSemantics" {
+		if !ok || function.Name.Name != "qualifyAMD64ScaledRoundRuntimeSemantics" {
 			continue
 		}
 		ast.Inspect(function.Body, func(node ast.Node) bool {

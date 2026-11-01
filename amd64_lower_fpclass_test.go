@@ -131,7 +131,7 @@ func TestTranslateX86FPClassRejectsFormsOutsideGoAssemblerTable(t *testing.T) {
 	}
 }
 
-func TestAMD64FPClassRuntimeSemantics(t *testing.T) {
+func qualifyAMD64FPClassRuntimeSemantics(t *testing.T) {
 	execution := x86FloatingHelperRuntimeTools(t)
 	var source strings.Builder
 	source.WriteString(`TEXT fpclasssemantics(SB),$0-32

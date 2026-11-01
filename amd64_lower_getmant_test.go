@@ -130,7 +130,7 @@ func TestTranslateX86GetMantRejectsFormsOutsideGoAssemblerTable(t *testing.T) {
 	}
 }
 
-func TestAMD64GetMantRuntimeSemantics(t *testing.T) {
+func qualifyAMD64GetMantRuntimeSemantics(t *testing.T) {
 	execution := x86FloatingHelperRuntimeTools(t)
 	var source strings.Builder
 	source.WriteString(`TEXT getmantsemantics(SB),$0-56

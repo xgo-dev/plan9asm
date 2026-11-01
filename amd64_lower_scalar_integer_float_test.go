@@ -111,7 +111,7 @@ func assertX86ScalarIntegerFloatRejected(t *testing.T, goarch, triple, instructi
 	}
 }
 
-func TestAMD64ScalarIntegerFloatRuntimeSemantics(t *testing.T) {
+func qualifyAMD64ScalarIntegerFloatRuntimeSemantics(t *testing.T) {
 	crossRosetta := runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" && rosettaAvailable()
 	if runtime.GOARCH != "amd64" && !crossRosetta {
 		t.Skip("runtime execution test only runs on amd64 host")

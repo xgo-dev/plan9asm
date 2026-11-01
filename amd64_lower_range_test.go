@@ -126,7 +126,7 @@ func TestTranslateX86FloatingRangeRejectsFormsOutsideGoAssemblerTable(t *testing
 	}
 }
 
-func TestAMD64FloatingRangeRuntimeSemantics(t *testing.T) {
+func qualifyAMD64FloatingRangeRuntimeSemantics(t *testing.T) {
 	execution := x86FloatingHelperRuntimeTools(t)
 	var source strings.Builder
 	source.WriteString(`TEXT floatingrangesemantics(SB),$0-40
@@ -234,7 +234,7 @@ int main(void) {
 	x86FloatingHelperRunNativePipelines(t, execution, "floating_range_semantics", ir, mainC)
 }
 
-func TestAMD64FloatingRangeDoubleAndScalarRuntimeSemantics(t *testing.T) {
+func qualifyAMD64FloatingRangeDoubleAndScalarRuntimeSemantics(t *testing.T) {
 	execution := x86FloatingHelperRuntimeTools(t)
 	var source strings.Builder
 	source.WriteString(`TEXT floatingrangedoublesemantics(SB),$0-40

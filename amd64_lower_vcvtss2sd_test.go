@@ -89,7 +89,7 @@ func TestTranslateX86ScalarPrecisionConvertRejectsFormsOutsideGo127(t *testing.T
 	}
 }
 
-func TestAMD64ScalarPrecisionConvertRuntimeSemantics(t *testing.T) {
+func qualifyAMD64ScalarPrecisionConvertRuntimeSemantics(t *testing.T) {
 	crossRosetta := runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" && rosettaAvailable()
 	if runtime.GOARCH != "amd64" && !crossRosetta {
 		t.Skip("runtime execution test only runs on amd64 or Rosetta")

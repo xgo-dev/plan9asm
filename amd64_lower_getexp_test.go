@@ -124,7 +124,7 @@ func TestTranslateX86GetExpRejectsFormsOutsideGoAssemblerTable(t *testing.T) {
 	}
 }
 
-func TestAMD64GetExpRuntimeSemantics(t *testing.T) {
+func qualifyAMD64GetExpRuntimeSemantics(t *testing.T) {
 	execution := x86FloatingHelperRuntimeTools(t)
 	const source = `TEXT getexpsemantics(SB),$0-56
 	MOVQ out+0(FP), AX

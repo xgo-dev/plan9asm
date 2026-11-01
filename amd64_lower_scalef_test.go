@@ -131,7 +131,7 @@ func TestTranslateX86ScaleFRejectsFormsOutsideGoAssemblerTables(t *testing.T) {
 	}
 }
 
-func TestAMD64ScaleFRuntimeSemantics(t *testing.T) {
+func qualifyAMD64ScaleFRuntimeSemantics(t *testing.T) {
 	execution := x86FloatingHelperRuntimeTools(t)
 	const source = `TEXT scalefsemantics(SB),$0-72
 	MOVQ out+0(FP), AX

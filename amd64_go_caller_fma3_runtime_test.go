@@ -10,7 +10,7 @@ import (
 	"github.com/xgo-dev/llvm"
 )
 
-func TestCrossLinuxRuntimeMatrixX86FMA3GoCallerNumericalFamily(t *testing.T) {
+func qualifyCrossLinuxRuntimeMatrixX86FMA3GoCallerNumericalFamily(t *testing.T) {
 	crossRosetta := runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" && rosettaAvailable()
 	if runtime.GOARCH != "amd64" && !crossRosetta {
 		t.Skip("requires the separately required Linux/amd64 FMA3 caller runtime oracle")

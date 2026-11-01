@@ -1,6 +1,6 @@
 # PR40 closeout
 
-Updated 2026-11-01. Finish amd64 typed instruction families, correctness and
+Updated 2026-11-02. Finish amd64 typed instruction families, correctness and
 translation efficiency before generalizing to another architecture. Retain the
 386, ARM, ARM64 and WASM gates. Read [architecture](architecture.md),
 [family development](instructions.md), [convergence](x86-convergence.md) and
@@ -10,7 +10,7 @@ inventory processes.
 
 ## Accepted publications
 
-[PR40](https://github.com/xgo-dev/plan9asm/pull/40) remains draft at
+[PR40](https://github.com/xgo-dev/plan9asm/pull/40)'s last fully accepted head is
 `c3a3fb8e74804558e9dd3e8fadfeadf4c7e5d2f3`. Its own
 [CI round](https://github.com/xgo-dev/plan9asm/actions/runs/41297943259)
 completed **325/325 SUCCESS**, attempt one, without reruns or cancellations.
@@ -156,14 +156,39 @@ diagnostic workflow differing. Its 24 MIN/MAX summaries retain the numerical,
 fault and exception counts above. Later documentation edits are inherited by
 explicit code identity; they are not another native execution.
 
-The repair still needs its own complete contribution CI. Let the existing
-round finish before pushing the batch; preserve its failures and all RED/GREEN
-reports.
+The repair is published at `b531c83c7`; its own complete contribution CI remains
+required. All six formerly failing CLI leaves passed in the same-head fork
+round. That round also exposed native AVX512 owners on runners without F/VL
+and enabled Z state; those failed preflights are not instruction/runtime passes.
+Let each existing round finish before pushing another batch.
+
+## Explicit native hardware qualification
+
+The follow-up retains all 65 native AVX512 owners in an explicit Linux/amd64
+qualification inventory. Mixed source files keep grammar and LLVM-object roots
+in default CI; only native entry wrappers move behind the existing tag. All
+original source/C fixtures and CPU/OS/opcode guards remain intact. The two COMI
+VEX axes remain ordinary mandatory roots, with independent tagged EVEX roots.
+SSE unmasked traps also remain mandatory.
+
+The default/tagged inventory union is checked on six host targets. CI compiles
+the tagged binary without claiming execution. Explicit original-floating
+wrappers refuse `auto`; strict native readers still require every selected root
+and child to pass. These 65 owners remain pending hardware qualification until
+successful current-source native receipts exist. Their relocation does not
+relabel the earlier failed rounds or certify native386, ER, BF16 or FP16.
+
+Local qualification passes eleven policy/preflight roots / thirty nodes and
+eighteen affected source/object/portable roots / 508 nodes on each SDK, with no
+failures or skips. The current SDK also passes 574 Node policies, 27 Go policy
+roots / 334 nodes and thirteen runner-policy roots / 26 nodes. Both SDKs retain
+the five-architecture gates. These checks establish the test partition and
+retained compile/portable coverage; they do not execute the tagged native set.
 
 ## Remaining work
 
-1. Finish qualification of the CLI/mode32 repair and publish the verified batch
-   without the fork-only workflow. Accept its own complete CI,
+1. Finish the native hardware partition follow-up and publish the verified batch
+   without the fork-only diagnostic workflow. Accept its own complete CI,
    coverage and review; the accepted C3a round does not certify a later head.
 2. Continue initialized functions, LLVM 22 objects and independent semantics
    family by family. Preserve native 386, AVX512/AVX512ER, reciprocal/MXCSR,

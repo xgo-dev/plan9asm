@@ -74,15 +74,7 @@ func TestX86FloatingHelperRuntimeNativeOwnerAndPipelinePolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var function *ast.FuncDecl
-			for _, declaration := range file.Decls {
-				if candidate, ok := declaration.(*ast.FuncDecl); ok && candidate.Name.Name == owner.root {
-					if function != nil {
-						t.Fatal("duplicate original runtime owner")
-					}
-					function = candidate
-				}
-			}
+			function := x86OriginalFloatingPolicyFunction(t, file, owner.root)
 			if function == nil || function.Body == nil {
 				t.Fatal("missing original runtime owner")
 			}

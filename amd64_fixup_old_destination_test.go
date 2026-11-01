@@ -17,7 +17,7 @@ const x86FixupRuntimeDeclaration = `func fixupimmsemantics(out *[289]byte,
 
 func x86FixupOriginalRuntimeSource(t *testing.T) string {
 	t.Helper()
-	source := x86X87FunctionLiteral(t, "amd64_lower_fixupimm_test.go", "TestAMD64FixupImmediateRuntimeSemantics", "source")
+	source := x86X87FunctionLiteral(t, "amd64_lower_fixupimm_test.go", "qualifyAMD64FixupImmediateRuntimeSemantics", "source")
 	if actual := fmt.Sprintf("%x", sha256.Sum256([]byte(source))); actual != x86FixupOriginalSourceSHA {
 		t.Fatal("complete original FIXUPIMM source changed", actual)
 	}

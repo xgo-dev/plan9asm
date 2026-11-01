@@ -23,7 +23,7 @@ func x86PackedAbsSignOriginalPayloadHashes(data []byte) (map[string]string, erro
 	functions := 0
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Name.Name != "TestAMD64PackedAbsSignRuntimeSemantics" {
+		if !ok || function.Name.Name != "qualifyAMD64PackedAbsSignRuntimeSemantics" {
 			continue
 		}
 		functions++

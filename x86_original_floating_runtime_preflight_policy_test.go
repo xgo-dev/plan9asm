@@ -39,6 +39,15 @@ func x86OriginalFloatingPolicyFunction(t *testing.T, file *ast.File, name string
 			return function
 		}
 	}
+	if strings.HasPrefix(name, "Test") {
+		helper := "qualify" + strings.TrimPrefix(name, "Test")
+		for _, declaration := range file.Decls {
+			if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.Name == helper {
+				ciNativeAVX512RequireWrapper(t, name, helper)
+				return function
+			}
+		}
+	}
 	t.Fatal("original floating runtime owner disappeared", name)
 	return nil
 }

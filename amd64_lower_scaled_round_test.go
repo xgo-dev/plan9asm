@@ -149,7 +149,7 @@ func TestTranslateX86ScaledRoundRejectsFormsOutsideGoAssemblerTables(t *testing.
 	}
 }
 
-func TestAMD64ScaledRoundRuntimeSemantics(t *testing.T) {
+func qualifyAMD64ScaledRoundRuntimeSemantics(t *testing.T) {
 	execution := x86FloatingHelperRuntimeTools(t)
 	var source strings.Builder
 	source.WriteString(`TEXT scaledroundsemantics(SB),$0-56

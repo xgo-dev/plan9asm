@@ -32,7 +32,7 @@ func x86ScalarPrecisionOriginalProgram(t *testing.T) string {
 	}
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Name.Name != "TestAMD64ScalarPrecisionConvertRuntimeSemantics" {
+		if !ok || function.Name.Name != "qualifyAMD64ScalarPrecisionConvertRuntimeSemantics" {
 			continue
 		}
 		start, end := set.Position(function.Pos()).Offset, set.Position(function.End()).Offset
@@ -41,6 +41,8 @@ func x86ScalarPrecisionOriginalProgram(t *testing.T) string {
 		// ASM/C, samples and all other statements retain their old exact hash.
 		original := strings.Replace(string(data[start:end]),
 			"\tx86OriginalFloatingRuntimeRequireCPU(t, \"scalar-precision\", clang, triple, runPrefix)\n", "", 1)
+		original = strings.Replace(original, "func qualifyAMD64ScalarPrecisionConvertRuntimeSemantics(",
+			"func TestAMD64ScalarPrecisionConvertRuntimeSemantics(", 1)
 		if fmt.Sprintf("%x", sha256.Sum256([]byte(original))) != "9df4a3815affc1e690c09fb6db69dfbe20c2acedb32baa9e31210d4a00a977ee" {
 			t.Fatal("original precision conversion ASM/C, independent values or source inputs changed")
 		}
