@@ -19,6 +19,7 @@ type x86MinMaxNativeCase struct {
 	op                   string
 	bits, width          int
 	source, second, dest int
+	registerBase         int
 	legacy, scalar, dead bool
 }
 
@@ -57,12 +58,28 @@ func (row x86MinMaxNativeCase) operation(memory string) string {
 	}
 	first := memory
 	if row.source >= 0 {
-		first = fmt.Sprintf("%s%d", bank, row.source)
+		first = fmt.Sprintf("%s%d", bank, row.source+row.registerBase)
 	}
 	if row.legacy {
-		return fmt.Sprintf("%s %s,%s%d", row.op, first, bank, row.dest)
+		return fmt.Sprintf("%s %s,%s%d", row.op, first, bank, row.dest+row.registerBase)
 	}
-	return fmt.Sprintf("%s %s,%s%d,%s%d", row.op, first, bank, row.second, bank, row.dest)
+	return fmt.Sprintf("%s %s,%s%d,%s%d", row.op, first, bank, row.second+row.registerBase, bank, row.dest+row.registerBase)
+}
+
+func (row x86MinMaxNativeCase) memoryRegister() string {
+	if row.registerBase != 0 {
+		return "R9"
+	}
+	return "BX"
+}
+
+func x86MinMaxNativeRawCases(rows []x86MinMaxNativeCase) []x86MinMaxNativeCase {
+	result := append([]x86MinMaxNativeCase(nil), rows...)
+	for _, row := range rows {
+		row.registerBase = 8
+		result = append(result, row)
+	}
+	return result
 }
 
 func (row x86MinMaxNativeCase) body(original bool) string {
@@ -71,6 +88,9 @@ func (row x86MinMaxNativeCase) body(original bool) string {
 		// SysV C arguments: out=DI, a=SI, b=DX, old=CX, csr=R8.
 		first, memory = "SI", "R9"
 		control = "MOVQ DX,R9\nMOVL R8,44(DI)\n"
+	} else if row.registerBase != 0 {
+		memory = row.memoryRegister()
+		control += "MOVQ BX,R9\n"
 	}
 	second := memory
 	if row.source < 0 {
@@ -85,7 +105,9 @@ func (row x86MinMaxNativeCase) body(original bool) string {
 	}
 	var source strings.Builder
 	source.WriteString(control)
-	fmt.Fprintf(&source, "%s (%s),%s0\n%s (%s),%s1\n%s (%s),%s2\n", load, first, bank, load, second, bank, load, old, bank)
+	for index, input := range []string{first, second, old} {
+		fmt.Fprintf(&source, "%s (%s),%s%d\n", load, input, bank, row.registerBase+index)
+	}
 	// Seed AF explicitly rather than infer it from an emulator's ADD result.
 	// OF still comes from ADD; SAHF sets SF/ZF/AF/PF/CF and preserves OF.
 	source.WriteString("STMXCSR 32(DI)\nLDMXCSR 44(DI)\nMOVL $0x7fffffff,DX\nADDL $1,DX\nMOVB $0x95,AH\nSAHF\nSTD\n")
@@ -97,9 +119,9 @@ func (row x86MinMaxNativeCase) body(original bool) string {
 	fmt.Fprintln(&source, row.operation("("+memory+")"))
 	source.WriteString("PUSHFQ\nPOPQ DX\nANDL $0xcd5,DX\nCLD\n")
 	if row.dead {
-		fmt.Fprintf(&source, "%s (%s),%s%d\n", load, old, bank, row.dest)
+		fmt.Fprintf(&source, "%s (%s),%s%d\n", load, old, bank, row.dest+row.registerBase)
 	}
-	fmt.Fprintf(&source, "%s %s%d,(DI)\nMOVL DX,40(DI)\nSTMXCSR 36(DI)\nLDMXCSR 32(DI)\n", load, bank, row.dest)
+	fmt.Fprintf(&source, "%s %s%d,(DI)\nMOVL DX,40(DI)\nSTMXCSR 36(DI)\nLDMXCSR 32(DI)\n", load, bank, row.dest+row.registerBase)
 	if !row.legacy {
 		source.WriteString("VZEROUPPER\n")
 	}
@@ -158,7 +180,7 @@ func x86MinMaxNativeRawSource(t *testing.T, source string, rows []x86MinMaxNativ
 	t.Helper()
 	encodings := make(map[string]string)
 	for _, row := range rows {
-		operation := row.operation("(BX)")
+		operation := row.operation("(" + row.memoryRegister() + ")")
 		if _, exists := encodings[operation]; exists {
 			continue
 		}
@@ -211,6 +233,13 @@ func x86MinMaxNativeRuntimeEncoding(t *testing.T, legacy, raw bool) {
 	}
 	if len(rows) != wantCount {
 		t.Fatal("complete native alias owner lost rows", legacy, len(rows))
+	}
+	if raw {
+		rows = x86MinMaxNativeRawCases(rows)
+		wantCount *= 2
+		numerical *= 2
+		faults *= 2
+		exceptions *= 2
 	}
 	source, declarations, driver := x86MinMaxNativeDriver(t, rows, execution.triple)
 	if raw {
@@ -273,6 +302,9 @@ func x86MinMaxNativeAliasObjects(t *testing.T, raw bool) {
 	rows := x86MinMaxNativeCases()
 	if len(rows) != 128 {
 		t.Fatal("complete native source alias inventory changed", len(rows))
+	}
+	if raw {
+		rows = x86MinMaxNativeRawCases(rows)
 	}
 	source, declarations, _, _ := x86MinMaxNativeProgram(rows)
 	if raw {
