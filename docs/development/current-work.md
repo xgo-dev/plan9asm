@@ -123,10 +123,37 @@ above. ADD/SUB and MUL/DIV owners execute as additional checks, not additional
 MIN/MAX observations. Later documentation edits do not represent another native
 execution. The contribution head's own complete CI remains required.
 
+## CI fixture and physical mode32 repair
+
+The `2c033f894` round exposed two isolated CLI extraction fixtures which still
+copied the superseded family files. The actual repository scanner finds the
+canonical catalog. Shared fixtures now retain all three original family roots,
+all 48 names, isolated checks on five architectures and complete-repository
+checks on both x86 modes. The complete extraction suite passes 74 roots / 222
+nodes on Go 1.27.3 and the CLI minimum Go 1.24.11, with no failures/skips.
+ARM's independent MULSD spelling remains present in complete-repository scans.
+
+The shared grammar also applies the existing physical mode32 boundary to
+ADD/SUB. An independent 108-case operation/width/register-role test first
+reproduced 36 missing checks, then passed on both endpoint SDKs. These are
+grammar controls, not native386 execution. The historical complete-source
+fixture retains identical original Go source hashes on all five targets;
+its 386 partition now explicitly retains 44 physical-bank Context rows
+(sixteen MIN/MAX and twenty-eight ADD/SUB). No row is removed or counted as an
+executed instruction. Initialized low-bank objects retain their separate owners.
+
+`a9ec02fb5` passes the complete local union: 93 roots / 2,526 unique PASS nodes
+per SDK, zero FAIL/SKIP. Combined production reduction is 99 lines relative to
+C3a, excluding tests/documentation. Final paired ABBA medians change by -0.23%
+on current Go and -0.73% on minimum Go, with essentially unchanged allocations;
+no speedup is claimed. The repair still needs fresh native qualification and
+its own complete contribution CI. Let the existing round finish before pushing
+the repair batch; preserve its failures and all RED/GREEN reports.
+
 ## Remaining work
 
-1. Publish the qualified floating arithmetic grammar without the fork-only
-   workflow. Accept its own complete CI,
+1. Finish qualification of the CLI/mode32 repair and publish the verified batch
+   without the fork-only workflow. Accept its own complete CI,
    coverage and review; the accepted C3a round does not certify a later head.
 2. Continue initialized functions, LLVM 22 objects and independent semantics
    family by family. Preserve native 386, AVX512/AVX512ER, reciprocal/MXCSR,
