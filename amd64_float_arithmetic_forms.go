@@ -103,19 +103,8 @@ func x86FloatArithmeticProperties(ins Instr, arch string, family x86FloatArithme
 		if sae && (ins.Args[0].Kind != OpReg || !spec.scalar && form.byteWidth != 64) {
 			return form, true, fmt.Errorf("%s %s has invalid MIN/MAX operands or controls: %q", arch, ins.Op, ins.Raw)
 		}
-		return form, true, x86Mode32VectorRegisterContext(ins, arch)
 	}
-	// Retain the existing MUL/DIV physical-mode boundary. A Go-accepted
-	// high-register name is not native mode32 register authority.
-	if family == x86FloatMultiplyDivide && arch == "386" && !spec.legacy {
-		for _, operand := range ins.Args {
-			width := amd64VectorByteWidth(operand.Reg)
-			if index, valid := amd64VectorRegisterIndex(operand.Reg, width); operand.Kind == OpReg && valid && index >= 8 {
-				return form, true, fmt.Errorf("mode32 floating mul/div has no physical SIMD register %s: %w", operand.Reg, ErrProbeNeedsContext)
-			}
-		}
-	}
-	return form, true, nil
+	return form, true, x86Mode32VectorRegisterContext(ins, arch)
 }
 
 func (c *amd64Ctx) lowerFloatArithmetic(op Op, ins Instr, family x86FloatArithmeticFamily) (bool, bool, error) {
