@@ -14,7 +14,7 @@
 typedef void (*Program)(uint8_t *, const uint8_t *, const uint8_t *, const uint8_t *, uint32_t);
 typedef struct {
     Program translated, original;
-    unsigned bits, width;
+    unsigned bits, width, carrier;
     int source, second, destination;
     bool legacy, scalar, dead, minimum;
 } Kernel;
@@ -141,7 +141,7 @@ int main(void) {
                 k.translated(translated, inputs[0], inputs[1], inputs[2], csr);
                 uint8_t want[32];
                 memcpy(want, inputs[k.destination], sizeof(want));
-                if (k.legacy) memset(want + 16, 0, 16);
+                if (k.carrier == 16) memset(want + 16, 0, 16);
                 if (!k.dead) {
                     if (!k.legacy) {
                         memset(want, 0, sizeof(want));

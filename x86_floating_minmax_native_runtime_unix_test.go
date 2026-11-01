@@ -18,6 +18,7 @@ import (
 type x86MinMaxNativeCase struct {
 	op                   string
 	bits, width          int
+	carrierWidth         int
 	source, second, dest int
 	registerBase         int
 	legacy, scalar, dead bool
@@ -27,8 +28,10 @@ func x86MinMaxNativeCases() []x86MinMaxNativeCase {
 	var rows []x86MinMaxNativeCase
 	for _, member := range x86FloatingMinMaxCases {
 		widths := []int{16}
+		carrierWidth := 16
 		aliases := [][3]int{{1, 2, 2}, {2, 2, 2}, {-1, 2, 2}}
 		if !member.legacy {
+			carrierWidth = 32
 			aliases = [][3]int{{0, 1, 2}, {2, 1, 2}, {0, 2, 2}, {1, 1, 2}, {2, 2, 2}, {-1, 0, 2}, {-1, 2, 2}}
 			if !member.scalar {
 				widths = append(widths, 32)
@@ -42,7 +45,8 @@ func x86MinMaxNativeCases() []x86MinMaxNativeCase {
 				}
 				rows = append(rows, x86MinMaxNativeCase{
 					op: member.op, bits: member.bits, width: width,
-					source: alias[0], second: alias[1], dest: alias[2],
+					carrierWidth: carrierWidth,
+					source:       alias[0], second: alias[1], dest: alias[2],
 					legacy: member.legacy, scalar: member.scalar, dead: index == len(aliases),
 				})
 			}
@@ -75,8 +79,12 @@ func (row x86MinMaxNativeCase) memoryRegister() string {
 
 func x86MinMaxNativeRawCases(rows []x86MinMaxNativeCase) []x86MinMaxNativeCase {
 	result := append([]x86MinMaxNativeCase(nil), rows...)
+	for index := range result {
+		result[index].carrierWidth = 32
+	}
 	for _, row := range rows {
 		row.registerBase = 8
+		row.carrierWidth = 32
 		result = append(result, row)
 	}
 	return result
@@ -98,9 +106,9 @@ func (row x86MinMaxNativeCase) body(original bool) string {
 		second = first
 	}
 	load, bank := "VMOVUPS", "Y"
-	if row.legacy {
-		// Keep the complete SSE/SSE2 owner runnable without AVX state.
-		// Its output observes X aliases, not uninitialized physical Y bytes.
+	if row.carrierWidth == 16 {
+		// Keep the named SSE/SSE2 owner runnable without AVX state. The
+		// raw owner additionally observes preserved physical Y upper bytes.
 		load, bank = "MOVUPS", "X"
 	}
 	var source strings.Builder
@@ -122,7 +130,7 @@ func (row x86MinMaxNativeCase) body(original bool) string {
 		fmt.Fprintf(&source, "%s (%s),%s%d\n", load, old, bank, row.dest+row.registerBase)
 	}
 	fmt.Fprintf(&source, "%s %s%d,(DI)\nMOVL DX,40(DI)\nSTMXCSR 36(DI)\nLDMXCSR 32(DI)\n", load, bank, row.dest+row.registerBase)
-	if !row.legacy {
+	if row.carrierWidth == 32 {
 		source.WriteString("VZEROUPPER\n")
 	}
 	source.WriteString("RET\n")
@@ -138,8 +146,8 @@ func x86MinMaxNativeProgram(rows []x86MinMaxNativeCase) (source, declarations, p
 		fmt.Fprintf(&c, "extern void %s(uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*,uint32_t);\n", name)
 		fmt.Fprintf(&c, "extern void %s(uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*,uint32_t);\n", original)
 		minimum := strings.Contains(row.op, "MIN")
-		fmt.Fprintf(&metadata, "{%s,%s,%d,%d,%d,%d,%d,%t,%t,%t,%t},\n", name, original,
-			row.bits, row.width, row.source, row.second, row.dest, row.legacy, row.scalar, row.dead, minimum)
+		fmt.Fprintf(&metadata, "{%s,%s,%d,%d,%d,%d,%d,%d,%t,%t,%t,%t},\n", name, original,
+			row.bits, row.width, row.carrierWidth, row.source, row.second, row.dest, row.legacy, row.scalar, row.dead, minimum)
 	}
 	return assembly.String(), decl.String(), c.String(), metadata.String()
 }
@@ -231,7 +239,7 @@ func x86MinMaxNativeRuntimeEncoding(t *testing.T, legacy, raw bool) {
 		}
 		execution.compiler = append(execution.compiler, flags...)
 	}
-	if !legacy {
+	if raw || !legacy {
 		execution.requireAVX(t)
 	}
 	all := x86MinMaxNativeCases()
