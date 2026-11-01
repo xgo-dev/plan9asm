@@ -105,6 +105,14 @@ with the Linux/amd64 software-alias runtime owner retained separately. A propose
 26-line result-routing cleanup regressed paired minimum-SDK measurements and
 was withdrawn. Smaller source alone does not establish faster translation.
 
+The residual binary-floating helpers also drop 43 production lines of obsolete
+f32/f64 input loading. Those families return through their typed owners; the
+remaining portable FP16 and SCALEF paths retain their existing loads and effects.
+Both endpoint SDKs pass all fifty related portable/object roots and 2,183 nodes;
+the current SDK retains the exact executed baseline case IDs. The two original
+host-inapplicable native owners remain separate, without counting their local
+skips as passes. This cleanup adds no registry or cache and claims no speedup.
+
 For each batch record the exact revision, SDK, LLVM version, source fixture,
 successful/failed counts, production/test line delta and retained case IDs.
 Measure parsing, analysis, feature inference, IR generation and public

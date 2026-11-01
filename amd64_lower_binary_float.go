@@ -217,50 +217,21 @@ func (c *amd64Ctx) lowerPackedBinaryFloating(spec amd64BinaryFloatingSpec, prope
 	if spec.mode == amd64BinaryFloatingScale {
 		return c.lowerPackedScaleF(spec, properties, ins.Args[0], ins.Args[1], destination, byteWidth, mask)
 	}
+	// The typed f32/f64 owners return before this fallback. Its remaining
+	// arithmetic consumers are raw FP16, including portable target lowering.
 	lanes := byteWidth * 8 / spec.laneBits
 	llvmType := amd64FMA3LLVMType(lanes, spec.laneBits)
 	load := func(operand Operand, allowBroadcast bool) (string, error) {
-		if spec.rawOnly {
-			sourceMask := ""
-			if allowBroadcast {
-				sourceMask = mask
-			}
-			bits, err := c.loadMaskedPackedCompareLanes(operand, byteWidth, spec.laneBits, allowBroadcast && properties.broadcast, sourceMask)
-			if err != nil {
-				return "", err
-			}
-			value := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i%d> %s to %s\n", value, lanes, spec.laneBits, bits, llvmType)
-			return "%" + value, nil
+		sourceMask := ""
+		if allowBroadcast {
+			sourceMask = mask
 		}
-		if allowBroadcast && properties.broadcast {
-			var scalar string
-			var err error
-			switch spec.laneBits {
-			case 16:
-				bits, loadErr := c.loadPackedBroadcastScalar(operand, 16, ins.x86Encoded)
-				if loadErr != nil {
-					return "", loadErr
-				}
-				value := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = bitcast i16 %s to half\n", value, bits)
-				scalar = "%" + value
-			case 32:
-				scalar, err = c.evalF32(operand)
-			case 64:
-				scalar, err = c.evalF64(operand)
-			}
-			if err != nil {
-				return "", err
-			}
-			return c.splatFMA3Scalar(lanes, spec.laneBits, scalar), nil
-		}
-		bytesValue, err := c.loadPackedCompareBytes(operand, byteWidth)
+		bits, err := c.loadMaskedPackedCompareLanes(operand, byteWidth, spec.laneBits, allowBroadcast && properties.broadcast, sourceMask)
 		if err != nil {
 			return "", err
 		}
 		value := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i8> %s to %s\n", value, byteWidth, bytesValue, llvmType)
+		fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i%d> %s to %s\n", value, lanes, spec.laneBits, bits, llvmType)
 		return "%" + value, nil
 	}
 	first, err := load(ins.Args[0], true)
@@ -293,40 +264,26 @@ func (c *amd64Ctx) lowerScalarBinaryFloating(spec amd64BinaryFloatingSpec, prope
 	if spec.mode == amd64BinaryFloatingScale {
 		return c.lowerScalarScaleF(spec, properties, ins.Args[0], ins.Args[1], destination, mask)
 	}
-	var first, second string
+	// SCALEF has returned; only the portable raw half-precision path remains.
+	var firstBits, secondBits string
 	var err error
-	if spec.laneBits == 16 {
-		var firstBits, secondBits string
-		if ins.Args[0].Kind == OpReg {
-			firstBits, err = c.loadXLowInteger(ins.Args[0].Reg, 16)
-		} else if mask != "" {
-			firstBits, err = c.loadVectorScalarMemory(ins.Args[0], 16, mask)
-		} else {
-			firstBits, err = c.evalIntSized(ins.Args[0], "i16")
-		}
-		if err == nil {
-			secondBits, err = c.loadXLowInteger(ins.Args[1].Reg, 16)
-		}
-		if err == nil {
-			firstTemp, secondTemp := c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast i16 %s to half\n", firstTemp, firstBits)
-			fmt.Fprintf(c.b, "  %%%s = bitcast i16 %s to half\n", secondTemp, secondBits)
-			first, second = "%"+firstTemp, "%"+secondTemp
-		}
-	} else if spec.laneBits == 32 {
-		first, err = c.evalF32(ins.Args[0])
-		if err == nil {
-			second, err = c.loadXLowF32(ins.Args[1].Reg)
-		}
+	if ins.Args[0].Kind == OpReg {
+		firstBits, err = c.loadXLowInteger(ins.Args[0].Reg, 16)
+	} else if mask != "" {
+		firstBits, err = c.loadVectorScalarMemory(ins.Args[0], 16, mask)
 	} else {
-		first, err = c.evalF64(ins.Args[0])
-		if err == nil {
-			second, err = c.loadXLowF64(ins.Args[1].Reg)
-		}
+		firstBits, err = c.evalIntSized(ins.Args[0], "i16")
+	}
+	if err == nil {
+		secondBits, err = c.loadXLowInteger(ins.Args[1].Reg, 16)
 	}
 	if err != nil {
 		return true, false, err
 	}
+	firstTemp, secondTemp := c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast i16 %s to half\n", firstTemp, firstBits)
+	fmt.Fprintf(c.b, "  %%%s = bitcast i16 %s to half\n", secondTemp, secondBits)
+	first, second := "%"+firstTemp, "%"+secondTemp
 	llvmType := amd64FMA3LLVMType(1, spec.laneBits)
 	computed := c.emitBinaryFloating(spec, llvmType, 1, second, first, properties.rounding)
 	computedBits := c.newTmp()
