@@ -3,6 +3,7 @@ package plan9asm
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -7496,7 +7497,7 @@ func TestTranslateX86BinaryFloatingCompleteGo127Forms(t *testing.T) {
 
 			// Keep every original Go format and its public Context boundary.
 			// This source has no numerical/native/merge producers; initialized
-			// MIN/MAX public objects have their own complete independent matrix.
+			// Arithmetic public objects have their own complete independent matrix.
 			file, signatures := x86UnboundVoidFormatSource(t, src.String(),
 				"binary_floating_complete_forms", target.goarch, target.triple)
 			local := *file
@@ -7504,17 +7505,26 @@ func TestTranslateX86BinaryFloatingCompleteGo127Forms(t *testing.T) {
 			local.Funcs[0].Instrs = nil
 			contextRows := 0
 			for _, instruction := range file.Funcs[0].Instrs {
-				if _, known, err := x86FloatMinMaxProperties(instruction, target.goarch); known && err != nil {
-					if target.goarch != "386" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatal("original MIN/MAX format became malformed", instruction.Raw, err)
+				if _, known, err := x86FloatArithmeticProperties(instruction, target.goarch, ""); known && err != nil {
+					highRegister := false
+					for _, operand := range instruction.Args {
+						name := string(operand.Reg)
+						if operand.Kind != OpReg || len(name) < 2 || !strings.ContainsRune("XYZ", rune(name[0])) {
+							continue
+						}
+						index, parseErr := strconv.Atoi(name[1:])
+						highRegister = highRegister || parseErr == nil && index >= 8
+					}
+					if target.goarch != "386" || !highRegister || !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatal("original arithmetic format became malformed", instruction.Raw, err)
 					}
 					contextRows++
 					continue // Only the unbound physical bank lacks an emitter object.
 				}
 				local.Funcs[0].Instrs = append(local.Funcs[0].Instrs, instruction)
 			}
-			if target.goarch == "386" && contextRows != 16 || target.goarch == "amd64" && contextRows != 0 {
-				t.Fatal("original MIN/MAX physical-bank partition changed", target.goarch, contextRows)
+			if target.goarch == "386" && contextRows != 44 || target.goarch == "amd64" && contextRows != 0 {
+				t.Fatal("original arithmetic physical-bank partition changed", target.goarch, contextRows)
 			}
 			ll := x86ScalarFormatObjectUnit(t, &local, signatures, target.goarch, target.triple, 0)
 			compileLLVMToObject(t, llc, target.triple, "binary-floating-complete-"+target.name+".ll", "binary-floating-complete-"+target.name+".o", ll)
