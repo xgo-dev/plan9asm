@@ -190,6 +190,23 @@ func x86MinMaxNativeRawSource(t *testing.T, source string, rows []x86MinMaxNativ
 		if len(code) < 2 || len(code) > 16 || code[len(code)-1] != 0xc3 {
 			t.Fatal("original MIN/MAX encoding lacks its final RET", operation, code)
 		}
+		if row.legacy {
+			prefix := 0
+			if code[0] == 0x66 || code[0] == 0xf2 || code[0] == 0xf3 {
+				prefix++
+			}
+			if (code[prefix]&0xf0 == 0x40) != (row.registerBase != 0) {
+				t.Fatal("original legacy MIN/MAX lost its low/REX bank witness", operation, code)
+			}
+		} else {
+			prefix := byte(0xc5)
+			if row.registerBase != 0 {
+				prefix = 0xc4
+			}
+			if code[0] != prefix {
+				t.Fatal("original MIN/MAX lost its VEX2/VEX3 witness", operation, code)
+			}
+		}
 		encodings[operation] = x86RawDisplacementDirectives(code[:len(code)-1])
 	}
 	for operation, encoded := range encodings {
