@@ -7,6 +7,34 @@ import (
 	"testing"
 )
 
+func x86RequireNumericNativeSourceContext(t *testing.T, source, declaration, arch string) {
+	t.Helper()
+	file, err := Parse(ArchAMD64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := mustGoPackage(t, "numeric", "package numeric\n"+declaration)
+	resolve := func(symbol string) string { return strings.TrimPrefix(goStripABISuffix(symbol), "·") }
+	signatures, err := goSigsForAsmFile(pkg, file, resolve, arch, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range file.Funcs {
+		if err := CheckX86ABI0ResultInitialization(fn, signatures[resolve(fn.Sym)], arch); !errors.Is(err, ErrProbeNeedsContext) {
+			t.Fatal("paired numerical address became a standalone result or storage proof", err)
+		}
+	}
+}
+
+func x86NumericNativeAddressObject(t *testing.T, ir, triple string) {
+	t.Helper()
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM22 llc required")
+	}
+	x86PackedStringCompileObject(t, llc, triple, ir, "-O0")
+}
+
 // An initialized machine address can arrive as uintptr or as loaded bits.
 // This does not turn it into a logical pointer or prove any pointee bytes.
 func TestX86InitializedNumericNativeAddressesThreeAPIs(t *testing.T) {
