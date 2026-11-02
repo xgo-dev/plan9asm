@@ -51,9 +51,16 @@ func TestX86VectorArithmeticPairedNativeReadCannotBorrowSourceFacts(t *testing.T
 				}
 				for _, replacement := range []string{"MOVL $1,AX", "MOVQ p+0(FP),DI"} {
 					bad := strings.Replace(source, "MOVQ p+0(FP),AX", replacement, 1)
-					if ir, err := x86ScalarFPBitViewAPI(t, bad, "func Value(p *[64]byte)",
-						"amd64", "x86_64-unknown-linux-gnu", api); !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
-						t.Fatal("Void native arithmetic invented address context", member.name, bank, api, err)
+					ir, err := x86ScalarFPBitViewAPI(t, bad, "func Value(p *[64]byte)",
+						"amd64", "x86_64-unknown-linux-gnu", api)
+					if replacement == "MOVL $1,AX" {
+						if err != nil || x86NumericNativeVolatileReadBytes(t, ir) != map[string]int{"X": 16, "Y": 32, "Z": 64}[bank] {
+							t.Fatal("Void arithmetic lost its initialized NUM native tuple", member.name, bank, api, err)
+						}
+						x86RequireNumericNativeSourceContext(t, bad, "func Value(p *[64]byte)", "amd64")
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+						t.Fatal("Void native arithmetic invented address context", member.name, bank, replacement, api, err)
 					}
 				}
 			}
