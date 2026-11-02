@@ -55,6 +55,16 @@ func x86ScalarFPResultTransfer(ins Instr, state *x86ResultState, owned []bool, r
 	if accepted, known := x86ResultFloatCompareStep(ins, state, owned, arch, false); known {
 		return accepted
 	}
+	if form, known, err := x86LegacyPackedMoveProperties(ins.Op, ins, arch); known && err == nil &&
+		form.memory < 0 && x86ResultNamedPredicateInstruction(ins) {
+		// A nontrapping register copy transports only the source's numerical
+		// bytes. Unknown bytes stay unknown; legacy upper aliases and FLAGS
+		// are preserved. Memory and raw observers keep their strict path.
+		source, _ := amd64ParseXReg(form.source.Reg)
+		destination, _ := amd64ParseXReg(form.destination.Reg)
+		state.writeVector(destination, 16, state.vectorBytes(source), true)
+		return true
+	}
 	if form, known, err := amd64PackedVectorMoveProperties(ins, arch); known {
 		return err == nil && x86ResultPackedVectorMoveTransfer(ins, form, state, owned, resultOffset, arch, false)
 	}
