@@ -9,52 +9,33 @@ import (
 // RCL/RCR/ROL/ROR/SAR/SAL/SHL/SHR at B/W/L/Q widths, plus the special
 // three-operand SHL/SHR W/L/Q double-shift table.
 func (c *amd64Ctx) lowerScalarShiftRotate(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	rawOp := strings.ToUpper(string(op))
-	baseOp := rawOp
-	if dot := strings.IndexByte(rawOp, '.'); dot >= 0 {
-		baseOp = rawOp[:dot]
-	}
-	stem, bits, recognized := amd64ScalarShiftRotateProperties(baseOp)
+	baseOp, _, _ := strings.Cut(strings.ToUpper(string(op)), ".")
+	_, _, recognized := amd64ScalarShiftRotateProperties(baseOp)
 	if !recognized {
 		return false, false, nil
 	}
-	if _, _, err := x86ScalarShiftProperties(op, ins, c.goarch); err != nil {
+	form, _, err := x86ScalarShiftProperties(op, ins, c.goarch)
+	if err != nil {
 		return true, false, err
 	}
-	if rawOp != baseOp {
-		return true, false, fmt.Errorf("%s %s does not accept instruction suffixes: %q", c.goarch, baseOp, ins.Raw)
+	if form.double {
+		return c.lowerScalarDoubleShift(ins, form)
 	}
-	if c.goarch == "386" && bits == 64 {
-		return true, false, fmt.Errorf("386 %s is illegal in 32-bit mode: %q", baseOp, ins.Raw)
-	}
-	if len(ins.Args) == 3 {
-		if (stem != "SHL" && stem != "SHR") || bits == 8 {
-			return true, false, fmt.Errorf("%s %s has no three-operand form in Go 1.27: %q", c.goarch, baseOp, ins.Raw)
-		}
-		return c.lowerScalarDoubleShift(baseOp, stem == "SHL", bits, ins)
-	}
-	if len(ins.Args) != 2 {
-		return true, false, fmt.Errorf("%s %s expects count, destination: %q", c.goarch, baseOp, ins.Raw)
-	}
-	count, err := c.scalarShiftCount(ins.Args[0], bits, false)
+	count, err := c.loadScalarShiftCount(form)
 	if err != nil {
-		return true, false, fmt.Errorf("%s %s count: %w", c.goarch, baseOp, err)
+		return true, false, fmt.Errorf("%s %s count: %w", c.goarch, form.name, err)
 	}
-	dst := ins.Args[1]
-	if !c.scalarShiftDestination(dst, bits) {
-		return true, false, fmt.Errorf("%s %s destination is outside Go 1.27's Ymb/Yml class: %q", c.goarch, baseOp, ins.Raw)
-	}
-	ty := amd64IntegerTypeForBits(bits)
-	value, store, err := c.loadScalarShiftOperand(ins, 1, ty)
+	ty := amd64IntegerTypeForBits(form.bits)
+	value, store, err := c.loadScalarShiftOperand(ins, form.destinationIndex, ty)
 	if err != nil {
 		return true, false, err
 	}
 	var result string
-	if stem == "RCL" || stem == "RCR" {
-		result = c.emitScalarCarryRotate(stem, bits, value, count)
+	if form.stem == "RCL" || form.stem == "RCR" {
+		result = c.emitScalarCarryRotate(form.stem, form.bits, value, count)
 	} else {
-		result = c.emitScalarShiftRotate(stem, bits, value, count)
-		c.emitScalarShiftFlags(stem, bits, value, result, count, false)
+		result = c.emitScalarShiftRotate(form.stem, form.bits, value, count)
+		c.emitScalarShiftFlags(form.stem, form.bits, value, result, count, false)
 	}
 	if err := store(result); err != nil {
 		return true, false, err
@@ -80,7 +61,7 @@ func amd64ScalarShiftRotateProperties(op string) (stem string, bits int, ok bool
 
 func (c *amd64Ctx) emitScalarCarryRotate(stem string, bits int, value, count64 string) string {
 	// Model RCL/RCR as a rotate of the destination plus CF. Intel masks the
-	// count to five (six for Q) bits first; scalarShiftCount already did that.
+	// count to five (six for Q) bits first; loadScalarShiftCount already did that.
 	// B/W then reduce it modulo 9/17, while L/Q values are already below 33/65.
 	totalBits := bits + 1
 	effective64 := c.newTmp()
@@ -162,48 +143,23 @@ func (c *amd64Ctx) emitScalarCarryRotate(stem string, bits int, value, count64 s
 	return "%" + result
 }
 
-func (c *amd64Ctx) scalarShiftCount(count Operand, bits int, doubleShift bool) (string, error) {
+// The complete typed grammar has already validated the original count. Loading
+// it does not change its numerical dependency or the hardware's five/six-bit mask.
+func (c *amd64Ctx) loadScalarShiftCount(form x86ScalarShiftForm) (string, error) {
+	if form.count.Kind == OpImm {
+		return fmt.Sprintf("%d", form.maskedCount()), nil
+	}
 	mask := int64(31)
-	if bits == 64 {
+	if form.bits == 64 {
 		mask = 63
 	}
-	switch count.Kind {
-	case OpImm:
-		if count.ImmRaw != "" || count.ImmIsFloat {
-			return "", fmt.Errorf("count must be a resolved integer immediate")
-		}
-		if doubleShift {
-			if count.Imm < -128 || count.Imm > 127 {
-				return "", fmt.Errorf("immediate is outside Go 1.27's signed-imm8 class")
-			}
-		} else if count.Imm < 0 || count.Imm > 255 {
-			return "", fmt.Errorf("immediate is outside Go 1.27's unsigned-imm8 class")
-		}
-		return fmt.Sprintf("%d", count.Imm&mask), nil
-	case OpReg:
-		if count.Reg != CL && count.Reg != CX {
-			return "", fmt.Errorf("register count must be CL or CX")
-		}
-		value, err := c.loadReg(count.Reg)
-		if err != nil {
-			return "", err
-		}
-		masked := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", masked, value, mask)
-		return "%" + masked, nil
-	default:
-		return "", fmt.Errorf("count must be an immediate, CL, or CX")
+	value, err := c.loadReg(form.count.Reg)
+	if err != nil {
+		return "", err
 	}
-}
-
-func (c *amd64Ctx) scalarShiftDestination(dst Operand, bits int) bool {
-	if dst.Kind == OpReg {
-		if bits == 8 {
-			return isGoYmbRegisterForArch(dst.Reg, c.goarch)
-		}
-		return isX86YrlRegisterForArch(dst.Reg, c.goarch)
-	}
-	return isAMD64MemoryOperand(dst)
+	masked := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", masked, value, mask)
+	return "%" + masked, nil
 }
 
 func (c *amd64Ctx) emitScalarShiftRotate(stem string, bits int, value, count64 string) string {
@@ -265,23 +221,18 @@ func (c *amd64Ctx) emitScalarShiftRotate(stem string, bits int, value, count64 s
 	return "%" + result
 }
 
-func (c *amd64Ctx) lowerScalarDoubleShift(baseOp string, left bool, bits int, ins Instr) (bool, bool, error) {
-	count, err := c.scalarShiftCount(ins.Args[0], bits, true)
+func (c *amd64Ctx) lowerScalarDoubleShift(ins Instr, form x86ScalarShiftForm) (bool, bool, error) {
+	count, err := c.loadScalarShiftCount(form)
 	if err != nil {
-		return true, false, fmt.Errorf("%s %s count: %w", c.goarch, baseOp, err)
+		return true, false, fmt.Errorf("%s %s count: %w", c.goarch, form.name, err)
 	}
-	if ins.Args[1].Kind != OpReg || !isX86YrlRegisterForArch(ins.Args[1].Reg, c.goarch) {
-		return true, false, fmt.Errorf("%s %s source must be a Yrl GP register: %q", c.goarch, baseOp, ins.Raw)
-	}
-	if !c.scalarShiftDestination(ins.Args[2], bits) {
-		return true, false, fmt.Errorf("%s %s destination must be a Yml GP register or memory: %q", c.goarch, baseOp, ins.Raw)
-	}
+	bits := form.bits
 	ty := amd64IntegerTypeForBits(bits)
-	source, err := c.evalIntSized(ins.Args[1], ty)
+	source, err := c.evalIntSized(form.source, ty)
 	if err != nil {
 		return true, false, err
 	}
-	destination, store, err := c.loadScalarShiftOperand(ins, 2, ty)
+	destination, store, err := c.loadScalarShiftOperand(ins, form.destinationIndex, ty)
 	if err != nil {
 		return true, false, err
 	}
@@ -307,7 +258,7 @@ func (c *amd64Ctx) lowerScalarDoubleShift(baseOp string, left bool, bits int, in
 	fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %d\n", inverse, ty, inverseNeg, bits-1)
 	first := c.newTmp()
 	second := c.newTmp()
-	if left {
+	if form.stem == "SHL" {
 		fmt.Fprintf(c.b, "  %%%s = shl %s %s, %s\n", first, ty, destination, effective)
 		fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %%%s\n", second, ty, source, inverse)
 	} else {
@@ -331,7 +282,7 @@ func (c *amd64Ctx) lowerScalarDoubleShift(baseOp string, left bool, bits int, in
 		fmt.Fprintf(c.b, "  %%%s = icmp ugt i64 %s, 16\n", outside, count)
 		value = c.emitScalarShiftArchitecturalChoice(I16, "%"+outside, value)
 	}
-	c.emitScalarShiftFlags(baseOp[:len(baseOp)-1], bits, destination, value, count, true)
+	c.emitScalarShiftFlags(form.stem, bits, destination, value, count, true)
 	if err := store(value); err != nil {
 		return true, false, err
 	}

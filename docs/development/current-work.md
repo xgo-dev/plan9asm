@@ -206,6 +206,13 @@ scanner-context and preflight gates pass. No typed handler, numerical operation
 or native permission changes. Other private-entry implementations remain;
 see [the exact boundary](x86-convergence.md).
 
+Scalar shift/rotate also reuses its existing validated form, removing another
+49 production lines. Both SDKs pass 43 roots / 10,890 nodes with all prior case
+IDs retained; BMI2 remains a separate family. Timing qualification is still
+inconclusive under host variance, including unchanged controls. Do not promote
+this cleanup to an efficiency certificate; retain controlled-host performance
+as an outstanding gate.
+
 ## Native policy repair
 
 The `ab900f0c0` Windows round exposed stale file-selection policies after native

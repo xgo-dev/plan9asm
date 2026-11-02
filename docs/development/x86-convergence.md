@@ -194,6 +194,25 @@ policies, 31 preflight roots / 484 nodes and both five-target gates pass.
 This is removal of duplicate code, not a new numerical implementation, native
 execution certificate or measured translation speedup.
 
+Scalar shift/rotate lowering now consumes the existing validated form's width,
+count, source and operand indices through both ordinary and double shifts.
+It removes 49 production lines of repeated mode, arity and operand validation.
+The early Group2 membership gate still excludes every BMI2 spelling, including
+malformed or mismatched instructions, before any value or memory emission.
+The numerical and FLAGS emitters retain count0, carry rotation, W double-shift
+count16 and the finite choice for undefined counts17–31. The existing 32 Group2
+names / 120 rows and six double-shift names / eighteen rows remain unchanged.
+
+Both endpoint SDKs retain every original local case ID and pass 43 roots /
+10,890 nodes, including 49 new family-boundary nodes. Complete CLI extraction
+passes on current Go and its Go1.24.11 minimum; the additional Go1.27 SDK math
+owner is available only on current Go. Node, preflight and five-target gates pass.
+Seven Group2 and one BMI2 benchmark kernels return actual I64 ABI0 results;
+the separate existing GP control retains its Void/control-flow workload.
+Paired timing remains inconclusive: current-SDK rounds disagree, and unchanged
+controls show substantial host variance. Retain both rounds; do not claim a
+speedup or rigorous absence of regression before controlled-host qualification.
+
 ## Independent rule inventory
 
 The official scanner includes the selected SDK's ordered `asm6.go` `optab` and
