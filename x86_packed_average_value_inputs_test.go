@@ -195,8 +195,26 @@ func x86FixedBinaryNativeInputBoundaries(t *testing.T, inventory func(string) []
 							t.Fatal("complete NUM address lost its paired native access", api, err)
 						}
 						width := map[string]int{"X": 16, "Y": 32, "Z": 64}[row.bank]
+						if strings.HasSuffix(row.op, ".BCST") {
+							base := strings.TrimSuffix(row.op, ".BCST")
+							width = 4
+							if strings.HasSuffix(base, "PD") || strings.HasSuffix(base, "QDQ") ||
+								strings.HasSuffix(base, "Q") && !strings.HasSuffix(base, "DQ") {
+								width = 8
+							}
+						}
+						mnemonic := strings.ToLower(row.op)
+						// Go's legacy spellings retain their original hardware opcode.
+						if alias := map[string]string{
+							"PUNPCKLWL": "punpcklwd", "PUNPCKHWL": "punpckhwd",
+							"PUNPCKLLQ": "punpckldq", "PUNPCKHLQ": "punpckhdq",
+							"PMULULQ": "pmuludq", "PACKSSLW": "packssdw",
+							"PADDL": "paddd", "PSUBL": "psubd",
+						}[row.op]; alias != "" {
+							mnemonic = alias
+						}
 						if x86NumericNativeVolatileReadBytes(t, ir) != width &&
-							!(strings.Contains(ir, "asm sideeffect") && strings.Contains(ir, strings.ToLower(row.op)) && strings.Contains(ir, "~{memory}")) {
+							!(strings.Contains(ir, "asm sideeffect") && strings.Contains(ir, mnemonic) && strings.Contains(ir, "~{memory}")) {
 							t.Fatal("NUM address lost its exact native tuple or original access", row, api)
 						}
 						x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
