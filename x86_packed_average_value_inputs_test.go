@@ -198,9 +198,11 @@ func x86FixedBinaryNativeInputBoundaries(t *testing.T, inventory func(string) []
 						if strings.HasSuffix(row.op, ".BCST") {
 							base := strings.TrimSuffix(row.op, ".BCST")
 							width = 4
-							if strings.HasSuffix(base, "PD") || strings.HasSuffix(base, "QDQ") ||
-								strings.HasSuffix(base, "Q") && !strings.HasSuffix(base, "DQ") {
+							if strings.HasSuffix(base, "PD") || strings.HasSuffix(base, "Q") {
 								width = 8
+							}
+							if strings.Contains(base, "UNPCK") {
+								width = x86UnpackTestLaneBytes(base)
 							}
 						}
 						mnemonic := strings.ToLower(row.op)
