@@ -395,8 +395,11 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	// Discover private value-stack effects in the same complete, already
 	// selected CFG used below, including source-bound private helpers.
 	flagProjection := false
+	trackMoveMask := false
 	for _, ins := range instructions {
 		trackCPUIDLeaf = trackCPUIDLeaf || strings.EqualFold(string(ins.Op), string(OpCPUID))
+		_, moveMask := amd64MoveMaskSpecs[Op(strings.ToUpper(string(ins.Op)))]
+		trackMoveMask = trackMoveMask || moveMask
 		if spec, known, _ := x86StackWidthProperties(ins, goarch); known {
 			if initial.valueStack == nil {
 				initial.valueStack = new(x86ResultValueStack)
@@ -418,7 +421,11 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		byteState++ // CPUID's EAX-only maximum-leaf must-fact.
 	}
 	byteState += 12 // One adjacent shift's input-byte bits and four typed byte fields.
-	byteState += 11 // One shared adjacent GP-bit observation, not a per-register domain.
+	if trackMoveMask {
+		byteState += 11 // Shared adjacent GP bits, register, valid and stack-origin tag.
+	} else if initial.valueStack != nil {
+		byteState += 10 // POP-only origin is implicit, retaining its original logical payload.
+	}
 	if len(initial.resultAddressSlots) != 0 {
 		byteState += len(initial.resultAddressGP)*25 + 2
 	}
