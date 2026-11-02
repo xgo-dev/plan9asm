@@ -45,7 +45,7 @@ jobs:
         run: node --test .github/scripts/priority-*.test.cjs
 
       - name: CI policy tests
-        run: go test . -run '^(TestCI|TestFixedLocal|TestGoAMD64FixedLocalPackedRuntimeOwnership|TestRuntimeOracleCommand(ConsumersRetainOwnedExecution|AuditDistinguishesTestingRun)$)' -count=1
+        run: go test . -run '^(TestCI|TestFixedLocal|TestGoAMD64FixedLocal(Packed|Conversion)RuntimeOwnership$|TestX86PackedConversion(RequiredNativeOwners|CompleteNativeRuntimeOwnership)$|TestX86FloatingCompareRequiredLinuxBuildSelection$|TestRuntimeOracleCommand(ConsumersRetainOwnedExecution|AuditDistinguishesTestingRun)$)' -count=1
 
       - name: Compile explicit native AVX512 owners and verify their inventory
         run: go test . -tags=plan9asm_native_avx512 -run '^TestCIAVX512NativeQualificationInventory$' -count=1

@@ -7,11 +7,11 @@ import (
 )
 
 func TestX86PackedConversionRequiredNativeOwners(t *testing.T) {
-	// The complete policy retains native-only build selection and binds all17
-	// unconditional owner calls. Keep the full go-ci counterpart check here.
+	// The complete policy binds all 17 unconditional owners to the explicit
+	// native tag. Ordinary conversion counterparts retain the default CI selector.
 	TestX86PackedConversionCompleteNativeRuntimeOwnership(t)
 	workflow, err := os.ReadFile(".github/workflows/go-ci.yml")
 	if err != nil || !strings.Contains(string(workflow), "-ci-selector '^(TestCrossLinuxRuntimeMatrix|") {
-		t.Fatal("required native runtime roots not selected by CI", err)
+		t.Fatal("ordinary conversion runtime counterparts not selected by CI", err)
 	}
 }

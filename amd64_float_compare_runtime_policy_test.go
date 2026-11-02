@@ -3,7 +3,6 @@ package plan9asm
 import (
 	"fmt"
 	"go/ast"
-	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -106,17 +105,26 @@ func TestX86FloatingCompareRuntimeRequiresExplicitISAAxes(t *testing.T) {
 }
 
 func TestX86FloatingCompareRequiredLinuxBuildSelection(t *testing.T) {
-	for _, target := range []struct{ os, arch string }{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "arm64"}, {"windows", "amd64"}} {
-		for _, file := range []string{"amd64_float_compare_runtime_linux_test.go", "amd64_float_compare_runtime_linux_amd64_test.go", "amd64_insert_extract_native_runtime_linux_amd64_test.go", "amd64_packed_double_dword_native_linux_amd64_test.go"} {
-			ctx := build.Default
-			ctx.GOOS, ctx.GOARCH = target.os, target.arch
-			actual, err := ctx.MatchFile(".", file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := target.os == "linux" && (target.arch == "amd64" || file == "amd64_float_compare_runtime_linux_test.go" && target.arch == "arm64")
-			if actual != want {
-				t.Fatalf("%s on %s/%s selected=%v want=%v", file, target.os, target.arch, actual, want)
+	for _, qualified := range []bool{false, true} {
+		for _, target := range []struct{ os, arch string }{
+			{"linux", "amd64"}, {"linux", "386"}, {"linux", "arm"}, {"linux", "arm64"},
+			{"js", "wasm"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"},
+		} {
+			for _, file := range []string{"amd64_float_compare_runtime_linux_test.go", "amd64_float_compare_runtime_linux_amd64_test.go", "amd64_insert_extract_native_runtime_linux_amd64_test.go", "amd64_packed_double_dword_native_linux_amd64_test.go"} {
+				t.Run(fmt.Sprintf("selection/qualified=%t/%s-%s/%s", qualified, target.os, target.arch, file), func(t *testing.T) {
+					ctx := ciNativeAVX512BuildContext(target.os, target.arch, qualified)
+					actual, err := ctx.MatchFile(".", file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := target.os == "linux" && (target.arch == "amd64" || target.arch == "arm64")
+					if file != "amd64_float_compare_runtime_linux_test.go" {
+						want = qualified && target.os == "linux" && target.arch == "amd64"
+					}
+					if actual != want {
+						t.Fatalf("%s on %s/%s qualified=%v selected=%v want=%v", file, target.os, target.arch, qualified, actual, want)
+					}
+				})
 			}
 		}
 	}

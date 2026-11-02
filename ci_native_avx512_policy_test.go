@@ -95,12 +95,7 @@ func TestCIAVX512NativeQualificationInventory(t *testing.T) {
 
 func ciNativeAVX512Roots(t *testing.T, goos, goarch string, qualified bool) map[string]bool {
 	t.Helper()
-	ctx := build.Default
-	ctx.GOOS, ctx.GOARCH = goos, goarch
-	ctx.BuildTags = nil
-	if qualified {
-		ctx.BuildTags = []string{"plan9asm_native_avx512"}
-	}
+	ctx := ciNativeAVX512BuildContext(goos, goarch, qualified)
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +129,18 @@ func ciNativeAVX512Roots(t *testing.T, goos, goarch string, qualified bool) map[
 		}
 	}
 	return roots
+}
+
+// Select explicit test build inputs independently of the executing host or
+// ambient tags. This observes file ownership, never native execution.
+func ciNativeAVX512BuildContext(goos, goarch string, qualified bool) build.Context {
+	ctx := build.Default
+	ctx.GOOS, ctx.GOARCH = goos, goarch
+	ctx.BuildTags = nil
+	if qualified {
+		ctx.BuildTags = []string{"plan9asm_native_avx512"}
+	}
+	return ctx
 }
 
 // Fixture policies still inspect the complete original body and source/C

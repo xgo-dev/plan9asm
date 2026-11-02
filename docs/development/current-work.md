@@ -200,6 +200,21 @@ establishing a speedup; see [convergence](x86-convergence.md). This local batch
 still needs publication and its own complete CI. The earlier `ab900f0c0` fork
 round is still running at the last observation; it does not certify this batch.
 
+## Native policy repair
+
+The `ab900f0c0` Windows round exposed stale file-selection policies after native
+owners moved behind the explicit tag. Four policy roots first fail on both SDKs;
+their repair checks ordinary/tagged selection on all eight target profiles.
+All 17 conversion partitions, seven fixed-local batches, 65 native owners,
+original numerical fixtures and CPU guards remain unchanged. Ordinary VEX
+execution remains selected on Linux/amd64 and Linux/arm64.
+
+Both SDKs pass all fourteen adjacent policy roots / 196 nodes. The four repaired
+roots now run in preflight: 31 roots / 484 nodes, alongside all 574 Node policies
+and both five-architecture gates. These are selection and policy checks, not
+native AVX512 execution. The complete fork round must finish before publishing
+the combined follow-up; retain its actual failures and inspect every new one.
+
 ## Remaining work
 
 1. Finish the native hardware partition follow-up and publish the verified batch

@@ -5,7 +5,6 @@ package plan9asm
 import (
 	"fmt"
 	"go/ast"
-	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -244,15 +243,19 @@ func TestGoAMD64FixedLocalConversionRuntimeOwnership(t *testing.T) {
 		requireX86GoAssemblerResult(t, "amd64", assembly, true)
 	}
 	const filename = "amd64_fixed_local_conversion_runtime_linux_amd64_test.go"
-	for _, target := range []struct{ os, arch string }{
-		{"linux", "amd64"}, {"linux", "386"}, {"linux", "arm"}, {"linux", "arm64"},
-		{"js", "wasm"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"},
-	} {
-		context := build.Default
-		context.GOOS, context.GOARCH = target.os, target.arch
-		selected, err := context.MatchFile(".", filename)
-		if err != nil || selected != (target.os == "linux" && target.arch == "amd64") {
-			t.Fatal("required native execution owner selection", target, selected, err)
+	for _, qualified := range []bool{false, true} {
+		for _, target := range []struct{ os, arch string }{
+			{"linux", "amd64"}, {"linux", "386"}, {"linux", "arm"}, {"linux", "arm64"},
+			{"js", "wasm"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"},
+		} {
+			t.Run(fmt.Sprintf("selection/qualified=%t/%s-%s", qualified, target.os, target.arch), func(t *testing.T) {
+				context := ciNativeAVX512BuildContext(target.os, target.arch, qualified)
+				selected, err := context.MatchFile(".", filename)
+				want := qualified && target.os == "linux" && target.arch == "amd64"
+				if err != nil || selected != want {
+					t.Fatal("native conversion batch lost its explicit selection", target, qualified, selected, err)
+				}
+			})
 		}
 	}
 	syntax, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
