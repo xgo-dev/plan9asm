@@ -317,7 +317,18 @@ func TestX86RawMoveVoidCannotBorrowInputsMasksOrNativeAddresses(t *testing.T) {
 						}
 						source.WriteString("VMOVDQU64 Z2,(DI)\nRET\n")
 						for _, api := range []string{"text", "module", "Go"} {
-							if ir, err := x86ScalarFPBitViewAPI(t, source.String(), declaration, arch, triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+							ir, err := x86ScalarFPBitViewAPI(t, source.String(), declaration, arch, triple, api)
+							if row.scalar && row.role == "load" && (control == "numeric address" || control == "lost pointer") {
+								width := 4
+								if strings.HasPrefix(row.row, "VMOVSD ") {
+									width = 8
+								}
+								if err != nil || x86NumericNativeVolatileReadBytes(t, ir) != width {
+									t.Fatal("raw scalar NUM load lost its exact paired read", api, err)
+								}
+								x86RequireNumericNativeSourceContext(t, source.String(), declaration, arch)
+								x86NumericNativeAddressObject(t, ir, triple)
+							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("raw move borrowed missing numerical/mask/address inputs for Void", api, err)
 							}
 						}

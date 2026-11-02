@@ -210,7 +210,14 @@ func TestX86ScalarLaneNativeResultsKeepWholeSourceBoundaries(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					goAssemblerOracleOutput(t, "amd64", bad, "", true)
 					for _, api := range []string{"text", "module", "Go"} {
-						if _, err := x86ScalarFPBitViewAPI(t, bad, decl, "amd64", "x86_64-unknown-linux-gnu", api); !errors.Is(err, ErrProbeNeedsContext) {
+						ir, err := x86ScalarFPBitViewAPI(t, bad, decl, "amd64", "x86_64-unknown-linux-gnu", api)
+						if name == "lost pointer" {
+							if err != nil || x86NumericNativeVolatileReadBytes(t, ir) != row.width {
+								t.Fatal("insertion lost its exact numeric-address read", api, err)
+							}
+							x86RequireNumericNativeSourceContext(t, bad, decl, "amd64")
+							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+						} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 							t.Fatal("native insertion widened another source contract", api, err)
 						}
 					}

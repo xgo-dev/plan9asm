@@ -174,6 +174,24 @@ func TestGoModuleOwnedReadonlyIndexedVectorRejectsOtherAuthority(t *testing.T) {
 				source := strings.Replace(base, mutation.before, mutation.after, 1)
 				pkg := mustGoPackage(t, ordinaryGlobalReadPackage, "package ordinaryglobals\n"+declarations)
 				ir, err := ordinaryGlobalReadRequest(t, pkg, []byte(source), "amd64", "x86_64-unknown-linux-gnu", api)
+				switch mutation.name {
+				case "no bound", "wrong edge", "stale flags", "past extent", "partial address", "literal index",
+					"mutable table", "relocation", "escape", "raw", "mixed origin":
+					// A failed readonly-table proof does not erase initialized machine
+					// address bits. The paired fallback owns an observable native read,
+					// not table bounds or reusable pointee/storage permissions. An
+					// overwritten result write does not invalidate the bounded read.
+					if err != nil || ir == "" {
+						t.Fatal("initialized table address lost its paired source continuation", err)
+					}
+					if mutation.name != "escape" && x86NumericNativeVolatileReadBytes(t, ir) != 16 &&
+						!(strings.Contains(ir, `asm sideeffect "pand `) && strings.Contains(ir, "~{memory}")) {
+						t.Fatal("unproved table bounds were used without an observable full-width native read")
+					}
+					x86RequireNumericNativeSourceContext(t, source, declarations, "amd64")
+					x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					return
+				}
 				if ir != "" || err == nil {
 					t.Fatal("owned table lent unbounded/mutable/non-numerical/raw authority", ir != "", err)
 				}

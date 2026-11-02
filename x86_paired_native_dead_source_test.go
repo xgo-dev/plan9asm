@@ -13,8 +13,8 @@ func TestX86PairedNativeDeadInputsNeedActualSourceClosure(t *testing.T) {
 		name, instruction string
 		bytes             int
 	}{
-		{"ternary", "VPTERNLOGD.Z $0,(AX),X1,K7,X2", 64},
-		{"integer-minmax", "VPMAXSD.Z (AX),X1,K7,X2", 64},
+		{"ternary", "VPTERNLOGD.Z $0,(AX),X1,K7,X2", 16},
+		{"integer-minmax", "VPMAXSD.Z (AX),X1,K7,X2", 16},
 		{"horizontal-reduction", "VHADDPS (AX),X1,X2", 16},
 		{"broadcast", "VPBROADCASTD.Z (AX),K7,X2", 4},
 	}
@@ -40,9 +40,8 @@ func TestX86PairedNativeDeadInputsNeedActualSourceClosure(t *testing.T) {
 					if err != nil || ir == "" {
 						t.Fatal("complete NUM address lost its paired dead/live access", err)
 					}
-					if !dead && !strings.Contains(ir, fmt.Sprintf("load volatile <%d x i8>", row.bytes)) &&
-						!strings.Contains(ir, fmt.Sprintf("load volatile i%d,", row.bytes*8)) &&
-						!(strings.Contains(ir, "asm sideeffect") && strings.Contains(ir, strings.ToLower(strings.Fields(row.instruction)[0]))) {
+					if !dead && x86NumericNativeVolatileReadBytes(t, ir) != row.bytes &&
+						!(strings.Contains(ir, "asm sideeffect") && strings.Contains(ir, strings.ToLower(strings.Split(strings.Fields(row.instruction)[0], ".")[0]))) {
 						t.Fatal("live NUM native source lost its original exact-width access", row.name)
 					}
 					x86RequireNumericNativeSourceContext(t, changed, "func Value(p *byte)", "amd64")
@@ -256,7 +255,14 @@ func TestX86TernaryDeadNamedRawMasksAndAddressesRemainObligations(t *testing.T) 
 					if _, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api); err != nil {
 						t.Fatal("complete initialized dead-source control lost a legitimate typed role", err)
 					}
-					if ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+					if row.memory {
+						if err != nil || ir == "" {
+							t.Fatal("defined dead NUM address lost its source-checked codegen", err)
+						}
+						x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("constant selector, zero mask or dead CFG hid an unbound native input", err)
 					}
 				})

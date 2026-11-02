@@ -85,10 +85,17 @@ RET
 						2*width, row.setup, row.body)
 					source = strings.NewReplacer("WORD", word, "RESULT", fmt.Sprint(width)).Replace(source)
 					ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(n "+typ+") "+typ, target.arch, target.triple, api)
-					wantPass := target.arch == "386" && row.complete
+					wantPass := target.arch == "386" && (row.complete || row.name == "unbound-memory")
 					if wantPass {
 						if err != nil || ir == "" {
 							t.Fatal("ordinary mode32 BP lost its source-defined logical role", err)
+						}
+						if row.name == "unbound-memory" {
+							if !strings.Contains(ir, "load volatile i32,") {
+								t.Fatal("defined mode32 BP lost its exact native dword read")
+							}
+							x86RequireNumericNativeSourceContext(t, source, "func Value(n "+typ+") "+typ, target.arch)
+							x86NumericNativeAddressObject(t, ir, target.triple)
 						}
 					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatal("BP classification granted an unbound register/frame/memory role", err)

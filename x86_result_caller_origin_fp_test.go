@@ -3,6 +3,7 @@ package plan9asm
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -61,7 +62,13 @@ func TestX86ResultCallerAddressDifferenceFPBoundary(t *testing.T) {
 			_, _, _, source := x86ResultInitializationFixture(t, "amd64", declaration, body)
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				if name == "result is not a pointer" {
+					if err != nil || strings.Count(ir, "load volatile i64,") != 1 {
+						t.Fatal("defined numerical difference lost its paired qword read", err)
+					}
+					x86RequireNumericNativeSourceContext(t, source, declaration, "amd64")
+					x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+				} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("FP subtraction borrowed an unrelated value or memory role", api, err)
 				}
 			}

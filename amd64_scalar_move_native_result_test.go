@@ -180,7 +180,19 @@ func TestX86ScalarMoveNativeRetainsPublicAndSourceBoundaries(t *testing.T) {
 						source, declaration := x86ExtensionNativeFixture("Value", arch, body, false)
 						goAssemblerOracleOutput(t, arch, source, "", true)
 						for _, api := range []string{"text", "module", "Go"} {
-							if _, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+							if name == "numeric base" || name == "pointer destroyed" && (op == "MOVL" || op == "MOVQ" || op == "MOVD") {
+								bits := map[string]int{"MOVB": 8, "MOVW": 16, "MOVL": 32, "MOVQ": 64, "MOVD": 64}[op]
+								reads := 1
+								if name == "pointer destroyed" {
+									reads = 2
+								}
+								if err != nil || strings.Count(ir, "load volatile ") != reads || !strings.Contains(ir, fmt.Sprintf("load volatile i%d,", bits)) || reads == 2 && !strings.Contains(ir, "load volatile i8,") {
+									t.Fatal("complete NUM move address lost its exact independent accesses", api, err)
+								}
+								x86RequireNumericNativeSourceContext(t, source, declaration, arch)
+								x86NumericNativeAddressObject(t, ir, triple)
+							} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 								t.Fatal("native continuation widened its source contract", api, err)
 							}
 						}

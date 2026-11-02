@@ -251,9 +251,18 @@ func TestX86SADNativeInputsStayIndependent(t *testing.T) {
 			t.Run(row.op+"/"+row.bank+"/"+row.mode+"/"+variant.name, func(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, variant.source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-					if variant.name == "complete" {
+					if variant.name == "complete" || variant.name == "numeric-pointer" {
 						if err != nil || ir == "" {
 							t.Fatal("complete native SAD inputs rejected", api, err)
+						}
+						if variant.name == "numeric-pointer" {
+							originalIR, originalErr := x86ScalarFPBitViewAPI(t, original, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+							if originalErr != nil {
+								t.Fatal(originalErr)
+							}
+							x86RequireSameNativeMemoryEffects(t, originalIR, ir)
+							x86RequireNumericNativeSourceContext(t, variant.source, declaration, "amd64")
+							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 						}
 					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("SAD acquired unknown memory/vector/mask inputs", api, err)

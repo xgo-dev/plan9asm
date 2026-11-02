@@ -238,7 +238,30 @@ func TestX86SegmentMOVCannotGrantIndependentAuthority(t *testing.T) {
 						t.Run(target.triple+"/"+row.op+"/"+segment+"/"+control.name+"/"+api, func(t *testing.T) {
 							source := x86ResultGPSIMDAdmissionSource(t, target.arch, control.declaration, control.body)
 							ir, err := x86ScalarFPBitViewAPI(t, source, control.declaration, target.arch, target.triple, api)
-							if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+							if control.name == "numerical-address-not-pointer" || control.name == "loaded-value-not-pointer" || control.name == "result-address-not-pointer" {
+								space := 257
+								if segment == "GS" {
+									space = 256
+								}
+								if err != nil || strings.Count(ir, fmt.Sprintf("load volatile i%d, ptr addrspace(%d)", row.width*8, space)) != 1 {
+									t.Fatal("defined NUM continuation lost its exact segment read", err)
+								}
+								if control.name == "loaded-value-not-pointer" {
+									if strings.Count(ir, "load volatile ") != 2 || !strings.Contains(ir, "load volatile i8,") {
+										t.Fatal("segment value lost its independent paired byte read")
+									}
+								} else {
+									bits := row.width * 8
+									if control.name == "result-address-not-pointer" {
+										bits = 8
+									}
+									if strings.Count(ir, "store volatile ") != 1 || !strings.Contains(ir, fmt.Sprintf("store volatile i%d ", bits)) {
+										t.Fatal("segment NUM address lost its independent exact scalar store")
+									}
+								}
+								x86RequireNumericNativeSourceContext(t, source, control.declaration, target.arch)
+								x86NumericNativeAddressObject(t, ir, target.triple)
+							} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 								t.Fatal("paired segment load granted another input/result/store/native contract", err)
 							}
 						})

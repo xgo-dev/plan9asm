@@ -151,7 +151,14 @@ func TestX86NativeGPStoreCannotBorrowUnknownOrPointerData(t *testing.T) {
 			goAssemblerOracleOutput(t, target.arch, source, "", true)
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(target.triple+"/"+mutation.name+"/"+api, func(t *testing.T) {
-					if ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *byte,value uintptr) uint32", target.arch, target.triple, api); !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *byte,value uintptr) uint32", target.arch, target.triple, api)
+					if mutation.name == "numerical-address" {
+						if err != nil || !strings.Contains(ir, fmt.Sprintf("store volatile i%d ", word*8)) {
+							t.Fatal("NUM address lost its original scalar write width", err)
+						}
+						x86RequireNumericNativeSourceContext(t, source, "func Value(p *byte,value uintptr) uint32", target.arch)
+						x86NumericNativeAddressObject(t, ir, target.triple)
+					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatal("unproved native write data/address/source was admitted", err)
 					}
 				})

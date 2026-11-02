@@ -71,6 +71,14 @@ func TestX86CRC32SparseNUMFlagsAndSourceBoundaries(t *testing.T) {
 						state.pointerGP[0], state.gp[0] = true, 0
 					}
 					before := state.clone()
+					if origin == "numerical-address" {
+						want := before.clone()
+						want.gp[0] = 255
+						if accepted, known := x86LoweredCRC32NativeRead(changed, &state, nil, 0, arch); !known || !accepted || !reflect.DeepEqual(state, want) {
+							t.Fatal("numeric CRC source changed exact result or independent state")
+						}
+						continue
+					}
 					if accepted, known := x86LoweredCRC32NativeRead(changed, &state, nil, 0, arch); !known || accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("unbound CRC origin gained a conditional read", origin)
 					}
@@ -165,7 +173,13 @@ func TestX86CRC32UnownedMemoryAndProvenanceThreeAPIs(t *testing.T) {
 					t.Run(target.triple+"/"+row.op+"/"+memory+"/"+api, func(t *testing.T) {
 						source := fmt.Sprintf("TEXT ·Value(SB),4,$0-4\nMOVL $0,AX\nMOVL $7,SI\n%s %s,AX\nMOVL AX,ret+0(FP)\nRET\n", row.op, memory)
 						ir, err := x86ScalarFPBitViewAPI(t, source, "func Value() uint32", target.arch, target.triple, api)
-						if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+						if memory == "(SI)" {
+							if err != nil || strings.Count(ir, fmt.Sprintf("load volatile i%d,", row.width*8)) != 1 {
+								t.Fatal("CRC numeric address lost its exact native source", err)
+							}
+							x86RequireNumericNativeSourceContext(t, source, "func Value() uint32", target.arch)
+							x86NumericNativeAddressObject(t, ir, target.triple)
+						} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 							t.Fatal("CRC shape supplied native/FP/AUTO/SB backing", err)
 						}
 					})

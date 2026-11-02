@@ -270,6 +270,23 @@ func TestX86RawIntegerCompareVoidAndUnusedBoolCannotBorrowInputs(t *testing.T) {
 						}
 						for _, api := range []string{"text", "module", "Go"} {
 							ir, err := x86ScalarFPBitViewAPI(t, body, decl, arch, x86AddressMemoryTargets(arch)[0], api)
+							if control == "numeric address" {
+								if err != nil || ir == "" {
+									t.Fatal("initialized raw compare address lost its paired native read", api, err)
+								}
+								original, signature := x86RawIntegerCompareOriginSource(row, code[index], arch, "")
+								if unused {
+									original, signature = x86RawIntegerCompareUnusedBoolSource(original, signature, arch)
+								}
+								pointerIR, err := x86ScalarFPBitViewAPI(t, original, signature, arch, x86AddressMemoryTargets(arch)[0], api)
+								if err != nil {
+									t.Fatal(err)
+								}
+								x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
+								x86RequireNumericNativeSourceContext(t, body, decl, arch)
+								x86NumericNativeAddressObject(t, ir, x86AddressMemoryTargets(arch)[0])
+								continue
+							}
 							if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("dead/unused-bool compare acquired missing data, mask or native pointer facts", arch, unused, api, err)
 							}

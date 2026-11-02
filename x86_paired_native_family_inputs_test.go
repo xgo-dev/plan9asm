@@ -41,12 +41,20 @@ func TestX86PairedNativeFamiliesRetainIndependentInputs(t *testing.T) {
 					variants["unknown-vector"] = strings.Replace(source, "PXOR "+input+","+input+"\n", "", 1)
 				}
 				for _, api := range []string{"text", "module", "Go"} {
-					if ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *byte)", arch, triple, api); err != nil || ir == "" {
+					originalIR, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *byte)", arch, triple, api)
+					if err != nil || originalIR == "" {
 						t.Error("initialized paired native control rejected", api, err)
 					}
 					for name, changed := range variants {
 						ir, err := x86ScalarFPBitViewAPI(t, changed, "func Value(p *byte)", arch, triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if name == "numeric-pointer" {
+							if err != nil || ir == "" {
+								t.Fatal("complete numerical address lost its paired source", api, err)
+							}
+							x86RequireSameNativeMemoryEffects(t, originalIR, ir)
+							x86RequireNumericNativeSourceContext(t, changed, "func Value(p *byte)", arch)
+							x86NumericNativeAddressObject(t, ir, triple)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Error("native continuation invented an independent input", api, name, err)
 						}
 					}

@@ -66,13 +66,21 @@ func TestX86VNNIIntegerNativeInputsCannotBorrowMemoryOrFlags(t *testing.T) {
 						x86LEAActualTargetGoObject(t, arch, testTargetTriple("linux", arch), changed)
 						for _, api := range []string{"text", "module", "Go"} {
 							ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, arch, testTargetTriple("linux", arch), api)
-							if control == "initialized" {
+							if control == "initialized" || control == "numeric-address" {
 								if err != nil || ir == "" {
 									t.Fatal("real initialized integer-dot native read lost its paired source owner", api, err)
 								}
 								_, file, sig, _ := x86ResultInitializationFixture(t, arch, declaration, strings.Join(strings.Split(changed, "\n")[1:], "\n"))
 								if err := checkX86ScalarFPResultInitialization(file.Funcs[0], sig, arch); !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("standalone declaration query borrowed native backing", err)
+								}
+								if control == "numeric-address" {
+									pointerIR, err := x86ScalarFPBitViewAPI(t, original, declaration, arch, testTargetTriple("linux", arch), api)
+									if err != nil {
+										t.Fatal(err)
+									}
+									x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
+									x86NumericNativeAddressObject(t, ir, testTargetTriple("linux", arch))
 								}
 							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("integer-dot borrowed absent accumulator/mask/source/FLAGS/address permission", api, err)

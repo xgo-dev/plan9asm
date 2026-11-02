@@ -148,8 +148,13 @@ func TestX86PrivateLegacyReadObserverExistingByteCounterparts(t *testing.T) {
 					state := x86ResultState{flags: x86ByteFlagCF | x86ByteFlagOF}
 					state.xmm[0], state.xmm[1] = 0xffff&^(uint16(1)<<uint(missing)), 0xffff
 					before := state.clone()
-					if x86ScalarFPResultTransfer(ins, &state, nil, 0, arch) || !reflect.DeepEqual(before, state) {
-						t.Fatal("private observer fabricated an unknown source byte from old destination")
+					want := before.clone()
+					want.writeVector(1, 16, uint64(state.xmm[0]), true)
+					if !x86ScalarFPResultTransfer(ins, &state, nil, 0, arch) || !reflect.DeepEqual(want, state) {
+						t.Fatal("private register copy fabricated an unknown byte or changed independent state")
+					}
+					if x86ResultTransfer(ins, &before, nil, 0, arch) {
+						t.Fatal("private partial-byte copy expanded the strict result observer")
 					}
 				})
 			}

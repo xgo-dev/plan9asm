@@ -3,6 +3,9 @@ package plan9asm
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -33,6 +36,55 @@ func x86NumericNativeAddressObject(t *testing.T, ir, triple string) {
 		t.Fatal("LLVM22 llc required")
 	}
 	x86PackedStringCompileObject(t, llc, triple, ir, "-O0")
+}
+
+// E4NF may load one typed tuple; masked E4 loads one integer per active
+// lane. Count the potential bytes in either IR representation independently
+// of the production memory-shape parser. This is not an execution count.
+func x86NumericNativeVolatileReadBytes(t *testing.T, ir string) int {
+	t.Helper()
+	bytes := 0
+	for _, match := range regexp.MustCompile(`load volatile (?:i([0-9]+)|<([0-9]+) x i([0-9]+)>),`).FindAllStringSubmatch(ir, -1) {
+		lanes, bits := 1, match[1]
+		if match[2] != "" {
+			var err error
+			lanes, err = strconv.Atoi(match[2])
+			if err != nil {
+				t.Fatal(err)
+			}
+			bits = match[3]
+		}
+		width, err := strconv.Atoi(bits)
+		if err != nil || width%8 != 0 || width <= 0 {
+			t.Fatal("unexpected volatile integer read type", match[0], err)
+		}
+		bytes += lanes * width / 8
+	}
+	return bytes
+}
+
+// A numerical-base variant changes address bits, not the original memory
+// operations. Keep widths, access order/count, volatile markers and exact asm
+// constraints equal to the initialized-pointer counterpart; SSA names differ.
+func x86RequireSameNativeMemoryEffects(t *testing.T, before, after string) {
+	t.Helper()
+	effects := func(ir string) []string {
+		var result []string
+		pattern := regexp.MustCompile(`(?:load|store) volatile (?:<[^>]+>|i[0-9]+|float|double)|asm sideeffect "(?:\\.|[^"\\])*", "(?:\\.|[^"\\])*"`)
+		for _, line := range strings.Split(ir, "\n") {
+			if match := pattern.FindString(line); match != "" {
+				if strings.HasPrefix(match, "asm ") && (!strings.Contains(match, "~{memory}") || strings.Contains(match, `asm sideeffect ""`)) {
+					continue // Register-only FP exceptions and empty barriers are not memory accesses.
+				}
+				result = append(result, match)
+			}
+		}
+		return result
+	}
+	want, got := effects(before), effects(after)
+	if len(want) == 0 || !reflect.DeepEqual(want, got) {
+		t.Fatal("numerical address changed its original native memory effects", want, got)
+	}
 }
 
 // An initialized machine address can arrive as uintptr or as loaded bits.

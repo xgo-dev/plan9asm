@@ -384,6 +384,21 @@ func TestX86FourSourceMissingActualInputsRemainContext(t *testing.T) {
 					source, declaration := x86FourSourceInitializedSource(row, arch, "Missing", false)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+						if missing == "numeric address" {
+							if err != nil || ir == "" {
+								t.Fatal("initialized numeric four-source address lost its native read", api, err)
+							}
+							row.missing = ""
+							original, decl := x86FourSourceInitializedSource(row, arch, "Missing", false)
+							pointerIR, err := x86ScalarFPBitViewAPI(t, original, decl, arch, triple, api)
+							if err != nil {
+								t.Fatal(err)
+							}
+							x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
+							x86RequireNumericNativeSourceContext(t, source, declaration, arch)
+							x86NumericNativeAddressObject(t, ir, triple)
+							continue
+						}
 						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("actual aligned-block/old/mask/native-address input was manufactured", api, err)
 						}

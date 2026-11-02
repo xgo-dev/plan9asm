@@ -162,7 +162,7 @@ func TestX86ResultNumericalLEACanonicalBoolAndCompleteCFG(t *testing.T) {
 		{"unknown joined input", "CMPQ AX,BX\nJE one\nMOVQ $7,DX\nJMP joined\none:\nMOVW $7,DX\njoined:\nLEAQ 0(DX*8),CX\nSETEQ AX", false},
 		{"complete joined input", "CMPQ AX,BX\nJE one\nMOVQ $7,DX\nJMP joined\none:\nMOVQ BX,DX\njoined:\nLEAQ 0(DX*8),CX\nSETEQ AX", true},
 		{"no implicit FLAGS", "LEAQ 0(BX*8),CX\nSETEQ AX", false},
-		{"no native memory", "LEAQ 0(BX*8),CX\nMOVQ (CX),DX\nCMPQ DX,$0\nSETEQ AX", false},
+		{"no native memory", "LEAQ 0(BX*8),CX\nMOVQ (CX),DX\nCMPQ DX,$0\nSETEQ AX", true},
 		{"no g fact", "LEAQ 0(R14*8),CX\nCMPQ CX,$0\nSETEQ AX", false},
 		{"no physical SP fact", "LEAQ 0(SP),CX\nMOVB $1,AX", false},
 		{"no physical BP fact", "LEAQ 0(BP),CX\nMOVB $1,AX", false},
@@ -170,9 +170,16 @@ func TestX86ResultNumericalLEACanonicalBoolAndCompleteCFG(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			source := "TEXT ·view<ABIInternal>(SB),4,$0-0\n" + test.body + "\nRET\n"
 			for _, api := range []string{"text", "module", "Go"} {
-				_, err := x86ScalarFPBitViewAPI(t, source, "func view(x,y uint64) bool\n", "amd64", "x86_64-unknown-linux-gnu", api)
+				ir, err := x86ScalarFPBitViewAPI(t, source, "func view(x,y uint64) bool\n", "amd64", "x86_64-unknown-linux-gnu", api)
 				if test.accept && err != nil || !test.accept && !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal(api, test.accept, err)
+				}
+				if test.name == "no native memory" {
+					if strings.Count(ir, "load volatile i64,") != 1 {
+						t.Fatal("complete LEA NUM address lost its native read")
+					}
+					x86RequireNumericNativeSourceContext(t, source, "func view(x,y uint64) bool", "amd64")
+					x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 				}
 			}
 		})

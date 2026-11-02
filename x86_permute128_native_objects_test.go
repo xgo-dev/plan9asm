@@ -93,7 +93,7 @@ func TestX86Permute128NativeInputsAndAddressRoles(t *testing.T) {
 					x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", changed)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-						if control == "initialized" || control == "zero" || control == "numeric-address" {
+						if control == "initialized" || control == "zero" || control == "numeric-address" && memory {
 							if err != nil || ir == "" {
 								t.Fatal("real initialized permute128 lost its source owner", api, err)
 							}

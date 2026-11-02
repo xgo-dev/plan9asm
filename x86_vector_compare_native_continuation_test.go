@@ -140,7 +140,15 @@ func TestX86CompareNativeCannotBorrowInputFacts(t *testing.T) {
 			t.Run(row+"/"+name, func(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					if name == "numeric-pointer" {
+						originalIR, originalErr := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+						if err != nil || originalErr != nil || ir == "" {
+							t.Fatal("complete NUM compare source rejected", err, originalErr)
+						}
+						x86RequireSameNativeMemoryEffects(t, originalIR, ir)
+						x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("compare acquired missing native/vector/mask inputs", api, err)
 					}
 				}

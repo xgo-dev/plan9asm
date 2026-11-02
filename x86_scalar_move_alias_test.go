@@ -275,7 +275,18 @@ func TestX86ScalarMoveAliasesNativeAddressAndSourceIdentityBoundaries(t *testing
 				t.Run(arch+"/"+op+"/"+name, func(t *testing.T) {
 					goAssemblerOracleOutput(t, arch, changed, "", true)
 					for _, api := range []string{"text", "module", "Go"} {
-						if ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, arch, triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, arch, triple, api)
+						if name == "numeric-base" {
+							effect := "load volatile i32,"
+							if op == "MOVQL" {
+								effect = "store volatile i32 "
+							}
+							if err != nil || !strings.Contains(ir, effect) {
+								t.Fatal("NUM scalar alias lost its exact dword direction", op, api, err)
+							}
+							x86RequireNumericNativeSourceContext(t, changed, declaration, arch)
+							x86NumericNativeAddressObject(t, ir, triple)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("scalar alias supplied native address authority", op, name, api, err)
 						}
 					}

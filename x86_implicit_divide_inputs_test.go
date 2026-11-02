@@ -140,7 +140,13 @@ func TestX86ImplicitDivideNativeReadRequiresActualAddressAndNoNewBacking(t *test
 						current.gp[index] = 0
 					}
 					initial := current.clone()
-					if accepted, _ := x86LoweredImplicitDivideStep(ins, &current, nil, arch); accepted || !reflect.DeepEqual(current, initial) {
+					if missing == "pointer" {
+						want := state.clone()
+						want.pointerGP[6], want.gp[6] = false, 0xff
+						if accepted, known := x86LoweredImplicitDivideStep(ins, &current, nil, arch); !accepted || !known || !reflect.DeepEqual(current, want) {
+							t.Fatal("full NUM divide address changed exact output or unrelated facts")
+						}
+					} else if accepted, _ := x86LoweredImplicitDivideStep(ins, &current, nil, arch); accepted || !reflect.DeepEqual(current, initial) {
 						t.Fatal("division gained an address from NUM or an unknown index", missing)
 					}
 				}

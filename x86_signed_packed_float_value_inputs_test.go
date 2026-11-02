@@ -224,7 +224,19 @@ func TestX86SignedPackedFloatNativeInputsStayIndependent(t *testing.T) {
 		for name, changed := range variants {
 			t.Run(fmt.Sprintf("%d/%s", index, name), func(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
-					if ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api); !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+					if name == "numeric-pointer" {
+						if err != nil || ir == "" {
+							t.Fatal("signed conversion lost its full NUM native input", api, err)
+						}
+						pointerIR, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+						if err != nil {
+							t.Fatal(err)
+						}
+						x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
+						x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatal("signed conversion borrowed native or vector inputs", api, err)
 					}
 				}

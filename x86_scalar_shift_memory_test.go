@@ -176,9 +176,16 @@ func TestX86ScalarShiftMemoryVoidRequiresInputs(t *testing.T) {
 					x86LEAActualTargetGoObject(t, arch, triple, assembly)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, assembly, declaration, arch, triple, api)
-						if name == "complete" {
+						if name == "complete" || name == "numerical-address" && (strings.HasPrefix(instruction, "SARX") || strings.HasPrefix(instruction, "RORX")) {
 							if err != nil || ir == "" {
 								t.Error("initialized Void memory shift lost its paired effect", api, err)
+							}
+							if name == "numerical-address" {
+								if strings.Count(ir, "load volatile i32,") != 1 || strings.Contains(ir, "store volatile ") {
+									t.Fatal("BMI2 numerical source changed its read-only width")
+								}
+								x86RequireNumericNativeSourceContext(t, assembly, declaration, arch)
+								x86NumericNativeAddressObject(t, ir, triple)
 							}
 						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Error("Void memory shift invented a missing numerical/address input", api, err)
@@ -283,7 +290,27 @@ func TestX86ScalarShiftMemoryContinuationBoundaries(t *testing.T) {
 						changed.x86SegmentPrefix = 0x64
 					}
 					before := rejected.clone()
-					if accepted, _ := x86LoweredScalarShiftMemory(changed, &rejected, nil, 0, arch); accepted || !reflect.DeepEqual(rejected, before) {
+					accepted, known := x86LoweredScalarShiftMemory(changed, &rejected, nil, 0, arch)
+					if mutation == "numerical-address" && row.readOnly {
+						if !accepted || !known || !reflect.DeepEqual(rejected, before) {
+							t.Fatal("BMI2 NUM source changed unrelated input/status roles")
+						}
+						source, declaration := x86ScalarShiftMemoryFixture(arch, row.text, true)
+						move := "MOVQ"
+						if arch == "386" {
+							move = "MOVL"
+						}
+						source = strings.Replace(source, move+" p+0(FP),DI", "MOVL $7,DI", 1)
+						triple := x86AddressMemoryTargets(arch)[0]
+						for _, api := range []string{"text", "module", "Go"} {
+							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+							if err != nil || strings.Count(ir, fmt.Sprintf("load volatile i%d,", row.bits)) != 1 {
+								t.Fatal("BMI2 lost its exact NUM-address source read", api, err)
+							}
+							x86RequireNumericNativeSourceContext(t, source, declaration, arch)
+							x86NumericNativeAddressObject(t, ir, triple)
+						}
+					} else if accepted || !reflect.DeepEqual(rejected, before) {
 						t.Fatal("missing source or foreign role acquired effects", mutation)
 					}
 				}

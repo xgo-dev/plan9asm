@@ -263,7 +263,19 @@ func TestX86ScalarFloatIntegerRawProducerIdentityAndMissingInputs(t *testing.T) 
 					t.Run(variant, func(t *testing.T) {
 						body, decl := x86ScalarIntegerRawSource(arch, "value", row, variant)
 						for _, api := range []string{"text", "module", "Go"} {
-							if _, err := x86ScalarFPBitViewAPI(t, body, decl, arch, triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+							ir, err := x86ScalarFPBitViewAPI(t, body, decl, arch, triple, api)
+							if variant == "numeric-pointer" {
+								if err != nil || ir == "" {
+									t.Fatal("raw scalar conversion lost its full NUM native input", api, err)
+								}
+								pointerIR, err := x86ScalarFPBitViewAPI(t, source, decl, arch, triple, api)
+								if err != nil {
+									t.Fatal(err)
+								}
+								x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
+								x86RequireNumericNativeSourceContext(t, body, decl, arch)
+								x86NumericNativeAddressObject(t, ir, triple)
+							} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 								t.Fatal("raw conversion invented missing native/numerical input", api, variant, err)
 							}
 						}

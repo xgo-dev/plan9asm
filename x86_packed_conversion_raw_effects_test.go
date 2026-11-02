@@ -218,6 +218,19 @@ func TestX86PackedConversionRawIdentityAndNativeBoundaries(t *testing.T) {
 					// makes a real named instruction, which this raw-only adapter
 					// must leave to the independent strict named effect.
 					becameNamed := mutation == "origin" && x86ResultNamedPredicateInstruction(ins)
+					if mutation == "numeric-address" {
+						oracle := x86PackedConversionContinuationEffect(t, ins)
+						destination, valid := amd64VectorRegisterIndex(ins.Args[len(ins.Args)-1].Reg, oracle.destination)
+						if !valid {
+							t.Fatal("independent conversion destination missing")
+						}
+						want := before.clone()
+						want.writeVector(destination, oracle.destination, x86CallerVectorByteMask(int64(oracle.destination)), oracle.legacy)
+						if !accepted || !known || !reflect.DeepEqual(state, want) {
+							t.Fatal("numeric conversion address changed independent effects", rows[ordinal], accepted, known)
+						}
+						continue
+					}
 					if accepted || known == becameNamed || !reflect.DeepEqual(before, state) {
 						t.Fatal("conversion borrowed physical identity, native backing or standalone authority", rows[ordinal], mutation, accepted, known)
 					}

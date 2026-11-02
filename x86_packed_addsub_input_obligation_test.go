@@ -58,9 +58,18 @@ func TestX86PackedAddSubVoidNativeInputsCannotBypassWholeProof(t *testing.T) {
 						for _, variant := range variants {
 							for _, api := range []string{"text", "module", "Go"} {
 								ir, err := x86ScalarFPBitViewAPI(t, variant.source, declaration, target.arch, target.triple, api)
-								if variant.name == "initialized" {
+								if variant.name == "initialized" || variant.name == "numerical-pointer" {
 									if err != nil || ir == "" {
 										t.Fatal("complete Void native input rejected", api, err)
+									}
+									if variant.name == "numerical-pointer" {
+										originalIR, originalErr := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+										if originalErr != nil {
+											t.Fatal(originalErr)
+										}
+										x86RequireSameNativeMemoryEffects(t, originalIR, ir)
+										x86RequireNumericNativeSourceContext(t, variant.source, declaration, target.arch)
+										x86NumericNativeAddressObject(t, ir, target.triple)
 									}
 								} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Errorf("%s/%s: missing native input bypassed the whole proof: %v", variant.name, api, err)

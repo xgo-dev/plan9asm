@@ -133,7 +133,18 @@ func TestX86VectorValueNativeMissingInputsStayContext(t *testing.T) {
 			for name, changed := range variants {
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					if name == "numeric-pointer" {
+						if err != nil || ir == "" {
+							t.Fatal("vector value lost its initialized numeric address", api, err)
+						}
+						pointerIR, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+						if err != nil {
+							t.Fatal(err)
+						}
+						x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
+						x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("native result invented a pointer, index, mask, merge or vector", name, api, err)
 					}
 				}

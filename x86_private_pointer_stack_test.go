@@ -182,7 +182,14 @@ func TestX86PrivatePointerStackCannotInventAddressOrEntryAuthority(t *testing.T)
 			t.Run(arch+"/"+row.name, func(t *testing.T) {
 				assembly, declaration := x86PrivatePointerStackProgram(arch, "Value", "BX", "BX", row.body)
 				for _, api := range []string{"text", "module", "Go"} {
-					if ir, err := x86ScalarFPBitViewAPI(t, assembly, declaration, arch, triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					ir, err := x86ScalarFPBitViewAPI(t, assembly, declaration, arch, triple, api)
+					if row.name == "numeric" {
+						if err != nil || strings.Count(ir, fmt.Sprintf("load volatile i%d,", word*8)) != 1 {
+							t.Fatal("whole private NUM cell lost its exact paired read", api, err)
+						}
+						x86RequireNumericNativeSourceContext(t, assembly, declaration, arch)
+						x86NumericNativeAddressObject(t, ir, triple)
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("private cells created a missing pointer, numerical result or physical stack contract", api, err)
 					}
 				}

@@ -197,7 +197,7 @@ func TestX86ImplicitMultiplyNativeMemoryInputsStatusAndAuthority(t *testing.T) {
 			x86LEAActualTargetGoObject(t, arch, triple, source)
 			for _, change := range []string{"accumulator", "pointer", "index", "numerical address", "pointer accumulator", "unknown upper accumulator", "CF", "OF", "ZF", "SF", "PF", "AF"} {
 				changed := source
-				valid := change == "CF" || change == "OF"
+				valid := change == "CF" || change == "OF" || change == "numerical address"
 				switch change {
 				case "accumulator":
 					changed = strings.Replace(changed, move+" $-1,AX\n", "", 1)
@@ -231,6 +231,15 @@ func TestX86ImplicitMultiplyNativeMemoryInputsStatusAndAuthority(t *testing.T) {
 						if valid {
 							if err != nil || ir == "" {
 								t.Fatal("multiply lost its only defined status outputs", err)
+							}
+							if change == "numerical address" {
+								pointerIR, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+								if err != nil {
+									t.Fatal(err)
+								}
+								x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
+								x86RequireNumericNativeSourceContext(t, changed, declaration, arch)
+								x86NumericNativeAddressObject(t, ir, triple)
 							}
 						} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 							t.Fatal("multiply invented input bytes, address authority or undefined FLAGS", err)

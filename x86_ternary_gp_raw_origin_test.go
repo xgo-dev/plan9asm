@@ -2,6 +2,7 @@ package plan9asm
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,17 @@ func TestX86TernaryGPRawOriginCannotSupplyInputsOrMemory(t *testing.T) {
 						state.gp[0], state.gp[3] = 0xff, 0xff
 						before := state.clone()
 						accepted, _ := x86LoweredTernaryGPResultStep(changed, &state, nil, 0, arch)
+						if control.name == "origin" && first == "(AX)" {
+							want := before.clone()
+							want.gp[1] = 0xff
+							if strings.HasPrefix(op, "ANDN") {
+								want.flags = x86ByteFlagCF | x86ByteFlagOF | x86ByteFlagZF | x86ByteFlagSF
+							}
+							if !accepted || x86RawTernaryGPSource(changed, arch) || !reflect.DeepEqual(state, want) {
+								t.Fatal("fresh named NUM read changed source/result/status roles")
+							}
+							return
+						}
 						if accepted || x86RawTernaryGPSource(changed, arch) || !reflect.DeepEqual(before, state) {
 							t.Fatal("changed raw source borrowed a numerical continuation", accepted)
 						}
@@ -55,8 +67,13 @@ func TestX86TernaryGPRawOriginCannotSupplyInputsOrMemory(t *testing.T) {
 					state := x86ResultState{flags: x86ByteFlagsAll}
 					state.gp[0], state.gp[3] = 0xff, 0xff
 					before := state.clone()
-					if accepted, known := x86LoweredTernaryGPResultStep(ins, &state, nil, 0, arch); accepted || !known || !reflect.DeepEqual(before, state) {
-						t.Fatal("numerical AX invented an incoming pointer", arch, op)
+					want := before.clone()
+					want.gp[1] = 0xff
+					if strings.HasPrefix(op, "ANDN") {
+						want.flags = x86ByteFlagCF | x86ByteFlagOF | x86ByteFlagZF | x86ByteFlagSF
+					}
+					if accepted, known := x86LoweredTernaryGPResultStep(ins, &state, nil, 0, arch); !accepted || !known || !reflect.DeepEqual(want, state) {
+						t.Fatal("raw full NUM address lost its exact result/status transition", arch, op)
 					}
 				}
 			}

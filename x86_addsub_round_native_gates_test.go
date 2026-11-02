@@ -76,7 +76,7 @@ func TestX86AlternatingRoundNativeContinuationBoundaries(t *testing.T) {
 					// Encoding selects operand roles and upper aliases. Paired read
 					// permission is independent: legacy memory now has a whole SSE
 					// emitter too. Scalar ROUND propagates only available upper bytes.
-					want := row.pairedRead && (change == "paired" || change == "missing-upper" && round ||
+					want := row.pairedRead && (change == "paired" || change == "numeric-base" || change == "missing-upper" && round ||
 						change == "raw" && row.vex && !round)
 					if change == "raw" && row.vex && !round {
 						// This primitive checks exact instruction metadata, not the

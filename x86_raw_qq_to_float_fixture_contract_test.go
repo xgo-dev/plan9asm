@@ -148,9 +148,11 @@ func TestX86RawQQToFloatInitializedSourceAndMissingInputs(t *testing.T) {
 						})
 					}
 					ir, err = x86ScalarFPBitViewAPI(t, source, "func rawQQToFloat(p uintptr)", arch, triple, api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatal("an integer address minted incoming-pointer authority", api, err)
+					if err != nil || strings.Count(ir, "asm sideeffect") != count {
+						t.Fatal("a full NUM address lost its original raw native accesses", api, err)
 					}
+					x86RequireNumericNativeSourceContext(t, source, "func rawQQToFloat(p uintptr)", arch)
+					x86NumericNativeAddressObject(t, ir, triple)
 				})
 			}
 		})

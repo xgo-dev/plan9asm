@@ -191,7 +191,13 @@ func TestX86RawVMOVWRetainsPointerAndValueBoundaries(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/load=%t/%s", target.triple, load, name), func(t *testing.T) {
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, bad, declaration, target.arch, target.triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if load && name == "numeric pointer" {
+							if err != nil || strings.Count(ir, "load volatile i16,") != 1 {
+								t.Fatal("VMOVW numeric source lost its exact word read", api, err)
+							}
+							x86RequireNumericNativeSourceContext(t, bad, declaration, target.arch)
+							x86NumericNativeAddressObject(t, ir, target.triple)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("raw VMOVW invented incoming pointer identity", api, err)
 						}
 					}

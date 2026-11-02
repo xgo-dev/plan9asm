@@ -68,9 +68,20 @@ func TestX86BLSVoidNativeInputsCannotBypassWholeProof(t *testing.T) {
 					for _, variant := range variants {
 						for _, api := range []string{"text", "module", "Go"} {
 							ir, err := x86ScalarFPBitViewAPI(t, variant.source, declaration, target.arch, target.triple, api)
-							if variant.name == "initialized" {
+							if variant.name == "initialized" || variant.name == "numerical-pointer" {
 								if err != nil || ir == "" {
 									t.Fatal("complete Void BLS native inputs rejected", api, err)
+								}
+								if variant.name == "numerical-pointer" {
+									bits := 32
+									if target.arch == "amd64" && strings.HasSuffix(op, "Q") {
+										bits = 64
+									}
+									if !strings.Contains(ir, fmt.Sprintf("load volatile i%d,", bits)) {
+										t.Fatal("NUM BLS address lost its physical-mode read width", bits)
+									}
+									x86RequireNumericNativeSourceContext(t, variant.source, declaration, target.arch)
+									x86NumericNativeAddressObject(t, ir, target.triple)
 								}
 							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Errorf("%s/%s: missing BLS native input bypassed the proof: %v", variant.name, api, err)

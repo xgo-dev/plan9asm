@@ -35,7 +35,7 @@ func TestX86TernaryGPDeadNativeReadsKeepExactWidthAndInputs(t *testing.T) {
 					t.Run(fmt.Sprintf("%s/%s/raw=%t/%s", target.triple, op, raw, variant.name), func(t *testing.T) {
 						for _, api := range []string{"text", "module", "Go"} {
 							ir, err := x86ScalarFPBitViewAPI(t, variant.source, "func Value(p *[16]byte)", target.arch, target.triple, api)
-							if variant.name != "initialized" {
+							if variant.name != "initialized" && variant.name != "numerical-address" {
 								if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("dead ternary GP borrowed an unknown native input", api, err)
 								}
@@ -44,8 +44,14 @@ func TestX86TernaryGPDeadNativeReadsKeepExactWidthAndInputs(t *testing.T) {
 							if err != nil {
 								t.Fatal("initialized dead native source rejected", api, err)
 							}
+							if variant.name == "numerical-address" {
+								x86RequireNumericNativeSourceContext(t, variant.source, "func Value(p *[16]byte)", target.arch)
+								x86NumericNativeAddressObject(t, ir, target.triple)
+							}
 							for _, text := range []string{ir, x86DwordProductIROptimize(t, ir)} {
-								if strings.Count(text, fmt.Sprintf("load volatile i%d,", bits)) != 1 || !strings.Contains(text, ", align 1") || strings.Contains(text, "dereferenceable") {
+								// A literal NUM address may justify stronger O2 alignment;
+								// the emitter still starts with the exact unaligned read.
+								if strings.Count(text, fmt.Sprintf("load volatile i%d,", bits)) != 1 || !strings.Contains(ir, ", align 1") || strings.Contains(text, "dereferenceable") {
 									t.Fatal("dead native ternary GP lost its exact unaligned volatile read", api)
 								}
 							}
