@@ -123,7 +123,8 @@ func x86LoweredScalarNativeStoreWithAddressBits(ins Instr, state *x86ResultState
 	}
 	if !x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil ||
 		(form.source.Kind == OpReg && x86LogicalSourceFrameRegister(form.source.Reg, arch)) ||
-		!x86ResultIncomingPointerAddressIdentity(form.destination, state, arch) {
+		!(x86ResultIncomingPointerAddressIdentity(form.destination, state, arch) ||
+			x86ResultNativeNumericAddress(form.destination, state, arch)) {
 		return false, true
 	}
 	if addressBits && form.bytes == x86ResultPointerWord(arch) && form.source.Kind == OpReg {

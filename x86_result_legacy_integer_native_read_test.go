@@ -106,7 +106,10 @@ func TestX86LoweredLegacyIntegerNativeReadRequiresWholeInputsAndKeepsState(t *te
 				case "numerical base":
 					state.pointerGP[0], state.gp[0] = false, 0xff
 				}
-				if accepted, known := x86ResultLegacyIntegerNativeReadStep(ins, &state, nil, 0, arch); accepted || !known {
+				// A fully initialized machine address is enough for this exact
+				// native access. It still creates no incoming pointer identity.
+				want := kind == "numerical base"
+				if accepted, known := x86ResultLegacyIntegerNativeReadStep(ins, &state, nil, 0, arch); accepted != want || !known {
 					t.Fatal("native source borrowed an unproved address", arch, op, kind, accepted, known)
 				}
 			}

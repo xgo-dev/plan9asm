@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -56,6 +57,10 @@ func TestX86StaticAddressValueCompleteMoveFormsAndObjects(t *testing.T) {
 }
 
 func TestX86StaticAddressValueDoesNotAuthorizeNativeDereference(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc is required")
+	}
 	for _, target := range x86RawReturnTargets {
 		move := "MOVQ"
 		if target.arch == "386" {
@@ -66,8 +71,34 @@ func TestX86StaticAddressValueDoesNotAuthorizeNativeDereference(t *testing.T) {
 				t.Run(target.triple+"/"+form+"/"+api, func(t *testing.T) {
 					source := x86RelocationResultSource(target.arch, form)
 					source = strings.Replace(source, move+" AX,ret+0(FP)", "MOVB (AX),CX\n"+move+" AX,ret+0(FP)", 1)
-					if ir, err := x86ScalarFPBitViewAPI(t, source, "func Value() uintptr", target.arch, target.triple, api); err == nil || ir != "" {
-						t.Fatal("numerical DATA address acquired native-memory permission", err)
+					file, err := Parse(ArchAMD64, source)
+					if err != nil {
+						t.Fatal(err)
+					}
+					pkg := mustGoPackage(t, "address", "package address\nfunc Value() uintptr")
+					sigs, err := goSigsForAsmFile(pkg, file, func(name string) string {
+						return strings.TrimPrefix(name, "·")
+					}, target.arch, nil, nil, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := CheckX86ABI0ResultInitialization(file.Funcs[0], sigs["Value"], target.arch); !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatal("DATA identity authorized an unpaired native read", err)
+					}
+					ir, err := x86ScalarFPBitViewAPI(t, source, "func Value() uintptr", target.arch, target.triple, api)
+					if form == "load" {
+						// Loading a logical DATA relocation retains its independent
+						// source boundary; it is not a numerical native-load input.
+						if err == nil || ir != "" {
+							t.Fatal("logical relocation acquired a native-memory role", err)
+						}
+						return
+					}
+					if err != nil || !strings.Contains(ir, "load volatile i8,") {
+						t.Fatal("initialized address lost its paired native read", err)
+					}
+					for _, level := range []string{"-O0", "-O2"} {
+						x86PackedStringCompileObject(t, llc, target.triple, ir, level)
 					}
 				})
 			}

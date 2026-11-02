@@ -903,5 +903,6 @@ func x86ResultReadWithNativeAddress(ins Instr, source Operand, width int64, stat
 			return accepted
 		}
 	}
-	return x86ResultIncomingPointerReadAddressIdentity(source, state, arch)
+	return x86ResultIncomingPointerReadAddressIdentity(source, state, arch) ||
+		x86ResultNativeNumericAddress(source, state, arch)
 }

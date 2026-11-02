@@ -151,7 +151,8 @@ func TestX86BEXTRNativeReadAndOpaqueInputsStaySeparate(t *testing.T) {
 					}
 					before := state.clone()
 					accepted, known := x86ResultScalarBitFieldStep(ins, &state, nil, 0, arch, native)
-					if !known || accepted != (role == "paired") || !accepted && !reflect.DeepEqual(state, before) {
+					want := role == "paired" || role == "numerical base"
+					if !known || accepted != want || !accepted && !reflect.DeepEqual(state, before) {
 						t.Fatal("BEXTR numerical continuation borrowed an unrelated source role", role, known, accepted)
 					}
 				})

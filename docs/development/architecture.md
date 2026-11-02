@@ -125,6 +125,13 @@ counts as an efficiency improvement.
 | Source owner / lease | The bounded lifetime of a captured source/tool observation. Expiry, mutation or closure invalidates its facts. |
 | Context | A probe lacks facts required to decide or translate the form. This is neither support nor successful validation. |
 
+Paired native reads and ordinary scalar stores can consume a complete machine
+word of initialized numerical address bits, including `uintptr` arguments and
+addresses loaded from memory. The selected emitter retains the original
+volatile access, width and faults. This creates no logical pointer, bounds,
+caller or reusable storage fact; standalone queries keep their existing rules.
+Undefined or partial address registers remain unproved.
+
 An immutable declaration table may be shared. Mutable source verification and
 caller facts must not be cached merely to hide repeated subprocess cost. Move
 capture outside repeated translation when its owner and lifetime can be made
