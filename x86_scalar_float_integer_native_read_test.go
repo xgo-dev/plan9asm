@@ -162,8 +162,20 @@ func TestX86ScalarFloatIntegerPairedReadRequiresIndependentInputs(t *testing.T) 
 							if strings.Contains(item.name, "SD") {
 								width = 8
 							}
-							if !strings.Contains(ir, "asm sideeffect") || !strings.Contains(ir, strings.ToLower(item.name)+" ") ||
-								!strings.Contains(ir, fmt.Sprintf("elementtype([%d x i8])", width)) || !strings.Contains(ir, "~{fpsr}") {
+							// Go's SL/SQ aliases use hardware SI, and VEX/EVEX W
+							// does not select a 64-bit GP result in mode32.
+							mnemonic := strings.TrimSuffix(strings.TrimSuffix(item.name, "Q"), "L")
+							if !strings.HasPrefix(item.name, "V") {
+								mnemonic += "I"
+							}
+							suffix := "l"
+							if arch == "amd64" && strings.HasSuffix(item.name, "Q") {
+								suffix = "q"
+							}
+							mnemonic = strings.ToLower(mnemonic) + suffix
+							if !strings.Contains(ir, "asm sideeffect") || !strings.Contains(ir, mnemonic+" ") ||
+								!strings.Contains(ir, fmt.Sprintf("elementtype([%d x i8])", width)) ||
+								!strings.Contains(ir, "*m,~{memory},~{fpsr}") || strings.Count(ir, "~{fpsr}") != 1 {
 								t.Fatal("numerical address lost its original exact-width conversion/MXCSR effect", ir)
 							}
 							x86NumericNativeAddressObject(t, ir, triple)
