@@ -100,14 +100,35 @@ func TestX86MixedBoolResultPointerParameterDoesNotGrantNumericalAuthority(t *tes
 		declaration := "func Value(p *uint32) (n uintptr, ok bool)"
 		for _, row := range []struct{ name, body string }{
 			{"pointer-bits-as-number", fmt.Sprintf("%s p+0(FP),AX\n%s AX,n+%d(FP)\nMOVB $1,ok+%d(FP)\nRET", move, move, word, 2*word)},
+			// Preserve this original source/case ID: $7 defines an address's
+			// numerical bits independently of the unused pointer parameter.
 			{"unknown-address", fmt.Sprintf("%s $7,AX\n%s (AX),BX\n%s BX,n+%d(FP)\nMOVB $1,ok+%d(FP)\nRET", move, move, move, word, 2*word)},
+			{"unknown-register-address", fmt.Sprintf("%s (AX),BX\n%s BX,n+%d(FP)\nMOVB $1,ok+%d(FP)\nRET", move, move, word, 2*word)},
+			{"partial-register-address", fmt.Sprintf("MOVB $7,AL\n%s (AX),BX\n%s BX,n+%d(FP)\nMOVB $1,ok+%d(FP)\nRET", move, move, word, 2*word)},
 			{"noncanonical-bool", fmt.Sprintf("%s $5,n+%d(FP)\nMOVB $2,ok+%d(FP)\nRET", move, word, 2*word)},
 			{"missing-number", fmt.Sprintf("MOVB $1,ok+%d(FP)\nRET", 2*word)},
 		} {
-			_, _, _, source := x86ResultInitializationFixture(t, arch, declaration, row.body)
+			_, file, sig, source := x86ResultInitializationFixture(t, arch, declaration, row.body)
+			if row.name == "unknown-address" {
+				goAssemblerOracleOutput(t, arch, source, "", true)
+				if err := CheckX86ABI0ResultInitialization(file.Funcs[0], sig, arch); !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("the standalone query borrowed a paired numerical-address load", err)
+				}
+			}
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(arch+"/"+row.name+"/"+api, func(t *testing.T) {
 					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+					if row.name == "unknown-address" {
+						if err != nil || ir == "" {
+							t.Fatal("a fully initialized numerical address lost its paired load", err)
+						}
+						llc := findLLVM22Tool("llc")
+						if llc == "" {
+							t.Fatal("LLVM22 llc required")
+						}
+						x86ResultInitializationObject(t, llc, triple, ir, "numeric-address-tuple")
+						return
+					}
 					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatalf("pointer layout granted unrelated NUM/canonical authority: output=%t error=%v", ir != "", err)
 					}
