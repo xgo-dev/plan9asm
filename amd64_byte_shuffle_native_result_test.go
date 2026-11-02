@@ -83,7 +83,24 @@ func TestX86ByteShuffleNativeContinuationCannotCreateAddressOrMaskFacts(t *testi
 				source := "TEXT ·Shuffle(SB),4,$0-12\n" + setup + instruction + "\nPEXTRD $0," + output + ",AX\nMOVL AX,ret+8(FP)\nRET\n"
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, source, "func Shuffle(p *[64]byte) uint32", "amd64", "x86_64-unknown-linux-gnu", api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					if mutation == "numerical-address" {
+						x86RequireNumericNativeSourceContext(t, source, "func Shuffle(p *[64]byte) uint32", "amd64")
+						goAssemblerOracleOutput(t, "amd64", source, "", true)
+						width := 16
+						if strings.Contains(row, "Y0") {
+							width = 32
+						} else if strings.Contains(row, "Z0") {
+							width = 64
+						}
+						read := strings.Contains(ir, fmt.Sprintf("load volatile <%d x i8>", width))
+						if strings.HasPrefix(row, "PSHUFB ") {
+							read = strings.Contains(ir, "call <4 x float> asm sideeffect \"pshufb ") && strings.Contains(ir, "~{memory}")
+						}
+						if err != nil || !read {
+							t.Fatal("numerical address lost the original exact-width byte-shuffle read", err)
+						}
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("conditional native read manufactured independent facts", api, err)
 					}
 				}

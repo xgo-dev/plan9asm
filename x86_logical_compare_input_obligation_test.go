@@ -63,9 +63,29 @@ func TestX86LogicalCompareVoidNativeInputsCannotBypassWholeProof(t *testing.T) {
 						for _, variant := range variants {
 							for _, api := range []string{"text", "module", "Go"} {
 								ir, err := x86ScalarFPBitViewAPI(t, variant.source, declaration, target.arch, target.triple, api)
-								if variant.name == "initialized" {
+								if variant.name == "initialized" || variant.name == "numerical-pointer" {
 									if err != nil || ir == "" {
 										t.Fatal("complete Void native inputs rejected", api, err)
+									}
+									if variant.name == "numerical-pointer" {
+										x86RequireNumericNativeSourceContext(t, variant.source, declaration, target.arch)
+										width := map[string]int{"X": 16, "Y": 32, "Z": 64}[bank]
+										read := false
+										if !strings.HasPrefix(op, "V") {
+											mnemonic := strings.ToLower(op)
+											if strings.HasPrefix(op, "PCMP") && strings.HasSuffix(op, "L") {
+												mnemonic = strings.TrimSuffix(mnemonic, "l") + "d"
+											}
+											read = strings.Contains(ir, "call <4 x float> asm sideeffect \""+mnemonic+" ") && strings.Contains(ir, "~{memory}")
+										} else {
+											for _, bits := range []int{8, 16, 32, 64} {
+												read = read || strings.Contains(ir, fmt.Sprintf("load volatile <%d x i%d>", width*8/bits, bits))
+											}
+										}
+										if !read {
+											t.Fatal("numerical address lost the compare/logical exact-width native read", variant.name, api, ir)
+										}
+										x86NumericNativeAddressObject(t, ir, target.triple)
 									}
 								} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Errorf("%s/%s: missing native input bypassed the whole proof: %v", variant.name, api, err)

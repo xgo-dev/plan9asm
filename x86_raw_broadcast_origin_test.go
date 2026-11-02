@@ -287,7 +287,17 @@ func TestX86RawBroadcastVoidAndUnusedBoolCannotBorrowInputs(t *testing.T) {
 							}
 							for _, api := range []string{"text", "module", "Go"} {
 								ir, err := x86ScalarFPBitViewAPI(t, body, decl, arch, x86AddressMemoryTargets(arch)[0], api)
-								if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+								if control == "numeric address" {
+									x86RequireNumericNativeSourceContext(t, body, decl, arch)
+									read := fmt.Sprintf("load volatile <%d x i8>", row.bytes)
+									if row.masked && row.bytes > row.lane {
+										read = fmt.Sprintf("load volatile i%d,", row.lane*8)
+									}
+									if err != nil || !strings.Contains(ir, read) {
+										t.Fatal("numerical address lost the broadcast's exact scalar/block read", arch, dead, unused, api, err)
+									}
+									x86NumericNativeAddressObject(t, ir, x86AddressMemoryTargets(arch)[0])
+								} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("dead/unused-bool broadcast acquired missing scalar, vector, mask, old result or native pointer facts", arch, dead, unused, api, err)
 								}
 							}

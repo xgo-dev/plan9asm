@@ -151,10 +151,22 @@ func TestX86ScalarFloatIntegerPairedReadRequiresIndependentInputs(t *testing.T) 
 			t.Run(fmt.Sprintf("%s/%s/%s/live=%t", arch, item.name, item.variant, item.live), func(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(api, func(t *testing.T) {
-						_, err := x86ScalarFPBitViewAPI(t, item.source, item.decl, arch, triple, api)
-						positive := item.variant == "index" || item.variant == "initialized-vector"
+						ir, err := x86ScalarFPBitViewAPI(t, item.source, item.decl, arch, triple, api)
+						positive := item.variant == "index" || item.variant == "initialized-vector" || item.variant == "numeric-pointer"
 						if positive && err != nil || !positive && !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("native input/pointer role mismatch", positive, err)
+						}
+						if item.variant == "numeric-pointer" {
+							x86RequireNumericNativeSourceContext(t, item.source, item.decl, arch)
+							width := 4
+							if strings.Contains(item.name, "SD") {
+								width = 8
+							}
+							if !strings.Contains(ir, "asm sideeffect") || !strings.Contains(ir, strings.ToLower(item.name)+" ") ||
+								!strings.Contains(ir, fmt.Sprintf("elementtype([%d x i8])", width)) || !strings.Contains(ir, "~{fpsr}") {
+								t.Fatal("numerical address lost its original exact-width conversion/MXCSR effect", ir)
+							}
+							x86NumericNativeAddressObject(t, ir, triple)
 						}
 					})
 				}

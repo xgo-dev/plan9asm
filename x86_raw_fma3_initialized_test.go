@@ -196,6 +196,18 @@ func TestX86RawFMA3DeadAndUnusedBoolRequireActualInputs(t *testing.T) {
 								if err != nil || ir == "" {
 									t.Fatal("complete dead/unused-bool raw FMA must remain a positive", arch, unused, api, err)
 								}
+							} else if control == "numeric address" {
+								x86RequireNumericNativeSourceContext(t, source, declaration, arch)
+								width := 4
+								if strings.HasSuffix(row.op, "PD") {
+									width = 8
+								}
+								if err != nil || !strings.Contains(ir, "asm sideeffect") || !strings.Contains(ir, strings.ToLower(row.op)+" ") ||
+									!strings.Contains(ir, fmt.Sprintf("elementtype([%d x i8])", width)) ||
+									!strings.Contains(ir, "~{memory}") || !strings.Contains(ir, "~{fpsr}") {
+									t.Fatal("numerical address lost raw FMA's native scalar broadcast and FP effects", arch, unused, api, err)
+								}
+								x86NumericNativeAddressObject(t, ir, x86AddressMemoryTargets(arch)[0])
 							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("raw FMA acquired an absent arithmetic input, old destination, mask or native pointer", arch, unused, api, err)
 							}

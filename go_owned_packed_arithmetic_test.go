@@ -174,7 +174,14 @@ func TestX86OwnedPackedArithmeticRetainsAuthorityBoundaries(t *testing.T) {
 			source := strings.Replace(base, change.before, change.after, 1)
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-				if err == nil || ir != "" {
+				if change.name == "numerical base" {
+					x86RequireNumericNativeSourceContext(t, source, declaration, "amd64")
+					goAssemblerOracleOutput(t, "amd64", source, "", true)
+					if err != nil || !strings.Contains(ir, "call <4 x float> asm sideeffect \"paddd ") || !strings.Contains(ir, "~{memory}") {
+						t.Fatal("numerical base lost the original m128 PADDD access", api, err)
+					}
+					x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+				} else if err == nil || ir != "" {
 					t.Fatal("owned DATA arithmetic borrowed a different input/extent/origin contract", api, err)
 				}
 			}

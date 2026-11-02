@@ -62,6 +62,17 @@ func x86CheckIsolatedVoidSamples(t *testing.T, arch string, samples []x86Isolate
 								if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("isolated Void instruction acquired absent input or storage authority", err)
 								}
+							} else if strings.HasSuffix(sample.name, "/numeric-pointer") {
+								x86RequireNumericNativeSourceContext(t, sample.source, sample.declaration, arch)
+								width := 4
+								if strings.Contains(sample.name, "SD") {
+									width = 8
+								}
+								if err != nil || !strings.Contains(ir, "asm sideeffect") ||
+									!strings.Contains(ir, fmt.Sprintf("elementtype([%d x i8])", width)) || !strings.Contains(ir, "~{fpsr}") {
+									t.Fatal("numerical address lost isolated COMI's native exact-width read", err)
+								}
+								x86NumericNativeAddressObject(t, ir, target)
 							} else if err != nil || ir == "" {
 								t.Fatal("same isolated Void instruction lost its complete initialized inputs", err)
 							}
@@ -139,7 +150,8 @@ func TestX86COMIIsolatedVoidRetainsCompleteInputObligations(t *testing.T) {
 						extent, declaration = word, fmt.Sprintf("func %s(p *byte)\n", name)
 					}
 					source := fmt.Sprintf("TEXT ·%s(SB),4,$0-%d\n%s%sRET\n", name, extent, setup, row.operation)
-					samples = append(samples, x86IsolatedVoidSample{row.label + "/" + control, source, declaration, control != "initialized", false})
+					samples = append(samples, x86IsolatedVoidSample{row.label + "/" + control, source, declaration,
+						control != "initialized" && control != "numeric-pointer", false})
 				}
 			}
 			x86CheckIsolatedVoidSamples(t, arch, samples)

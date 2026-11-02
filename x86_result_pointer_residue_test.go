@@ -158,7 +158,14 @@ func TestX86IncomingPointerResidueWholeSourceThreeAPIs(t *testing.T) {
 				t.Run(target.triple+"/"+row.name+"/"+api, func(t *testing.T) {
 					source := fmt.Sprintf("TEXT ·Value(SB),4,$0-%d\n%sMOVL AX,ret+%d(FP)\nRET\n", word+4, row.body, word)
 					ir, err := x86ScalarFPBitViewAPI(t, source, "func Value("+row.params+") uint32", target.arch, target.triple, api)
-					if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					if row.name == "native-after-projection" || row.name == "numeric-native-address" {
+						x86RequireNumericNativeSourceContext(t, source, "func Value("+row.params+") uint32", target.arch)
+						x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
+						if err != nil || !strings.Contains(ir, "load volatile i8,") {
+							t.Fatal("defined numerical residue lost its exact native CRC byte read", err)
+						}
+						x86NumericNativeAddressObject(t, ir, target.triple)
+					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatal("residue manufactured an address/unknown/padding authority", err)
 					}
 				})

@@ -160,7 +160,16 @@ func TestX86CMOVNativeCannotInventPotentialInputs(t *testing.T) {
 				source := fmt.Sprintf("TEXT ·Value(SB),4,$0-%d\n%s%s %s,AX\nRET\n", 3*word, setup, name, memory)
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *byte,old,flags uintptr)", target.arch, target.triple, api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					if role == "numerical-pointer" {
+						x86RequireNumericNativeSourceContext(t, source, "func Value(p *byte,old,flags uintptr)", target.arch)
+						goAssemblerOracleOutput(t, target.arch, source, "", true)
+						width := map[byte]int{'W': 2, 'L': 4, 'Q': 8}[name[4]]
+						if err != nil || !strings.Contains(ir, fmt.Sprintf("load volatile <%d x i8>", width)) ||
+							!strings.Contains(ir, "asm sideeffect \"\", \"r\"") {
+							t.Fatal("numerical address lost CMOV's unconditional exact-width read", name, target.triple, api, err)
+						}
+						x86NumericNativeAddressObject(t, ir, target.triple)
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("native CMOV invented a potential input, including for Void", name, role, target.triple, api, err)
 					}
 				}
