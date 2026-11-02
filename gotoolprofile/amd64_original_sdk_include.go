@@ -14,6 +14,12 @@ import (
 // Literal includes in both conditional branches remain guarded; unclosed
 // dynamic directives fail. Actual Go independently compiles the final export.
 func captureAMD64SDKIncludeSources(pkg amd64OriginalListPackage, goRoot string, files *amd64OriginalObservationFiles) error {
+	return captureAMD64DependencyIncludeSources(pkg, goRoot, goRoot, files)
+}
+
+func captureAMD64DependencyIncludeSources(pkg amd64OriginalListPackage, sourceRoot, goRoot string,
+	files *amd64OriginalObservationFiles,
+) error {
 	var pending []string
 	scheduled := make(map[string]bool)
 	enqueue := func(name string) error {
@@ -66,7 +72,7 @@ func captureAMD64SDKIncludeSources(pkg amd64OriginalListPackage, goRoot string, 
 			if err != nil {
 				return err
 			}
-			included, err := retainAMD64SDKInclude(pkg, goRoot, include, files)
+			included, err := retainAMD64DependencyInclude(pkg, sourceRoot, goRoot, include, files)
 			if err != nil {
 				return fmt.Errorf("SDK include %q in %s: %w", include, name, err)
 			}
@@ -80,15 +86,22 @@ func captureAMD64SDKIncludeSources(pkg amd64OriginalListPackage, goRoot string, 
 	return nil
 }
 
-func retainAMD64SDKInclude(pkg amd64OriginalListPackage, goRoot, include string, files *amd64OriginalObservationFiles) (string, error) {
+func retainAMD64DependencyInclude(pkg amd64OriginalListPackage, sourceRoot, goRoot, include string, files *amd64OriginalObservationFiles) (string, error) {
 	// cmd/asm searches from the package CWD even for nested headers. The
 	// selected source supplies that directory, not the including header.
 	assembly := filepath.ToSlash(filepath.Join("src", pkg.ImportPath, pkg.SFiles[0]))
+	if !pkg.Standard {
+		relative, err := filepath.Rel(sourceRoot, filepath.Join(pkg.Dir, pkg.SFiles[0]))
+		if err != nil || !CPPLocalSource(filepath.ToSlash(relative)) {
+			return "", fmt.Errorf("dependency assembly escapes its actual source root")
+		}
+		assembly = filepath.ToSlash(relative)
+	}
 	preferred, shared, err := CPPIncludeCandidates(assembly, include)
 	if err != nil || !CPPLocalSource(preferred) || !CPPLocalSource(shared) {
 		return "", fmt.Errorf("SDK include escapes its actual source root")
 	}
-	name := filepath.Join(goRoot, filepath.FromSlash(preferred))
+	name := filepath.Join(sourceRoot, filepath.FromSlash(preferred))
 	if err := files.directory(filepath.Dir(name), false); err != nil {
 		return "", fmt.Errorf("SDK preferred include directory is not closed: %w", err)
 	}
@@ -106,7 +119,7 @@ func retainAMD64SDKInclude(pkg amd64OriginalListPackage, goRoot, include string,
 	} else if err != nil {
 		return "", err
 	} else {
-		name, err = CPPRegularSource(goRoot, preferred)
+		name, err = CPPRegularSource(sourceRoot, preferred)
 		if err != nil {
 			return "", err
 		}

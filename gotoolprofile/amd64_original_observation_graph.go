@@ -180,7 +180,11 @@ func captureAMD64OriginalGraph(ctx context.Context, request AMD64OriginalObserva
 			// Use the verified physical directory for relative CPP paths. The
 			// packages map retains Go's original spelling for later replay.
 			pkg.Dir = dir
-			if err := captureAMD64OriginalCPP(pkg, base, actual["GOROOT"], profile, files); err != nil {
+			if path != request.PackagePath && reflect.DeepEqual(pkg.Module, module) {
+				if err := captureAMD64OriginalModuleDependency(pkg, base, actual["GOROOT"], profile, files); err != nil {
+					return nil, err
+				}
+			} else if err := captureAMD64OriginalCPP(pkg, base, actual["GOROOT"], profile, files); err != nil {
 				return nil, err
 			}
 		}

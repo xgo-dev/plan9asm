@@ -26,6 +26,27 @@ func captureAMD64OriginalSDKDependency(pkg amd64OriginalListPackage, goRoot stri
 	if len(pkg.SFiles) == 0 {
 		return nil
 	}
+	return captureAMD64OriginalDependencyInputs(pkg, goRoot, goRoot, profile, files)
+}
+
+// The graph has already joined this package to the selected root's complete
+// module identity and authenticated source directory. Its assembler contributes
+// only to its own compiler export, never ordinary root CPP or frame authority.
+func captureAMD64OriginalModuleDependency(pkg amd64OriginalListPackage, sourceRoot, goRoot string,
+	profile *Observation, files *amd64OriginalObservationFiles,
+) error {
+	if pkg.Standard || pkg.Module == nil || files.directories[pkg.Dir] == nil {
+		return fmt.Errorf("original module dependency lacks its bound package role")
+	}
+	if len(pkg.SFiles) == 0 {
+		return nil
+	}
+	return captureAMD64OriginalDependencyInputs(pkg, sourceRoot, goRoot, profile, files)
+}
+
+func captureAMD64OriginalDependencyInputs(pkg amd64OriginalListPackage, sourceRoot, goRoot string,
+	profile *Observation, files *amd64OriginalObservationFiles,
+) error {
 	// Capture, rather than broaden the ordinary validator: the registered
 	// actual SDK sources derive any special package macros for this exact
 	// observed environment. Unknown compiler registrations still fail.
@@ -49,5 +70,5 @@ func captureAMD64OriginalSDKDependency(pkg amd64OriginalListPackage, goRoot stri
 	if err := files.directory(filepath.Join(goRoot, "pkg", "include"), true); err != nil {
 		return err
 	}
-	return captureAMD64SDKIncludeSources(pkg, goRoot, files)
+	return captureAMD64DependencyIncludeSources(pkg, sourceRoot, goRoot, files)
 }
