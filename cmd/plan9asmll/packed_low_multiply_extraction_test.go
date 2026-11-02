@@ -11,12 +11,12 @@ func TestExtractSupportedOpsPackedLowMultiplyTypedTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := os.ReadFile(filepath.Join(repo, "amd64_packed_low_multiply_forms.go"))
+	source, err := os.ReadFile(filepath.Join(repo, "amd64_packed_arithmetic_forms.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	isolated := t.TempDir()
-	if err := os.WriteFile(filepath.Join(isolated, "amd64_packed_low_multiply_forms.go"), source, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(isolated, "amd64_packed_arithmetic_forms.go"), source, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(isolated, "translate.go"), []byte("package plan9asm\n"), 0600); err != nil {

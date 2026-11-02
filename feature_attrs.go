@@ -448,8 +448,12 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 					add("+avx")
 				}
 			}
-			if form, known, err := x86LegacyIntegerArithmeticProperties(ins.Op, ins, goarch); known && err == nil && form.legacy && !form.mmx && form.memory >= 0 && form.source.Kind != OpFP {
-				add("+sse2")
+			if form, known, err := x86PackedArithmeticProperties(ins.Op, ins, goarch, 0); known && err == nil && form.legacy && !form.mmx && form.memory >= 0 {
+				if form.spec.family == x86PackedArithmeticLowMultiply {
+					add("+sse2", "+sse4.1")
+				} else if ins.Args[form.memory].Kind != OpFP {
+					add("+sse2")
+				}
 			}
 			if form, known, err := x86PackedPhysicalProperties(ins.Op, ins, goarch, ""); known && err == nil && form.legacy && !form.mmx && form.memory >= 0 && ins.Args[form.memory].Kind != OpFP {
 				add("+sse2")
@@ -460,9 +464,6 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				if form.spec.family == x86PackedDwordProduct && form.spec.signed {
 					add("+sse4.1")
 				}
-			}
-			if form, known, err := x86PackedLowMultiplyProperties(ins.Op, ins, goarch); known && err == nil && form.legacy && form.memory >= 0 {
-				add("+sse2", "+sse4.1")
 			}
 			if form, known, err := x86PackedUnpackProperties(ins, moveArch); known && err == nil &&
 				form.legacy && !form.mmx && form.memory >= 0 && form.source.Kind != OpFP {

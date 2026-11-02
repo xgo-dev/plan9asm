@@ -1715,12 +1715,12 @@ func TestExtractSupportedOpsFindsCompleteTypedUnpackSpecTable(t *testing.T) {
 }
 
 func TestExtractSupportedOpsFindsCompleteWrappingAddSpecTable(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("../..", "amd64_packed_add_forms.go"))
+	data, err := os.ReadFile(filepath.Join("../..", "amd64_packed_arithmetic_forms.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "amd64_packed_add_forms.go"), data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "amd64_packed_arithmetic_forms.go"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "translate.go"), []byte("package plan9asm\n"), 0600); err != nil {

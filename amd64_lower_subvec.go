@@ -5,12 +5,12 @@ import (
 	"strings"
 )
 
-type amd64PackedSubtractMode uint8
+type amd64PackedSubtractMode = x86PackedArithmeticMode
 
 const (
-	amd64PackedSubtractWrap amd64PackedSubtractMode = iota
-	amd64PackedSubtractSignedSaturating
-	amd64PackedSubtractUnsignedSaturating
+	amd64PackedSubtractWrap               = x86PackedWrap
+	amd64PackedSubtractSignedSaturating   = x86PackedSignedSaturating
+	amd64PackedSubtractUnsignedSaturating = x86PackedUnsignedSaturating
 )
 
 // lowerPackedIntegerSubtract implements the complete Go 1.27 packed-integer
@@ -60,43 +60,12 @@ func (c *amd64Ctx) lowerPackedIntegerSubtract(op Op, ins Instr) (ok bool, termin
 	return true, false, err
 }
 
-func amd64PackedSubtractProperties(op string) (laneBits int, mode amd64PackedSubtractMode, vector, ok bool) {
-	switch op {
-	case "PSUBB":
-		return 8, amd64PackedSubtractWrap, false, true
-	case "PSUBW":
-		return 16, amd64PackedSubtractWrap, false, true
-	case "PSUBL":
-		return 32, amd64PackedSubtractWrap, false, true
-	case "PSUBQ":
-		return 64, amd64PackedSubtractWrap, false, true
-	case "PSUBSB":
-		return 8, amd64PackedSubtractSignedSaturating, false, true
-	case "PSUBSW":
-		return 16, amd64PackedSubtractSignedSaturating, false, true
-	case "PSUBUSB":
-		return 8, amd64PackedSubtractUnsignedSaturating, false, true
-	case "PSUBUSW":
-		return 16, amd64PackedSubtractUnsignedSaturating, false, true
-	case "VPSUBB":
-		return 8, amd64PackedSubtractWrap, true, true
-	case "VPSUBW":
-		return 16, amd64PackedSubtractWrap, true, true
-	case "VPSUBD":
-		return 32, amd64PackedSubtractWrap, true, true
-	case "VPSUBQ":
-		return 64, amd64PackedSubtractWrap, true, true
-	case "VPSUBSB":
-		return 8, amd64PackedSubtractSignedSaturating, true, true
-	case "VPSUBSW":
-		return 16, amd64PackedSubtractSignedSaturating, true, true
-	case "VPSUBUSB":
-		return 8, amd64PackedSubtractUnsignedSaturating, true, true
-	case "VPSUBUSW":
-		return 16, amd64PackedSubtractUnsignedSaturating, true, true
-	default:
+func amd64PackedSubtractProperties(op string) (int, amd64PackedSubtractMode, bool, bool) {
+	spec, known := x86PackedArithmeticSpecs[Op(op)]
+	if !known || spec.family != x86PackedArithmeticSubtract {
 		return 0, 0, false, false
 	}
+	return spec.laneBits, spec.mode, spec.encoding == x86PackedLogicalVEXOrEVEX, true
 }
 
 // emitPackedIntegerSubtract computes second-first, matching Go assembler's

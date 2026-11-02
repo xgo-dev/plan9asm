@@ -13,10 +13,8 @@ type x86LegacyIntegerArithmeticForm struct {
 // Reuse the arithmetic specifications and Go operand rows already owned by
 // lowering. This descriptor adds no frame, source, caller or initialized bank.
 func x86LegacyIntegerArithmeticProperties(op Op, ins Instr, arch string) (x86LegacyIntegerArithmeticForm, bool, error) {
-	name, _, _ := strings.Cut(strings.ToUpper(string(op)), ".")
-	spec, add := amd64PackedAddSpecs[Op(name)]
-	_, _, vector, subtract := amd64PackedSubtractProperties(name)
-	if add && spec.form == amd64PackedAddVEXEVEX || subtract && vector || !add && !subtract {
+	spec, known := x86PackedArithmeticSpecForOp(op, x86PackedArithmeticAdd|x86PackedArithmeticSubtract)
+	if !known || spec.encoding != x86PackedLogicalLegacyFP && spec.encoding != x86PackedLogicalLegacyInteger {
 		return x86LegacyIntegerArithmeticForm{}, false, nil
 	}
 	if ins.Op != "" && !strings.EqualFold(string(ins.Op), string(op)) {
@@ -24,11 +22,7 @@ func x86LegacyIntegerArithmeticProperties(op Op, ins Instr, arch string) (x86Leg
 	}
 	local := ins
 	local.Op = op
-	local.Args = append([]Operand(nil), ins.Args...)
-	encoding := x86PackedLogicalLegacyFP
-	if add && spec.form == amd64PackedAddLegacyYMM {
-		encoding = x86PackedLogicalLegacyInteger
-	}
+	encoding := spec.encoding
 	if encoding == x86PackedLogicalLegacyInteger {
 		var err error
 		local, err = x86LegacyMMXReadInstruction(local, arch)

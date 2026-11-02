@@ -10,10 +10,7 @@ func x86UnmaskedVEXByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect
 	if !strings.HasPrefix(strings.ToUpper(string(op)), "V") {
 		return x86TypedByteEffect{}, false, nil
 	}
-	if form, known, err := x86PackedIntegerAddProperties(ins, arch); known {
-		return x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm, true, err)
-	}
-	if form, known, err := x86PackedSubtractProperties(ins, arch); known {
+	if form, known, err := x86PackedArithmeticProperties(ins.Op, ins, arch, x86PackedArithmeticAdd|x86PackedArithmeticSubtract); known {
 		return x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm, true, err)
 	}
 	if form, known, err := x86PackedBinaryEffectProperties(op, ins, arch); known {

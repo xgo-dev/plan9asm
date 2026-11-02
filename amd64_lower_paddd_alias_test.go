@@ -8,32 +8,43 @@ import (
 )
 
 func TestAMD64PackedAddGrammarCoversCompleteGoFamily(t *testing.T) {
-	expected := map[Op]amd64PackedAddSpec{
-		"PADDB":    {canonical: "PADDB", form: amd64PackedAddLegacyYMM, laneBits: 8, mode: amd64PackedAddWrap},
-		"PADDW":    {canonical: "PADDW", form: amd64PackedAddLegacyYMM, laneBits: 16, mode: amd64PackedAddWrap},
-		"PADDL":    {canonical: "PADDL", form: amd64PackedAddLegacyYMM, laneBits: 32, mode: amd64PackedAddWrap},
-		"PADDD":    {canonical: "PADDL", form: amd64PackedAddLegacyYMM, laneBits: 32, mode: amd64PackedAddWrap},
-		"PADDQ":    {canonical: "PADDQ", form: amd64PackedAddLegacyYXM, laneBits: 64, mode: amd64PackedAddWrap},
-		"PADDSB":   {canonical: "PADDSB", form: amd64PackedAddLegacyYMM, laneBits: 8, mode: amd64PackedAddSignedSaturating},
-		"PADDSW":   {canonical: "PADDSW", form: amd64PackedAddLegacyYMM, laneBits: 16, mode: amd64PackedAddSignedSaturating},
-		"PADDUSB":  {canonical: "PADDUSB", form: amd64PackedAddLegacyYMM, laneBits: 8, mode: amd64PackedAddUnsignedSaturating},
-		"PADDUSW":  {canonical: "PADDUSW", form: amd64PackedAddLegacyYMM, laneBits: 16, mode: amd64PackedAddUnsignedSaturating},
-		"VPADDB":   {canonical: "VPADDB", form: amd64PackedAddVEXEVEX, laneBits: 8, mode: amd64PackedAddWrap},
-		"VPADDW":   {canonical: "VPADDW", form: amd64PackedAddVEXEVEX, laneBits: 16, mode: amd64PackedAddWrap},
-		"VPADDD":   {canonical: "VPADDD", form: amd64PackedAddVEXEVEX, laneBits: 32, mode: amd64PackedAddWrap, allowBroadcast: true},
-		"VPADDQ":   {canonical: "VPADDQ", form: amd64PackedAddVEXEVEX, laneBits: 64, mode: amd64PackedAddWrap, allowBroadcast: true},
-		"VPADDSB":  {canonical: "VPADDSB", form: amd64PackedAddVEXEVEX, laneBits: 8, mode: amd64PackedAddSignedSaturating},
-		"VPADDSW":  {canonical: "VPADDSW", form: amd64PackedAddVEXEVEX, laneBits: 16, mode: amd64PackedAddSignedSaturating},
-		"VPADDUSB": {canonical: "VPADDUSB", form: amd64PackedAddVEXEVEX, laneBits: 8, mode: amd64PackedAddUnsignedSaturating},
-		"VPADDUSW": {canonical: "VPADDUSW", form: amd64PackedAddVEXEVEX, laneBits: 16, mode: amd64PackedAddUnsignedSaturating},
+	expected := map[Op]struct {
+		encoding       x86PackedLogicalEncoding
+		laneBits       int
+		mode           amd64PackedAddMode
+		broadcastBytes int
+	}{
+		"PADDB":    {x86PackedLogicalLegacyInteger, 8, amd64PackedAddWrap, 0},
+		"PADDW":    {x86PackedLogicalLegacyInteger, 16, amd64PackedAddWrap, 0},
+		"PADDL":    {x86PackedLogicalLegacyInteger, 32, amd64PackedAddWrap, 0},
+		"PADDD":    {x86PackedLogicalLegacyInteger, 32, amd64PackedAddWrap, 0},
+		"PADDQ":    {x86PackedLogicalLegacyFP, 64, amd64PackedAddWrap, 0},
+		"PADDSB":   {x86PackedLogicalLegacyInteger, 8, amd64PackedAddSignedSaturating, 0},
+		"PADDSW":   {x86PackedLogicalLegacyInteger, 16, amd64PackedAddSignedSaturating, 0},
+		"PADDUSB":  {x86PackedLogicalLegacyInteger, 8, amd64PackedAddUnsignedSaturating, 0},
+		"PADDUSW":  {x86PackedLogicalLegacyInteger, 16, amd64PackedAddUnsignedSaturating, 0},
+		"VPADDB":   {x86PackedLogicalVEXOrEVEX, 8, amd64PackedAddWrap, 0},
+		"VPADDW":   {x86PackedLogicalVEXOrEVEX, 16, amd64PackedAddWrap, 0},
+		"VPADDD":   {x86PackedLogicalVEXOrEVEX, 32, amd64PackedAddWrap, 4},
+		"VPADDQ":   {x86PackedLogicalVEXOrEVEX, 64, amd64PackedAddWrap, 8},
+		"VPADDSB":  {x86PackedLogicalVEXOrEVEX, 8, amd64PackedAddSignedSaturating, 0},
+		"VPADDSW":  {x86PackedLogicalVEXOrEVEX, 16, amd64PackedAddSignedSaturating, 0},
+		"VPADDUSB": {x86PackedLogicalVEXOrEVEX, 8, amd64PackedAddUnsignedSaturating, 0},
+		"VPADDUSW": {x86PackedLogicalVEXOrEVEX, 16, amd64PackedAddUnsignedSaturating, 0},
 	}
-	if len(amd64PackedAddSpecs) != len(expected) {
-		t.Fatalf("packed-add grammar has %d entries, want %d", len(amd64PackedAddSpecs), len(expected))
+	addCount := 0
+	for _, spec := range x86PackedArithmeticSpecs {
+		if spec.family == x86PackedArithmeticAdd {
+			addCount++
+		}
+	}
+	if addCount != len(expected) {
+		t.Fatal("complete packed-add grammar inventory changed", addCount)
 	}
 	for op, want := range expected {
-		if got, ok := amd64PackedAddSpecs[op]; !ok {
-			t.Errorf("packed-add grammar omitted %s", op)
-		} else if got != want {
+		got, known := x86PackedArithmeticSpecForOp(op, x86PackedArithmeticAdd)
+		if !known || got.encoding != want.encoding || got.laneBits != want.laneBits || got.mode != want.mode ||
+			got.broadcastBytes != want.broadcastBytes || got.zeroing != (want.encoding == x86PackedLogicalVEXOrEVEX) {
 			t.Errorf("packed-add grammar %s = %+v, want %+v", op, got, want)
 		}
 	}

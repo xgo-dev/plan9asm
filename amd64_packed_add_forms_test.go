@@ -14,10 +14,18 @@ import (
 
 var x86WrappingAddOpcodes = []string{"PADDB", "PADDW", "PADDL", "PADDQ", "VPADDB", "VPADDW", "VPADDD", "VPADDQ"}
 
+func x86WrappingAddSpecForTest(op Op) x86PackedArithmeticSpec {
+	spec, known := x86PackedArithmeticSpecForOp(op, x86PackedArithmeticAdd)
+	if !known || spec.mode != x86PackedWrap {
+		panic("invalid wrapping-add fixture opcode")
+	}
+	return spec
+}
+
 func x86WrappingAddFormats(arch string) []string {
 	var rows []string
 	for _, opcode := range append(append([]string(nil), x86WrappingAddOpcodes...), "PADDD") {
-		spec := x86PackedWrappingAddSpecs[Op(opcode)]
+		spec := x86WrappingAddSpecForTest(Op(opcode))
 		if !strings.HasPrefix(opcode, "V") {
 			rows = append(rows, opcode+" X0,X7", opcode+" 16(AX)(BX*2),X7")
 			if arch == "amd64" {
@@ -50,11 +58,17 @@ func x86WrappingAddFormats(arch string) []string {
 }
 
 func TestX86PackedWrappingAddActualGoCompleteAttributes(t *testing.T) {
-	if len(x86PackedWrappingAddSpecs) != 9 {
+	wrapping := 0
+	for _, spec := range x86PackedArithmeticSpecs {
+		if spec.family == x86PackedArithmeticAdd && spec.mode == x86PackedWrap {
+			wrapping++
+		}
+	}
+	if wrapping != 9 {
 		t.Fatal("eight wrapping operations and the actual Go PADDD alias required")
 	}
 	for index, opcode := range x86WrappingAddOpcodes {
-		spec := x86PackedWrappingAddSpecs[Op(opcode)]
+		spec := x86WrappingAddSpecForTest(Op(opcode))
 		bits := 8 << uint(index%4)
 		broadcast := 0
 		if index >= 6 {
@@ -64,7 +78,7 @@ func TestX86PackedWrappingAddActualGoCompleteAttributes(t *testing.T) {
 			t.Fatalf("%s has wrong independent arithmetic/tuple attributes: %+v", opcode, spec)
 		}
 	}
-	if x86PackedWrappingAddSpecs["PADDD"] != x86PackedWrappingAddSpecs["PADDL"] {
+	if x86WrappingAddSpecForTest("PADDD") != x86WrappingAddSpecForTest("PADDL") {
 		t.Fatal("actual Go alias must retain the exact canonical operation")
 	}
 	root := filepath.Join(runtime.GOROOT(), "src/cmd/internal/obj/x86")
@@ -223,7 +237,7 @@ func TestX86PackedWrappingAddIndependentFPFieldsEveryByteAndMaskZero(t *testing.
 	for _, op := range []string{"VPADDB", "VPADDW", "VPADDD", "VPADDQ"} {
 		for _, bank := range []string{"X", "Y", "Z"} {
 			for _, broadcast := range []bool{false, true} {
-				if broadcast && x86PackedWrappingAddSpecs[Op(op)].broadcastBytes == 0 {
+				if broadcast && x86WrappingAddSpecForTest(Op(op)).broadcastBytes == 0 {
 					continue
 				}
 				opcode := op + ".Z"

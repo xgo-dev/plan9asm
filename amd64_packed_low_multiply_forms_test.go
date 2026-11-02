@@ -28,7 +28,13 @@ func TestX86PackedLowMultiplyCompleteGoEncoderRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(x86PackedLowMultiplySpecs) != 3 {
+	lowCount := 0
+	for _, spec := range x86PackedArithmeticSpecs {
+		if spec.family == x86PackedArithmeticLowMultiply {
+			lowCount++
+		}
+	}
+	if lowCount != 3 {
 		t.Fatal("incomplete D/Q low-product inventory")
 	}
 	for _, name := range []string{"VPMULLD", "VPMULLQ"} {

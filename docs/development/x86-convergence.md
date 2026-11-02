@@ -152,6 +152,33 @@ tools. Preserve vector IR and independently check generated-program performance.
 Do not clear global compiler caches. Batch LLVM tests with bounded modules and
 prompt disposal; batching must preserve every test case, not sample the suite.
 
+The next packed arithmetic batch joins all 36 add/subtract/D-Q low-product
+spellings (35 canonical opcodes) in one typed catalog. The existing binary
+grammar continues to own operand formats; operation, element width, saturation,
+encoding and broadcast remain separate fields. Add/subtract effects and result
+queries normalize once per invocation instead of probing two family parsers.
+Private wrapping-add admission, legacy MMX projection and raw mode32 low-product
+adaptation retain their separate contracts. Numerical lowerers, E4 handling and
+the base binary grammar are byte-identical to `ab900f0c0`. Replaced catalogs,
+switches and selectors are removed in the same batch: 80 fewer production lines.
+
+Read-only legacy queries avoid a redundant operand copy, and physical GP-to-MMX
+bank projection uses constant register names. TDD first reproduces redundant
+allocations and three query-boundary defects; the corrected queries return empty
+metadata on family misses, preserve bare-name compatibility and reject mismatched
+source identities. Both Go 1.27.3 and Go 1.20.14 retain all 5,751 original local
+case IDs and pass the full 66-root / 5,791-node scope. Native PADDD execution is
+not counted as a local pass. Complete extraction and five-target gates remain.
+
+Three ABBA blocks give six samples per revision and SDK for each of 49 unchanged
+benchmarks: 31 complete translations and 18 feature queries. Across the complete
+translation cases, the geometric mean of median timing ratios changes by -0.58%
+on current Go and -0.07% on minimum Go. Two legacy arithmetic kernels remove
+about 320 allocations per translation; the other translation allocation counts
+remain stable. The twenty neighboring translation cases change by -0.20%/+0.25%.
+These observations support code convergence and lower allocation cost, not a
+statistically established translation speedup or native execution improvement.
+
 ## Independent rule inventory
 
 The official scanner includes the selected SDK's ordered `asm6.go` `optab` and

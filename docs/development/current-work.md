@@ -185,6 +185,21 @@ roots / 334 nodes and thirteen runner-policy roots / 26 nodes. Both SDKs retain
 the five-architecture gates. These checks establish the test partition and
 retained compile/portable coverage; they do not execute the tagged native set.
 
+## Packed integer grammar follow-up
+
+The packed add/subtract/D-Q low-product follow-up consolidates 36 source
+spellings into one catalog and the existing binary grammar, removing 80 net
+production lines. Both endpoint SDKs retain all 5,751 original local case IDs
+and pass 66 roots / 5,791 nodes including new query-boundary/allocation controls.
+The native PADDD execution owner remains separate from this ARM64-host result.
+Complete CLI extraction passes 74 roots / 222 nodes on current Go and its
+Go 1.24.11 minimum; scanner integration passes 67 nodes per endpoint SDK.
+All 574 Node policies, 334 Go policy nodes and both five-architecture gates pass.
+Paired complete-translation measurements retain or reduce allocations without
+establishing a speedup; see [convergence](x86-convergence.md). This local batch
+still needs publication and its own complete CI. The earlier `ab900f0c0` fork
+round is still running at the last observation; it does not certify this batch.
+
 ## Remaining work
 
 1. Finish the native hardware partition follow-up and publish the verified batch

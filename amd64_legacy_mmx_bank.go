@@ -116,7 +116,7 @@ func x86LegacyMMXGPBank(reg Reg, arch string) (Reg, bool) {
 	for index, register := range [...]Reg{AX, CX, DX, BX, SP, BP, SI, DI,
 		"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"} {
 		if reg == register && (arch == "amd64" || arch == "386" && index < 8) {
-			return Reg(fmt.Sprintf("M%d", index&7)), true
+			return [...]Reg{"M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7"}[index&7], true
 		}
 	}
 	return "", false

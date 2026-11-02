@@ -88,12 +88,8 @@ func x86RawArithmeticLiteralForm(ins Instr, arch string) bool {
 	if !x86RawLiteralSourceShape(ins, arch) || !x86RawReturnDecodedReadIdentity(ins) {
 		return false
 	}
-	add, known, err := x86PackedIntegerAddProperties(ins, arch)
-	form := add.x86PackedBinaryForm
-	if !known {
-		subtract, subKnown, subErr := x86PackedSubtractProperties(ins, arch)
-		form, known, err = subtract.x86PackedBinaryForm, subKnown, subErr
-	}
+	parsed, known, err := x86PackedArithmeticProperties(ins.Op, ins, arch, x86PackedArithmeticAdd|x86PackedArithmeticSubtract)
+	form := parsed.x86PackedBinaryForm
 	return known && err == nil && !form.legacy && !form.mmx && form.memory >= 0 &&
 		ins.x86RIPMemoryRead.source == form.first && ins.x86RIPMemoryRead.width == int64(form.memoryBytes)
 }

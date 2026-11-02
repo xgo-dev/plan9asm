@@ -5,57 +5,13 @@ import (
 	"strconv"
 )
 
-type amd64PackedAddMode uint8
+type amd64PackedAddMode = x86PackedArithmeticMode
 
 const (
-	amd64PackedAddWrap amd64PackedAddMode = iota
-	amd64PackedAddSignedSaturating
-	amd64PackedAddUnsignedSaturating
+	amd64PackedAddWrap               = x86PackedWrap
+	amd64PackedAddSignedSaturating   = x86PackedSignedSaturating
+	amd64PackedAddUnsignedSaturating = x86PackedUnsignedSaturating
 )
-
-type amd64PackedAddForm uint8
-
-const (
-	// amd64PackedAddLegacyYMM is Go's ymm table: MMX/m64 and XMM/m128.
-	// Go only exposes the MMX rows in amd64 mode.
-	amd64PackedAddLegacyYMM amd64PackedAddForm = iota
-	// amd64PackedAddLegacyYXM is Go's yxm table: XMM/m128 only.
-	amd64PackedAddLegacyYXM
-	// amd64PackedAddVEXEVEX is Go's _yvandnpd table: X/Y/Z sources,
-	// optional EVEX masking, and opt-in D/Q memory broadcast.
-	amd64PackedAddVEXEVEX
-)
-
-type amd64PackedAddSpec struct {
-	canonical      Op
-	form           amd64PackedAddForm
-	laneBits       int
-	mode           amd64PackedAddMode
-	allowBroadcast bool
-}
-
-// amd64PackedAddSpecs is the complete typed grammar for Go 1.27's packed-add
-// instruction family. Keep aliases here rather than duplicating lowering:
-// cmd/asm maps PADDD to APADDL, while its VEX spelling remains VPADDD.
-var amd64PackedAddSpecs = map[Op]amd64PackedAddSpec{
-	"PADDB":    {canonical: "PADDB", form: amd64PackedAddLegacyYMM, laneBits: 8, mode: amd64PackedAddWrap},
-	"PADDW":    {canonical: "PADDW", form: amd64PackedAddLegacyYMM, laneBits: 16, mode: amd64PackedAddWrap},
-	"PADDL":    {canonical: "PADDL", form: amd64PackedAddLegacyYMM, laneBits: 32, mode: amd64PackedAddWrap},
-	"PADDD":    {canonical: "PADDL", form: amd64PackedAddLegacyYMM, laneBits: 32, mode: amd64PackedAddWrap},
-	"PADDQ":    {canonical: "PADDQ", form: amd64PackedAddLegacyYXM, laneBits: 64, mode: amd64PackedAddWrap},
-	"PADDSB":   {canonical: "PADDSB", form: amd64PackedAddLegacyYMM, laneBits: 8, mode: amd64PackedAddSignedSaturating},
-	"PADDSW":   {canonical: "PADDSW", form: amd64PackedAddLegacyYMM, laneBits: 16, mode: amd64PackedAddSignedSaturating},
-	"PADDUSB":  {canonical: "PADDUSB", form: amd64PackedAddLegacyYMM, laneBits: 8, mode: amd64PackedAddUnsignedSaturating},
-	"PADDUSW":  {canonical: "PADDUSW", form: amd64PackedAddLegacyYMM, laneBits: 16, mode: amd64PackedAddUnsignedSaturating},
-	"VPADDB":   {canonical: "VPADDB", form: amd64PackedAddVEXEVEX, laneBits: 8, mode: amd64PackedAddWrap},
-	"VPADDW":   {canonical: "VPADDW", form: amd64PackedAddVEXEVEX, laneBits: 16, mode: amd64PackedAddWrap},
-	"VPADDD":   {canonical: "VPADDD", form: amd64PackedAddVEXEVEX, laneBits: 32, mode: amd64PackedAddWrap, allowBroadcast: true},
-	"VPADDQ":   {canonical: "VPADDQ", form: amd64PackedAddVEXEVEX, laneBits: 64, mode: amd64PackedAddWrap, allowBroadcast: true},
-	"VPADDSB":  {canonical: "VPADDSB", form: amd64PackedAddVEXEVEX, laneBits: 8, mode: amd64PackedAddSignedSaturating},
-	"VPADDSW":  {canonical: "VPADDSW", form: amd64PackedAddVEXEVEX, laneBits: 16, mode: amd64PackedAddSignedSaturating},
-	"VPADDUSB": {canonical: "VPADDUSB", form: amd64PackedAddVEXEVEX, laneBits: 8, mode: amd64PackedAddUnsignedSaturating},
-	"VPADDUSW": {canonical: "VPADDUSW", form: amd64PackedAddVEXEVEX, laneBits: 16, mode: amd64PackedAddUnsignedSaturating},
-}
 
 // lowerPackedIntegerAdd implements the complete Go 1.27 packed-integer add
 // family: the legacy ymm/yxm tables and the _yvandnpd VEX/EVEX table.

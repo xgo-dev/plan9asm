@@ -7,7 +7,7 @@ import (
 
 func (c *amd64Ctx) lowerPackedIntegerAddForm(op Op, ins Instr) (bool, bool, error) {
 	base, _, _ := strings.Cut(strings.ToUpper(string(op)), ".")
-	if _, known := amd64PackedAddSpecs[Op(base)]; !known {
+	if _, known := x86PackedArithmeticSpecForOp(Op(base), x86PackedArithmeticAdd); !known {
 		return false, false, nil
 	}
 	if ins.Op != "" && strings.ToUpper(string(ins.Op)) != strings.ToUpper(string(op)) {
@@ -60,7 +60,7 @@ func (c *amd64Ctx) lowerPackedIntegerAddForm(op Op, ins Instr) (bool, bool, erro
 	}
 	mnemonic := ""
 	if form.legacy && form.memory >= 0 {
-		mnemonic = strings.ToLower(string(form.spec.canonical))
+		mnemonic = strings.ToLower(base)
 		if mnemonic == "paddl" {
 			mnemonic = "paddd"
 		}
