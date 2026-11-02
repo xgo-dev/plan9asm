@@ -149,6 +149,7 @@ func TestInferWasmDiagnostics(t *testing.T) {
 		name string
 		src  string
 		want string
+		ret  LLVMType
 	}{
 		{name: "empty pop remains unknown", src: "Drop\nReturn"},
 		{name: "malformed get is ignored", src: "Get\nReturn"},
@@ -175,7 +176,8 @@ func TestInferWasmDiagnostics(t *testing.T) {
 		{name: "else result", src: "I32Const $1\nIf $1\nI64Const $2\nElse\nI32Const $3\nEnd", want: "conflicting stack types"},
 		{name: "end result", src: "Block $1\nI64Const $1\nEnd", want: "conflicting stack types"},
 		{name: "branch result", src: "Block $1\nI64Const $1\nBr $0", want: "conflicting stack types"},
-		{name: "return types", src: "I32Const $1\nReturn\nI64Const $1\nReturn", want: "conflicting return types"},
+		{name: "return types", src: "I32Const $1\nReturn\nI64Const $1\nReturn", ret: I32},
+		{name: "reachable return types", src: "Get R0\nIf\nI32Const $1\nReturn\nElse\nI64Const $1\nReturn\nEnd", want: "conflicting return types"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,10 +185,13 @@ func TestInferWasmDiagnostics(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = InferWASMAssemblyFuncSig(file.Funcs[0], "helper")
+			got, err := InferWASMAssemblyFuncSig(file.Funcs[0], "helper")
 			if tc.want == "" {
 				if err != nil {
 					t.Fatal(err)
+				}
+				if tc.ret != "" && got.Ret != tc.ret {
+					t.Fatalf("return type = %s, want %s", got.Ret, tc.ret)
 				}
 				return
 			}

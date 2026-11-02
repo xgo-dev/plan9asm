@@ -28,6 +28,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		written    = make(map[Reg]bool)
 		returnType LLVMType
 		controls   []inferControl
+		terminated bool
 	)
 	copyStack := func(values []wasmInferValue) []wasmInferValue {
 		return append([]wasmInferValue(nil), values...)
@@ -76,10 +77,48 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 
 	for _, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
-		if spec, found, err := parseWASMIntegerCount(ins); found {
-			if err != nil {
-				return FuncSig{}, err
+		// Validate typed source formats even when the instruction is dead,
+		// matching translateFuncWASM's prepass. Retain these descriptors for
+		// live stack inference instead of parsing them again.
+		vector, vectorKnown, err := parseWASMV128Core(ins)
+		if err != nil {
+			return FuncSig{}, err
+		}
+		count, countKnown, err := parseWASMIntegerCount(ins)
+		if err != nil {
+			return FuncSig{}, err
+		}
+		floating, floatingKnown, err := parseWASMFloatBinary(ins)
+		if err != nil {
+			return FuncSig{}, err
+		}
+		if terminated && op != "ELSE" && op != "END" && op != "LABEL" {
+			continue
+		}
+		if op == "ELSE" || op == "END" {
+			terminated = false
+		}
+		if vectorKnown {
+			spec := vector
+			if len(stack) < spec.inputs {
+				return FuncSig{}, fmt.Errorf("%s: %s requires %d V128 stack operands", name, op, spec.inputs)
 			}
+			for index := 0; index < spec.inputs; index++ {
+				value := pop(op)
+				for reg := range value.regs {
+					if wasmDefaultRegisterType(reg) != wasmV128CoreType {
+						return FuncSig{}, fmt.Errorf("%s: %s register %s does not carry V128", name, op, reg)
+					}
+				}
+				if err := require(value, wasmV128CoreType); err != nil {
+					return FuncSig{}, err
+				}
+			}
+			push(wasmInferValue{typ: spec.resultType()})
+			continue
+		}
+		if countKnown {
+			spec := count
 			if len(stack) == 0 {
 				return FuncSig{}, fmt.Errorf("%s: %s requires one stack operand", name, op)
 			}
@@ -94,10 +133,8 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			}
 			continue
 		}
-		if spec, found, err := parseWASMFloatBinary(ins); found {
-			if err != nil {
-				return FuncSig{}, err
-			}
+		if floatingKnown {
+			spec := floating
 			if len(stack) < 2 {
 				return FuncSig{}, fmt.Errorf("%s: %s requires two stack operands", name, op)
 			}
@@ -276,6 +313,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 				}
 			}
 		case "BR":
+			terminated = true
 			if len(controls) != 0 {
 				control := controls[len(controls)-1]
 				if control.result != "" && len(stack) > len(control.base) {
@@ -287,6 +325,9 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			stack = nil
 		case "DROP":
 			_ = pop(op)
+		case "UNDEF", "UNREACHABLE", "JMP":
+			terminated = true
+			stack = nil
 		case "CALL", "CALLNORESUME", "WASMCALL":
 			// The callee signature is not encoded in the instruction. Values
 			// pushed for it have already constrained the input registers; reset
@@ -294,6 +335,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			stack = nil
 			push(wasmInferValue{})
 		case "WASMRETURN", "RET", "RETUNWIND":
+			terminated = true
 			if len(stack) != 0 {
 				v := pop(op)
 				if v.typ != "" {

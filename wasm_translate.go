@@ -38,6 +38,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if _, _, err := parseWASMIntegerCount(ins); err != nil {
 			return err
 		}
+		if _, _, err := parseWASMV128Core(ins); err != nil {
+			return err
+		}
 	}
 	// LLVM's WebAssembly backend cannot lower blockaddress. Keep this as a
 	// lowering invariant so future control-flow or code-pointer work fails here
@@ -1091,6 +1094,21 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			fmt.Fprintf(b, "  ; %s\n", strings.ReplaceAll(ins.Raw, "\n", " "))
 		}
 		if blockTerminated && op != "ELSE" && op != "END" && op != "LABEL" {
+			continue
+		}
+		if spec, ok := wasmV128CoreOps[op]; ok {
+			var inputs [3]wasmValue
+			for index := spec.inputs - 1; index >= 0; index-- {
+				value, err := pop(op)
+				if err != nil {
+					return err
+				}
+				if value.typ != wasmV128CoreType || value.stackAddr {
+					return fmt.Errorf("%s requires V128 stack values, got %s", ins.Op, value.typ)
+				}
+				inputs[index] = value
+			}
+			push(emitWASMV128Core(b, newTmp, spec, ins, inputs[:spec.inputs]))
 			continue
 		}
 		if spec, ok := wasmIntegerCountOps[op]; ok {
