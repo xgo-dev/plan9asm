@@ -5,10 +5,10 @@
   "source": "arm64/arm64asm/testdata/plan9cases.txt",
   "asm_files": 1,
   "unique_ops": 667,
-  "unique_forms": 1108,
-  "supported_forms": 774,
+  "unique_forms": 1178,
+  "supported_forms": 841,
   "context_forms": 63,
-  "unsupported_forms": 271,
+  "unsupported_forms": 274,
   "parse_err_count": 0,
-  "coverage_fingerprint": "ff28d1d7ad89967b24ed2dfe813716569960ecc942c9b87994fb6a963c4b1be1"
+  "coverage_fingerprint": "46b0911577a85fede4fbce37e537c10839f52594a7c6c5534df71c025c7d2801"
 }

@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const {spawnSync} = require('node:child_process');
 const { test } = require('node:test');
 const {jobBody} = require('./workflow-needs.cjs');
 
@@ -20,6 +22,27 @@ function policySelector(source) {
   return commands[0][1];
 }
 
+function corpusBaselineStep(source) {
+  const steps = jobSection('ci_policy', source).split(/(?=^      - )/m);
+  const selected = steps.filter(step => step.startsWith('      - name: Official corpus form baselines\n'));
+  assert.equal(selected.length, 1, 'one actual corpus baseline execution step required');
+  const step = selected[0];
+  assert.match(step, /^        timeout-minutes: 10$/m);
+  assert.match(step, /^        shell: bash$/m);
+  assert.doesNotMatch(step, /^        (?:if|continue-on-error):/m);
+  const marker = '        run: |\n';
+  assert.equal(step.split(marker).length, 2, 'one literal baseline run body required');
+  const lines = step.slice(step.indexOf(marker) + marker.length).trimEnd().split('\n');
+  assert.ok(lines.every(line => line.startsWith('          ')), 'complete literal shell body required');
+  const script = lines.map(line => line.slice(10)).join('\n') + '\n';
+  assert.deepEqual(script.trimEnd().split('\n'), [
+    'set -euo pipefail',
+    'scripts/check-go-asm-coverage.sh',
+    'scripts/check-arm64-plan9-corpus.sh',
+  ]);
+  return {step, script};
+}
+
 function requireCompletePolicy(source) {
   assert.equal(policySelector(source),
     '^(TestCI|TestFixedLocal|TestGoAMD64FixedLocal(Packed|Conversion)RuntimeOwnership$|TestX86PackedConversion(RequiredNativeOwners|CompleteNativeRuntimeOwnership)$|TestX86FloatingCompareRequiredLinuxBuildSelection$|TestRuntimeOracleCommand(ConsumersRetainOwnedExecution|AuditDistinguishesTestingRun)$)',
@@ -30,6 +53,7 @@ function requireCompletePolicy(source) {
   assert.match(policy, /^        run: bash scripts\/install-ci-llvm22-ubuntu\.sh$/m);
   assert.match(policy, /^        uses: \.\/\.github\/actions\/setup-node22$/m);
   assert.doesNotMatch(policy, /^    (?:needs|if|continue-on-error):/m);
+  corpusBaselineStep(source);
 }
 
 test('translator jobs require policy preflight, not external compatibility', () => {
@@ -61,6 +85,35 @@ test('cheap CI policy checks pass before instruction and official corpus jobs', 
   assert.doesNotMatch(policy, /^    (needs|if):/m);
   assert.ok(workflow.indexOf('\n  ci_policy:\n') <
     workflow.indexOf('\n  test:\n'));
+
+  // Exercise the actual workflow body with owned protocol scripts, never Go/LLVM.
+  const {script} = corpusBaselineStep(workflow);
+  for (const [first, second, status, expected] of [
+    [0, 0, 0, ['go-asm', 'arm64-plan9']],
+    [17, 0, 17, ['go-asm']],
+    [0, 19, 19, ['go-asm', 'arm64-plan9']],
+  ]) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'plan9asm-baseline-preflight-'));
+    try {
+      fs.mkdirSync(path.join(directory, 'scripts'));
+      for (const [file, name, exit] of [
+        ['check-go-asm-coverage.sh', 'go-asm', first],
+        ['check-arm64-plan9-corpus.sh', 'arm64-plan9', second],
+      ]) {
+        fs.writeFileSync(path.join(directory, 'scripts', file),
+          `#!/usr/bin/env bash\nprintf '%s\\n' '${name}' >> calls\nexit ${exit}\n`, {mode: 0o755});
+      }
+      const result = spawnSync('bash', ['--noprofile', '--norc', '-c', script], {
+        cwd: directory, encoding: 'utf8', timeout: 5000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      assert.equal(result.status, status, result.stderr);
+      assert.deepEqual(fs.readFileSync(path.join(directory, 'calls'), 'utf8').trimEnd().split('\n'), expected);
+    } finally {
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
+  }
 });
 
 test('PR preflight selects every existing CI and FixedLocal static contract', () => {
@@ -124,5 +177,24 @@ test('preflight rejects stale suffix allowlists, missing contract families and f
   for (const changed of ['run: echo policy', command + ' || true',
     "if: false\n        " + command]) {
     assert.throws(() => requireCompletePolicy(workflow.replace(command, () => changed)));
+  }
+
+  const {step} = corpusBaselineStep(workflow);
+  for (const changed of [
+    '', step + step,
+    step.replace('timeout-minutes: 10', 'timeout-minutes: 0'),
+    step.replace('shell: bash', 'shell: python'),
+    step.replace('        shell: bash', '        if: false\n        shell: bash'),
+    step.replace('        shell: bash', '        continue-on-error: true\n        shell: bash'),
+    step.replace('          scripts/check-go-asm-coverage.sh\n', ''),
+    step.replace('          scripts/check-arm64-plan9-corpus.sh\n', ''),
+    step.replace('scripts/check-go-asm-coverage.sh', 'echo scripts/check-go-asm-coverage.sh'),
+    step.replace('scripts/check-arm64-plan9-corpus.sh', '# scripts/check-arm64-plan9-corpus.sh'),
+    step.replace('set -euo pipefail', 'set +e'),
+    step.replace('scripts/check-go-asm-coverage.sh', 'scripts/check-go-asm-coverage.sh || true'),
+    step.replace('scripts/check-arm64-plan9-corpus.sh', 'scripts/check-arm64-plan9-corpus.sh &'),
+  ]) {
+    assert.notEqual(changed, step, 'negative control must alter the actual baseline step');
+    assert.throws(() => requireCompletePolicy(workflow.replace(step, () => changed)));
   }
 });

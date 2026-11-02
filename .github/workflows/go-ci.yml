@@ -50,6 +50,14 @@ jobs:
       - name: Compile explicit native AVX512 owners and verify their inventory
         run: go test . -tags=plan9asm_native_avx512 -run '^TestCIAVX512NativeQualificationInventory$' -count=1
 
+      - name: Official corpus form baselines
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/check-go-asm-coverage.sh
+          scripts/check-arm64-plan9-corpus.sh
+
 
   fmt:
     needs: ci_policy

@@ -263,6 +263,14 @@ one explicit unsupported occurrence, separate from twenty ordinary VADDPD hits.
 Original Go bytes and current-Go rejection are independently retained by the
 assembler-epoch regression. No invalid source is relabeled Context or PASS.
 
+The independent x/arch ARM64 corpus also retains all 4,444 concrete probes and
+4,680 occurrences unchanged. Its refined full-source baseline has 1,178 forms,
+including 274 unsupported groups; the extra three groups split existing errors.
+Its Go assembler oracle attempts all 794 selected family cases: 703 accepted
+and 91 rejected. That subset has zero unsupported forms or parse errors. Both
+baseline scripts now run in policy preflight before the matrix expands, while
+the original build and per-SDK corpus checks remain required.
+
 ## Remaining work
 
 1. Finish the native hardware partition follow-up and publish the verified batch
