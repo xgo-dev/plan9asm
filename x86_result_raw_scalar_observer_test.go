@@ -145,15 +145,42 @@ func TestX86RawScalarObserverDoesNotGrantMemoryOrMMXRoles(t *testing.T) {
 			ins := file.Funcs[0].Instrs[1]
 			t.Run(arch+"/"+row, func(t *testing.T) {
 				state := x86ResultState{flags: x86ByteFlagsAll}
-				state.gp[7] = 0xff        // A numerical DI is not an incoming pointer.
+				state.gp[7] = 0xff        // Complete numerical address bits, not a pointer/storage role.
 				state.nativeMMX[1] = 0xff // Bytes alone are not an x87/MMX owner.
 				before := state.clone()
 				accepted, known := x86LoweredRawScalarObserverStep(ins, &state, nil, 0, arch)
-				if accepted || !known || !reflect.DeepEqual(before, state) {
-					t.Fatal("raw count/mask acquired missing native address or physical MMX authority", accepted, known)
+				if strings.HasPrefix(row, "PMOVMSKB") {
+					if accepted || !known || !reflect.DeepEqual(before, state) || x86RawScalarObserverSource(ins, arch) {
+						t.Fatal("ordinary numerical source allowed physical MMX input", accepted, known)
+					}
+					return
 				}
-				if strings.HasPrefix(row, "PMOVMSKB") && x86RawScalarObserverSource(ins, arch) {
-					t.Fatal("ordinary numerical source allowed physical MMX input")
+				// Only the paired volatile read supplies the result if it
+				// continues. No memory extent or reusable identity is created.
+				want := before.clone()
+				want.gp[3] = 0xff
+				if strings.HasPrefix(row, "POPCNTW") {
+					want.gp[3] = 3
+				} else {
+					want.flags = x86ByteFlagCF | x86ByteFlagZF
+				}
+				if !accepted || !known || !reflect.DeepEqual(want, state) {
+					t.Fatal("paired count read lost its exact result or created unrelated facts", accepted, known)
+				}
+				for _, address := range []string{"unknown", "partial"} {
+					t.Run(address, func(t *testing.T) {
+						next := before.clone()
+						next.gp[7] = 0
+						if address == "partial" {
+							word := uint(x86ResultPointerWord(arch))
+							next.gp[7] = uint8((uint16(1)<<word)-1) &^ (1 << (word - 1))
+						}
+						unchanged := next.clone()
+						accepted, known := x86LoweredRawScalarObserverStep(ins, &next, nil, 0, arch)
+						if accepted || !known || !reflect.DeepEqual(unchanged, next) {
+							t.Fatal("paired read invented missing address bits or changed rejected state", accepted, known)
+						}
+					})
 				}
 			})
 		}
