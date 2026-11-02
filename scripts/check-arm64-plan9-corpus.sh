@@ -21,7 +21,7 @@ module_json="$tmp_root/xarch.json"
 # This official Go decoder corpus is independent of external-library manifests.
 # An explicit module@version can be downloaded outside a main module without
 # modifying the translator's go.mod/go.sum or recreating a compatibility ledger.
-GOWORK=off go -C "$tmp_root" mod download -json golang.org/x/arch@v0.31.0 >"$module_json"
+GOWORK=off go mod download -C "$tmp_root" -json golang.org/x/arch@v0.31.0 >"$module_json"
 xarch_root=$("$python_cmd" - "$module_json" <<'PY'
 import json
 import sys
