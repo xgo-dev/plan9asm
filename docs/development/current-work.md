@@ -46,9 +46,12 @@ owners; no AMD64 count is a denominator for another architecture.
 
 ## Candidate after f325
 
-The instruction follow-ups are committed through `3c05ab50b`; publication and
-their own complete CI are pending. Inspect the checkout for later documentation
-and gate commits instead of treating an older CI round as current evidence.
+The instruction follow-ups through `3c05ab50b` are published at fork head
+`deb6157f4`. Its [own CI](https://github.com/cpunion/plan9asm/actions/runs/41506944925)
+is running and has failed source-contract tests under repair. Local follow-ups
+retain the original cases, add genuine unknown/partial-address negatives and
+check accepted numerical native accesses through LLVM objects. These repairs
+still need the complete affected suite; f325 does not certify them.
 The bounded follow-ups cover CPUID leaf/subleaf input dependencies, initialized
 NUM addresses only in paired native read/store consumers, movemask dependency
 continuation, selected same-module CPP inputs and function-local proof budgets.
@@ -66,7 +69,13 @@ movemask union separately passes 6,618 nodes per SDK and 108 portable executions
 per SDK. The three-target dependency/export role union passes 72 nodes on the
 current SDK. Final combined policy and CLI gates remain required.
 
-This candidate needs its own source-bound final gates and fresh published CI.
+Ordinary module capture now uses the same actual-package boundary as SDK
+capture, rather than recursively retaining unimported descendants. The source
+change removes four net production lines without raising the 128 MiB limit.
+Both endpoint SDKs pass 24 roots / 116 nodes, with the original over-budget and
+source-mutation controls retained. Real compress qualification needs a rerun.
+
+The follow-up batch needs its own source-bound final gates and published CI.
 Do not copy f325 coverage or successful checks onto it. External canonical
 module qualification currently has **0 module PASS**; two compress object
 logs are object observations only. Rerun the complete canonical batch at the
@@ -84,10 +93,10 @@ No newer instruction-only result relabels or closes those failures.
 
 [LLGo2694](https://github.com/xgo-dev/llgo/pull/2694) remains published at
 `7be828f55b9005f13f768b4a8a07aae4c57e6798`. The unpublished rebased candidate
-`17f50ce963956211e976937056701fa6bd999ddf` is based on upstream
-`983465e779527ff496857a9a1915c1b57131091f` and still pins f325.
-The 218-test and Linux runtime records belong to older 08e/f325 inputs;
-they do not qualify this new base. Fresh candidate validation is pending.
+`5feac7a70` is based on upstream `983465e779527ff496857a9a1915c1b57131091f`
+and pins deb6157. Its fresh local adapter/build suite passes 218 nodes with
+zero FAIL/SKIP. Fresh Linux compilation, final linking and execution are pending;
+the older 08e/f325 runtime records do not qualify this candidate.
 The P1 requires an official upstream fix **and tagged release before merge**;
 a fork pin or successful CI does not resolve it. Keep draft status and record
 zero formal approvals until an actual review changes that state.
