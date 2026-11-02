@@ -194,7 +194,7 @@ func x86FixedBinaryNativeInputBoundaries(t *testing.T, inventory func(string) []
 						if err != nil || ir == "" {
 							t.Fatal("complete NUM address lost its paired native access", api, err)
 						}
-						width := amd64VectorByteWidth(Reg(row.bank + "0"))
+						width := map[string]int{"X": 16, "Y": 32, "Z": 64}[row.bank]
 						if !strings.Contains(ir, fmt.Sprintf("load volatile <%d x i8>", width)) &&
 							!(strings.Contains(ir, "asm sideeffect") && strings.Contains(ir, strings.ToLower(row.op)) && strings.Contains(ir, "~{memory}")) {
 							t.Fatal("NUM address lost its exact native tuple or original access", row, api)
