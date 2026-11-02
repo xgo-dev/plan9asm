@@ -135,9 +135,14 @@ func TestX86Mode32BPPairedNativeLoadDefinedBytes(t *testing.T) {
 					t.Run(target.triple+"/"+width.suffix+"/"+row.name+"/"+api, func(t *testing.T) {
 						source := x86Mode32BPNativeLoadSource(word, offset, width.suffix, width.widen, row.setup)
 						ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *byte) uint32", target.arch, target.triple, api)
-						if target.arch == "386" && row.complete {
-							if err != nil || ir == "" || !strings.Contains(ir, "load volatile i") {
+						if target.arch == "386" && (row.complete || row.name == "numeric-pointer") {
+							bits := map[string]int{"B": 8, "W": 16, "L": 32}[width.suffix]
+							if err != nil || ir == "" || !strings.Contains(ir, fmt.Sprintf("load volatile i%d,", bits)) {
 								t.Fatal("paired native load lost its ordinary mode32 destination or original fault", err)
+							}
+							if row.name == "numeric-pointer" {
+								x86RequireNumericNativeSourceContext(t, source, "func Value(p *byte) uint32", target.arch)
+								x86NumericNativeAddressObject(t, ir, target.triple)
 							}
 						} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 							t.Fatal("paired BP load acquired unknown pointer bytes or a physical frame destination", err)

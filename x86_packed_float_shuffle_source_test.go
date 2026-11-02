@@ -313,7 +313,25 @@ func TestX86PackedFloatShuffleMissingNativeInputsAndDeadAccess(t *testing.T) {
 						if changed == baseline {
 							t.Fatal("independent negative did not change its input", mutation.name)
 						}
-						if output, err := x86ScalarFPBitViewAPI(t, changed, "func Read(input *byte,mask uint64)", "amd64", "x86_64-unknown-linux-gnu", api); output != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						output, err := x86ScalarFPBitViewAPI(t, changed, "func Read(input *byte,mask uint64)", "amd64", "x86_64-unknown-linux-gnu", api)
+						if mutation.name == "numeric-address" {
+							if err != nil || output == "" {
+								t.Fatal("complete NUM address lost its paired native shuffle", err)
+							}
+							if strings.HasPrefix(row.op, "V") {
+								tuple := fmt.Sprintf("<%d x i8>", width)
+								if width == 4 || width == 8 {
+									tuple = fmt.Sprintf("(?:%s|i%d)", tuple, width*8)
+								}
+								if len(regexp.MustCompile(`load volatile `+tuple+`,`).FindAllString(output, -1)) != 1 {
+									t.Fatal("NUM address changed the full/broadcast shuffle read width", width)
+								}
+							} else if !strings.Contains(output, "asm sideeffect") || !strings.Contains(output, strings.ToLower(row.op)) || !strings.Contains(output, "~{memory}") {
+								t.Fatal("NUM address lost its original legacy access opcode")
+							}
+							x86RequireNumericNativeSourceContext(t, changed, "func Read(input *byte,mask uint64)", "amd64")
+							x86NumericNativeAddressObject(t, output, "x86_64-unknown-linux-gnu")
+						} else if output != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("dead shuffle acquired an absent pointer/index/mask", mutation.name, err)
 						}
 					}

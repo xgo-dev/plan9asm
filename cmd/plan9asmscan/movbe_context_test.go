@@ -9,14 +9,17 @@ func TestMOVBECoverageRequiresActualMemoryAndValueInputs(t *testing.T) {
 				continue
 			}
 			t.Run(arch+"/"+op, func(t *testing.T) {
-				for _, line := range []string{op + " (AX),BX", op + " BX,(AX)"} {
+				for index, line := range []string{op + " (AX),BX", op + " BX,(AX)"} {
 					valueProbeNeedsContext(t, arch, line)
-					valueProbeNeedsContext(t, arch, "MOVL $1,AX\nMOVL $7,BX\n"+line)
+					if index == 0 {
+						valueProbePairedNumericAddress(t, arch, "MOVL $1,AX\nMOVL $7,BX\n"+line)
+					} else {
+						valueProbeNeedsContext(t, arch, "MOVL $1,AX\nMOVL $7,BX\n"+line)
+					}
 				}
 			})
 		}
 	}
-	// Every Go MOVBE row requires memory. Declaration-free probes cannot
-	// manufacture an incoming pointer from NUM; initialized typed-entry
-	// counterparts own the independent five-target, three-API object matrix.
+	// Only paired loads consume defined NUM addresses here. Special MOVBE
+	// stores keep their independent role; neither route invents pointer/backing.
 }

@@ -35,7 +35,13 @@ func TestX86NativeImmediateStoreVoidInputsCannotBorrowPrivateSlots(t *testing.T)
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(target.triple+"/"+row.name+"/"+api, func(t *testing.T) {
 					ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *byte)", target.arch, target.triple, api)
-					if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					if row.name == "numeric-base" {
+						if err != nil || strings.Count(ir, "store volatile i32 7,") != 1 || !strings.Contains(ir, "align 1") {
+							t.Fatal("defined address lost its exact unaligned immediate store", err)
+						}
+						x86RequireNumericNativeSourceContext(t, source, "func Value(p *byte)", target.arch)
+						x86NumericNativeAddressObject(t, ir, target.triple)
+					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatal("Void native write acquired an unproved base/index", err)
 					}
 				})

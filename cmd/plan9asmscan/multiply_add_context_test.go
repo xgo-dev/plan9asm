@@ -18,7 +18,7 @@ func TestMultiplyAddCoverageRequiresInputs(t *testing.T) {
 				valueProbeNeedsContext(t, arch, register)
 				valueProbeNeedsContext(t, arch, memory)
 				prefix := "PXOR X0,X0\nPXOR X1,X1\nMOVL $1,BX\n"
-				valueProbeNeedsContext(t, arch, prefix+memory)
+				valueProbePairedNumericAddress(t, arch, prefix+memory)
 				if err := plan9asm.ProbeInstructionSequence(plan9asm.ArchAMD64, arch,
 					compactProbeInstructions(t, prefix+register)); err != nil {
 					t.Fatal("complete initialized register form lost support", err)

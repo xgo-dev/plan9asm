@@ -26,7 +26,7 @@ func TestVectorTestCoverageRequiresActualInputs(t *testing.T) {
 					for _, remove := range []string{"VPXORD Z0,Z0,Z0\n", "VPXORD Z1,Z1,Z1\n"} {
 						valueProbeNeedsContext(t, arch, strings.Replace(prefix+line, remove, "", 1))
 					}
-					valueProbeNeedsContext(t, arch, prefix+"MOVL $1,AX\n"+name+" (AX),"+bank+"1")
+					valueProbePairedNumericAddress(t, arch, prefix+"MOVL $1,AX\n"+name+" (AX),"+bank+"1")
 				})
 			}
 		}

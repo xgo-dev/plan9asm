@@ -189,7 +189,19 @@ func x86FixedBinaryNativeInputBoundaries(t *testing.T, inventory func(string) []
 		for name, changed := range variants {
 			t.Run(row.op+"/"+row.bank+"/"+row.mode+"/"+name, func(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
-					if ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api); !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+					if name == "numeric-pointer" {
+						if err != nil || ir == "" {
+							t.Fatal("complete NUM address lost its paired native access", api, err)
+						}
+						width := amd64VectorByteWidth(Reg(row.bank + "0"))
+						if !strings.Contains(ir, fmt.Sprintf("load volatile <%d x i8>", width)) &&
+							!(strings.Contains(ir, "asm sideeffect") && strings.Contains(ir, strings.ToLower(row.op)) && strings.Contains(ir, "~{memory}")) {
+							t.Fatal("NUM address lost its exact native tuple or original access", row, api)
+						}
+						x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatal("average acquired unknown memory/vector/mask inputs", api, err)
 					}
 				}

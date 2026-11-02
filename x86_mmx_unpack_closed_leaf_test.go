@@ -72,7 +72,14 @@ func TestX86MMXUnpackCannotBorrowInitializedShadowOrUnclosedState(t *testing.T) 
 		for _, api := range []string{"text", "module", "Go"} {
 			t.Run(row.name+"/"+api, func(t *testing.T) {
 				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				if row.name == "numeric-address" {
+					if err != nil || !strings.Contains(ir, "asm sideeffect") || !strings.Contains(ir, "punpcklbw") ||
+						!strings.Contains(ir, "~{memory}") || !strings.Contains(ir, "emms") {
+						t.Fatal("defined address lost its original MMX qword access or EMMS", err)
+					}
+					x86RequireNumericNativeSourceContext(t, source, declaration, "amd64")
+					x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+				} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("an implementation MMX slot supplied source bytes or caller state", err)
 				}
 			})

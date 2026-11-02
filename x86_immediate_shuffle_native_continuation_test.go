@@ -88,7 +88,7 @@ func TestX86ImmediateShuffleInitializedNativeReadCompleteObjects(t *testing.T) {
 
 func TestX86ImmediateShuffleNativeReadDoesNotInventInputsOrQueryRights(t *testing.T) {
 	for _, arch := range []string{"amd64", "386"} {
-		source, declarations, _ := x86ImmediateShuffleNativePrograms(arch)
+		source, declarations, count := x86ImmediateShuffleNativePrograms(arch)
 		move, triple := "MOVQ", "x86_64-unknown-linux-gnu"
 		if arch == "386" {
 			move, triple = "MOVL", "i386-unknown-linux-gnu"
@@ -96,7 +96,21 @@ func TestX86ImmediateShuffleNativeReadDoesNotInventInputsOrQueryRights(t *testin
 		for _, replacement := range []string{"", move + " $1,AX\n"} {
 			changed := strings.ReplaceAll(source, move+" input+0(FP),AX\n", replacement)
 			for _, api := range []string{"text", "module", "Go"} {
-				if ir, err := x86ScalarFPBitViewAPI(t, changed, declarations, arch, triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				ir, err := x86ScalarFPBitViewAPI(t, changed, declarations, arch, triple, api)
+				if replacement != "" {
+					if err != nil || ir == "" || !strings.Contains(ir, "load volatile ") {
+						t.Fatal("defined NUM addresses lost the full native shuffle program", arch, api, err)
+					}
+					for index := 0; index < count; index++ {
+						body := x86StringMemoryFunction(t, ir, fmt.Sprintf("NativeShuffle%d", index))
+						if !strings.Contains(body, "load volatile ") &&
+							!(strings.Contains(body, "asm sideeffect") && strings.Contains(body, "~{memory}")) {
+							t.Fatal("NUM shuffle function lost its original tuple access", index)
+						}
+					}
+					x86RequireNumericNativeSourceContext(t, changed, declarations, arch)
+					x86NumericNativeAddressObject(t, ir, triple)
+				} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("native tuple borrowed missing/merely numerical pointer inputs", arch, api, err)
 				}
 			}

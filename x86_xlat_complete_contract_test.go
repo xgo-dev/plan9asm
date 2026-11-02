@@ -110,11 +110,19 @@ func TestX86XLATInitializedPublicObjectsAndActualInputRevocations(t *testing.T) 
 			for _, mutation := range []struct{ name, before, after string }{
 				{"missing AL", "MOVB $255,AL\n", ""},
 				{"NUM is not pointer", move + " table+0(FP),BX\n", move + " $1,BX\n"},
+				{"partial table", move + " table+0(FP),BX\n", "MOVB $1,BX\n"},
 				{"index is not whole AX", "MOVB $255,AL\n", "MOVB $255,AH\n"},
 			} {
 				changed := strings.ReplaceAll(source, mutation.before, mutation.after)
 				for _, api := range []string{"text", "module", "Go"} {
-					if ir, err := x86ScalarFPBitViewAPI(t, changed, declarations, target.arch, target.triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					ir, err := x86ScalarFPBitViewAPI(t, changed, declarations, target.arch, target.triple, api)
+					if mutation.name == "NUM is not pointer" {
+						if err != nil || strings.Count(ir, "load volatile i8,") != 4 {
+							t.Fatal("NUM table lost one original faulting XLAT byte access", api, err)
+						}
+						x86RequireNumericNativeSourceContext(t, changed, declarations, target.arch)
+						x86NumericNativeAddressObject(t, ir, target.triple)
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("dead XLAT invented an unsigned AL input or native table base", mutation.name, api, err)
 					}
 				}

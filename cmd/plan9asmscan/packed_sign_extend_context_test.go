@@ -61,14 +61,13 @@ func TestPackedSignExtendCoverageRetainsActualInputsAndVoidE5Reads(t *testing.T)
 							} else if err := probe(withoutOld); err != nil {
 								t.Fatal("non-merge widening invented an old-destination dependency", err)
 							}
-							// E5 masking may suppress actual accesses; it does not make
-							// numeric zero a pointer or grant this declaration-free probe
-							// native memory. Keep this rejection even for a dead result.
+							// E5 masking retains its original access suppression. A
+							// defined NUM base permits only that paired memory effect.
 							memory := strings.Replace(row, input+",", "(AX),", 1)
 							valueProbeNeedsContext(t, arch, memory)
-							valueProbeNeedsContext(t, arch, prefix+"MOVL $0,AX\n"+memory)
+							valueProbePairedNumericAddress(t, arch, prefix+"MOVL $0,AX\n"+memory)
 							if mode != "plain" {
-								valueProbeNeedsContext(t, arch, prefix+"MOVL $0,AX\nKMOVD AX,K1\n"+memory)
+								valueProbePairedNumericAddress(t, arch, prefix+"MOVL $0,AX\nKMOVD AX,K1\n"+memory)
 							}
 						})
 					}

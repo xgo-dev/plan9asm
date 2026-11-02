@@ -152,7 +152,9 @@ func x86GPFaultingSource(row x86GPFaultingReadCase, arch, name, omission string,
 	return x86GPFaultingFixture{
 		name: name, source: fmt.Sprintf("TEXT ·%s(SB),4,$0-%d\n%s", name, args, body.String()),
 		declaration: declaration, label: fmt.Sprintf("live=%t/indexed=%t/%s", live, indexed, label),
-		row: row, accept: omission == "",
+		// Ordinary paired numerical readers accept full NUM address bits.
+		// Original native RMW and flag-only memory owners remain separate.
+		row: row, accept: omission == "" || omission == "numeric-base" && !row.native && !row.flagsResult,
 	}
 }
 
@@ -234,6 +236,13 @@ func TestX86GPFaultingReadWholeFunctionInputs(t *testing.T) {
 							if fixture.accept {
 								if err != nil || ir == "" {
 									t.Fatal("INITIALIZED_POSITIVE_REJECTED", err, fixture.source)
+								}
+								if strings.HasSuffix(fixture.label, "/numeric-base") {
+									if !strings.Contains(ir, fmt.Sprintf("load volatile i%d,", fixture.row.bytes*8)) {
+										t.Fatal("NUM address lost the exact GP faulting read width", fixture.row.bytes)
+									}
+									x86RequireNumericNativeSourceContext(t, fixture.source, fixture.declaration, arch)
+									x86NumericNativeAddressObject(t, ir, testTargetTriple("linux", arch))
 								}
 							} else if err == nil && ir != "" {
 								t.Fatal("MISSING_INPUT_ACCEPTED", fixture.label, fixture.source)
@@ -412,8 +421,14 @@ func TestX86GPFaultingReadUintptrRolePolicy(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(api, func(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, fixture.source, fixture.declaration, target.arch, target.triple, api)
-						if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
-							t.Fatal("UINTPTR_ROLE_POLICY_ACCEPTED: NUM input gained a pointer role", err)
+						if !fixture.row.native && !fixture.row.flagsResult {
+							if err != nil || !strings.Contains(ir, fmt.Sprintf("load volatile i%d,", fixture.row.bytes*8)) {
+								t.Fatal("uintptr lost its paired exact-width faulting read", err)
+							}
+							x86RequireNumericNativeSourceContext(t, fixture.source, fixture.declaration, target.arch)
+							x86NumericNativeAddressObject(t, ir, target.triple)
+						} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+							t.Fatal("uintptr supplied a separate native RMW or flag-only memory role", err)
 						}
 					})
 				}

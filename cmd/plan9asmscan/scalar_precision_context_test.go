@@ -32,7 +32,7 @@ func TestScalarPrecisionCoverageRequiresActualInputs(t *testing.T) {
 					valueProbeNeedsContext(t, arch, strings.TrimPrefix(prefix, "XORPS X0,X0\n")+row)
 					if control == "" {
 						native := strings.Replace(row, "X0,", "(AX),", 1)
-						valueProbeNeedsContext(t, arch, prefix+"MOVL $0,AX\n"+native)
+						valueProbePairedNumericAddress(t, arch, prefix+"MOVL $0,AX\n"+native)
 					}
 				})
 			}

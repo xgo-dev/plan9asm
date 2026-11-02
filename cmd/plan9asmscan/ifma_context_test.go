@@ -42,9 +42,8 @@ func TestIFMACoverageRetainsSourceAccumulatorAndMaskInputs(t *testing.T) {
 						if mode != "plain" {
 							valueProbeNeedsContext(t, arch, strings.Replace(prefix+line, "KMOVD AX,K1\n", "", 1))
 						}
-						// A numerical address does not authorize a native source,
-						// even if all numerical outputs of the read are dead.
-						valueProbeNeedsContext(t, arch, prefix+"MOVL $1,SI\n"+
+						// Complete address bits permit only this paired native read.
+						valueProbePairedNumericAddress(t, arch, prefix+"MOVL $1,SI\n"+
 							fmt.Sprintf("%s (SI),%s1,%s%s2", name, bank, mask, bank))
 					})
 				}

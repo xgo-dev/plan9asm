@@ -9,15 +9,18 @@ import (
 )
 
 func TestX86PairedNativeDeadInputsNeedActualSourceClosure(t *testing.T) {
-	rows := []struct{ name, instruction string }{
-		{"ternary", "VPTERNLOGD.Z $0,(AX),X1,K7,X2"},
-		{"integer-minmax", "VPMAXSD.Z (AX),X1,K7,X2"},
-		{"horizontal-reduction", "VHADDPS (AX),X1,X2"},
-		{"broadcast", "VPBROADCASTD.Z (AX),K7,X2"},
+	rows := []struct {
+		name, instruction string
+		bytes             int
+	}{
+		{"ternary", "VPTERNLOGD.Z $0,(AX),X1,K7,X2", 64},
+		{"integer-minmax", "VPMAXSD.Z (AX),X1,K7,X2", 64},
+		{"horizontal-reduction", "VHADDPS (AX),X1,X2", 16},
+		{"broadcast", "VPBROADCASTD.Z (AX),K7,X2", 4},
 	}
-	// A real mask value of zero still needs a source-bound address role.
-	// The complete positive controls also retain an initialized pointer before
-	// the jump, so a repair cannot simply reject branches or unreachable code.
+	// A real mask value of zero still needs defined address bits. Both original
+	// incoming pointers and complete NUM constants preserve the paired access;
+	// neither can be replaced by undefined or partial source registers.
 	prefix := "MOVQ p+0(FP),AX\nMOVL $0,CX\nKMOVD CX,K7\n" +
 		"VPXORD Z0,Z0,Z0\nVPXORD Z1,Z1,Z1\nVPXORD Z2,Z2,Z2\n"
 	for _, row := range rows {
@@ -33,8 +36,22 @@ func TestX86PairedNativeDeadInputsNeedActualSourceClosure(t *testing.T) {
 					if _, err := x86ScalarFPBitViewAPI(t, control, "func Value(p *byte)", "amd64", "x86_64-unknown-linux-gnu", api); err != nil {
 						t.Fatal("genuine pointer/mask positive control failed before dead-source comparison", err)
 					}
-					if ir, err := x86ScalarFPBitViewAPI(t, changed, "func Value(p *byte)", "amd64", "x86_64-unknown-linux-gnu", api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatal("shape-only all-known GP values supplied an unreachable native pointer", err)
+					ir, err := x86ScalarFPBitViewAPI(t, changed, "func Value(p *byte)", "amd64", "x86_64-unknown-linux-gnu", api)
+					if err != nil || ir == "" {
+						t.Fatal("complete NUM address lost its paired dead/live access", err)
+					}
+					if !dead && !strings.Contains(ir, fmt.Sprintf("load volatile <%d x i8>", row.bytes)) &&
+						!strings.Contains(ir, fmt.Sprintf("load volatile i%d,", row.bytes*8)) &&
+						!(strings.Contains(ir, "asm sideeffect") && strings.Contains(ir, strings.ToLower(strings.Fields(row.instruction)[0]))) {
+						t.Fatal("live NUM native source lost its original exact-width access", row.name)
+					}
+					x86RequireNumericNativeSourceContext(t, changed, "func Value(p *byte)", "amd64")
+					x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					for _, replacement := range []string{"", "MOVB $0,AX"} {
+						missing := strings.Replace(control, "MOVQ p+0(FP),AX", replacement, 1)
+						if ir, err := x86ScalarFPBitViewAPI(t, missing, "func Value(p *byte)", "amd64", "x86_64-unknown-linux-gnu", api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+							t.Fatal("dead/live source acquired undefined or partial address bits", replacement, err)
+						}
 					}
 				})
 			}
@@ -50,7 +67,9 @@ func TestX86DeadExternalSourceKeepsLoopsJoinsAndFutureStateSeparate(t *testing.T
 		accept             bool
 	}{
 		{"initialized-loop", prefix, "JMP finish\ndead:\n" + read + "JMP dead\nfinish:\nRET\n", true},
-		{"unknown-loop-address", strings.Replace(prefix, "MOVQ p+0(FP),AX", "MOVQ $0,AX", 1), "JMP finish\ndead:\n" + read + "JMP dead\nfinish:\nRET\n", false},
+		{"unknown-loop-address", strings.Replace(prefix, "MOVQ p+0(FP),AX", "MOVQ $0,AX", 1), "JMP finish\ndead:\n" + read + "JMP dead\nfinish:\nRET\n", true},
+		{"undefined-loop-address", strings.Replace(prefix, "MOVQ p+0(FP),AX\n", "", 1), "JMP finish\ndead:\n" + read + "JMP dead\nfinish:\nRET\n", false},
+		{"partial-loop-address", strings.Replace(prefix, "MOVQ p+0(FP),AX", "MOVB $0,AX", 1), "JMP finish\ndead:\n" + read + "JMP dead\nfinish:\nRET\n", false},
 		{"separate-components", prefix, "JMP middle\n" + read + "middle:\nJMP finish\n" + read + "finish:\nRET\n", true},
 		{"join-loses-pointer", prefix, "JMP finish\nJE keep\nMOVQ $0,AX\nJMP joined\nkeep:\nNOP\njoined:\n" + read + "finish:\nRET\n", false},
 		{"join-retains-pointer", prefix, "JMP finish\nJE keep\nMOVQ p+0(FP),AX\nJMP joined\nkeep:\nMOVQ p+0(FP),AX\njoined:\n" + read + "finish:\nRET\n", true},
@@ -67,6 +86,10 @@ func TestX86DeadExternalSourceKeepsLoopsJoinsAndFutureStateSeparate(t *testing.T
 				if row.accept {
 					if err != nil || ir == "" {
 						t.Fatal("source-bound dead proof lost its existing register domain", err)
+					}
+					if row.name == "unknown-loop-address" {
+						x86RequireNumericNativeSourceContext(t, source, "func Value(p *byte)", "amd64")
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 					}
 				} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("dead source borrowed a future or one-path external input", err)

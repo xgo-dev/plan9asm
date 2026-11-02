@@ -31,7 +31,7 @@ func TestCMOVCoverageRequiresDataAndPredicateInputs(t *testing.T) {
 					for _, remove := range []string{"MOVL $3,AX\n", "MOVL $7,BX\n", "CMPL DX,DX\n"} {
 						valueProbeNeedsContext(t, arch, strings.Replace(prefix+line, remove, "", 1))
 					}
-					valueProbeNeedsContext(t, arch, prefix+op+" (AX),BX")
+					valueProbePairedNumericAddress(t, arch, prefix+op+" (AX),BX")
 				})
 			}
 		}

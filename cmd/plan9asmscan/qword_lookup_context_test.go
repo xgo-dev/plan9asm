@@ -46,7 +46,7 @@ func TestQwordLookupCoverageRequiresActualInputsAndMaskRoles(t *testing.T) {
 						if op == "VPMULTISHIFTQB" && mode == "merge" {
 							valueProbeNeedsContext(t, arch, strings.Replace(prefix+line, "VPXORD Z2,Z2,Z2\n", "", 1))
 						}
-						valueProbeNeedsContext(t, arch, prefix+"MOVL $1,SI\n"+
+						valueProbePairedNumericAddress(t, arch, prefix+"MOVL $1,SI\n"+
 							name+" (SI),"+bank+"1,"+mask+destination)
 					})
 				}

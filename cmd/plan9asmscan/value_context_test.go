@@ -23,6 +23,36 @@ func valueProbeNeedsContext(t *testing.T, arch, body string) {
 	}
 }
 
+// ProbeInstructionSequence uses real paired lowering, not a standalone pointer
+// query. Defined NUM addresses retain their native faults and memory effects.
+func valueProbePairedNumericAddress(t *testing.T, arch, body string) {
+	t.Helper()
+	err := plan9asm.ProbeInstructionSequence(plan9asm.ArchAMD64, arch, compactProbeInstructions(t, body))
+	state := &formStat{}
+	classifyFormProbe(state, err)
+	if err != nil || state.SupportedCount != 1 || state.ContextCount != 0 || state.UnsupportedCount != 0 {
+		t.Fatal("initialized NUM address lost its paired codegen classification", err, state)
+	}
+	file, err := plan9asm.Parse(plan9asm.ArchAMD64, "TEXT probe(SB),4,$0-0\n"+body+"\nRET\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := plan9asm.FuncSig{Name: "probe", Ret: plan9asm.Void}
+	if err := plan9asm.CheckX86ABI0ResultInitialization(file.Funcs[0], sig, arch); !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+		t.Fatal("paired codegen supplied a standalone pointer/result proof", err)
+	}
+	triple := "x86_64-unknown-linux-gnu"
+	if arch == "386" {
+		triple = "i386-unknown-linux-gnu"
+	}
+	ir, err := plan9asm.Translate(file, plan9asm.Options{Goarch: arch, TargetTriple: triple,
+		Sigs: map[string]plan9asm.FuncSig{"probe": sig}})
+	if err != nil || !(strings.Contains(ir, "load volatile ") || strings.Contains(ir, "store volatile ") ||
+		strings.Contains(ir, "asm sideeffect")) || strings.Contains(ir, "dereferenceable") {
+		t.Fatal("paired NUM probe lost observable native memory or invented backing", err)
+	}
+}
+
 func TestMaskValueCoverageRequiresCompleteInputs(t *testing.T) {
 	// Independent complete KADD/KSHIFT/KUNPCK inventory, not a production map.
 	ops := strings.Fields("KADDB KADDW KADDD KADDQ " +

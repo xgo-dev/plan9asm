@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -199,7 +200,13 @@ func TestX86EndBranchCannotCreateInputsOrEntry(t *testing.T) {
 					x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, source, "func marker() uint32", target.arch, target.triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if test.name == "numeric address" {
+							if err != nil || strings.Count(ir, "load volatile i32,") != 1 {
+								t.Fatal("defined address lost its original faulting dword access", api, err)
+							}
+							x86RequireNumericNativeSourceContext(t, source, "func marker() uint32", target.arch)
+							x86NumericNativeAddressObject(t, ir, target.triple)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("ENDBR supplied missing source facts or native entry", api, err)
 						}
 					}

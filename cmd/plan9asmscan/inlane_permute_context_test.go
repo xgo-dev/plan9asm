@@ -45,14 +45,14 @@ func testElementPermuteCoverageInputs(t *testing.T, members, banks []string) {
 							compactProbeInstructions(t, prefix.String()+observed)); err != nil {
 							t.Fatal("complete register data/selector input rejected", err)
 						}
-						// A numeric zero is not a native pointer, even when the
-						// result is dead. Neither mask=0 nor broadcast repairs it.
+						// Unknown address bits remain Context; a defined zero can
+						// produce only the paired native access and its fault.
 						native := op + " " + memory + "," + bank + "2"
 						valueProbeNeedsContext(t, arch, prefix.String()+native)
-						valueProbeNeedsContext(t, arch, prefix.String()+"MOVL $0,AX\n"+native)
+						valueProbePairedNumericAddress(t, arch, prefix.String()+"MOVL $0,AX\n"+native)
 						if arch == "amd64" {
 							masked := op + ".BCST.Z " + memory + ",K1," + bank + "2"
-							valueProbeNeedsContext(t, arch, prefix.String()+"MOVL $0,AX\nKMOVD AX,K1\n"+masked)
+							valueProbePairedNumericAddress(t, arch, prefix.String()+"MOVL $0,AX\nKMOVD AX,K1\n"+masked)
 						}
 					})
 				}

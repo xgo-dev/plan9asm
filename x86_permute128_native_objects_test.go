@@ -93,9 +93,17 @@ func TestX86Permute128NativeInputsAndAddressRoles(t *testing.T) {
 					x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", changed)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-						if control == "initialized" || control == "zero" {
+						if control == "initialized" || control == "zero" || control == "numeric-address" {
 							if err != nil || ir == "" {
 								t.Fatal("real initialized permute128 lost its source owner", api, err)
+							}
+							if control == "numeric-address" {
+								if !strings.Contains(ir, "load volatile <32 x i8>") &&
+									!(strings.Contains(ir, "asm sideeffect") && strings.Contains(ir, "~{memory}")) {
+									t.Fatal("NUM address lost its original ymm input access", api)
+								}
+								x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
+								x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 							}
 						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("permute128 borrowed absent source/address/FLAGS/frame authority", api, err)

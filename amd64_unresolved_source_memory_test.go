@@ -147,9 +147,8 @@ RET
 			resolve := func(name string) string { return strings.TrimPrefix(name, "·") }
 			options := Options{Goarch: target.arch, TargetTriple: target.triple, ResolveSym: resolve,
 				Sigs: map[string]FuncSig{"Value": {Name: "Value", Ret: Void}}}
-			// Resolving OFFSET proves its displacement, not that integer 32
-			// denotes readable storage. Retain the original format object
-			// separately from the three public source-context observations.
+			// Resolving OFFSET proves only its displacement. The complete NUM
+			// address permits the exact volatile access, never readable backing.
 			format := x86ScalarFormatObjectUnit(t, file, options.Sigs, target.arch, target.triple, 0)
 			for _, level := range []string{"-O0", "-O2"} {
 				x86PackedStringCompileObject(t, llc, target.triple, format, level)
@@ -180,9 +179,11 @@ RET
 							ir = result.Module.String()
 						}
 					}
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatalf("resolved displacement authorized an unbound numerical address: %v", err)
+					if err != nil || strings.Count(ir, "load volatile i32,") != 1 || !strings.Contains(ir, "align 1") {
+						t.Fatalf("resolved NUM address lost its exact unaligned dword access: %v", err)
 					}
+					x86RequireNumericNativeSourceContext(t, source, "func Value()", target.arch)
+					x86NumericNativeAddressObject(t, ir, target.triple)
 				})
 			}
 			move, word := "MOVQ", 8

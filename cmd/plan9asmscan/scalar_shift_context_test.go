@@ -36,7 +36,7 @@ func TestScalarShiftMemoryCoverageRequiresAddressAndInputs(t *testing.T) {
 					}
 					instruction := stem + width + " " + count + ",(DI),AX"
 					valueProbeNeedsContext(t, arch, instruction)
-					valueProbeNeedsContext(t, arch, "MOVL $1,DI\nMOVL $1,CX\n"+instruction)
+					valueProbePairedNumericAddress(t, arch, "MOVL $1,DI\nMOVL $1,CX\n"+instruction)
 				})
 			}
 		}
