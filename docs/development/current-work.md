@@ -242,6 +242,27 @@ and both five-architecture gates. These are selection and policy checks, not
 native AVX512 execution. The complete fork round must finish before publishing
 the combined follow-up; retain its actual failures and inspect every new one.
 
+## Complete control-form identity
+
+Corpus reports now retain full source suffixes in `Form`; base `Opcode` and
+`Family`, lowering and probe outcomes remain unchanged. This separates zeroing,
+broadcast, rounding, ARM predicates and addressing controls instead of allowing
+one rejected spelling to poison an ordinary form or inherit its manifest label.
+
+Both SDK endpoints pass eight relevant roots / 132 nodes and the complete
+scanner suite, 110 roots / 2,470 nodes, with zero failures/skips. An independent
+before/after observation retains all 50,357 concrete probe keys, full errors,
+source hashes and occurrence counts across the two endpoint corpora. Forty
+fresh reports, built with each Go 1.20–1.27 SDK across all five architectures,
+reverse-partition exactly to the old baseline counts and fingerprints. The
+unchanged strict checker passes the intentionally refined baseline.
+
+Current amd64 reports 6,763 forms instead of 6,736; this is finer classification,
+not 27 new implementations. Go 1.20's historical `VADDPD.Z X30, X1, X0` remains
+one explicit unsupported occurrence, separate from twenty ordinary VADDPD hits.
+Original Go bytes and current-Go rejection are independently retained by the
+assembler-epoch regression. No invalid source is relabeled Context or PASS.
+
 ## Remaining work
 
 1. Finish the native hardware partition follow-up and publish the verified batch

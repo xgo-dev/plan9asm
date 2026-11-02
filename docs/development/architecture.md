@@ -143,3 +143,9 @@ explicit; measure complete-source performance and retain invalidation tests.
 Never promote `context`, a hardware skip, or zero observed `unsupported` forms
 to object/runtime coverage. Re-test context forms with justified initialized
 inputs, and retain whole-file regressions independently of instruction probes.
+
+Corpus form identity retains the complete source mnemonic, including condition,
+addressing, zeroing, broadcast and rounding suffixes. Opcode/family frequency
+still uses the base mnemonic. Splitting these controls can increase reported
+form counts without adding an instruction implementation. Manifest associations
+must match the complete form; a base-form match cannot certify its controls.

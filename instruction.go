@@ -27,13 +27,15 @@ func DescribeInstruction(arch Arch, goarch string, ins Instr) InstructionDescrip
 	for i, arg := range ins.Args {
 		operands[i] = operandClass(arch, goarch, arg)
 	}
+	// Keep rejected and accepted control spellings separate. The base opcode
+	// remains the family key; it is not the complete source-form identity.
 	return InstructionDescriptor{
 		Arch:     arch,
 		Goarch:   goarch,
 		Family:   InstructionFamily(arch, op),
 		Opcode:   op,
 		Operands: operands,
-		Form:     op + " " + strings.Join(operands, ","),
+		Form:     strings.ToUpper(strings.TrimSpace(string(ins.Op))) + " " + strings.Join(operands, ","),
 	}
 }
 
