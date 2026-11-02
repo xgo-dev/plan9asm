@@ -50,8 +50,11 @@ The instruction follow-ups through `3c05ab50b` are published at fork head
 `deb6157f4`. Its [own CI](https://github.com/cpunion/plan9asm/actions/runs/41506944925)
 is running and has failed source-contract tests under repair. Local follow-ups
 retain the original cases, add genuine unknown/partial-address negatives and
-check accepted numerical native accesses through LLVM objects. These repairs
-still need the complete affected suite; f325 does not certify them.
+check accepted numerical native accesses through LLVM objects. The local repair
+union passes 110 roots / 40,747 nodes on both endpoint SDKs without FAIL/SKIP.
+The minimum SDK is a fresh complete run; the current SDK combines the unchanged
+production snapshot with all affected shared-helper consumers. This is local
+qualification, not success of the still-running published CI.
 The bounded follow-ups cover CPUID leaf/subleaf input dependencies, initialized
 NUM addresses only in paired native read/store consumers, movemask dependency
 continuation, selected same-module CPP inputs and function-local proof budgets.
@@ -74,6 +77,15 @@ capture, rather than recursively retaining unimported descendants. The source
 change removes four net production lines without raising the 128 MiB limit.
 Both endpoint SDKs pass 24 roots / 116 nodes, with the original over-budget and
 source-mutation controls retained. Real compress qualification needs a rerun.
+
+Unmasked scalar SQRT now preserves ordinary native memory reads through LLVM
+optimization, using the existing observable reader. Previously a literal-null
+read could disappear and leave a register SQRT operating on `undef`. Independent
+SS/SD regressions pass 161 nodes per SDK; the adjacent union passes 41 roots /
+1,474 nodes per SDK. Linux/amd64 emulation reproduces the old fault mismatch and
+passes all 12 fixed executable pipelines, with 288 memory outcomes and 60 fault
+classifier controls. This is actual emulated execution, not physical-hardware
+acceptance. Required Node and Go policies pass 574 and 484 nodes at `55b480d6f`.
 
 The follow-up batch needs its own source-bound final gates and published CI.
 Do not copy f325 coverage or successful checks onto it. External canonical
