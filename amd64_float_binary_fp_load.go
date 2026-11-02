@@ -16,6 +16,11 @@ func (c *amd64Ctx) loadFloatBinaryFPBits(source Operand, bits int) (string, erro
 
 func (c *amd64Ctx) loadFloatBinaryScalar(source Operand, bits int, mask string) (string, error) {
 	if source.Kind != OpFP {
+		if x86OrdinaryNativeMemoryOperand(source, c.goarch) {
+			// Preserve the source read even for a dead numerical result or
+			// a literal null address. It supplies no pointee-validity fact.
+			return c.loadFMA3ObservableScalar(source, bits, mask)
+		}
 		return c.loadFMA3Scalar(source, bits, mask)
 	}
 	if err := c.validateFPVectorSpan(source.FPOffset, bits/8); err != nil {

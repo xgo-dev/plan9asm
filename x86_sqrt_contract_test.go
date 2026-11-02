@@ -122,7 +122,7 @@ func TestX86SqrtLogicalFieldBoundsAndAddressIdentity(t *testing.T) {
 					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
 					if body == "LEA%s x+0(FP),AX\nMOVL $0,AX\nSQRTSS (AX),X0" {
 						x86RequireNumericNativeSourceContext(t, source, declaration, target.arch)
-						if err != nil || !strings.Contains(ir, "load i32,") || !strings.Contains(ir, "asm sideeffect \"sqrtss ") || !strings.Contains(ir, "~{fpsr}") {
+						if err != nil || x86FMA3PortableVolatileBytes(t, ir) != 4 || !strings.Contains(ir, "asm sideeffect \"sqrtss ") || !strings.Contains(ir, "~{fpsr}") {
 							t.Fatal("explicit numerical overwrite lost its native m32 SQRTSS effect", err)
 						}
 						x86NumericNativeAddressObject(t, ir, target.triple)
