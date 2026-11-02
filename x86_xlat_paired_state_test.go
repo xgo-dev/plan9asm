@@ -17,7 +17,8 @@ func TestX86XLATPairedByteInputsAliasesAndUnrelatedState(t *testing.T) {
 					state.canonicalGP[0], state.callerAddressOrigin[0] = 0xff, 17
 					state.resultAddressGP[0] = x86ResultSlotAddress{start: 8, end: 16, valid: true}
 					before, expected := state.clone(), state.clone()
-					valid := knownAX&1 != 0 && pointer
+					// BX has complete numerical bits in both pointer cases.
+					valid := knownAX&1 != 0
 					if valid {
 						expected.gp[0] |= 1
 						expected.canonicalGP[0] &^= 1
@@ -32,6 +33,14 @@ func TestX86XLATPairedByteInputsAliasesAndUnrelatedState(t *testing.T) {
 						t.Fatal("rejected XLAT partially changed its source state")
 					}
 				}
+			}
+		}
+		for _, available := range []uint8{0, 1} {
+			state := x86ResultState{flags: x86ByteFlagsAll}
+			state.gp[0], state.gp[3] = 1, available
+			before := state.clone()
+			if accepted, known := x86ResultXLATStep(instruction, &state, nil, arch, true); !known || accepted || !reflect.DeepEqual(state, before) {
+				t.Fatal("XLAT acquired unknown or partial numerical table address bytes", available)
 			}
 		}
 		for _, edit := range []func(*Instr){

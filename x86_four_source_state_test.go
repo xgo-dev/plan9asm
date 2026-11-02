@@ -73,7 +73,7 @@ func TestX86FourSourceNativeContinuationDoesNotGrantInputsOrOtherRoles(t *testin
 				mode = "zero"
 			}
 			row := x86FourSourceOracleRow{op: member.op, scalar: member.scalar, dot: member.dot, first: 2, dest: 6, mode: mode}
-			for _, mutation := range []string{"standalone", "missing pointer", "numeric address", "unknown index", "mask", "raw", "address size", "physical segment"} {
+			for _, mutation := range []string{"standalone", "missing pointer", "numeric address", "partial address", "unknown index", "mask", "raw", "address size", "physical segment"} {
 				if mutation == "mask" && arch == "386" {
 					continue
 				}
@@ -89,6 +89,8 @@ func TestX86FourSourceNativeContinuationDoesNotGrantInputsOrOtherRoles(t *testin
 						state.pointerGP[pointer] = false
 					case "numeric address":
 						state.pointerGP[pointer], state.gp[pointer] = false, mask
+					case "partial address":
+						state.pointerGP[pointer], state.gp[pointer] = false, 1
 					case "unknown index":
 						ins.Args[0].Mem.Index, ins.Args[0].Mem.Scale = CX, 1
 					case "mask":
@@ -101,7 +103,8 @@ func TestX86FourSourceNativeContinuationDoesNotGrantInputsOrOtherRoles(t *testin
 						ins.x86SegmentPrefix = 0x64
 					}
 					before := state.clone()
-					if accepted, _ := x86ResultFourSourceStep(ins, &state, nil, arch, native); accepted || !reflect.DeepEqual(before, state) {
+					accepted, known := x86ResultFourSourceStep(ins, &state, nil, arch, native)
+					if !known || accepted != (mutation == "numeric address") || !reflect.DeepEqual(before, state) {
 						t.Fatal("the paired complete opcode created an unbound input/native/caller/entry role", mutation)
 					}
 				})

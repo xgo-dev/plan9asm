@@ -77,13 +77,23 @@ func TestX86RawBroadcastEveryInputByteAndIndependentState(t *testing.T) {
 					case "K data":
 						state.masks[1] = false
 					case "native address":
-						state.pointerGP[6] = false // Numeric SI is not a native pointer.
+						state.pointerGP[6] = false // Complete numerical SI supplies only the paired access.
 					case "GP pointer":
 						state.pointerGP[0] = true // Opaque pointer AX is not numerical scalar input.
 					}
 					before := state.clone()
-					if accepted, known := x86LoweredRawBroadcastStep(ins, &state, nil, arch); !known || accepted || !reflect.DeepEqual(state, before) {
+					if accepted, known := x86LoweredRawBroadcastStep(ins, &state, nil, arch); !known || accepted != (control == "native address") || !reflect.DeepEqual(state, before) {
 						t.Fatal("raw broadcast borrowed an independent input role", control)
+					}
+					if control == "native address" {
+						for _, available := range []uint8{0, 1} {
+							partial := before.clone()
+							partial.gp[6] = available
+							unchanged := partial.clone()
+							if accepted, _ := x86LoweredRawBroadcastStep(ins, &partial, nil, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+								t.Fatal("raw broadcast acquired unknown or partial address bytes", available)
+							}
+						}
 					}
 				}
 			})

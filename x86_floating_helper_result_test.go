@@ -141,7 +141,7 @@ func TestX86FloatingHelperNativeContinuationRetainsItsSourceBoundary(t *testing.
 			if arch == "386" && len(original.Args) > 3 {
 				continue
 			}
-			for _, mutation := range []string{"valid", "standalone", "pointer", "numerical address", "index", "raw", "address size", "source selector"} {
+			for _, mutation := range []string{"valid", "standalone", "pointer", "numerical address", "partial address", "index", "raw", "address size", "source selector"} {
 				ins := original
 				ins.Args = append([]Operand(nil), original.Args...)
 				state := x86FloatingHelperInitializedState()
@@ -153,10 +153,12 @@ func TestX86FloatingHelperNativeContinuationRetainsItsSourceBoundary(t *testing.
 				switch mutation {
 				case "standalone":
 					native = false
-				case "pointer", "numerical address":
+				case "pointer", "numerical address", "partial address":
 					state.pointerGP[0] = false
 					if mutation == "numerical address" {
 						state.gp[0] = 0xff
+					} else if mutation == "partial address" {
+						state.gp[0] = 1
 					}
 				case "index":
 					ins.Args[first].Mem.Index, ins.Args[first].Mem.Scale = DX, 2
@@ -172,8 +174,8 @@ func TestX86FloatingHelperNativeContinuationRetainsItsSourceBoundary(t *testing.
 				}
 				before := state.clone()
 				accepted, known := x86ResultFloatingHelperStep(ins, &state, nil, arch, native)
-				if mutation == "valid" {
-					if !accepted || !known {
+				if mutation == "valid" || mutation == "numerical address" {
+					if !accepted || !known || !reflect.DeepEqual(state, before) {
 						t.Fatal("incoming native pointer lost paired helper continuation", arch, member.name)
 					}
 				} else if accepted || !known || !reflect.DeepEqual(state, before) {

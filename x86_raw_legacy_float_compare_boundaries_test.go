@@ -44,8 +44,16 @@ func TestX86RawLegacyFloatingCompareEveryByteAndIndependentState(t *testing.T) {
 						state := x86RawLegacyFloatCompareState()
 						state.pointerGP[3], state.gp[3] = false, 0xff
 						before := state.clone()
-						if accepted, known := x86ResultFloatCompareStep(ins, &state, nil, arch, true); !known || accepted || !reflect.DeepEqual(state, before) {
-							t.Fatal("numerical address acquired incoming pointer identity")
+						if accepted, known := x86ResultFloatCompareStep(ins, &state, nil, arch, true); !known || !accepted || !reflect.DeepEqual(state, before) {
+							t.Fatal("numerical comparison changed independent state or acquired pointer identity")
+						}
+						for _, available := range []uint8{0, 1} {
+							partial := before.clone()
+							partial.gp[3] = available
+							unchanged := partial.clone()
+							if accepted, _ := x86ResultFloatCompareStep(ins, &partial, nil, arch, true); accepted || !reflect.DeepEqual(partial, unchanged) {
+								t.Fatal("raw float comparison acquired unknown or partial address bytes", available)
+							}
 						}
 					}
 					if !x86ResultPreservesPrivateStorage(ins, arch) ||

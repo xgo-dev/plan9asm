@@ -123,11 +123,17 @@ func TestX86MOVBERawIdentityCannotSupplyPointerOrNumericalBytes(t *testing.T) {
 						if control.name == "origin" {
 							// With every physical marker absent this is ordinary
 							// named source, not a malformed encoded instruction.
-							// Numerical AX still cannot invent a native pointer.
+							// Its native read may consume complete numerical AX.
 							state.pointerGP[0], state.gp[0] = false, 0xff
 						}
 						before := state.clone()
 						accepted, _ := x86LoweredMOVBEResultStep(changed, &state, nil, 0, arch)
+						if control.name == "origin" && strings.HasPrefix(operands, "(") {
+							if !accepted || x86RawMOVBESource(changed, arch) || !reflect.DeepEqual(before, state) {
+								t.Fatal("named numerical MOVBE read changed state or acquired raw identity")
+							}
+							continue
+						}
 						if accepted || x86RawMOVBESource(changed, arch) || !reflect.DeepEqual(before, state) {
 							t.Fatal("changed raw source borrowed a MOVBE continuation", accepted)
 						}
@@ -142,9 +148,26 @@ func TestX86MOVBERawIdentityCannotSupplyPointerOrNumericalBytes(t *testing.T) {
 					}
 					before := state.clone()
 					accepted, known := x86LoweredMOVBEResultStep(ins, &state, nil, 0, arch)
-					want := pointer && !strings.HasPrefix(operands, "BX")
-					if accepted != want || !known || !accepted && !reflect.DeepEqual(before, state) {
+					want := !strings.HasPrefix(operands, "BX")
+					expected := before.clone()
+					if want {
+						expected.gp[3] = 0xff
+						if op == "MOVBEW" {
+							expected.gp[3] = 3
+						}
+					}
+					if accepted != want || !known || !reflect.DeepEqual(state, expected) {
 						t.Fatal("numerical address or opaque store input gained memory/data authority", pointer, operands, accepted)
+					}
+					if !pointer && want {
+						for _, available := range []uint8{0, 1} {
+							partial := before.clone()
+							partial.gp[0] = available
+							unchanged := partial.clone()
+							if accepted, _ := x86LoweredMOVBEResultStep(ins, &partial, nil, 0, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+								t.Fatal("MOVBE read acquired unknown or partial address bytes", available)
+							}
+						}
 					}
 				}
 			}

@@ -45,10 +45,18 @@ func TestX86CLMULNativeEverySelectedByteAndWholeMemoryRole(t *testing.T) {
 					if accepted, known := x86ResultCLMULStep(ins, &state, nil, arch); !known || accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("standalone result observer acquired paired native memory")
 					}
-					state.pointerGP[3] = false // Defined numerical BX cannot replace the original native address.
+					state.pointerGP[3] = false // A paired read can consume complete numerical BX.
 					before = state.clone()
-					if accepted, known := x86LoweredCLMULStep(ins, &state, nil, arch); !known || accepted || !reflect.DeepEqual(state, before) {
-						t.Fatal("CLMUL discarded its complete native address obligation or partially committed its result")
+					if accepted, known := x86LoweredCLMULStep(ins, &state, nil, arch); !known || !accepted || !reflect.DeepEqual(state, before) {
+						t.Fatal("numerical CLMUL read changed independent state or acquired a pointer role")
+					}
+					for _, available := range []uint8{0, 1} {
+						partial := before.clone()
+						partial.gp[3] = available
+						unchanged := partial.clone()
+						if accepted, _ := x86LoweredCLMULStep(ins, &partial, nil, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+							t.Fatal("CLMUL acquired unknown or partial numerical address bytes", available)
+						}
 					}
 				}
 			})

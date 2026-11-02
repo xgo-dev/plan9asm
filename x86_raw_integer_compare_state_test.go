@@ -49,11 +49,21 @@ func TestX86RawIntegerCompareEveryInputByteAndIndependentState(t *testing.T) {
 					if control == "mask" {
 						state.masks[1] = false
 					} else {
-						state.pointerGP[3] = false // Numerically defined BX still does not supply a native pointer.
+						state.pointerGP[3] = false // Complete NUM permits only the paired native read.
 					}
 					before := state.clone()
-					if accepted, known := x86LoweredPackedIntegerCompareStep(ins, &state, nil, arch); !known || accepted || !reflect.DeepEqual(state, before) {
+					if accepted, known := x86LoweredPackedIntegerCompareStep(ins, &state, nil, arch); !known || accepted != (control == "native address") || !reflect.DeepEqual(state, before) {
 						t.Fatal("raw compare borrowed an unknown mask or native address", control)
+					}
+					if control == "native address" {
+						for _, available := range []uint8{0, 1} {
+							partial := before.clone()
+							partial.gp[3] = available
+							unchanged := partial.clone()
+							if accepted, _ := x86LoweredPackedIntegerCompareStep(ins, &partial, nil, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+								t.Fatal("raw comparison acquired unknown or partial address bytes", available)
+							}
+						}
 					}
 				}
 			})

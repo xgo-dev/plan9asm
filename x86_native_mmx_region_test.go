@@ -76,8 +76,22 @@ func TestX86NativeMMXCompleteIntegerBankEffects(t *testing.T) {
 				case "(AX)":
 					missing.pointerGP[0] = false
 				}
-				if accepted, known := plan.transfer(ordinal, ins, &missing, owned, 8, "amd64"); accepted || !known {
+				unchanged := missing.clone()
+				if accepted, known := plan.transfer(ordinal, ins, &missing, owned, 8, "amd64"); accepted != (source == "(AX)") || !known {
 					t.Fatal("private numerical shadows supplied a missing physical bank or memory source")
+				}
+				if source == "(AX)" {
+					if !reflect.DeepEqual(missing, unchanged) {
+						t.Fatal("numerical MMX read changed an independent state or pointer role")
+					}
+					for _, available := range []uint8{0, 1} {
+						partial := unchanged.clone()
+						partial.gp[0] = available
+						beforePartial := partial.clone()
+						if accepted, _ := plan.transfer(ordinal, ins, &partial, owned, 8, "amd64"); accepted || !reflect.DeepEqual(partial, beforePartial) {
+							t.Fatal("MMX read acquired unknown or partial address bytes", available)
+						}
+					}
 				}
 				missing = before.clone()
 				missing.nativeMMX[0] = 0

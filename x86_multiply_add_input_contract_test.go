@@ -143,8 +143,19 @@ func TestX86MultiplyAddNumericalStateAndMemoryAuthority(t *testing.T) {
 						state.masks[1] = false
 					}
 					before := state.clone()
-					if apply(&state) || !reflect.DeepEqual(state, before) {
+					numericalAddress := memory && missing == "first"
+					if accepted := apply(&state); accepted != numericalAddress || !reflect.DeepEqual(state, before) {
 						t.Fatal("missing input acquired an effect or changed state", missing)
+					}
+					if numericalAddress {
+						for _, available := range []uint8{0, 1} {
+							partial := before.clone()
+							partial.gp[3] = available
+							unchanged := partial.clone()
+							if apply(&partial) || !reflect.DeepEqual(partial, unchanged) {
+								t.Fatal("multiply-add acquired unknown or partial address bytes", available)
+							}
+						}
 					}
 				}
 				if memory {
