@@ -261,6 +261,7 @@ func checkX86ResultSourceFlow(fn Func, initial x86ResultState, owned []bool, res
 func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned []bool, resultOffset int64, goarch string,
 	transfer x86ResultSourceTransfer, checkReturn func(x86ResultState, int) error, trapOnly bool) error {
 	originalTransfer := transfer
+	trackCPUIDLeaf := false
 	var repeatEmptyBranch func(int, Instr, *x86ResultState) bool
 	transfer = func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 		if !x86ResultValueStackContinuation(ins, state, arch) {
@@ -291,6 +292,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		origins := state.callerAddressOrigin
 		predicate := state.predicate
 		stringCount := state.stringCount
+		cpuidRootLeaf := state.cpuidRootLeaf
 		ordinaryStep := false
 		defer func() {
 			if !ordinaryStep {
@@ -348,6 +350,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		state.callerAddressOrigin = x86ResultCallerOriginsAfter(ins, origins, state.callerAddressGP, state.callerAddressFP, arch)
 		state.predicate = x86ResultPredicateAfter(ins, predicate, arch)
 		state.stringCount = x86ResultStringCountAfter(ins, stringCount, state.stringCount, arch)
+		if trackCPUIDLeaf {
+			state.cpuidRootLeaf = x86ResultCPUIDRootLeafAfter(ins, cpuidRootLeaf, arch)
+		}
 		if !popFlags {
 			state.direction = x86ResultDirectionAfterSource(ins, state.direction, arch)
 		}
@@ -392,6 +397,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	// selected CFG used below, including source-bound private helpers.
 	flagProjection := false
 	for _, ins := range instructions {
+		trackCPUIDLeaf = trackCPUIDLeaf || strings.EqualFold(string(ins.Op), string(OpCPUID))
 		if spec, known, _ := x86StackWidthProperties(ins, goarch); known {
 			if initial.valueStack == nil {
 				initial.valueStack = new(x86ResultValueStack)
@@ -408,7 +414,10 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		len(initial.boolOutgoing) + len(initial.boolOutgoingCanonical) + len(initial.gp) + len(initial.canonicalGP) +
 		8*len(initial.xmm) + len(initial.nativeMMX) + len(initial.masks) + 1 + len(initial.pointerGP) + len(initial.callerAddressGP) +
 		2*len(initial.callerAddressOrigin) + 1 + 2 + 3 + 1 + 1 // Native string counter must-fact.
-	byteState += 2  // One adjacent LEA register/byte-mask observation, never pointer/NUM bytes.
+	byteState += 2 // One adjacent LEA register/byte-mask observation, never pointer/NUM bytes.
+	if trackCPUIDLeaf {
+		byteState++ // CPUID's EAX-only maximum-leaf must-fact.
+	}
 	byteState += 12 // One adjacent shift's input-byte bits and four typed byte fields.
 	if len(initial.resultAddressSlots) != 0 {
 		byteState += len(initial.resultAddressGP)*25 + 2
@@ -709,9 +718,10 @@ type x86ResultState struct {
 	boolReadonlyInputs                  bool // Only the independent readonly callee proof.
 	// Used by the independent register/ABI0 bool-result contracts.
 	// A set bit means that physical byte is exactly 0/1, not merely initialized.
-	canonicalGP [16]uint8
-	xmm         [32]uint16 // high banks are consumed only by validated mode-bound forms
-	nativeMMX   [8]uint8   // Only a source-bound actual native region may transfer this bank.
+	canonicalGP   [16]uint8
+	cpuidRootLeaf bool
+	xmm           [32]uint16 // high banks are consumed only by validated mode-bound forms
+	nativeMMX     [8]uint8   // Only a source-bound actual native region may transfer this bank.
 	// The disjoint upper 48 byte bits share the same physical X/Y/Z bank.
 	// Existing low-X effects preserve these bits unless their typed encoding
 	// explicitly clears the upper aliases.
@@ -904,6 +914,7 @@ func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 		merged.masks[index] = merged.masks[index] && other.masks[index]
 	}
 	merged.flags &= other.flags
+	merged.cpuidRootLeaf = merged.cpuidRootLeaf && other.cpuidRootLeaf
 	merged.direction = state.direction.intersect(other.direction)
 	if merged.stringCount != other.stringCount {
 		merged.stringCount = x86StringCountUnknown
@@ -1357,7 +1368,9 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 		// Read all ordered inputs before any overwrite. A three-operand
 		// multiply does not read its old result, unlike two-operand IMUL.
 		for _, operand := range effect.operands {
-			if operand.read && !x86ResultRead(operand.operand, operand.width, state, owned, arch) {
+			ignoredSubleaf := state.cpuidRootLeaf && strings.EqualFold(string(ins.Op), string(OpCPUID)) &&
+				operand.operand.Kind == OpReg && operand.operand.Reg == CX
+			if operand.read && !ignoredSubleaf && !x86ResultRead(operand.operand, operand.width, state, owned, arch) {
 				return false
 			}
 		}

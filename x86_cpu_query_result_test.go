@@ -80,8 +80,10 @@ func TestX86CPUQueryVoidRequiresActualInputsThreeAPIs(t *testing.T) {
 					valid        bool
 				}{
 					{"missing-both", "", false},
-					{"missing-cx", "MOVL $0,AX\n", false},
-					{"partial-cx", "MOVL $0,AX\nMOVB $0,CL\n", false},
+					{"missing-cx", "MOVL $0,AX\n", row.name == "CPUID"},
+					{"partial-cx", "MOVL $0,AX\nMOVB $0,CL\n", row.name == "CPUID"},
+					{"subleaf-missing-cx", "MOVL $7,AX\n", false},
+					{"subleaf-partial-cx", "MOVL $7,AX\nMOVB $0,CL\n", false},
 					{"partial-ax", "MOVB $0,AL\nMOVL $0,CX\n", row.name == "XGETBV"},
 					{"missing-ax", "MOVL $0,CX\n", row.name == "XGETBV"},
 					{"complete", "MOVL $0,AX\nMOVL $0,CX\n", true},
@@ -132,7 +134,8 @@ func TestX86CPUQueryEntryAndJoinInputsThreeAPIs(t *testing.T) {
 					frame                    int
 					valid                    bool
 				}{
-					{"pointer-input", "p *uint32", move + " p+0(FP),CX\nMOVL $0,AX\n", word, false},
+					{"pointer-input", "p *uint32", move + " p+0(FP),CX\nMOVL $0,AX\n", word, row.name == "CPUID"},
+					{"subleaf-pointer-input", "p *uint32", move + " p+0(FP),CX\nMOVL $7,AX\n", word, false},
 					{"unused-bool", "unused bool", "", 1, false},
 					{"initialized-unused-bool", "unused bool", "MOVL $0,AX\nMOVL $0,CX\n", 1, true},
 					{"missing-join", "selector uint32", "MOVL selector+0(FP),AX\nCMPL AX,$0\nJE ready\nMOVL $0,CX\nready:\n", 4, false},
