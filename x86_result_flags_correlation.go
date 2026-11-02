@@ -155,7 +155,7 @@ func x86ResultFlagsStackPop(stack *x86ResultValueStack, storage int) [32]uint8 {
 	return origins
 }
 
-func x86ResultPrivateStackXORStep(ins Instr, popped x86ResultPoppedWord, poppedOrigins [32]uint8,
+func x86ResultPrivateStackXORStep(ins Instr, popped x86ResultGPBits, poppedOrigins [32]uint8,
 	state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
 	form, memory, known := x86ResultPrivateStackXORForm(ins, arch)
 	if !known {
@@ -191,7 +191,7 @@ func x86ResultPrivateStackXORStep(ins Instr, popped x86ResultPoppedWord, poppedO
 			}
 			if state.gp[root]&(1<<uint((bit+shift)/8)) == 0 {
 				inputs[index][bit] = x86FlagsUntracked
-				if popped.valid && popped.register == root {
+				if popped.valid && popped.fromStack && popped.register == root {
 					inputs[index][bit] = poppedOrigins[bit+shift]
 				}
 			}

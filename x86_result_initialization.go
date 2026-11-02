@@ -267,11 +267,10 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		if !x86ResultValueStackContinuation(ins, state, arch) {
 			return false
 		}
-		popped := x86ResultPoppedWord{}
+		popped := state.gpBits
+		state.gpBits = x86ResultGPBits{}
 		var poppedOrigins [32]uint8
 		if state.valueStack != nil {
-			popped = state.valueStack.popped
-			state.valueStack.popped = x86ResultPoppedWord{}
 			if correlation := state.valueStack.correlation; correlation != nil {
 				poppedOrigins = correlation.popped
 				correlation.popped = [32]uint8{}
@@ -333,7 +332,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		if popped.valid {
 			previous := step
 			step = func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
-				if accepted, known := x86ResultPoppedWordMaskStep(ins, popped, state, owned, resultOffset, arch); known {
+				if accepted, known := x86ResultGPBitsMaskStep(ins, popped, state, owned, resultOffset, arch); known {
 					return accepted
 				}
 				return previous(ordinal, ins, state, owned, resultOffset, arch)
@@ -419,6 +418,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		byteState++ // CPUID's EAX-only maximum-leaf must-fact.
 	}
 	byteState += 12 // One adjacent shift's input-byte bits and four typed byte fields.
+	byteState += 11 // One shared adjacent GP-bit observation, not a per-register domain.
 	if len(initial.resultAddressSlots) != 0 {
 		byteState += len(initial.resultAddressGP)*25 + 2
 	}
@@ -426,9 +426,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		byteState += len(initial.boolFrameGP) * 25
 	}
 	if initial.valueStack != nil {
-		// Bit masks, two-byte depth, invalid join, ID and the ten-byte
-		// transient popped register/validity/eight-byte initialized-bit view.
-		byteState += x86ResultValueStackLimit(goarch) + 14
+		// Bit masks, two-byte depth, invalid join and ID. The adjacent GP-bit
+		// observation above is shared with the other typed register producers.
+		byteState += x86ResultValueStackLimit(goarch) + 4
 		// Pointer cell endpoints use complete bitmap words spanning the
 		// bounded byte domain: 64 logical bytes on AMD64, 32 on mode32.
 		byteState += ((x86ResultValueStackLimit(goarch) + 63) / 64) * 8
@@ -734,6 +734,7 @@ type x86ResultState struct {
 	x87                  *x86ResultX87State          // Private logical availability; never hardware entry/control state.
 	continuation         *x86ContinuationResultState // Separate opaque control/table identities, never NUM/native storage.
 	bitScanPending       x86ResultBitScanPending
+	gpBits               x86ResultGPBits
 	predicate            x86ResultPredicate
 	nativeLEAAddressBits x86NativeLEAAddressBits
 	shiftBits            x86ResultShiftBits
@@ -805,6 +806,12 @@ func (state x86ResultState) clone() x86ResultState {
 
 func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 	merged := state.clone()
+	if !merged.gpBits.valid || !other.gpBits.valid || merged.gpBits.register != other.gpBits.register ||
+		merged.gpBits.fromStack != other.gpBits.fromStack {
+		merged.gpBits = x86ResultGPBits{}
+	} else {
+		merged.gpBits.bits &= other.gpBits.bits
+	}
 	if merged.shiftBits != other.shiftBits {
 		merged.shiftBits = x86ResultShiftBits{}
 	}
@@ -949,14 +956,10 @@ func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 			}
 			merged.valueStack.id = merged.valueStack.id && other.valueStack.id
 		}
-		if other.valueStack == nil || merged.valueStack.invalid ||
-			merged.valueStack.popped.register != other.valueStack.popped.register ||
-			!merged.valueStack.popped.valid || !other.valueStack.popped.valid {
-			merged.valueStack.popped = x86ResultPoppedWord{}
-		} else {
-			merged.valueStack.popped.bits &= other.valueStack.popped.bits
-		}
 		x86ResultIntersectFlagsCorrelation(merged.valueStack, other.valueStack)
+	}
+	if merged.gpBits.fromStack && (merged.valueStack == nil || merged.valueStack.invalid) {
+		merged.gpBits = x86ResultGPBits{}
 	}
 	if merged.bitScanPending != other.bitScanPending {
 		merged.bitScanPending = x86ResultBitScanPending{}

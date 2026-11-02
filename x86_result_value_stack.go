@@ -7,7 +7,6 @@ type x86ResultValueStack struct {
 	bytes   []uint8 // Low byte is at the end, matching a descending byte stack.
 	invalid bool
 	id      bool // ID is separate from the six arithmetic flags and DF.
-	popped  x86ResultPoppedWord
 	// AMD64 has at most 63 private cells. A set bit marks a source W cell,
 	// not a Q cell; equal virtual depth does not imply equal native SP delta.
 	wordCells uint64
@@ -304,7 +303,7 @@ func x86ResultValueStackStepWithNativeStore(ins Instr, state *x86ResultState, ow
 				known |= uint64(0xff) << uint(8*b)
 			}
 		}
-		stack.popped = x86ResultPoppedWord{bits: known, register: index, valid: true}
+		state.gpBits = x86ResultGPBits{bits: known, register: index, valid: true, fromStack: true}
 		if stack.correlation != nil {
 			stack.correlation.popped = origins
 		}

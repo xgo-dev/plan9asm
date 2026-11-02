@@ -16,8 +16,10 @@ func x86RawScalarObserverSource(ins Instr, arch string) bool {
 // declaration, caller, physical entry and reusable-memory roles stay strict.
 func x86LoweredRawScalarObserverStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
 	_, count, _ := x86ScalarBitCountProperties(ins.Op, ins, arch)
+	var maskForm x86MoveMaskForm
 	if !count {
-		if _, mask, _ := x86MoveMaskProperties(ins.Op, ins, arch); !mask {
+		var mask bool
+		if maskForm, mask, _ = x86MoveMaskProperties(ins.Op, ins, arch); !mask {
 			return false, false
 		}
 	}
@@ -26,6 +28,15 @@ func x86LoweredRawScalarObserverStep(ins Instr, state *x86ResultState, owned []b
 	}
 	if !x86RawScalarObserverSource(ins, arch) {
 		return false, true
+	}
+	if !count {
+		// Erasing the exact raw origin must not create the named-only
+		// adjacent partial-bit role. Retain the original complete input.
+		index, _ := amd64VectorRegisterIndex(ins.Args[0].Reg, maskForm.byteWidth)
+		required := x86CallerVectorByteMask(int64(maskForm.byteWidth))
+		if state.vectorBytes(index)&required != required {
+			return false, true
+		}
 	}
 	local := ins
 	local.x86Encoded, local.x86SourceRaw = false, nil

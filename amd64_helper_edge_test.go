@@ -949,6 +949,9 @@ func lowerAMD64PackedArithmeticOrVectorForTest(c *amd64Ctx, op Op, ins Instr) (b
 	if known, terminated, err := c.lowerPackedIntegerSubtract(op, ins); known {
 		return known, terminated, err
 	}
+	if known, terminated, err := c.lowerPackedMoveMask(op, ins); known {
+		return known, terminated, err
+	}
 	return c.lowerVec(op, ins)
 }
 
@@ -2142,7 +2145,7 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		{"VEXTRACTF32X4", Instr{Raw: "VEXTRACTF32X4 $1, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong src class", true},
 		{"PCLMULQDQ", Instr{Raw: "PCLMULQDQ AX, X0, X1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "missing imm", true},
 		{"PCMPEQB", Instr{Raw: "PCMPEQB Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
-		{"PMOVMSKB", Instr{Raw: "PMOVMSKB Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}}, "wrong src class", false},
+		{"PMOVMSKB", Instr{Raw: "PMOVMSKB Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}}, "wrong src class", true},
 		{"PSHUFB", Instr{Raw: "PSHUFB Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong mask class", true},
 		{"PINSRQ", Instr{Raw: "PINSRQ AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "short form", true},
 		{"PINSRD", Instr{Raw: "PINSRD $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", true},

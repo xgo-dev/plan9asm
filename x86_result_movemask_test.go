@@ -26,6 +26,12 @@ func TestX86ResultMoveMaskEveryByteAndPreservedState(t *testing.T) {
 		if strings.Contains(line, " Y") {
 			width = 32
 		}
+		laneBytes := 1
+		if strings.Contains(line, "MSKPS") {
+			laneBytes = 4
+		} else if strings.Contains(line, "MSKPD") {
+			laneBytes = 8
+		}
 		for missing := -1; missing < width; missing++ {
 			state := x86ResultState{flags: x86ByteFlagCF | x86ByteFlagOF}
 			state.xmm[0], state.vectorUpper[0] = 0xffff, ^uint64(0xffff)
@@ -36,12 +42,18 @@ func TestX86ResultMoveMaskEveryByteAndPreservedState(t *testing.T) {
 			}
 			before := state
 			accepted, known := x86ResultMoveMaskStep(instruction, &state, nil, 0, "amd64")
-			if !known || accepted != (missing == -1) {
+			if !known || !accepted {
 				t.Fatalf("%s missing byte=%d: accepted=%t known=%t", line, missing, accepted, known)
 			}
 			want := before
-			if accepted {
-				want.gp[0] = 0xff // r32 result defines the complete zero-extended RAX.
+			want.gp[0] = 0xff
+			if missing >= 0 && missing%laneBytes == laneBytes-1 {
+				// An unavailable sign bit makes only its output bit unknown.
+				// This does not make the containing GP byte numerical; only an
+				// adjacent consumer may independently mask away that bit.
+				bit := uint(missing / laneBytes)
+				want.gp[0] &^= 1 << (bit / 8)
+				want.gpBits = x86ResultGPBits{bits: ^(uint64(1) << bit), register: 0, valid: true}
 			}
 			if !reflect.DeepEqual(state, want) {
 				t.Fatalf("%s changed vector/FLAGS/other GP state at missing byte=%d", line, missing)

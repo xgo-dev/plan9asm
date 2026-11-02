@@ -51,8 +51,8 @@ func TestX86StackRefinementCloneJoinAndReuse(t *testing.T) {
 			if index%2 == 0 {
 				want = 0xcff
 			}
-			if accepted, known := x86ResultValueStackStep(ins, &state, nil, 0, arch); !accepted || !known || state.valueStack.popped.bits&0xffff != want {
-				t.Fatal("source-bit eligibility changed at a stack position", arch, index, state.valueStack.popped)
+			if accepted, known := x86ResultValueStackStep(ins, &state, nil, 0, arch); !accepted || !known || state.gpBits.bits&0xffff != want {
+				t.Fatal("source-bit eligibility changed at a stack position", arch, index, state.gpBits)
 			}
 		}
 		if len(state.valueStack.bytes) != 0 || state.valueStack.refinable != nil {
@@ -64,7 +64,7 @@ func TestX86StackRefinementCloneJoinAndReuse(t *testing.T) {
 				t.Fatal("numeric storage could not reuse a former FLAGS slot", arch, text)
 			}
 		}
-		if state.valueStack.popped.bits&0xffff != 0xffff {
+		if state.gpBits.bits&0xffff != 0xffff {
 			t.Fatal("a stale FLAGS mask contaminated reused numeric storage", arch)
 		}
 	}

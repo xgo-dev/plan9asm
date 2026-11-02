@@ -173,13 +173,13 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 	switch op {
 	case "MOVOU", "MOVOA", "MOVUPS", "MOVAPS", "MOVO", "MOVQ", "VMOVQ", "MOVL", "MOVD",
 		"VMOVDQU", "VMOVDQA", "VMOVNTDQ", "VMOVDQU64", "VMOVDQA64", "VMOVAPS", "VMOVAPD",
-		"VPCMPEQB", "VPCMPGTB", "VPMOVMSKB", "VZEROUPPER", "VZEROALL", "VPBROADCASTB", "VPBROADCASTD", "VPBROADCASTQ", "VPAND", "VPXOR", "VPOR", "VPADDD", "VPADDQ", "VPSUBB", "VPTEST", "VTESTPD", "VTESTPS",
+		"VPCMPEQB", "VPCMPGTB", "VZEROUPPER", "VZEROALL", "VPBROADCASTB", "VPBROADCASTD", "VPBROADCASTQ", "VPAND", "VPXOR", "VPOR", "VPADDD", "VPADDQ", "VPSUBB", "VPTEST", "VTESTPD", "VTESTPS",
 		"VPCLMULQDQ", "VEXTRACTF32X4",
 		"VPCMPUQ",
 		"VBROADCASTF32X2", "VBROADCASTSD",
 		"VPSHUFB", "VPSHUFD", "VPSLLD", "VPSLLQ", "VPSLLW", "VPSRAD", "VPSRAW", "VPSRLD", "VPSRLQ", "VPSRLW", "VPSRLDQ", "VPSLLDQ", "VPUNPCKLBW", "VPUNPCKHBW", "VPUNPCKLDQ", "VPUNPCKHDQ", "VPUNPCKLQDQ", "VPUNPCKHQDQ",
 		"VPALIGNR", "VPERM2I128", "VPERM2F128", "VINSERTI128", "VPBLENDD",
-		"PXOR", "POR", "PAND", "PADDB", "PADDD", "PADDL", "PSUBB", "PSUBL", "PSUBUSB", "PMULLW", "PCLMULQDQ", "PCMPEQB", "PCMPEQW", "PCMPEQL", "PCMPGTB", "PABSD", "PTEST", "PMOVMSKB",
+		"PXOR", "POR", "PAND", "PADDB", "PADDD", "PADDL", "PSUBB", "PSUBL", "PSUBUSB", "PMULLW", "PCLMULQDQ", "PCMPEQB", "PCMPEQW", "PCMPEQL", "PCMPGTB", "PABSD", "PTEST",
 		"PMINUB", "PMINSB", "PMINUW", "PMINSW", "PMINUD", "PMINSD", "PMAXUB", "PMAXSB", "PMAXUW", "PMAXSW", "PMAXUD", "PMAXSD",
 		"PSHUFB", "PSRLDQ", "PSLLDQ", "PSRLO", "PSLLO", "PSRLQ", "PSLLQ", "PSLLW", "PSRLW", "PSRLL", "PSLLL", "PSRAL", "PEXTRD", "PEXTRB", "PEXTRQ",
 		"PALIGNR", "PUNPCKLBW", "PUNPCKHBW", "PUNPCKLLQ", "PUNPCKHLQ", "PUNPCKLQDQ", "PUNPCKHQDQ", "PSHUFL", "PSHUFD", "SHUFPS",
@@ -1178,37 +1178,6 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		}
 		return false, false, nil
 
-	case "VPMOVMSKB":
-		// VPMOVMSKB Ysrc, dstReg
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 VPMOVMSKB expects Ysrc, dstReg: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseYReg(ins.Args[0].Reg); !ok {
-			return false, false, nil
-		}
-		v, err := c.loadY(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		// Work around LLVM backend issues with the AVX2 pmovmskb intrinsic by
-		// splitting the 256-bit vector into two 128-bit halves and using the SSE2
-		// pmovmskb.128 intrinsic.
-		lo := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <32 x i8> %s, <32 x i8> zeroinitializer, <16 x i32> %s\n", lo, v, llvmI32RangeMask(0, 16))
-		hi := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <32 x i8> %s, <32 x i8> zeroinitializer, <16 x i32> %s\n", hi, v, llvmI32RangeMask(16, 16))
-		ml := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse2.pmovmskb.128(<16 x i8> %%%s)\n", ml, lo)
-		mh := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse2.pmovmskb.128(<16 x i8> %%%s)\n", mh, hi)
-		sh := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i32 %%%s, 16\n", sh, mh)
-		or := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i32 %%%s, %%%s\n", or, sh, ml)
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, or)
-		return true, false, c.storeReg(ins.Args[1].Reg, "%"+z)
-
 	case "PABSD":
 		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 PABSD expects Xsrc, Xdst: %q", ins.Raw)
@@ -1362,24 +1331,6 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		sel := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = select <16 x i1> %%%s, <16 x i8> %s, <16 x i8> zeroinitializer\n", sel, cmp, allOnes)
 		return true, false, c.storeX(ins.Args[1].Reg, "%"+sel)
-
-	case "PMOVMSKB":
-		// PMOVMSKB Xsrc, dstReg
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 PMOVMSKB expects Xsrc, dstReg: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseXReg(ins.Args[0].Reg); !ok {
-			return false, false, nil
-		}
-		v, err := c.loadX(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse2.pmovmskb.128(<16 x i8> %s)\n", call, v)
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, call)
-		return true, false, c.storeReg(ins.Args[1].Reg, "%"+z)
 
 	case "PEXTRB":
 		// PEXTRB $imm, Xsrc, dst

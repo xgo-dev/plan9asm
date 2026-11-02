@@ -1,8 +1,8 @@
 package plan9asm
 
-// The whole input vector must have numerical bytes. The GP result is a
-// write-only zero-extended r32; FLAGS and every vector alias are unchanged.
-// MMX physical state and mode32 high banks have no producer in this domain.
+// Every output bit depends only on its source sign byte; high bits are zero.
+// Whole numerical GP bytes and one adjacent bit observation remain distinct.
+// FLAGS/vector aliases, physical MMX and raw/mode32 source roles are unchanged.
 func x86ResultMoveMaskStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
 	form, known, err := x86MoveMaskProperties(ins.Op, ins, arch)
 	if !known {
@@ -15,9 +15,37 @@ func x86ResultMoveMaskStep(ins Instr, state *x86ResultState, owned []bool, resul
 	if !valid || arch == "386" && index >= 8 {
 		return false, true
 	}
-	required := x86CallerVectorByteMask(int64(form.byteWidth))
-	if state.vectorBytes(index)&required != required {
+	source := state.vectorBytes(index)
+	named := x86ResultNamedPredicateInstruction(ins)
+	if !named && source&x86CallerVectorByteMask(int64(form.byteWidth)) != x86CallerVectorByteMask(int64(form.byteWidth)) {
+		return false, true // Partial named facts cannot establish a raw source role.
+	}
+	destination, _, valid := x86ResultGP(ins.Args[1].Reg, 4, arch)
+	if !valid {
 		return false, true
 	}
-	return x86ResultStore(ins.Args[1], 4, state, owned, resultOffset, arch), true
+	laneBytes := 1
+	if form.floatingLaneBits != 0 {
+		laneBytes = form.floatingLaneBits / 8
+	}
+	bits := ^uint64(0)
+	for lane := 0; lane < form.byteWidth/laneBytes; lane++ {
+		if source&(uint64(1)<<uint(lane*laneBytes+laneBytes-1)) == 0 {
+			bits &^= uint64(1) << uint(lane)
+		}
+	}
+	var bytes uint8
+	for at := 0; at < 8; at++ {
+		if byte(bits>>uint(8*at)) == 255 {
+			bytes |= 1 << uint(at)
+		}
+	}
+	if !x86ResultStore(ins.Args[1], 4, state, owned, resultOffset, arch) {
+		return false, true
+	}
+	state.gp[destination] = bytes
+	if named && bits != ^uint64(0) {
+		state.gpBits = x86ResultGPBits{bits: bits, register: destination, valid: true}
+	}
+	return true, true
 }

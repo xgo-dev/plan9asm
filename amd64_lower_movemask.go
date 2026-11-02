@@ -82,8 +82,15 @@ func (c *amd64Ctx) lowerPackedMoveMask(op Op, ins Instr) (ok bool, terminated bo
 		if err != nil {
 			return true, false, err
 		}
-		mask32 := c.floatingMoveMask(value, form.byteWidth, form.floatingLaneBits)
+		mask32 := c.packedSignMask(value, form.byteWidth, form.floatingLaneBits)
 		return true, false, c.storeRegSized(ins.Args[1].Reg, I32, mask32)
+	}
+	if form.byteWidth != 8 && c.targetTriple != "" && !x86ScalarFloatIntegerNativeTarget(arch, c.targetTriple) {
+		value, err := c.loadPackedCompareBytes(ins.Args[0], form.byteWidth)
+		if err != nil {
+			return true, false, err
+		}
+		return true, false, c.storeRegSized(ins.Args[1].Reg, I32, c.packedSignMask(value, form.byteWidth, 8))
 	}
 
 	var mask32 string
@@ -132,9 +139,14 @@ func (c *amd64Ctx) lowerPackedMoveMask(op Op, ins Instr) (ok bool, terminated bo
 	return true, false, c.storeRegSized(ins.Args[1].Reg, I32, mask32)
 }
 
-func (c *amd64Ctx) floatingMoveMask(value string, byteWidth, laneBits int) string {
+// Lane i writes mask bit i explicitly. Byte lanes need no vector-to-integer
+// bitcast, so this portable path does not depend on the target's byte order.
+func (c *amd64Ctx) packedSignMask(value string, byteWidth, laneBits int) string {
 	lanes := byteWidth * 8 / laneBits
-	integerLanes := c.bitcastVectorBytesToIntegerLanes(byteWidth, lanes, laneBits, value)
+	integerLanes := value
+	if laneBits != 8 {
+		integerLanes = c.bitcastVectorBytesToIntegerLanes(byteWidth, lanes, laneBits, value)
+	}
 	mask := "0"
 	for lane := 0; lane < lanes; lane++ {
 		laneValue := c.newTmp()
