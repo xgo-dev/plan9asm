@@ -135,8 +135,26 @@ func TestX86ScalarCompareIncomingPointerDoesNotGrantOtherEffects(t *testing.T) {
 			} {
 				source := x86ScalarComparePointerSource(target.arch, "view", row.setup,
 					x86ScalarCompareInstruction(op, row.address, row.partner), row.tail)
+				paired := row.name == "numeric-not-pointer" || row.name == "no-reusable-backing-credit"
+				if paired {
+					x86RequireNumericNativeSourceContext(t, source, "func view(p *byte) uint32", target.arch)
+					x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
+				}
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, source, "func view(p *byte) uint32", target.arch, target.triple, api)
+					if paired {
+						bits := map[byte]int{'B': 8, 'W': 16, 'L': 32, 'Q': 64}[op[len(op)-1]]
+						reads := 1
+						if row.name == "no-reusable-backing-credit" {
+							reads = 3
+						}
+						if err != nil || !strings.Contains(ir, fmt.Sprintf("load volatile i%d,", bits)) || strings.Count(ir, "load volatile") != reads ||
+							row.name == "no-reusable-backing-credit" && strings.Count(ir, "load volatile i32,") < 2 {
+							t.Fatalf("independent NUM reads lost their widths or effects %s/%s/%s/%s: %v", target.triple, op, row.name, api, err)
+						}
+						x86NumericNativeAddressObject(t, ir, target.triple)
+						continue
+					}
 					if row.name == "no-segment-credit" {
 						// Keep the original tuple. Its absolute hardware base
 						// needs no incoming GP numerical or pointer authority.
@@ -163,8 +181,8 @@ func TestX86ScalarCompareIncomingPointerDoesNotGrantOtherEffects(t *testing.T) {
 
 // The compare's continuation grants no credit to another read. Ordinary MOVL
 // now has its own paired volatile load and numerical effect; both operations
-// must survive even though the MOVL result is dead. Overwriting DX above still
-// revokes the pointer before a later access.
+// must survive even though the MOVL result is dead. Overwriting DX revokes its
+// pointer identity; a later complete NUM read needs its own paired effect.
 func TestX86ScalarCompareAndMoveRetainIndependentNativeReads(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	if llc == "" {

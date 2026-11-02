@@ -220,8 +220,19 @@ func TestX86ScalarArithmeticNativeRetainsPublicAndSourceBoundaries(t *testing.T)
 					t.Run(name, func(t *testing.T) {
 						source, declaration := x86ExtensionNativeFixture("Value", arch, "CMPL BX,BX\n"+body, false)
 						goAssemblerOracleOutput(t, arch, source, "", true)
+						if name == "numeric base" || name == "destroyed pointer" {
+							x86RequireNumericNativeSourceContext(t, source, declaration, arch)
+						}
 						for _, api := range []string{"text", "module", "Go"} {
 							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+							if name == "numeric base" || name == "destroyed pointer" {
+								bits := map[byte]int{'B': 8, 'W': 16, 'L': 32, 'Q': 64}[op[len(op)-1]]
+								if err != nil || strings.Count(ir, fmt.Sprintf("load volatile i%d,", bits)) != 1 {
+									t.Fatal("complete NUM address lost its exact scalar arithmetic read", api, err)
+								}
+								x86NumericNativeAddressObject(t, ir, triple)
+								continue
+							}
 							if name == "native store" {
 								// The paired RMW consumer now models this complete
 								// read/write. Preserve its exact former negative and

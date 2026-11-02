@@ -189,9 +189,18 @@ func TestX86LegacyAlternatingRoundMemoryRequiresActualInputs(t *testing.T) {
 				t.Run(arch+"/"+row.op+"/"+change, func(t *testing.T) {
 					source, declaration := x86LegacyAlternatingRoundMemoryAssembly(arch, "LegacyMemoryInputs", row, false, change)
 					x86LEAActualTargetGoObject(t, arch, triple, source)
+					if change == "numeric-base" {
+						x86RequireNumericNativeSourceContext(t, source, declaration, arch)
+					}
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86LegacyAlternatingRoundMemoryAPI(t, source, declaration, arch, triple, api)
-						if change == "complete" {
+						if change == "numeric-base" {
+							if err != nil || !strings.Contains(ir, "asm sideeffect \""+strings.ToLower(row.op)+" ") ||
+								!strings.Contains(ir, "~{memory}") || !strings.Contains(ir, "~{fpsr}") {
+								t.Fatal("complete NUM address lost its original legacy memory/FP effect", api, err)
+							}
+							x86NumericNativeAddressObject(t, ir, triple)
+						} else if change == "complete" {
 							if err != nil || ir == "" {
 								t.Fatal("complete manual Ptr inputs rejected", api, err)
 							}

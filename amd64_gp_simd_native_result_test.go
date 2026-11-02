@@ -106,8 +106,19 @@ func TestX86GPSIMDNativeResultsRetainSourceBoundaries(t *testing.T) {
 			} {
 				t.Run(name, func(t *testing.T) {
 					goAssemblerOracleOutput(t, "amd64", bad, "", true)
+					if name == "numeric base" {
+						x86RequireNumericNativeSourceContext(t, bad, declaration, "amd64")
+					}
 					for _, api := range []string{"text", "module", "Go"} {
-						if _, err := x86ScalarFPBitViewAPI(t, bad, declaration, "amd64", "x86_64-unknown-linux-gnu", api); !errors.Is(err, ErrProbeNeedsContext) {
+						ir, err := x86ScalarFPBitViewAPI(t, bad, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+						if name == "numeric base" {
+							if err != nil || !strings.Contains(ir, fmt.Sprintf("load volatile i%d,", row.width*8)) {
+								t.Fatal("complete NUM address lost the GP/SIMD transfer width", api, err)
+							}
+							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+							continue
+						}
+						if !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("unproved native transfer boundary accepted", api, err)
 						}
 					}

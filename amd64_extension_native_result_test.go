@@ -160,8 +160,19 @@ func TestX86ExtensionNativeResultBoundaries(t *testing.T) {
 			t.Run(arch+"/"+name, func(t *testing.T) {
 				source, decl := x86ExtensionNativeFixture("F", arch, body, false)
 				goAssemblerOracleOutput(t, arch, source, "", true)
+				if name == "numeric base" {
+					x86RequireNumericNativeSourceContext(t, source, decl, arch)
+				}
 				for _, api := range []string{"text", "module", "Go"} {
-					if _, err := x86ScalarFPBitViewAPI(t, source, decl, arch, triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+					ir, err := x86ScalarFPBitViewAPI(t, source, decl, arch, triple, api)
+					if name == "numeric base" {
+						if err != nil || !strings.Contains(ir, "load volatile i8,") {
+							t.Fatal("complete NUM address lost its byte extension read", api, err)
+						}
+						x86NumericNativeAddressObject(t, ir, triple)
+						continue
+					}
+					if !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatalf("%s manufactured numerical or pointer bytes: %v", api, err)
 					}
 				}

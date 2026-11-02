@@ -179,8 +179,20 @@ func TestX86PackedZeroExtendNativeResultsKeepWholeSourceBoundaries(t *testing.T)
 				} {
 					source := "TEXT ·Value(SB),4,$0-12\nMOVQ p+0(FP),DX\n" + body + "PEXTRD $0,X1,AX\nMOVL AX,ret+8(FP)\nRET\n"
 					goAssemblerOracleOutput(t, "amd64", source, "", true)
+					if mutation == "lost pointer" {
+						x86RequireNumericNativeSourceContext(t, source, "func Value(p *[32]byte) uint32", "amd64")
+					}
 					for _, api := range []string{"text", "module", "Go"} {
-						if _, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *[32]byte) uint32", "amd64", "x86_64-unknown-linux-gnu", api); !errors.Is(err, ErrProbeNeedsContext) {
+						ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *[32]byte) uint32", "amd64", "x86_64-unknown-linux-gnu", api)
+						if mutation == "lost pointer" {
+							read := fmt.Sprintf("load volatile <%d x i8>", 16*ratio.input/ratio.output)
+							if err != nil || !strings.Contains(ir, read) {
+								t.Fatal("complete NUM address lost its shrinking source tuple", api, err)
+							}
+							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+							continue
+						}
+						if !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("widening result borrowed another source contract", mutation, api, err)
 						}
 					}

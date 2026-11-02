@@ -87,8 +87,29 @@ func TestX86COMINativeInputCannotSupplyOtherRoles(t *testing.T) {
 					if row.remove != "" {
 						source = strings.Replace(source, row.remove, "", 1)
 					}
+					paired := row.name == "numeric-base" || row.name == "no-future-pointer"
+					if paired {
+						x86RequireNumericNativeSourceContext(t, source, "var external [8]byte\nfunc view(p *byte) uintptr\n", arch)
+						x86LEAActualTargetGoObject(t, arch, triple, source)
+					}
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, source, "var external [8]byte\nfunc view(p *byte) uintptr\n", arch, triple, api)
+						if paired {
+							width, count := 4, 1
+							if strings.HasSuffix(op, "D") {
+								width = 8
+							}
+							if row.name == "no-future-pointer" {
+								count = 2
+							}
+							if err != nil || strings.Count(ir, fmt.Sprintf("elementtype([%d x i8])", width)) != count ||
+								!strings.Contains(ir, strings.ToLower(op)+" ") || !strings.Contains(ir, "~{fpsr}") ||
+								row.name == "no-future-pointer" && !strings.Contains(ir, "load volatile i32,") {
+								t.Fatal("independently paired COMI reads lost width, opcode or FP effects", api, err)
+							}
+							x86NumericNativeAddressObject(t, ir, triple)
+							continue
+						}
 						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("native comparison supplied missing input or storage authority", api, err)
 						}

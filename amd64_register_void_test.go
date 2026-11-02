@@ -202,8 +202,25 @@ func TestAMD64RegisterVoidCannotWaiveFaultingInputsAndSourceRoles(t *testing.T) 
 				_, _, source = amd64RegisterVoidSource(t, declaration, "MOVQ (AX),R10\n"+fixture.body)
 				requireAMD64RegisterResultGoObject(t, source)
 			}
+			if fixture.name == "NUM-is-not-pointer" {
+				err := checkAMD64RegisterResultInitialization(fn, sig,
+					func(_ int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
+						return x86ScalarFPResultTransfer(ins, state, owned, resultOffset, arch)
+					})
+				if !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("standalone register query acquired native storage authority", err)
+				}
+				requireAMD64RegisterResultGoObject(t, source)
+			}
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+				if fixture.name == "NUM-is-not-pointer" {
+					if err != nil || !strings.Contains(ir, "load volatile i64,") {
+						t.Fatal("complete NUM input lost its paired native read", api, err)
+					}
+					x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					continue
+				}
 				if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 					t.Error("Void waived a faulting read or its original source/entry role", api, err)
 				}

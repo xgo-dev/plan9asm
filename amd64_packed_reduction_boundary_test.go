@@ -70,8 +70,21 @@ func TestX86PackedReductionVoidRetainsMeaningfulInputsAndNativeBoundaries(t *tes
 		variants["missing-second-or-legacy-old-data"] = strings.Replace(source, "VPXORD Z1,Z1,Z1\n", "", 1)
 		for name, changed := range variants {
 			t.Run(fmt.Sprintf("%s/%s", row.row, name), func(t *testing.T) {
+				if name == "numeric-is-not-a-pointer" {
+					x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
+					x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", changed)
+				}
 				for _, api := range []string{"text", "module", "Go"} {
-					if ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+					if name == "numeric-is-not-a-pointer" {
+						if err != nil || !strings.Contains(ir, fmt.Sprintf("call <%d x float> asm sideeffect \"%s ", row.width/4, row.mnemonic)) ||
+							!strings.Contains(ir, "~{memory}") || !strings.Contains(ir, "~{fpsr}") {
+							t.Fatal("complete NUM address lost its original reduction width or effects", api, err)
+						}
+						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+						continue
+					}
+					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Error("Void invented a meaningful arithmetic input or native storage permission", api, err)
 					}
 				}

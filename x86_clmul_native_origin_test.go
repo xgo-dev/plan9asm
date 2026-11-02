@@ -310,8 +310,25 @@ func TestX86CLMULNativeVoidAndUnusedBoolKeepInputRoles(t *testing.T) {
 								continue
 							}
 							source, declaration := x86CLMULNativeOriginSource(row, arch, control, true, dead, unused)
+							if control == "numeric address" {
+								x86RequireNumericNativeSourceContext(t, source, declaration, arch)
+							}
 							for _, api := range []string{"text", "module", "Go"} {
-								if ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, x86AddressMemoryTargets(arch)[0], api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+								triple := x86AddressMemoryTargets(arch)[0]
+								ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+								if control == "numeric address" {
+									read := fmt.Sprintf("load volatile <%d x i8>", row.width)
+									if row.encoding == "legacy" {
+										read = "asm sideeffect \"pclmulqdq "
+									}
+									if err != nil || !strings.Contains(ir, read) ||
+										row.encoding == "legacy" && !strings.Contains(ir, "~{memory}") {
+										t.Fatal("complete NUM address lost its original CLMUL memory effect", arch, dead, unused, api, err)
+									}
+									x86NumericNativeAddressObject(t, ir, triple)
+									continue
+								}
+								if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("raw CLMUL invented a selected byte or native pointer role", arch, dead, unused, api, err)
 								}
 							}
