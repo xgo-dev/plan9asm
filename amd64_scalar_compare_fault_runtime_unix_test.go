@@ -9,6 +9,7 @@ import (
 )
 
 func TestCrossLinuxRuntimeMatrixX86ScalarCompareDeadReadFaults(t *testing.T) {
+	t.Run("scalar-sqrt", x86ScalarSqrtDeadReadFaultRuntime)
 	execution := x86FloatCompareExecutionTools(t)
 	var source, declarations, native, prototypes, pairs strings.Builder
 	for index, op := range x86ScalarCompareNames("amd64") {
