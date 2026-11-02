@@ -200,6 +200,12 @@ establishing a speedup; see [convergence](x86-convergence.md). This local batch
 still needs publication and its own complete CI. The earlier `ab900f0c0` fork
 round is still running at the last observation; it does not certify this batch.
 
+A subsequent cleanup removes 389 internally intercepted vector and ADC/SBB
+lines. Both SDKs retain all 26 local roots / 357 case IDs; complete CLI,
+scanner-context and preflight gates pass. No typed handler, numerical operation
+or native permission changes. Other private-entry implementations remain;
+see [the exact boundary](x86-convergence.md).
+
 ## Native policy repair
 
 The `ab900f0c0` Windows round exposed stale file-selection policies after native

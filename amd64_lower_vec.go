@@ -214,20 +214,6 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 	}
 
 	switch op {
-	case "VPOPCNTB":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 VPOPCNTB expects src, Zdst: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseZReg(ins.Args[1].Reg); !ok {
-			return false, false, nil
-		}
-		src, err := c.loadZVecOperand(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		out := amd64BytePopcountZ(c, src)
-		return true, false, c.storeZ(ins.Args[1].Reg, out)
-
 	case "VPCMPUQ":
 		if len(ins.Args) != 4 || ins.Args[0].Kind != OpImm || ins.Args[3].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 VPCMPUQ expects $imm, src1, src2, Kdst: %q", ins.Raw)
@@ -266,47 +252,6 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		}
 		maskv := amd64PackI1x8ToI64(c, "%"+cmp)
 		return true, false, c.storeK(ins.Args[3].Reg, maskv)
-
-	case "VPCOMPRESSQ":
-		if len(ins.Args) != 3 || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 VPCOMPRESSQ expects Zsrc, Kmask, Zdst: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseKReg(ins.Args[1].Reg); !ok {
-			return false, false, nil
-		}
-		if _, ok := amd64ParseZReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
-		}
-		src, err := c.loadZVecOperand(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		maskv, err := c.loadK(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		sv := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <64 x i8> %s to <8 x i64>\n", sv, src)
-		outVec := "zeroinitializer"
-		writePos := "0"
-		for i := 0; i < 8; i++ {
-			bit := amd64MaskBitI1(c, maskv, i)
-			lane := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement <8 x i64> %%%s, i32 %d\n", lane, sv, i)
-			inserted := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = insertelement <8 x i64> %s, i64 %%%s, i32 %s\n", inserted, outVec, lane, writePos)
-			selected := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = select i1 %s, <8 x i64> %%%s, <8 x i64> %s\n", selected, bit, inserted, outVec)
-			step := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i32\n", step, bit)
-			nextPos := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i32 %s, %%%s\n", nextPos, writePos, step)
-			outVec = "%" + selected
-			writePos = "%" + nextPos
-		}
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i64> %s to <64 x i8>\n", out, outVec)
-		return true, false, c.storeZ(ins.Args[2].Reg, "%"+out)
 
 	case "VPBROADCASTD":
 		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
@@ -586,137 +531,11 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 	case "VPALIGNR":
 		return c.lowerPackedAlignRight(rawOp, ins)
 
-	case "VINSERTI128":
-		// VINSERTI128 $imm, Xsrc, Ysrc, Ydst
-		if len(ins.Args) != 4 || ins.Args[0].Kind != OpImm || ins.Args[2].Kind != OpReg || ins.Args[3].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 VINSERTI128 expects $imm, Xsrc, Ysrc, Ydst: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseYReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
-		}
-		if _, ok := amd64ParseYReg(ins.Args[3].Reg); !ok {
-			return false, false, nil
-		}
-		imm := ins.Args[0].Imm & 1
-		xsrc, err := c.loadXVecOperand(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		ysrc, err := c.loadY(ins.Args[2].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		y64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <32 x i8> %s to <4 x i64>\n", y64, ysrc)
-		x64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", x64, xsrc)
-		i0 := c.newTmp()
-		i1 := c.newTmp()
-		if imm == 0 {
-			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", i0, x64)
-			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", i1, x64)
-			s0 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = insertelement <4 x i64> %%%s, i64 %%%s, i32 0\n", s0, y64, i0)
-			s1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = insertelement <4 x i64> %%%s, i64 %%%s, i32 1\n", s1, s0, i1)
-			out := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i64> %%%s to <32 x i8>\n", out, s1)
-			return true, false, c.storeY(ins.Args[3].Reg, "%"+out)
-		}
-		fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", i0, x64)
-		fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", i1, x64)
-		s0 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = insertelement <4 x i64> %%%s, i64 %%%s, i32 2\n", s0, y64, i0)
-		s1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = insertelement <4 x i64> %%%s, i64 %%%s, i32 3\n", s1, s0, i1)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i64> %%%s to <32 x i8>\n", out, s1)
-		return true, false, c.storeY(ins.Args[3].Reg, "%"+out)
-
 	case "VMOVNTDQ":
 		// Compatibility entry point for direct lowerVec unit tests. Ordinary
 		// translation dispatches the whole family through the dedicated
 		// lowerer before reaching this legacy switch.
 		return c.lowerNonTemporalVectorMove(op, ins)
-
-	case "AESENC", "AESENCLAST", "AESDEC", "AESDECLAST":
-		// Two-operand form: OP Xsrc, Xdst
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects Xsrc, Xdst: %q", op, ins.Raw)
-		}
-		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
-			return false, false, nil
-		}
-		src, err := c.loadXVecOperand(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		dstv, err := c.loadX(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		src2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", src2, src)
-		dst2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", dst2, dstv)
-		intr := map[Op]string{
-			"AESENC":     "@llvm.x86.aesni.aesenc",
-			"AESENCLAST": "@llvm.x86.aesni.aesenclast",
-			"AESDEC":     "@llvm.x86.aesni.aesdec",
-			"AESDECLAST": "@llvm.x86.aesni.aesdeclast",
-		}[op]
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call <2 x i64> %s(<2 x i64> %%%s, <2 x i64> %%%s)\n", call, intr, dst2, src2)
-		bc := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, call)
-		return true, false, c.storeX(ins.Args[1].Reg, "%"+bc)
-
-	case "AESIMC":
-		// Two-operand form: AESIMC Xsrc, Xdst
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 AESIMC expects Xsrc, Xdst: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
-			return false, false, nil
-		}
-		src, err := c.loadXVecOperand(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		src2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", src2, src)
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call <2 x i64> @llvm.x86.aesni.aesimc(<2 x i64> %%%s)\n", call, src2)
-		bc := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, call)
-		return true, false, c.storeX(ins.Args[1].Reg, "%"+bc)
-
-	case "AESKEYGENASSIST":
-		// Three-operand form: AESKEYGENASSIST $imm, Xsrc, Xdst
-		if len(ins.Args) != 3 || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 AESKEYGENASSIST expects $imm, Xsrc, Xdst: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
-			return false, false, nil
-		}
-		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
-		}
-		if ins.Args[0].Kind != OpImm {
-			return true, false, fmt.Errorf("amd64 AESKEYGENASSIST expects immediate first operand: %q", ins.Raw)
-		}
-		imm := ins.Args[0].Imm & 0xff
-		src, err := c.loadX(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		src2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", src2, src)
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call <2 x i64> @llvm.x86.aesni.aeskeygenassist(<2 x i64> %%%s, i8 %d)\n", call, src2, imm)
-		bc := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, call)
-		return true, false, c.storeX(ins.Args[2].Reg, "%"+bc)
 
 	case "PTEST", "VPTEST", "VTESTPD", "VTESTPS":
 		return c.lowerVectorTest(rawOp, ins)
@@ -1505,25 +1324,6 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 
 	case "VPCLMULQDQ":
 		return c.lowerPackedCarrylessMultiply(rawOp, ins)
-
-	case "VEXTRACTF32X4":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 VEXTRACTF32X4 expects $imm, Zsrc, Xdst: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseZReg(ins.Args[1].Reg); !ok {
-			return false, false, nil
-		}
-		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
-		}
-		idx := int(ins.Args[0].Imm & 0x3)
-		src, err := c.loadZ(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <64 x i8> %s, <64 x i8> zeroinitializer, <16 x i32> %s\n", out, src, llvmI32RangeMask(idx*16, 16))
-		return true, false, c.storeX(ins.Args[2].Reg, "%"+out)
 
 	case "PCLMULQDQ":
 		return c.lowerPackedCarrylessMultiply(rawOp, ins)

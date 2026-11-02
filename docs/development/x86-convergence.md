@@ -179,6 +179,21 @@ remain stable. The twenty neighboring translation cases change by -0.20%/+0.25%.
 These observations support code convergence and lower allocation cost, not a
 statistically established translation speedup or native execution improvement.
 
+The subsequent internal-dispatch cleanup removes 389 more production lines:
+seven vector arms (200 lines) and the old ADC/SBB arms (189). Their complete
+typed owners already intercept success and recognized errors inside the same
+function, including direct private-helper calls. All handler/effect/native code
+and entry prefixes are unchanged. Another 597 lines still reachable through
+private entries remain outside this deletion; they need separate convergence.
+
+Before and after deletion, both endpoint SDKs pass the same 26 local roots /
+357 case IDs. The original wider attempt retains its host-native preflight skip
+separately. Complete CLI extraction retains all 74 roots / 222 nodes; scanner
+context controls pass four roots / 628 nodes on each endpoint. All 574 Node
+policies, 31 preflight roots / 484 nodes and both five-target gates pass.
+This is removal of duplicate code, not a new numerical implementation, native
+execution certificate or measured translation speedup.
+
 ## Independent rule inventory
 
 The official scanner includes the selected SDK's ordered `asm6.go` `optab` and
