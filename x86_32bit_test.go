@@ -316,9 +316,10 @@ func Test386LoweringEdgeCases(t *testing.T) {
 	reg := Operand{Kind: OpReg, Reg: AX}
 
 	for _, test := range []struct {
-		name string
-		op   Op
-		args []Operand
+		name  string
+		op    Op
+		args  []Operand
+		lower func(Op, Instr) (bool, bool, error)
 	}{
 		{name: "ADCL operand count", op: "ADCL"},
 		{name: "ADCL source", op: "ADCL", args: []Operand{ident, reg}},
@@ -329,7 +330,7 @@ func Test386LoweringEdgeCases(t *testing.T) {
 		{name: "ANDW operand count", op: "ANDW"},
 		{name: "ANDW source", op: "ANDW", args: []Operand{ident, reg}},
 		{name: "ANDW destination", op: "ANDW", args: []Operand{imm, ident}},
-		{name: "SETEQ destination", op: "SETEQ", args: []Operand{ident}},
+		{name: "SETEQ destination", op: "SETEQ", args: []Operand{ident}, lower: c.lowerConditionalSet},
 		{name: "IMULL source", op: "IMULL", args: []Operand{ident}},
 		{name: "IMULL destination", op: "IMULL", args: []Operand{imm, imm}},
 		{name: "IMULL two-operand source", op: "IMULL", args: []Operand{ident, reg}},
@@ -340,7 +341,11 @@ func Test386LoweringEdgeCases(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			expectError(test.name, func() (bool, bool, error) {
-				return c.lowerArith(test.op, Instr{Raw: test.name, Args: test.args})
+				lower := c.lowerArith
+				if test.lower != nil {
+					lower = test.lower
+				}
+				return lower(test.op, Instr{Raw: test.name, Args: test.args})
 			})
 		})
 	}
@@ -414,7 +419,7 @@ func Test386LoweringErrorPaths(t *testing.T) {
 		return c.lowerArith("POPL", Instr{Raw: "POPL 0(BAD)", Args: []Operand{badMem}})
 	})
 	wantLowerError("SETEQ destination", func() (bool, bool, error) {
-		return c.lowerArith("SETEQ", Instr{Raw: "SETEQ 0(BAD)", Args: []Operand{badMem}})
+		return c.lowerConditionalSet("SETEQ", Instr{Raw: "SETEQ 0(BAD)", Args: []Operand{badMem}})
 	})
 	wantLowerError("CMPXCHG8B destination", func() (bool, bool, error) {
 		return c.lowerAtomic("CMPXCHG8B", Instr{Raw: "CMPXCHG8B 0(BAD)", Args: []Operand{badMem}})

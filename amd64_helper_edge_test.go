@@ -597,11 +597,15 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 		},
 	}
 	c, b := newAMD64CtxWithFuncForTest(t, fn, sig, nil)
+	mustLowerWith := func(lower func(Op, Instr) (bool, bool, error), op Op, ins Instr) {
+		t.Helper()
+		if ok, term, err := lower(op, ins); !ok || term || err != nil {
+			t.Fatalf("lower(%s) = (%v, %v, %v)", op, ok, term, err)
+		}
+	}
 	mustLower := func(op Op, ins Instr) {
 		t.Helper()
-		if ok, term, err := c.lowerArith(op, ins); !ok || term || err != nil {
-			t.Fatalf("lowerArith(%s) = (%v, %v, %v)", op, ok, term, err)
-		}
+		mustLowerWith(c.lowerArith, op, ins)
 	}
 	if ok, term, err := c.lowerScalarShiftRotate("RCRQ", Instr{Raw: "RCRQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}}); !ok || term || err != nil {
 		t.Fatalf("lowerScalarShiftRotate(RCRQ) = (%v, %v, %v)", ok, term, err)
@@ -645,12 +649,12 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("XORB", Instr{Raw: "XORB $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ANDB", Instr{Raw: "ANDB $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ORB", Instr{Raw: "ORB $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("INCQ", Instr{Raw: "INCQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
-	mustLower("DECQ", Instr{Raw: "DECQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
-	mustLower("DECQ", Instr{Raw: "DECQ 96(AX)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX, Off: 96}}}})
-	mustLower("INCL", Instr{Raw: "INCL AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
-	mustLower("DECL", Instr{Raw: "DECL AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
-	mustLower("DECL", Instr{Raw: "DECL 12(BX)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 12}}}})
+	mustLowerWith(c.lowerScalarIncDec, "INCQ", Instr{Raw: "INCQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarIncDec, "DECQ", Instr{Raw: "DECQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarIncDec, "DECQ", Instr{Raw: "DECQ 96(AX)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX, Off: 96}}}})
+	mustLowerWith(c.lowerScalarIncDec, "INCL", Instr{Raw: "INCL AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarIncDec, "DECL", Instr{Raw: "DECL AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarIncDec, "DECL", Instr{Raw: "DECL 12(BX)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 12}}}})
 	mustLower("LEAQ", Instr{Raw: "LEAQ 8(BX)(CX*2), DI", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Index: CX, Scale: 2, Off: 8}}, {Kind: OpReg, Reg: DI}}})
 	mustLower("LEAL", Instr{Raw: "LEAL 4(BX), SI", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 4}}, {Kind: OpReg, Reg: SI}}})
 	mustLower("LEAQ", Instr{Raw: "LEAQ ret+16(FP), R8", Args: []Operand{{Kind: OpFP, FPOffset: 16}, {Kind: OpReg, Reg: Reg("R8")}}})
@@ -674,36 +678,36 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("BSFL", Instr{Raw: "BSFL AX, DX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: DX}}})
 	mustLower("BSRL", Instr{Raw: "BSRL AX, DI", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: DI}}})
 	c.bitScanNS, c.targetTriple = oldScanNamespace, oldScanTarget
-	mustLower("SETEQ", Instr{Raw: "SETEQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
-	mustLower("SETGT", Instr{Raw: "SETGT ret+8(FP)", Args: []Operand{{Kind: OpFP, FPOffset: 8}}})
-	mustLower("SETGE", Instr{Raw: "SETGE AH", Args: []Operand{{Kind: OpReg, Reg: AH}}})
-	mustLower("SETHI", Instr{Raw: "SETHI BX", Args: []Operand{{Kind: OpReg, Reg: BX}}})
-	mustLower("SETCS", Instr{Raw: "SETCS AL", Args: []Operand{{Kind: OpReg, Reg: AL}}})
-	mustLower("SETCS", Instr{Raw: "SETCS AH", Args: []Operand{{Kind: OpReg, Reg: AH}}})
-	mustLower("CMOVQEQ", Instr{Raw: "CMOVQEQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
-	mustLower("CMOVQNE", Instr{Raw: "CMOVQNE CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
-	mustLower("CMOVQCS", Instr{Raw: "CMOVQCS CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
-	mustLower("CMOVQCC", Instr{Raw: "CMOVQCC CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
-	mustLower("CMOVQGT", Instr{Raw: "CMOVQGT CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerConditionalSet, "SETEQ", Instr{Raw: "SETEQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerConditionalSet, "SETGT", Instr{Raw: "SETGT ret+8(FP)", Args: []Operand{{Kind: OpFP, FPOffset: 8}}})
+	mustLowerWith(c.lowerConditionalSet, "SETGE", Instr{Raw: "SETGE AH", Args: []Operand{{Kind: OpReg, Reg: AH}}})
+	mustLowerWith(c.lowerConditionalSet, "SETHI", Instr{Raw: "SETHI BX", Args: []Operand{{Kind: OpReg, Reg: BX}}})
+	mustLowerWith(c.lowerConditionalSet, "SETCS", Instr{Raw: "SETCS AL", Args: []Operand{{Kind: OpReg, Reg: AL}}})
+	mustLowerWith(c.lowerConditionalSet, "SETCS", Instr{Raw: "SETCS AH", Args: []Operand{{Kind: OpReg, Reg: AH}}})
+	mustLowerWith(c.lowerConditionalMove, "CMOVQEQ", Instr{Raw: "CMOVQEQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerConditionalMove, "CMOVQNE", Instr{Raw: "CMOVQNE CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerConditionalMove, "CMOVQCS", Instr{Raw: "CMOVQCS CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerConditionalMove, "CMOVQCC", Instr{Raw: "CMOVQCC CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerConditionalMove, "CMOVQGT", Instr{Raw: "CMOVQGT CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ANDNL", Instr{Raw: "ANDNL AX, BX, CX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: CX}}})
 	mustLower("ANDNQ", Instr{Raw: "ANDNQ AX, BX, DX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: DX}}})
 	mustLower("BEXTRQ", Instr{Raw: "BEXTRQ CX, AX, DX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: DX}}})
 	mustLower("BZHIQ", Instr{Raw: "BZHIQ DI, AX, CX", Args: []Operand{{Kind: OpReg, Reg: DI}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: CX}}})
-	mustLower("SHRQ", Instr{Raw: "SHRQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("SHLQ", Instr{Raw: "SHLQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SHRQ", Instr{Raw: "SHRQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SHLQ", Instr{Raw: "SHLQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("SHLXQ", Instr{Raw: "SHLXQ DI, CX, AX", Args: []Operand{{Kind: OpReg, Reg: DI}, {Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
-	mustLower("SARQ", Instr{Raw: "SARQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("SARL", Instr{Raw: "SARL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("SHLL", Instr{Raw: "SHLL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("SHLB", Instr{Raw: "SHLB $2, R10", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("R10")}}})
-	mustLower("SHRL", Instr{Raw: "SHRL CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SARQ", Instr{Raw: "SARQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SARL", Instr{Raw: "SARL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SHLL", Instr{Raw: "SHLL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SHLB", Instr{Raw: "SHLB $2, R10", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("R10")}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SHRL", Instr{Raw: "SHRL CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("SHRXQ", Instr{Raw: "SHRXQ DI, AX, CX", Args: []Operand{{Kind: OpReg, Reg: DI}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: CX}}})
-	mustLower("SALQ", Instr{Raw: "SALQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("SALL", Instr{Raw: "SALL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("ROLL", Instr{Raw: "ROLL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("ROLQ", Instr{Raw: "ROLQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
-	mustLower("RORQ", Instr{Raw: "RORQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
-	mustLower("RORL", Instr{Raw: "RORL CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SALQ", Instr{Raw: "SALQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "SALL", Instr{Raw: "SALL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "ROLL", Instr{Raw: "ROLL $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "ROLQ", Instr{Raw: "ROLQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "RORQ", Instr{Raw: "RORQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLowerWith(c.lowerScalarShiftRotate, "RORL", Instr{Raw: "RORL CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("RORXL", Instr{Raw: "RORXL $1, AX, BX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}})
 	mustLower("RORXQ", Instr{Raw: "RORXQ $1, AX, CX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: CX}}})
 	mustLower("NOTL", Instr{Raw: "NOTL AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
@@ -855,7 +859,7 @@ func TestAMD64SetCSUsesCarryFlag(t *testing.T) {
 		{Raw: "SETCS AL", Args: []Operand{{Kind: OpReg, Reg: AL}}},
 		{Raw: "SETCS AH", Args: []Operand{{Kind: OpReg, Reg: AH}}},
 	} {
-		if ok, term, err := c.lowerArith("SETCS", ins); !ok || term || err != nil {
+		if ok, term, err := c.lowerConditionalSet("SETCS", ins); !ok || term || err != nil {
 			t.Fatalf("lowerArith(%s) = (%v, %v, %v)", ins.Raw, ok, term, err)
 		}
 	}
@@ -882,7 +886,7 @@ func TestAMD64SetGEUsesSignedFlag(t *testing.T) {
 	b.WriteString("  store i1 false, ptr " + c.flagsSltSlot + "\n")
 
 	ins := Instr{Raw: "SETGE AH", Args: []Operand{{Kind: OpReg, Reg: AH}}}
-	if ok, term, err := c.lowerArith("SETGE", ins); !ok || term || err != nil {
+	if ok, term, err := c.lowerConditionalSet("SETGE", ins); !ok || term || err != nil {
 		t.Fatalf("lowerArith(%s) = (%v, %v, %v)", ins.Raw, ok, term, err)
 	}
 

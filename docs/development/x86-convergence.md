@@ -183,8 +183,8 @@ The subsequent internal-dispatch cleanup removes 389 more production lines:
 seven vector arms (200 lines) and the old ADC/SBB arms (189). Their complete
 typed owners already intercept success and recognized errors inside the same
 function, including direct private-helper calls. All handler/effect/native code
-and entry prefixes are unchanged. Another 597 lines still reachable through
-private entries remain outside this deletion; they need separate convergence.
+and entry prefixes are unchanged. The remaining private-entry duplicates are
+handled by the separate callback migration described below.
 
 Before and after deletion, both endpoint SDKs pass the same 26 local roots /
 357 case IDs. The original wider attempt retains its host-native preflight skip
@@ -209,9 +209,26 @@ passes on current Go and its Go1.24.11 minimum; the additional Go1.27 SDK math
 owner is available only on current Go. Node, preflight and five-target gates pass.
 Seven Group2 and one BMI2 benchmark kernels return actual I64 ABI0 results;
 the separate existing GP control retains its Void/control-flow workload.
-Paired timing remains inconclusive: current-SDK rounds disagree, and unchanged
-controls show substantial host variance. Retain both rounds; do not claim a
-speedup or rigorous absence of regression before controlled-host qualification.
+The initial local paired rounds disagree, including unchanged controls; retain
+them as inconclusive observations. A subsequent controlled Ubuntu/amd64
+comparison completes three ABBA blocks on both SDKs, six samples per revision
+and kernel. The seven Group2 kernels have a geometric mean of median timing
+ratios of 0.99735 on current Go and 1.00027 on minimum Go, with unchanged
+allocation counts. The BMI2 and GP controls retain their separate workloads.
+These 216 samples observe no material timing change within this narrow scope,
+not a speedup or whole-source/native performance certificate.
+
+The following private-entry cleanup deletes 599 more production lines of
+duplicated INC/DEC, conditional SET/MOVE and Group2 lowering, including the
+superseded double-shift helper. The public dispatcher already reaches the
+complete typed owners first. Five fragment-test callbacks now call those same
+owners; every original operand, signature and numerical/error assertion is
+retained. The only other production entry into the residual arithmetic helper
+is the unchanged LEA projection. No compatibility dispatcher, registry or cache
+is added. Both endpoint SDKs retain the exact 125-root / 22,100-node inventory:
+22,093 PASS and seven host-native SKIPs each. Two additional Linux/amd64 owners
+are outside the local build. These remain separate from execution acceptance.
+The inherited minimum-SDK unsupported form also remains explicit.
 
 ## Independent rule inventory
 

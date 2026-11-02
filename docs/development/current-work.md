@@ -208,10 +208,24 @@ see [the exact boundary](x86-convergence.md).
 
 Scalar shift/rotate also reuses its existing validated form, removing another
 49 production lines. Both SDKs pass 43 roots / 10,890 nodes with all prior case
-IDs retained; BMI2 remains a separate family. Timing qualification is still
-inconclusive under host variance, including unchanged controls. Do not promote
-this cleanup to an efficiency certificate; retain controlled-host performance
-as an outstanding gate.
+IDs retained; BMI2 remains a separate family. The subsequent
+[controlled cloud comparison](https://github.com/cpunion/plan9asm/actions/runs/41372913511)
+completed both SDK jobs. Across seven Group2 kernels, the geometric mean of
+paired median translation times changes by -0.27% on Go 1.27.3 and +0.03% on
+Go 1.20.14, with unchanged allocations. All 216 raw samples retain exact source
+and tool identities. This observes stable translation cost for these kernels;
+it does not establish a speedup, whole-source performance or native execution.
+The earlier noisy local measurements remain separate observations.
+
+The private arithmetic cleanup removes another 599 production lines after
+migrating five fragment-test callbacks to their existing complete typed owners.
+Original operands, signatures and numerical/error assertions remain unchanged.
+Both SDKs retain all 125 roots / 22,100 case IDs: 22,093 PASS and seven explicit
+host-native SKIPs each. Two additional Linux/amd64 source owners do not build
+on the local ARM64 host. Neither group counts as execution coverage. CLI,
+scanner and policy gates pass. The minimum SDK's official-corpus classification
+still records one inherited unsupported form; investigation must retain that
+failure rather than relabeling it as successful support.
 
 ## Native policy repair
 
