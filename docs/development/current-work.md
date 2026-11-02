@@ -1,300 +1,99 @@
 # PR40 closeout
 
-Updated 2026-11-02. Finish amd64 typed instruction families, correctness and
-translation efficiency before generalizing to another architecture. Retain the
-386, ARM, ARM64 and WASM gates. Read [architecture](architecture.md),
-[family development](instructions.md), [convergence](x86-convergence.md) and
-[validation](validation.md). External scanning and ledgers belong to
-[llgo-compat/plan9asm](https://github.com/llgo-compat/plan9asm); do not run local
-inventory processes.
+Updated 2026-11-03. Finish AMD64 correctness, typed-family convergence and
+translation efficiency first. Preserve the 386, ARM, ARM64 and WASM gates.
+Use the [architecture](architecture.md), [family guide](instructions.md),
+[convergence notes](x86-convergence.md) and [validation](validation.md).
+External compatibility discovery belongs to
+[llgo-compat/plan9asm](https://github.com/llgo-compat/plan9asm).
 
-## Accepted publications
+## Published evidence
 
-[PR40](https://github.com/xgo-dev/plan9asm/pull/40)'s last fully accepted head is
-`c3a3fb8e74804558e9dd3e8fadfeadf4c7e5d2f3`. Its own
-[CI round](https://github.com/xgo-dev/plan9asm/actions/runs/41297943259)
-completed **325/325 SUCCESS**, attempt one, without reruns or cancellations.
-Official function coverage is **88.2%**; Codecov patch coverage is
-**92.48% >= 87.83%**. Independent acceptance joins 286 source artifacts,
-240 partitions, 23 groups and all 22 Windows/race packages with 168 raw streams
-each. Host-inapplicable skips remain distinct from passes. Two historical
-inline threads are resolved; no formal approval is recorded.
+The accepted fork head is `f32575c824b2a8759fcf1941b7a47e6b35e047b8`.
+Its [own complete CI](https://github.com/cpunion/plan9asm/actions/runs/41451548879)
+finished **325/325 SUCCESS**, attempt one, without reruns or cancellations.
+Independent acceptance binds the actual merge checkout and all 286 source
+artifacts, 240 partitions, 23 groups and three required aggregates.
+Windows and race each retain 22 packages and 168 raw streams; original SKIPs
+remain distinct from passes. Sixteen cross-runtime owners and their fresh
+collector join 531 roots / 3,897 children, all PASS without SKIPs.
 
-[LLGo2694](https://github.com/xgo-dev/llgo/pull/2694) remains draft at
-`7be828f55b9005f13f768b4a8a07aae4c57e6798`, based on
-`610075be034817b0f386d109926fd9a93db41a48` and pinning the earlier accepted
-translator `9285ff89a` through the allowed fork. The subsequent translator
-follow-ups have separate qualifications; they are not execution evidence for
-this older LLGo pin. LLGo's own thirteen workflows completed
-**140 SUCCESS + two conditional publisher SKIPs**, with no failures, reruns or
-cancellations. Patch coverage is **97.06% >= 95.82%**.
-Independent acceptance includes all eight native profiles, 612 stages and
-six actual Windows installation profiles. Firmware build success does not
-establish device execution.
+The 22 fresh main-module profiles report **88.4% statement coverage**.
+Codecov patch coverage is **91.39% >= 86.86%**; project coverage is 89.16%.
+All 327 exact-head checks succeed, including the two Codecov checks.
+This is fork CI evidence: upstream [PR40](https://github.com/xgo-dev/plan9asm/pull/40)
+still has published head `b531c83c7c810640cd6e04ab70e6422e440fd5d4`.
+Neither that older head nor the accepted f325 round certifies a later candidate.
+Both contribution PRs remain draft; no formal approval is recorded.
 
-The unresolved LLGo P1 requires an official tagged upstream plan9asm release
-containing these changes. The latest observed release, v0.6.2, does not contain
-them; a fork replacement does not satisfy that review. Do not merge, tag or
-release upstream, or mark this P1 resolved on the basis of fork CI.
+## Source coverage and boundaries
 
-[Earlier component history](https://github.com/cpunion/plan9asm/blob/9285ff89ab60cb7500481e233effdae8e61e5af3/docs/development/current-work.md)
-retains detailed qualifications and historical failures. They remain attached
-to their original inputs; a later passing round does not relabel a failed one.
+The independently joined AMD64 source union retains 67 overlapping views per
+SDK and 64 canonical snapshot files across both SDKs:
 
-## Source inventory and its limits
+| SDK | AVX | optab | ymovtab | Joined source identities |
+|---|---:|---:|---:|---:|
+| Current | 3,568 | 1,306 | 112 | 4,986 / 4,986 |
+| Minimum | 3,568 | 1,305 | 112 | 4,985 / 4,985 |
 
-The accepted source union has 67 overlapping views per SDK and 64 canonical
-snapshot files across both SDKs:
+Thirteen Zpseudo and four Zbyte rows, plus the ymovtab sentinel, stay separate.
+Preserve overlapping rows, first-match selection, frontend refusals,
+backend-only observations and physical-mode restrictions.
+**Source identity is not IR, LLVM-object or runtime evidence.** A complete row
+union does not prove complete functions, whole-library translation or execution.
+All five architectures retain their own grammar, source, object and runtime
+owners; no AMD64 count is a denominator for another architecture.
 
-| SDK | AVX | optab | ymovtab | Joined / denominator | Unjoined |
-|---|---:|---:|---:|---:|---:|
-| Current | 3,568 | 1,306 | 112 | 4,986 / 4,986 | 0 |
-| Minimum | 3,568 | 1,305 | 112 | 4,985 / 4,985 | 0 |
+## Candidate after f325
 
-These are independently joined source identities, not IR, LLVM-object or
-executed instruction counts. Exactly thirteen Zpseudo and four Zbyte rows
-are excluded from this denominator and retained separately. The ymovtab
-sentinel is separate from its 112 encoding rows. Preserve overlapping rows,
-first-match selection, frontend refusals, backend-only observations and actual
-mode restrictions. Parsing grants no initialized values, pointer extent,
-machine-state permission or source lease.
+The instruction follow-ups are committed through `3c05ab50b`; publication and
+their own complete CI are pending. Inspect the checkout for later documentation
+and gate commits instead of treating an older CI round as current evidence.
+The bounded follow-ups cover CPUID leaf/subleaf input dependencies, initialized
+NUM addresses only in paired native read/store consumers, movemask dependency
+continuation, selected same-module CPP inputs and function-local proof budgets.
+Standalone pointer/caller permissions and source ownership remain independent.
 
-The typed migration shares legal format groups, widths, aliases, effects and
-lowering within each family. Production line reductions and rejected slower
-abstractions are recorded in [convergence](x86-convergence.md). Source inventory
-completion does not establish whole-architecture semantic completion or a
-measured translation speedup.
+The partial-result candidate separates ordinary mixed-bool code generation
+from the strict numerical output-initialization audit. Inputs, CFG, stack,
+canonical bools and source replay still pass their existing checks; the actual
+strict error remains cached and cannot grant complete-proof storage permission.
+The final adjacent suite passes **46 roots / 2,352 nodes per SDK** with zero
+FAIL/SKIP and identical case IDs. Each SDK executes 72 portable caller pipelines
+and 288 values at LLVM 22 O0/O2, including low/interior-byte observations. The
+complete type matrix has O0 objects; this is not native386 qualification. The
+movemask union separately passes 6,618 nodes per SDK and 108 portable executions
+per SDK. The three-target dependency/export role union passes 72 nodes on the
+current SDK. Final combined policy and CLI gates remain required.
 
-## Current MIN/MAX and convergence follow-up
+This candidate needs its own source-bound final gates and fresh published CI.
+Do not copy f325 coverage or successful checks onto it. External canonical
+module qualification currently has **0 module PASS**; two compress object
+logs are object observations only. Rerun the complete canonical batch at the
+new head before claiming library-level progress.
 
-Product code `3c05d6dfb` removes 43 superseded production lines and extends the
-shared MIN/MAX oracle: 128 named kernels plus 256 raw kernels. Element width,
-instruction width, observed carrier and register bank are separate axes.
-Original Go objects independently retain low/REX, VEX2 and VEX3 encodings,
-including high registers and R9 memory. Raw legacy uses an AVX carrier to
-observe preserved Y upper bytes; the named SSE owner remains SSE-only.
+## Remaining qualification
 
-The isolated [fork qualification](https://github.com/cpunion/plan9asm/actions/runs/41296064081)
-at `31985333cf239ea4a03c2a8753bcdc53f91494c7` passed on native Linux/amd64
-with Go 1.27.3 and Go 1.20.14, LLVM 22.1.8. Each SDK has exactly 23 roots,
-746 unique RUN/PASS nodes and 24 native summaries, zero FAIL/SKIP. Source
-hashes match product code; only the fork diagnostic workflow differs. That
-workflow must not enter the contribution.
+The 65 tagged native AVX512 owners remain **hardware pending**. Default grammar,
+original Go bytes, LLVM 22 objects and retained SSE/VEX owners stay required.
+Tagged compilation or absent hardware never counts as native execution.
+Native386, ER/BF16/FP16 and other separate runtime boundaries retain their own
+requirements. The historical strict SDK/runtime result remains **41/55 PASS,
+14 FAIL**, tracked in [issue47](https://github.com/xgo-dev/plan9asm/issues/47).
+No newer instruction-only result relabels or closes those failures.
 
-All three public APIs execute at O0 and LLVM-optimized O2 against original Go
-assembler bytes and an integer-only IEEE oracle. Each SDK retains 9,437,184
-numerical comparisons, 9,360 fault observations and 18,432 exception observations.
-Cases cover aliases, scalar passthrough, signed zero, NaN payloads, denormals,
-MXCSR, FLAGS, exact memory widths, alignment and live/dead-result faults and
-exceptions. Complete earlier family tests and object gates remain. The separate
-128-kernel C compile/link gate makes no execution claim.
+[LLGo2694](https://github.com/xgo-dev/llgo/pull/2694) remains published at
+`7be828f55b9005f13f768b4a8a07aae4c57e6798`. The unpublished rebased candidate
+`17f50ce963956211e976937056701fa6bd999ddf` is based on upstream
+`983465e779527ff496857a9a1915c1b57131091f` and still pins f325.
+The 218-test and Linux runtime records belong to older 08e/f325 inputs;
+they do not qualify this new base. Fresh candidate validation is pending.
+The P1 requires an official upstream fix **and tagged release before merge**;
+a fork pin or successful CI does not resolve it. Keep draft status and record
+zero formal approvals until an actual review changes that state.
 
-Both SDKs pass nineteen family/object roots and 706 nodes locally. An initial
-VEX length-oracle error and a minimum-SDK disk-guard interruption remain failed
-reports. The corrected oracle uses original NOSPLIT|NOFRAME objects; the
-interrupted SDK was separately retried. Local ARM64 guest attempts are not
-native acceptance. This batch does not certify EVEX/AVX512, Go ABI0 wrapper
-execution or other floating-point families.
-
-## Floating arithmetic grammar follow-up
-
-`dc2936489` joins all 48 named ADD/SUB, MUL/DIV and MIN/MAX opcodes in one
-typed catalog and operand parser. Three dispatchers, caller syntax and memory
-shape queries now consume that grammar. Separate numerical lowerers retain
-rounding, source-order NaNs, machine state, raw-source verification and faults.
-The residual binary catalog owns FP16 and SCALEF only. Production shrinks by
-87 lines, including the replacement catalog.
-
-Both SDK endpoints retain exactly the same 74 roots and 2,183 unique PASS
-nodes before and after the change, with no failures or skips. An interrupted
-disk-guard attempt remains separate. Ten ABBA benchmark samples per revision
-and SDK retain the same allocation count: 12,106 current, 12,217 minimum.
-Median complete-translation time changes by -0.13% and +1.03% respectively;
-these observations establish no speedup. Additional official-row and consumer
-tests bring each SDK's local union to 92 roots and 2,417 PASS nodes. This retains
-132 AVX encoding rows / 684 witnesses and both legacy source modes.
-
-The isolated [floating arithmetic qualification](https://github.com/cpunion/plan9asm/actions/runs/41310855146)
-at `cc196e8b1` completed both native Linux/amd64 jobs with LLVM 22.1.8. Each SDK
-has exactly 36 roots and 774 unique RUN/PASS nodes, zero FAIL/SKIP. Its complete
-5,489-file product manifest matches `899f2ba2a`; only the diagnostic workflow
-differs. The 24 MIN/MAX numerical/fault/exception summaries retain the counts
-above. ADD/SUB and MUL/DIV owners execute as additional checks, not additional
-MIN/MAX observations. Later documentation edits do not represent another native
-execution. The contribution head's own complete CI remains required.
-
-## CI fixture and physical mode32 repair
-
-The `2c033f894` round exposed two isolated CLI extraction fixtures which still
-copied the superseded family files. The actual repository scanner finds the
-canonical catalog. Shared fixtures now retain all three original family roots,
-all 48 names, isolated checks on five architectures and complete-repository
-checks on both x86 modes. The complete extraction suite passes 74 roots / 222
-nodes on Go 1.27.3 and the CLI minimum Go 1.24.11, with no failures/skips.
-ARM's independent MULSD spelling remains present in complete-repository scans.
-
-The shared grammar also applies the existing physical mode32 boundary to
-ADD/SUB. An independent 108-case operation/width/register-role test first
-reproduced 36 missing checks, then passed on both endpoint SDKs. These are
-grammar controls, not native386 execution. The historical complete-source
-fixture retains identical original Go source hashes on all five targets;
-its 386 partition now explicitly retains 44 physical-bank Context rows
-(sixteen MIN/MAX and twenty-eight ADD/SUB). No row is removed or counted as an
-executed instruction. Initialized low-bank objects retain their separate owners.
-
-`a9ec02fb5` passes the complete local union: 93 roots / 2,526 unique PASS nodes
-per SDK, zero FAIL/SKIP. Combined production reduction is 99 lines relative to
-C3a, excluding tests/documentation. Final paired ABBA medians change by -0.23%
-on current Go and -0.73% on minimum Go, with essentially unchanged allocations;
-no speedup is claimed.
-
-The repair's [fresh native qualification](https://github.com/cpunion/plan9asm/actions/runs/41316060002)
-at `a824274f3` completed both SDK jobs without reruns/cancellations. Each SDK
-retains exactly 36 roots / 774 unique RUN/PASS nodes and zero FAIL/SKIP. The
-complete 5,490-file product manifest matches `e97ae1d32`, with only the fork
-diagnostic workflow differing. Its 24 MIN/MAX summaries retain the numerical,
-fault and exception counts above. Later documentation edits are inherited by
-explicit code identity; they are not another native execution.
-
-The repair is published at `b531c83c7`; its own complete contribution CI remains
-required. All six formerly failing CLI leaves passed in the same-head fork
-round. That round also exposed native AVX512 owners on runners without F/VL
-and enabled Z state; those failed preflights are not instruction/runtime passes.
-Let each existing round finish before pushing another batch.
-
-## Explicit native hardware qualification
-
-The follow-up retains all 65 native AVX512 owners in an explicit Linux/amd64
-qualification inventory. Mixed source files keep grammar and LLVM-object roots
-in default CI; only native entry wrappers move behind the existing tag. All
-original source/C fixtures and CPU/OS/opcode guards remain intact. The two COMI
-VEX axes remain ordinary mandatory roots, with independent tagged EVEX roots.
-SSE unmasked traps also remain mandatory.
-
-The default/tagged inventory union is checked on six host targets. CI compiles
-the tagged binary without claiming execution. Explicit original-floating
-wrappers refuse `auto`; strict native readers still require every selected root
-and child to pass. These 65 owners remain pending hardware qualification until
-successful current-source native receipts exist. Their relocation does not
-relabel the earlier failed rounds or certify native386, ER, BF16 or FP16.
-
-Local qualification passes eleven policy/preflight roots / thirty nodes and
-eighteen affected source/object/portable roots / 508 nodes on each SDK, with no
-failures or skips. The current SDK also passes 574 Node policies, 27 Go policy
-roots / 334 nodes and thirteen runner-policy roots / 26 nodes. Both SDKs retain
-the five-architecture gates. These checks establish the test partition and
-retained compile/portable coverage; they do not execute the tagged native set.
-
-## Packed integer grammar follow-up
-
-The packed add/subtract/D-Q low-product follow-up consolidates 36 source
-spellings into one catalog and the existing binary grammar, removing 80 net
-production lines. Both endpoint SDKs retain all 5,751 original local case IDs
-and pass 66 roots / 5,791 nodes including new query-boundary/allocation controls.
-The native PADDD execution owner remains separate from this ARM64-host result.
-Complete CLI extraction passes 74 roots / 222 nodes on current Go and its
-Go 1.24.11 minimum; scanner integration passes 67 nodes per endpoint SDK.
-All 574 Node policies, 334 Go policy nodes and both five-architecture gates pass.
-Paired complete-translation measurements retain or reduce allocations without
-establishing a speedup; see [convergence](x86-convergence.md). This local batch
-still needs publication and its own complete CI. The earlier `ab900f0c0` fork
-round is still running at the last observation; it does not certify this batch.
-
-A subsequent cleanup removes 389 internally intercepted vector and ADC/SBB
-lines. Both SDKs retain all 26 local roots / 357 case IDs; complete CLI,
-scanner-context and preflight gates pass. No typed handler, numerical operation
-or native permission changes. Other private-entry implementations remain;
-see [the exact boundary](x86-convergence.md).
-
-Scalar shift/rotate also reuses its existing validated form, removing another
-49 production lines. Both SDKs pass 43 roots / 10,890 nodes with all prior case
-IDs retained; BMI2 remains a separate family. The subsequent
-[controlled cloud comparison](https://github.com/cpunion/plan9asm/actions/runs/41372913511)
-completed both SDK jobs. Across seven Group2 kernels, the geometric mean of
-paired median translation times changes by -0.27% on Go 1.27.3 and +0.03% on
-Go 1.20.14, with unchanged allocations. All 216 raw samples retain exact source
-and tool identities. This observes stable translation cost for these kernels;
-it does not establish a speedup, whole-source performance or native execution.
-The earlier noisy local measurements remain separate observations.
-
-The private arithmetic cleanup removes another 599 production lines after
-migrating five fragment-test callbacks to their existing complete typed owners.
-Original operands, signatures and numerical/error assertions remain unchanged.
-Both SDKs retain all 125 roots / 22,100 case IDs: 22,093 PASS and seven explicit
-host-native SKIPs each. Two additional Linux/amd64 source owners do not build
-on the local ARM64 host. Neither group counts as execution coverage. CLI,
-scanner and policy gates pass. The minimum SDK's official-corpus classification
-still records one inherited unsupported form; investigation must retain that
-failure rather than relabeling it as successful support.
-
-## Native policy repair
-
-The `ab900f0c0` Windows round exposed stale file-selection policies after native
-owners moved behind the explicit tag. Four policy roots first fail on both SDKs;
-their repair checks ordinary/tagged selection on all eight target profiles.
-All 17 conversion partitions, seven fixed-local batches, 65 native owners,
-original numerical fixtures and CPU guards remain unchanged. Ordinary VEX
-execution remains selected on Linux/amd64 and Linux/arm64.
-
-Both SDKs pass all fourteen adjacent policy roots / 196 nodes. The four repaired
-roots now run in preflight: 31 roots / 484 nodes, alongside all 574 Node policies
-and both five-architecture gates. These are selection and policy checks, not
-native AVX512 execution. The complete fork round must finish before publishing
-the combined follow-up; retain its actual failures and inspect every new one.
-
-## Complete control-form identity
-
-Corpus reports now retain full source suffixes in `Form`; base `Opcode` and
-`Family`, lowering and probe outcomes remain unchanged. This separates zeroing,
-broadcast, rounding, ARM predicates and addressing controls instead of allowing
-one rejected spelling to poison an ordinary form or inherit its manifest label.
-
-Both SDK endpoints pass eight relevant roots / 132 nodes and the complete
-scanner suite, 110 roots / 2,470 nodes, with zero failures/skips. An independent
-before/after observation retains all 50,357 concrete probe keys, full errors,
-source hashes and occurrence counts across the two endpoint corpora. Forty
-fresh reports, built with each Go 1.20–1.27 SDK across all five architectures,
-reverse-partition exactly to the old baseline counts and fingerprints. The
-unchanged strict checker passes the intentionally refined baseline.
-
-Current amd64 reports 6,763 forms instead of 6,736; this is finer classification,
-not 27 new implementations. Go 1.20's historical `VADDPD.Z X30, X1, X0` remains
-one explicit unsupported occurrence, separate from twenty ordinary VADDPD hits.
-Original Go bytes and current-Go rejection are independently retained by the
-assembler-epoch regression. No invalid source is relabeled Context or PASS.
-
-The independent x/arch ARM64 corpus also retains all 4,444 concrete probes and
-4,680 occurrences unchanged. Its refined full-source baseline has 1,178 forms,
-including 274 unsupported groups; the extra three groups split existing errors.
-Its Go assembler oracle attempts all 794 selected family cases: 703 accepted
-and 91 rejected. That subset has zero unsupported forms or parse errors. Both
-baseline scripts now run in policy preflight before the matrix expands, while
-the original build and per-SDK corpus checks remain required.
-
-## Remaining work
-
-1. Finish the native hardware partition follow-up and publish the verified batch
-   without the fork-only diagnostic workflow. Accept its own complete CI,
-   coverage and review; the accepted C3a round does not certify a later head.
-2. Continue initialized functions, LLVM 22 objects and independent semantics
-   family by family. Preserve native 386, AVX512/AVX512ER, reciprocal/MXCSR,
-   extended80/BCD, MMX-state and BF16 fault gaps until separately qualified.
-   Context, unavailable hardware and unfinished tests are never passes.
-3. Converge shared typed consumers and remove replaced selectors in the same
-   batch. Keep element, carrier, active/result and memory widths, direction,
-   masks, aliases, FLAGS and fault/order effects separate. Measure retained
-   allocations and complete translation time; do not count faster rejection
-   or reduced scope as acceleration.
-4. Preserve the historical strict amd64 SDK/runtime result of 41/55 PASS and
-   fourteen FAIL, all attempted. Track individual source and runtime causes in
-   [issue47](https://github.com/xgo-dev/plan9asm/issues/47). The instruction-only
-   PR gates do not close these integration failures.
-5. After upstream publishes an appropriate release, replace LLGo's fork pin,
-   rerun its integration checks and address the remaining review. Keep broader
-   runtime contracts separate from instruction translation.
-
-Use current Go 1.27, an immutable Go 1.20.14 SDK and LLVM 22 only. Keep one
-heavy local Go/LLVM/Node owner, a 20 GiB disk reserve and reusable compiler
-caches. Never clear the global cache. Dispose owned modules, contexts,
-executables and subprocesses promptly. Keep exact source/tool provenance and
-failed reports under ignored `_out/`.
+Detailed earlier components, failures and measurements remain in the
+[immutable history](https://github.com/cpunion/plan9asm/blob/dfab0bf818b9e09eacbd8a1a2b8df7b8fc5227be/docs/development/current-work.md).
+Use Go 1.27, immutable Go 1.20.14 and LLVM 22; missing tools fail.
+Keep one heavy owner, a 20 GiB reserve and reusable global caches. Release owned
+objects/processes promptly; preserve raw failures and exact inputs under `_out`.
