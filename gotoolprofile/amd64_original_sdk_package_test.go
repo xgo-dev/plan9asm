@@ -119,8 +119,24 @@ func TestAMD64OriginalSDKPackageDoesNotRelaxOtherRoles(t *testing.T) {
 		if err := retainAMD64OriginalPackageDirectory(pkg, pkg.Dir, files); err != nil {
 			t.Fatal(err)
 		}
-		if files.hashes[filepath.Join(pkg.Dir, "descendant", "dep.go")] == "" {
-			t.Fatal("ordinary module lost its existing complete source-tree guard")
+		nested := filepath.Join(pkg.Dir, "descendant", "dep.go")
+		if files.hashes[nested] != "" {
+			t.Fatal("unimported ordinary descendant acquired a package-input role")
+		}
+		selected := pkg
+		selected.ImportPath += "/descendant"
+		selected.Dir = filepath.Dir(nested)
+		if err := retainAMD64OriginalPackageDirectory(selected, selected.Dir, files); err != nil {
+			t.Fatal(err)
+		}
+		if files.hashes[nested] == "" {
+			t.Fatal("selected ordinary descendant lost its actual source guard")
+		}
+		if err := os.WriteFile(nested, []byte("package descendant\n// selected edit\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := files.verify(); err == nil {
+			t.Fatal("changed selected ordinary descendant escaped source verification")
 		}
 	})
 	t.Run("foreign module SDK", func(t *testing.T) {
