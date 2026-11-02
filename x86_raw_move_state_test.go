@@ -109,10 +109,11 @@ func TestX86RawMoveEveryByteAndIndependentState(t *testing.T) {
 					}
 					before := state.clone()
 					accepted, recognized := x86LoweredRawVectorMoveStep(ins, &state, nil, 0, arch)
-					if !recognized || accepted != (control == "address") || !reflect.DeepEqual(state, before) {
+					numericalRead := control == "address" && row.scalar && row.role == "load"
+					if !recognized || accepted != numericalRead || !reflect.DeepEqual(state, before) {
 						t.Fatal("raw move changed independent address/mask state", control)
 					}
-					if control == "address" {
+					if numericalRead {
 						base := 3
 						if row.role == "store" {
 							base = 7

@@ -45,9 +45,10 @@ func TestX86MOVBEDeadNativeAccessKeepsExactWidthAndInputs(t *testing.T) {
 					}
 					for _, variant := range variants {
 						t.Run(fmt.Sprintf("%s/%s/%s/raw=%t/%s", target.triple, op, effect, raw, variant.name), func(t *testing.T) {
+							pairedNumericalRead := variant.name == "numerical-address" && !store
 							for _, api := range []string{"text", "module", "Go"} {
 								ir, err := x86ScalarFPBitViewAPI(t, variant.source, "func Value(p *[16]byte)", target.arch, target.triple, api)
-								if variant.name != "initialized" && variant.name != "numerical-address" {
+								if variant.name != "initialized" && !pairedNumericalRead {
 									if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 										t.Fatal("dead MOVBE borrowed an unknown address or value", api, err)
 									}
@@ -56,16 +57,18 @@ func TestX86MOVBEDeadNativeAccessKeepsExactWidthAndInputs(t *testing.T) {
 								if err != nil {
 									t.Fatal("initialized dead MOVBE native access rejected", api, err)
 								}
-								if variant.name == "numerical-address" {
+								if pairedNumericalRead {
 									x86RequireNumericNativeSourceContext(t, variant.source, "func Value(p *[16]byte)", target.arch)
 									x86NumericNativeAddressObject(t, ir, target.triple)
 								}
-								for _, text := range []string{ir, x86DwordProductIROptimize(t, ir)} {
+								for pipeline, text := range []string{ir, x86DwordProductIROptimize(t, ir)} {
 									if strings.Count(text, fmt.Sprintf("%s volatile i%d ", effect, bits)) != 1 &&
 										strings.Count(text, fmt.Sprintf("%s volatile i%d,", effect, bits)) != 1 {
 										t.Fatal("dead MOVBE lost its exact volatile access", api, effect, bits)
 									}
-									if !strings.Contains(text, ", align 1") || strings.Contains(text, "dereferenceable") {
+									// LLVM may infer alignment from the literal address in
+									// the optimized control. The emitter still starts at 1.
+									if (pipeline == 0 || variant.name != "numerical-address") && !strings.Contains(text, ", align 1") || strings.Contains(text, "dereferenceable") {
 										t.Fatal("MOVBE invented memory alignment or backing", api)
 									}
 								}
