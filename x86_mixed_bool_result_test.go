@@ -126,14 +126,18 @@ func TestX86MixedBoolResultOrdinaryCanonicalThreeAPIs(t *testing.T) {
 				{"unknown-byte", fmt.Sprintf("MOVB DX,ret+%d(FP)\n", boolean) + storeNumber + "RET", false},
 				{"numeric-input-is-not-bool", fmt.Sprintf("MOVL n+%d(FP),AX\nMOVB AX,ret+%d(FP)\n", 4-input, boolean) + storeNumber + "RET", false},
 				{"noncanonical-join", "MOVL $1,AX\nCMPL AX,$0\nJE other\n" + storeBool(2) + "JMP end\nother:\n" + copyBool + "end:\n" + storeNumber + "RET", false},
-				{"missing-number", copyBool + "RET", false},
-				{"partial-number", copyBool + fmt.Sprintf("MOVB $7,ret+%d(FP)\nRET", number), false},
+				{"missing-number", copyBool + "RET", true},
+				{"partial-number", copyBool + fmt.Sprintf("MOVB $7,ret+%d(FP)\nRET", number), true},
 				{"overwritten-canonical", copyBool + storeBool(2) + storeNumber + "RET", false},
 				{"dead-unknown-effect", copyBool + storeNumber + "JMP end\nCALL ·unknown(SB)\nend:\nRET", false},
 			} {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(fmt.Sprintf("%s/bool-first=%t/%s/%s", target.triple, boolFirst, row.name, api), func(t *testing.T) {
-						_, _, _, source := x86ResultInitializationFixture(t, target.arch, declaration, row.body)
+						_, file, sig, source := x86ResultInitializationFixture(t, target.arch, declaration, row.body)
+						incomplete := row.name == "missing-number" || row.name == "partial-number"
+						if incomplete && !errors.Is(CheckX86ABI0ResultInitialization(file.Funcs[0], sig, target.arch), ErrProbeNeedsContext) {
+							t.Fatal("the original incomplete-result audit disappeared")
+						}
 						ir, err := x86OrderingHintTranslateAPI(t, api, source, "package ordering\n"+declaration+"\n", target.arch, target.triple)
 						if row.accept {
 							if err != nil || ir == "" {
@@ -141,6 +145,13 @@ func TestX86MixedBoolResultOrdinaryCanonicalThreeAPIs(t *testing.T) {
 							}
 							if row.name == "physical-byte-roundtrip" && !strings.Contains(ir, " = zext i8 ") {
 								t.Fatal("intermediate bool byte was normalized before its numerical observation")
+							}
+							if incomplete {
+								llc := findLLVM22Tool("llc")
+								if llc == "" {
+									t.Fatal("LLVM22 llc required")
+								}
+								x86ResultInitializationObject(t, llc, target.triple, ir, "partial-numeric-tuple")
 							}
 						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatalf("unproved tuple accepted: output=%t error=%v", ir != "", err)

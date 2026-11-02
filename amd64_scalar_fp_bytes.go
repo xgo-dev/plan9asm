@@ -56,6 +56,13 @@ func (c *amd64Ctx) scalarFPResultInitialized() error {
 		c.fpScalarChecked = true
 		c.fpScalarCheckErr = c.checkLoweredScalarFPResultInitialization()
 	}
+	if _, incomplete := c.fpScalarCheckErr.(*x86IncompleteResultError); incomplete &&
+		(c.fpMixedBoolBytes || x86OrdinaryMixedBoolResultRole(c.fpScalarSource, c.sig, c.goarch)) {
+		// Ordinary Go callers may inspect a numerical tuple field only on the
+		// path that writes it. Keep the actual strict error cached: this does
+		// not grant the complete-proof capabilities guarded by that cache.
+		return nil
+	}
 	return c.fpScalarCheckErr
 }
 

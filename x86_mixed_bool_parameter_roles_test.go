@@ -109,24 +109,24 @@ func TestX86MixedBoolResultPointerParameterDoesNotGrantNumericalAuthority(t *tes
 			{"missing-number", fmt.Sprintf("MOVB $1,ok+%d(FP)\nRET", 2*word)},
 		} {
 			_, file, sig, source := x86ResultInitializationFixture(t, arch, declaration, row.body)
-			if row.name == "unknown-address" {
+			if row.name == "unknown-address" || row.name == "missing-number" {
 				goAssemblerOracleOutput(t, arch, source, "", true)
 				if err := CheckX86ABI0ResultInitialization(file.Funcs[0], sig, arch); !errors.Is(err, ErrProbeNeedsContext) {
-					t.Fatal("the standalone query borrowed a paired numerical-address load", err)
+					t.Fatal("the standalone source/result audit lost its original strict outcome", err)
 				}
 			}
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(arch+"/"+row.name+"/"+api, func(t *testing.T) {
 					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
-					if row.name == "unknown-address" {
+					if row.name == "unknown-address" || row.name == "missing-number" {
 						if err != nil || ir == "" {
-							t.Fatal("a fully initialized numerical address lost its paired load", err)
+							t.Fatal("valid code generation borrowed a pointer fact or was blocked by its separate result audit", err)
 						}
 						llc := findLLVM22Tool("llc")
 						if llc == "" {
 							t.Fatal("LLVM22 llc required")
 						}
-						x86ResultInitializationObject(t, llc, triple, ir, "numeric-address-tuple")
+						x86ResultInitializationObject(t, llc, triple, ir, "ordinary-pointer-tuple")
 						return
 					}
 					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {

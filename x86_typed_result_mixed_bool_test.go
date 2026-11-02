@@ -57,13 +57,23 @@ func TestX86TypedNumericalMixedBoolCanonicalCompositionThreeAPIs(t *testing.T) {
 						body += "ANDL $1,AX\n"
 					}
 					body += fmt.Sprintf("MOVB AX,ret+%d(FP)\nRET", boolean)
-					_, _, _, source := x86ResultInitializationFixture(t, target.arch, declaration, body)
+					_, file, sig, source := x86ResultInitializationFixture(t, target.arch, declaration, body)
+					if scenario == "missing-number" && !errors.Is(CheckX86ABI0ResultInitialization(file.Funcs[0], sig, target.arch), ErrProbeNeedsContext) {
+						t.Fatal("the strict numerical-result audit must retain its original failure")
+					}
 					for _, api := range []string{"text", "module", "Go"} {
 						t.Run(fmt.Sprintf("%s/bool-first=%t/%s/%s/%s", target.triple, boolFirst, operation, scenario, api), func(t *testing.T) {
 							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
-							if scenario == "canonical-mask" || scenario == "zero-extended-input" {
+							if scenario == "canonical-mask" || scenario == "zero-extended-input" || scenario == "missing-number" {
 								if err != nil || ir == "" {
 									t.Fatalf("complete typed NUM/canonical tuple rejected: output=%t error=%v", ir != "", err)
+								}
+								if scenario == "missing-number" {
+									llc := findLLVM22Tool("llc")
+									if llc == "" {
+										t.Fatal("LLVM22 llc required")
+									}
+									x86ResultInitializationObject(t, llc, target.triple, ir, "typed-partial-numeric-tuple")
 								}
 							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatalf("unproved arithmetic bool tuple accepted: output=%t error=%v", ir != "", err)

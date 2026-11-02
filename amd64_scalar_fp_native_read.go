@@ -77,15 +77,19 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 				return x86ScalarFPResultTransfer(ins, state, owned, resultOffset, arch)
 			})
 	}
-	if strictErr == nil && nativeMMX == nil {
+	_, incompleteResults := strictErr.(*x86IncompleteResultError)
+	ordinaryIncomplete := incompleteResults && x86OrdinaryMixedBoolResultRole(fn, sig, arch)
+	if (strictErr == nil || ordinaryIncomplete) && nativeMMX == nil {
 		// Complete numerical bytes do not authenticate the original source.
 		// Keep the existing native/frame owners independent, but apply the
 		// same restriction-only replay before ordinary strict success too.
 		// This branch returns, so the later paired path never repeats it.
 		if len(fn.X86RawText) == 0 && fn.x86SourceStack == nil && fn.x86FixedLocal == nil {
-			return x86LoweredNumericalProducerReplay(fn, arch)
+			if err := x86LoweredNumericalProducerReplay(fn, arch); err != nil {
+				return err
+			}
 		}
-		return nil
+		return strictErr
 	}
 	if selected, err := c.checkRawLogicalScalarResult(); selected {
 		return err

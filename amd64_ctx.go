@@ -103,7 +103,7 @@ type amd64Ctx struct {
 	fpScalarChecked   bool
 	fpScalarCheckErr  error
 	fpScalarTrapOnly  bool // Complete private logical-shadow proof: every path ends in an exact trap.
-	fpMixedBoolBytes  bool // Complete ordinary tuple NUM/canonical proof passed.
+	fpMixedBoolBytes  bool // Ordinary tuple inputs/canonical bool passed; result audit is separate.
 	dataBPSource      bool // Complete named leaf's private opaque-pointer holder, never physical BP.
 
 	fpStaticAddressValues *x86StaticAddressValues // No dereference capability.

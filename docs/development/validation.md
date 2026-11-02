@@ -96,6 +96,12 @@ oracles retain their additional live SDK/tool/file identity observations.
 ## Local and CI gates
 
 Run focused RED/GREEN tests first; preserve failures under ignored `_out/`.
+
+Derive FP slot offsets from `DeriveGoFuncABI0Signature` before constructing a
+fixture. The result area may start after ABI word padding; successful assembly
+alone does not validate its offsets against the Go declaration. Pair rejection
+controls with a valid initialized source through the same public API.
+
 Before choosing a family selector, enumerate its canonical row/object roots and
 all changed regression owners. Check every name against the selector and the
 actual JSON RUN/terminal inventory; a broad-looking prefix can omit legacy

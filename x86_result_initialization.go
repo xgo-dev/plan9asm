@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// Returned only after all source effects and every reachable return contract
+// have passed. An exact error type keeps a wrapped or joined input/storage
+// failure from masquerading as an incomplete numerical result.
+type x86IncompleteResultError struct{ error }
+
+func (err *x86IncompleteResultError) Unwrap() error {
+	return err.error
+}
+
 // CheckX86ABI0ResultInitialization checks only byte initialization of one or
 // more scalar ABI0 result fields. It supplies no source authentication, native
 // frame, caller-memory, return-continuation or translation permission. The
@@ -217,7 +226,8 @@ func checkX86ABI0ResultInitializationWithTrapOnly(fn Func, sig FuncSig, goarch s
 		(fn.ArgSize < int64(frame) || fn.ArgSize > 4096) {
 		return fail("TEXT argument extent disagrees with the typed result")
 	}
-	return checkX86ResultSourceFlowWithTrapOnly(fn, initial, owned, resultOffset, goarch, transfer,
+	var incomplete *x86IncompleteResultError
+	err := checkX86ResultSourceFlowWithTrapOnly(fn, initial, owned, resultOffset, goarch, transfer,
 		func(state x86ResultState, pc int) error {
 			if state.x87 != nil && (state.x87.invalid || state.x87.depth != 0) {
 				return fail("logical x87 value stack is not balanced at RET")
@@ -228,11 +238,6 @@ func checkX86ABI0ResultInitializationWithTrapOnly(fn Func, sig FuncSig, goarch s
 			if state.continuation != nil && !state.continuation.checkReturn() {
 				return fail("initializer does not write every code-table cell on every RET")
 			}
-			for offset := int(resultOffset); offset < frame; offset++ {
-				if owned[offset] && !state.fp[offset] {
-					return fail(fmt.Sprintf("result byte %d is not written on every path to RET %d", offset, pc))
-				}
-			}
 			if canonicalBool || mixedBool {
 				for _, slot := range sig.Frame.Results {
 					if slot.Type == I1 && !state.canonicalFP[slot.Offset] {
@@ -240,8 +245,20 @@ func checkX86ABI0ResultInitializationWithTrapOnly(fn Func, sig FuncSig, goarch s
 					}
 				}
 			}
+			for offset := int(resultOffset); offset < frame; offset++ {
+				if owned[offset] && !state.fp[offset] && incomplete == nil {
+					incomplete = &x86IncompleteResultError{fail(fmt.Sprintf("result byte %d is not written on every path to RET %d", offset, pc))}
+				}
+			}
 			return nil
 		}, trapOnly)
+	if err != nil {
+		return err
+	}
+	if incomplete != nil {
+		return incomplete
+	}
+	return nil
 }
 
 type x86ResultSourceTransfer func(int, Instr, *x86ResultState, []bool, int64, string) bool
