@@ -175,7 +175,11 @@ func TestX86FloatingHelperNativeContinuationRetainsItsSourceBoundary(t *testing.
 				before := state.clone()
 				accepted, known := x86ResultFloatingHelperStep(ins, &state, nil, arch, native)
 				if mutation == "valid" || mutation == "numerical address" {
-					if !accepted || !known || !reflect.DeepEqual(state, before) {
+					expected := before.clone()
+					if member.maskResult {
+						expected.masks[2] = true
+					}
+					if !accepted || !known || !reflect.DeepEqual(state, expected) {
 						t.Fatal("incoming native pointer lost paired helper continuation", arch, member.name)
 					}
 				} else if accepted || !known || !reflect.DeepEqual(state, before) {

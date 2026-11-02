@@ -132,7 +132,7 @@ func TestX86MOVBERawIdentityCannotSupplyPointerOrNumericalBytes(t *testing.T) {
 							if !accepted || x86RawMOVBESource(changed, arch) || !reflect.DeepEqual(before, state) {
 								t.Fatal("named numerical MOVBE read changed state or acquired raw identity")
 							}
-							continue
+							return
 						}
 						if accepted || x86RawMOVBESource(changed, arch) || !reflect.DeepEqual(before, state) {
 							t.Fatal("changed raw source borrowed a MOVBE continuation", accepted)
