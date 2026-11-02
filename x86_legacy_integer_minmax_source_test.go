@@ -259,6 +259,7 @@ func TestX86LegacyIntegerMinMaxDeadNativeInputsAndOriginalAccess(t *testing.T) {
 					for _, mutation := range []struct{ name, before, after string }{
 						{"pointer", move + " input+0(FP),AX\n", ""},
 						{"numeric-address", move + " input+0(FP),AX\n", move + " $1,AX\n"},
+						{"partial-address", move + " input+0(FP),AX\n", "MOVB $1,AL\n"},
 						{"old-destination", "PXOR X0,X0\n", ""},
 						{"index", "(AX),X0", "(AX)(CX*2),X0"},
 					} {
@@ -266,7 +267,16 @@ func TestX86LegacyIntegerMinMaxDeadNativeInputsAndOriginalAccess(t *testing.T) {
 						if changed == source {
 							t.Fatal("missing-input control was not applied", mutation.name)
 						}
-						if output, err := x86ScalarFPBitViewAPI(t, changed, "func Read(input *byte)", arch, triple, api); output != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						output, err := x86ScalarFPBitViewAPI(t, changed, "func Read(input *byte)", arch, triple, api)
+						if mutation.name == "numeric-address" {
+							if err != nil || !strings.Contains(output, "asm sideeffect \""+strings.ToLower(member.op)+" ($2), $0\"") {
+								t.Fatal("numerical address lost its original native access", err)
+							}
+							x86RequireNumericNativeSourceContext(t, changed, "func Read(input *byte)", arch)
+							x86NumericNativeAddressObject(t, output, triple)
+							continue
+						}
+						if output != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("dead native min/max invented an old input/address", mutation.name, err)
 						}
 					}

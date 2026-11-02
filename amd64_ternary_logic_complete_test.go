@@ -177,8 +177,18 @@ func TestX86TernaryRawIdentityMemoryAndIndependentState(t *testing.T) {
 					state := initial.clone()
 					state.pointerGP[0] = false
 					before := state.clone()
-					if accepted, _ := x86ResultTernaryLogicContinuationStep(ins, &state, nil, arch, true); accepted || !reflect.DeepEqual(state, before) {
-						t.Fatal("a numerical address became an incoming pointer")
+					expected := before.clone()
+					expected.writeVector(2, row.width, x86CallerVectorByteMask(int64(row.width)), false)
+					if accepted, known := x86ResultTernaryLogicContinuationStep(ins, &state, nil, arch, true); !known || !accepted || !reflect.DeepEqual(state, expected) {
+						t.Fatal("numerical native read changed independent state or acquired a pointer role")
+					}
+					for _, available := range []uint8{0, 1} {
+						partial := before.clone()
+						partial.gp[0] = available
+						unchanged := partial.clone()
+						if accepted, _ := x86ResultTernaryLogicContinuationStep(ins, &partial, nil, arch, true); accepted || !reflect.DeepEqual(partial, unchanged) {
+							t.Fatal("unknown or partial numerical address acquired native input bytes", available)
+						}
 					}
 				}
 			})

@@ -124,7 +124,7 @@ func TestX86QwordPermuteVoidDeadAndZeroMaskNeedActualInputs(t *testing.T) {
 		if row.input == "register" || row.mode == "merge" {
 			continue
 		}
-		for _, missing := range []string{"none", "pointer", "numeric-address", "index", "control", "mask"} {
+		for _, missing := range []string{"none", "pointer", "numeric-address", "partial-address", "index", "control", "mask"} {
 			if missing == "control" && row.immediate || missing == "mask" && row.mode == "plain" {
 				continue
 			}
@@ -134,6 +134,8 @@ func TestX86QwordPermuteVoidDeadAndZeroMaskNeedActualInputs(t *testing.T) {
 				source = strings.Replace(source, "MOVQ data+8(FP),BX\n", "", 1)
 			case "numeric-address":
 				source = strings.Replace(source, "MOVQ data+8(FP),BX", "MOVQ $42,BX", 1)
+			case "partial-address":
+				source = strings.Replace(source, "MOVQ data+8(FP),BX", "MOVB $42,BL", 1)
 			case "index":
 				source = strings.Replace(source, "(BX)", "(BX)(SI*2)", 1)
 			case "control":
@@ -145,7 +147,7 @@ func TestX86QwordPermuteVoidDeadAndZeroMaskNeedActualInputs(t *testing.T) {
 				x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", source)
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-					if missing == "none" {
+					if missing == "none" || missing == "numeric-address" {
 						if err != nil || ir == "" {
 							t.Fatal("dead initialized native read lacks its paired source", api, err)
 						}
@@ -154,6 +156,10 @@ func TestX86QwordPermuteVoidDeadAndZeroMaskNeedActualInputs(t *testing.T) {
 							bytes = 8
 						}
 						x86QwordPermuteRequireRead(t, x86StringMemoryFunction(t, ir, "Value"), bytes)
+						if missing == "numeric-address" {
+							x86RequireNumericNativeSourceContext(t, source, declaration, "amd64")
+							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+						}
 					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("Void/zero mask invented a missing actual native address/control/mask", api, missing, err)
 					}

@@ -87,6 +87,7 @@ func TestX86ScalarFPBitViewsVoidUnknownInputsRemainContext(t *testing.T) {
 		{name: "partial-lane", declaration: "func view(x uint64)\n", body: "MOVSS x+2(FP),X1\nMOVSS X1,X0\nVMOVSD X0,X1,X2"},
 		{name: "branch-only", declaration: "func view(x uint64)\n", body: "MOVSS x+2(FP),X1\nMOVL $1,AX\nCMPL AX,$0\nJE joined\nMOVSS X1,X7\njoined:\nVMOVSS X7,X1,X0"},
 		{name: "native-address", declaration: "func view(x uint64)\n", body: "MOVSS x+2(FP),X1\nMOVL $1,AX\nMOVSS (AX),X0"},
+		{name: "partial-native-address", declaration: "func view(x uint64)\n", body: "MOVSS x+2(FP),X1\nMOVB $1,AL\nMOVSS (AX),X0"},
 		{name: "readonly-input", declaration: "func view(x uint64)\n", body: "MOVSS x+2(FP),X1\nMOVSS X1,x+2(FP)"},
 		{name: "pointer-bytes", declaration: "func view(x *uint64)\n", body: "MOVSS x+0(FP),X1"},
 		{name: "alignment-hole", declaration: "func view(a byte,x uint64)\n", body: "MOVSS a+0(FP),X1"},
@@ -101,6 +102,14 @@ func TestX86ScalarFPBitViewsVoidUnknownInputsRemainContext(t *testing.T) {
 				}
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, source, fixture.declaration, target.arch, target.triple, api)
+					if fixture.name == "native-address" {
+						if err != nil || !strings.Contains(ir, "load volatile i32,") {
+							t.Fatal("complete numerical address lost its fault-preserving scalar read", api, err)
+						}
+						x86RequireNumericNativeSourceContext(t, source, fixture.declaration, target.arch)
+						x86NumericNativeAddressObject(t, ir, target.triple)
+						continue
+					}
 					if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Errorf("%s void manufactured byte/address authority: %v\n%s", api, err, ir)
 					}

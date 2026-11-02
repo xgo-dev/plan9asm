@@ -62,7 +62,7 @@ func TestX86AESKeyAssistRequiresOnlyItsNumericalRegisterSubwords(t *testing.T) {
 func TestX86AESRawIdentityCannotBorrowPrivateControlOrInputs(t *testing.T) {
 	for _, arch := range []string{"386", "amd64"} {
 		for _, name := range x86AESOracleNames {
-			row, _ := x86AESOracleRow(name, "(SI)", "X")
+			row, destination := x86AESOracleRow(name, "(SI)", "X")
 			file, err := Parse(ArchAMD64, "TEXT Value(SB),4,$0-0\n"+x86RawNumericalInstruction(t, arch, row)+"RET\n")
 			if err != nil {
 				t.Fatal(err)
@@ -91,12 +91,28 @@ func TestX86AESRawIdentityCannotBorrowPrivateControlOrInputs(t *testing.T) {
 				state.pointerGP[6], state.xmm[1] = true, 0xffff
 				if x86ResultNamedPredicateInstruction(changed) {
 					// Removing all legacy origin metadata is a fresh named
-					// operation, not a forged raw marker. A numerical address
-					// still cannot supply its missing incoming pointer.
+					// operation, not a forged raw marker. Its paired native
+					// read may use complete numerical address bits.
 					state.pointerGP[6], state.gp[6] = false, 0xff
 				}
 				before := state.clone()
 				accepted, known := x86LoweredAESResultStep(changed, &state, nil, arch)
+				if x86ResultNamedPredicateInstruction(changed) {
+					expected := before.clone()
+					expected.writeVector(destination, 16, 0xffff, !strings.HasPrefix(name, "V"))
+					if !known || !accepted || !reflect.DeepEqual(state, expected) || x86RawAESSource(changed, arch) {
+						t.Fatal("named numerical AES read changed independent state or acquired a raw role", arch, name)
+					}
+					for _, available := range []uint8{0, 1} {
+						partial := before.clone()
+						partial.gp[6] = available
+						unchanged := partial.clone()
+						if accepted, _ := x86LoweredAESResultStep(changed, &partial, nil, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+							t.Fatal("named AES borrowed unknown or partial address bytes", arch, name, available)
+						}
+					}
+					continue
+				}
 				if !known || accepted || !reflect.DeepEqual(state, before) || x86RawAESSource(changed, arch) ||
 					!x86ResultNamedPredicateInstruction(changed) && (x86ResultPreservesPrivateStorage(changed, arch) ||
 						x86ResultDirectionAfterSource(changed, x86ResultDirectionEither, arch) != x86ResultDirectionUnknown) {

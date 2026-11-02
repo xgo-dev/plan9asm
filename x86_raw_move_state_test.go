@@ -108,8 +108,23 @@ func TestX86RawMoveEveryByteAndIndependentState(t *testing.T) {
 						state.pointerGP[7] = false
 					}
 					before := state.clone()
-					if accepted, recognized := x86LoweredRawVectorMoveStep(ins, &state, nil, 0, arch); !recognized || accepted || !reflect.DeepEqual(state, before) {
-						t.Fatal("raw move borrowed an unknown mask/numerical address or partially changed state", control)
+					accepted, recognized := x86LoweredRawVectorMoveStep(ins, &state, nil, 0, arch)
+					if !recognized || accepted != (control == "address") || !reflect.DeepEqual(state, before) {
+						t.Fatal("raw move changed independent address/mask state", control)
+					}
+					if control == "address" {
+						base := 3
+						if row.role == "store" {
+							base = 7
+						}
+						for _, available := range []uint8{0, 1} {
+							partial := before.clone()
+							partial.gp[base] = available
+							unchanged := partial.clone()
+							if accepted, _ := x86LoweredRawVectorMoveStep(ins, &partial, nil, 0, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+								t.Fatal("raw move acquired unknown or partial address bytes", available)
+							}
+						}
 					}
 				}
 			})

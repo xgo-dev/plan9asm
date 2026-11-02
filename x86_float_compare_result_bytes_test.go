@@ -91,17 +91,19 @@ func TestX86FloatingCompareNativeContinuationRetainsSourceBoundaries(t *testing.
 			for index := 0; index < 32; index++ {
 				state.writeVector(index, 64, ^uint64(0), false)
 			}
-			for _, change := range []string{"standalone", "pointer", "numeric base", "index", "raw", "address size"} {
+			for _, change := range []string{"standalone", "pointer", "numeric base", "partial base", "index", "raw", "address size"} {
 				current, changed := state.clone(), ins
 				changed.Args = append([]Operand(nil), ins.Args...)
 				native := true
 				switch change {
 				case "standalone":
 					native = false
-				case "pointer", "numeric base":
+				case "pointer", "numeric base", "partial base":
 					current.pointerGP[0] = false
 					if change == "numeric base" {
 						current.gp[0] = 0xff
+					} else if change == "partial base" {
+						current.gp[0] = 1
 					}
 				case "index":
 					changed.Args[form.memory].Mem.Index, changed.Args[form.memory].Mem.Scale = DX, 2
@@ -111,6 +113,18 @@ func TestX86FloatingCompareNativeContinuationRetainsSourceBoundaries(t *testing.
 					changed.x86AddressBits = 16
 				}
 				before := current.clone()
+				if change == "numeric base" {
+					expected := before.clone()
+					if form.maskResult {
+						index, _ := amd64ParseKReg(ins.Args[form.destination].Reg)
+						expected.masks[index] = true
+					}
+					accepted, known := x86ResultFloatCompareStep(changed, &current, nil, arch, native)
+					if !known || !accepted || !reflect.DeepEqual(current, expected) {
+						t.Fatal("complete numerical address changed independent comparison state", arch, row)
+					}
+					continue
+				}
 				if accepted, _ := x86ResultFloatCompareStep(changed, &current, nil, arch, native); accepted || !reflect.DeepEqual(current, before) {
 					t.Fatal("unproved comparison supplied native bytes or changed state", arch, row, change)
 				}

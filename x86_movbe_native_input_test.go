@@ -33,6 +33,7 @@ func TestX86MOVBEDeadNativeAccessKeepsExactWidthAndInputs(t *testing.T) {
 						{"initialized", source},
 						{"unknown-address", strings.Replace(source, move+" p+0(FP),AX", move+" p+0(FP),DI", 1)},
 						{"numerical-address", strings.Replace(source, move+" p+0(FP),AX", "MOVL $1,AX", 1)},
+						{"partial-address", strings.Replace(source, move+" p+0(FP),AX", "MOVB $1,AL", 1)},
 						{"unknown-index", strings.Replace(source, "MOVL $1,DX\n", "", 1)},
 					}
 					if store {
@@ -46,7 +47,7 @@ func TestX86MOVBEDeadNativeAccessKeepsExactWidthAndInputs(t *testing.T) {
 						t.Run(fmt.Sprintf("%s/%s/%s/raw=%t/%s", target.triple, op, effect, raw, variant.name), func(t *testing.T) {
 							for _, api := range []string{"text", "module", "Go"} {
 								ir, err := x86ScalarFPBitViewAPI(t, variant.source, "func Value(p *[16]byte)", target.arch, target.triple, api)
-								if variant.name != "initialized" {
+								if variant.name != "initialized" && variant.name != "numerical-address" {
 									if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 										t.Fatal("dead MOVBE borrowed an unknown address or value", api, err)
 									}
@@ -54,6 +55,10 @@ func TestX86MOVBEDeadNativeAccessKeepsExactWidthAndInputs(t *testing.T) {
 								}
 								if err != nil {
 									t.Fatal("initialized dead MOVBE native access rejected", api, err)
+								}
+								if variant.name == "numerical-address" {
+									x86RequireNumericNativeSourceContext(t, variant.source, "func Value(p *[16]byte)", target.arch)
+									x86NumericNativeAddressObject(t, ir, target.triple)
 								}
 								for _, text := range []string{ir, x86DwordProductIROptimize(t, ir)} {
 									if strings.Count(text, fmt.Sprintf("%s volatile i%d ", effect, bits)) != 1 &&

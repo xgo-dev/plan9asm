@@ -54,15 +54,27 @@ func TestX86ImplicitMultiplyNativeMemoryEveryByteAndExactOutputState(t *testing.
 						t.Fatal("native multiplication changed its exact byte/FLAGS/storage domain", seed, needed, got, state, expected)
 					}
 				}
-				for _, missing := range []string{"pointer", "index"} {
+				for _, missing := range []string{"pointer", "unknown-address", "partial-address", "index"} {
 					before := original.clone()
 					before.gp[ax] = 255
 					if missing == "pointer" {
 						before.pointerGP[si], before.gp[si] = false, 255
+					} else if missing == "unknown-address" || missing == "partial-address" {
+						before.pointerGP[si], before.gp[si] = false, 0
+						if missing == "partial-address" {
+							before.gp[si] = 1
+						}
 					} else {
 						before.gp[bx] = 0
 					}
 					state := before.clone()
+					if missing == "pointer" {
+						accepted, known := x86LoweredImplicitMultiplyNativeRead(ins, &state, nil, 0, arch)
+						if !known || !accepted || !reflect.DeepEqual(state, x86ImplicitMultiplyNativeExpected(before, row.bits, arch)) {
+							t.Fatal("complete numerical address changed the product or acquired a pointer role")
+						}
+						continue
+					}
 					if accepted, known := x86LoweredImplicitMultiplyNativeRead(ins, &state, nil, 0, arch); !known || accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("a rejected native input invented permission or partially mutated state", missing)
 					}

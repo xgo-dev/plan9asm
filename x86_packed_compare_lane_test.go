@@ -216,10 +216,20 @@ func TestX86PackedCompareLaneMemoryNeedsWholeTuple(t *testing.T) {
 				ins := x86ScalarLaneInstruction(t, row.instruction("(SI)"))
 				state := x86RawMoveInitializedState()
 				state.writeVector(row.second(), 64, uint64(1)<<uint(row.bytes)-1, false)
-				state.pointerGP[6] = false // NUM bytes alone cannot establish an incoming address.
-				before := state
-				if accepted, known := x86ResultVectorCompareStepWithRead(ins, &state, nil, arch, true); !known || accepted || !reflect.DeepEqual(state, before) {
-					t.Fatal("partial comparison borrowed an unproved native address")
+				state.pointerGP[6] = false // A paired native read needs bits, not a logical pointer.
+				before, expected := state.clone(), state.clone()
+				defined := uint64(1)<<uint(row.bytes) - 1
+				expected.writeVector(2, row.width, defined, row.legacy)
+				if accepted, known := x86ResultVectorCompareStepWithRead(ins, &state, nil, arch, true); !known || !accepted || !reflect.DeepEqual(state, expected) {
+					t.Fatal("numerical native comparison invented unrelated bytes or pointer facts")
+				}
+				for _, available := range []uint8{0, 1} {
+					partial := before.clone()
+					partial.gp[6] = available
+					unchanged := partial.clone()
+					if accepted, _ := x86ResultVectorCompareStepWithRead(ins, &partial, nil, arch, true); accepted || !reflect.DeepEqual(partial, unchanged) {
+						t.Fatal("partial comparison borrowed unknown or partial address bytes", available)
+					}
 				}
 			})
 		}
