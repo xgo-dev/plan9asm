@@ -184,7 +184,12 @@ func TestX86SignedPackedFloatVoidCannotInventRegisterInputs(t *testing.T) {
 						t.Fatal("initialized independent signed conversion rejected", api, err)
 					}
 					unknown := strings.Replace(source, "VPXORD Z0,Z0,Z0\n", "", 1)
-					if ir, err := x86ScalarFPBitViewAPI(t, unknown, "func Value()", target.arch, target.triple, api); !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					ir, err := x86ScalarFPBitViewAPI(t, unknown, "func Value()", target.arch, target.triple, api)
+					if target.arch == "amd64" {
+						x86VectorScratchCodegenControl(t, unknown, "func Value()", target.arch, target.triple, ir, err)
+						continue
+					}
+					if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Error("Void conversion borrowed unknown vector bytes", api, err)
 					}
 				}

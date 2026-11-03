@@ -259,9 +259,7 @@ func TestX86PackedCompareLaneProbeDoesNotProveResult(t *testing.T) {
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86PackedIntegerCompareAPI(t, source, "func query() uint32\n",
 					"amd64", "x86_64-unknown-linux-gnu", api)
-				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-					t.Fatal("IR-only probe lent initialized bytes to a real result", api, err)
-				}
+				x86VectorScratchCodegenControl(t, source, "func query() uint32", "amd64", "x86_64-unknown-linux-gnu", ir, err)
 			}
 		})
 	}

@@ -62,6 +62,10 @@ func x86ScalarFPInitializationContextFixture(t *testing.T, fixture x86ScalarFPBi
 			x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, fixture.declaration, target.arch, target.triple, api)
+				if target.arch == "amd64" && (fixture.name == "Y-unmodeled-wide" || fixture.name == "Z-unmodeled-wide") {
+					x86VectorScratchCodegenControl(t, source, fixture.declaration, target.arch, target.triple, ir, err)
+					continue
+				}
 				if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 					t.Errorf("%s unknown numeric input acquired a value: %v\n%s", api, err, ir)
 				}

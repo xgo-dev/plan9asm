@@ -43,6 +43,10 @@ func TestX86AESUnknownRegisterResultsCannotBecomeObservableValues(t *testing.T) 
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(unused bool)", target.arch, target.triple, api)
 						if observe {
+							if target.arch == "amd64" && !raw {
+								x86VectorScratchCodegenControl(t, source, "func Value(unused bool)", target.arch, target.triple, ir, err)
+								continue
+							}
 							if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("unknown AES data escaped through a numerical/control use", target, name, raw, api, err)
 							}

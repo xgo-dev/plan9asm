@@ -21,7 +21,15 @@ func TestX86FloatCompareNativeOriginalInstruction(t *testing.T) {
 	} {
 		t.Run(row, func(t *testing.T) {
 			source := "TEXT f(SB),4,$0-0\n" + row + "\nRET\n"
-			ir := x86FloatingCompareUnboundFormatObject(t, source, "amd64", "x86_64-unknown-linux-gnu")
+			var ir string
+			if row == "CMPPS X0,X1,$3" || row == "VCMPPS $11,Y0,Y1,Y2" {
+				x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", source)
+				var err error
+				ir, err = x86ScalarFPBitViewAPI(t, source, "func f()", "amd64", "x86_64-unknown-linux-gnu", "text")
+				x86VectorScratchCodegenControl(t, source, "func f()", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+			} else {
+				ir = x86FloatingCompareUnboundFormatObject(t, source, "amd64", "x86_64-unknown-linux-gnu")
+			}
 			opcode := strings.ToLower(strings.Split(row, " ")[0])
 			opcode = strings.Split(opcode, ".")[0]
 			if !strings.Contains(ir, "asm sideeffect") || !strings.Contains(ir, opcode+" $$") || strings.Contains(ir, " = fcmp ") {

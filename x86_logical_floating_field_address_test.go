@@ -96,6 +96,10 @@ func TestX86LogicalFloatingFieldAddressKeepsIndependentBoundaries(t *testing.T) 
 					x86LEAActualTargetGoObject(t, target.arch, target.triple, changed)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, target.arch, target.triple, api)
+						if target.arch == "amd64" && mutation.name == "unknown-store" {
+							x86VectorScratchCodegenControl(t, changed, declaration, target.arch, target.triple, ir, err)
+							continue
+						}
 						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Error("floating field acquired padding, unknown data or native state authority", api, err)
 						}

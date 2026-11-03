@@ -19,7 +19,7 @@ func TestX86ScalarFPBitViewsNewParameterReadsRequireWholeSourceFacts(t *testing.
 		// Go's four-operand masked register rows are AMD64-only. Keep
 		// their original mode32 rejection separate from numerical Context.
 		reject386 := fixture.name != "unknown-low" && fixture.name != "branch-only-low"
-		x86ScalarFPViewContextFixture(t, fixture, reject386)
+		x86ScalarFPViewContextFixture(t, fixture, reject386, false)
 	}
 }
 
@@ -125,7 +125,7 @@ func TestX86ScalarFPBitViewsTypedFloatingEffectsNeedAllInputs(t *testing.T) {
 					declaration: fmt.Sprintf("func view(x uint64) uint%d\n", bits),
 					body:        body + fmt.Sprintf("\n%s X0,ret+8(FP)", move),
 				}
-				x86ScalarFPViewContextFixture(t, fixture, name == "unknown-mask")
+				x86ScalarFPViewContextFixture(t, fixture, name == "unknown-mask", name != "unknown-mask")
 			}
 			// The new numeric view supplies no missing byte, even to a zero
 			// mask or a scalar broadcast. This independent declaration leaves
@@ -140,7 +140,7 @@ func TestX86ScalarFPBitViewsTypedFloatingEffectsNeedAllInputs(t *testing.T) {
 	}
 }
 
-func x86ScalarFPViewContextFixture(t *testing.T, fixture x86ScalarFPBitFixture, actualGoRejectsMode32 bool) {
+func x86ScalarFPViewContextFixture(t *testing.T, fixture x86ScalarFPBitFixture, actualGoRejectsMode32, ordinaryScratch bool) {
 	t.Helper()
 	for _, target := range x86RawReturnTargets {
 		t.Run(fixture.name+"/"+target.triple, func(t *testing.T) {
@@ -152,6 +152,10 @@ func x86ScalarFPViewContextFixture(t *testing.T, fixture x86ScalarFPBitFixture, 
 			}
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, fixture.declaration, target.arch, target.triple, api)
+				if target.arch == "amd64" && ordinaryScratch {
+					x86VectorScratchCodegenControl(t, source, fixture.declaration, target.arch, target.triple, ir, err)
+					continue
+				}
 				if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 					t.Errorf("%s source lacks whole numerical facts: %v\n%s", api, err, ir)
 				}

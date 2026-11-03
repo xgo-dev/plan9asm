@@ -125,7 +125,8 @@ func TestX86FloatingMinMaxVoidCannotBorrowImplementationInputs(t *testing.T) {
 			if row.legacy {
 				instruction = row.op + " X0,X1"
 			}
-			file, err := Parse(ArchAMD64, "TEXT ·Value(SB),4,$0-0\n"+instruction+"\nRET\n")
+			source := "TEXT ·Value(SB),4,$0-0\n" + instruction + "\nRET\n"
+			file, err := Parse(ArchAMD64, source)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,6 +136,10 @@ func TestX86FloatingMinMaxVoidCannotBorrowImplementationInputs(t *testing.T) {
 						Sigs:       map[string]FuncSig{"Value": {Name: "Value", Ret: Void}},
 						ResolveSym: func(name string) string { return strings.TrimPrefix(name, "·") }}
 					ir, err := x86PackedFloatStorageAPI(api, file, options)
+					if target.arch == "amd64" {
+						x86VectorScratchCodegenControl(t, source, "func Value()", target.arch, target.triple, ir, err)
+						return
+					}
 					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("dead MIN/MAX borrowed implementation vector inputs", err)
 					}

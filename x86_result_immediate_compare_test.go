@@ -219,6 +219,10 @@ func TestX86ImmediatePackedCompareCannotBypassWholeSourceProof(t *testing.T) {
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(target.triple+"/"+row.name+"/"+api, func(t *testing.T) {
 					ir, err := x86ScalarFPBitViewAPI(t, source, "func Value() float64", target.arch, target.triple, api)
+					if row.name == "undefined-vector" {
+						x86VectorScratchCodegenControl(t, source, "func Value() float64", target.arch, target.triple, ir, err)
+						return
+					}
 					if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatalf("floating storage bypassed the numerical family obligation: output=%t, error=%v", ir != "", err)
 					}
