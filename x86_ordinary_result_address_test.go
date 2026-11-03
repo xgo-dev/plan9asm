@@ -335,7 +335,19 @@ func TestX86OrdinaryResultAddressDistinctFieldsAndRevocation(t *testing.T) {
 				t.Run(arch+"/"+test.name+"/"+api, func(t *testing.T) {
 					body := strings.ReplaceAll(test.body, "WORD", word)
 					source := fmt.Sprintf("TEXT ·First(SB),NOSPLIT,$0-%d\n LEA%s first+%d(FP),DI\n LEA%s second+%d(FP),BX\n %s\n RET\n", offset+8, word, offset, word, offset+4, body)
-					_, err := x86ScalarFPBitViewAPI(t, source, "func First(a uint8) (first,second uint32)", arch, triple, api)
+					declaration := "func First(a uint8) (first,second uint32)"
+					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+					if test.name == "numeric_revoke" {
+						// DI lost its logical result alias. Its independent NUM
+						// store still faults; it does not initialize first(FP).
+						x86PartialTupleCodegenControl(t, source, declaration, arch, triple, ir, err)
+						for _, text := range []string{ir, x86DwordProductIROptimize(t, ir)} {
+							if !strings.Contains(text, "store volatile i32 7,") {
+								t.Fatal("revoked logical alias lost the exact native faulting store", text)
+							}
+						}
+						return
+					}
 					if test.accept && err != nil || !test.accept && !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatalf("distinct-field alias accept=%t: %v", test.accept, err)
 					}

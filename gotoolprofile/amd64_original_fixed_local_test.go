@@ -83,16 +83,20 @@ RET
 	return request, pkg, file, options, expanded
 }
 
-func amd64OriginalFixedLocalAPIs(t *testing.T, pkg plan9asm.GoPackage, file *plan9asm.File, options plan9asm.Options, assembly string, wantContext bool) {
+func amd64OriginalFixedLocalAPIs(t *testing.T, pkg plan9asm.GoPackage, file *plan9asm.File, options plan9asm.Options, assembly string, wantContext bool, nativeBacking ...bool) {
 	t.Helper()
+	if len(nativeBacking) > 1 {
+		t.Fatal("ambiguous expected frame backing")
+	}
+	wantNative := len(nativeBacking) == 0 || nativeBacking[0]
 	check := func(t *testing.T, ir string, err error) {
 		t.Helper()
 		if wantContext {
 			if err == nil || ir != "" {
 				t.Fatalf("revoked or unbound original source retained permission: %v", err)
 			}
-		} else if err != nil || !strings.Contains(ir, "fixed_local_native") {
-			t.Fatalf("independently captured fixed-local source failed: %v", err)
+		} else if err != nil || ir == "" || strings.Contains(ir, "fixed_local_native") != wantNative {
+			t.Fatalf("original source backing native=%t differs: %v", wantNative, err)
 		}
 	}
 	t.Run("Translate", func(t *testing.T) {
@@ -346,7 +350,7 @@ func TestAMD64OriginalFixedLocalBroaderObservationRetainsFactoryContext(t *testi
 				ResolveSym: func(symbol string) string { return strings.Replace(symbol, "·", pkg.Path+".", 1) },
 				Sigs:       map[string]plan9asm.FuncSig{sig.Name: sig}}
 			bound, binding, err := observed.BindFixedLocal(ctx, pkg, file, "value_amd64.s", options)
-			if role == "bodyful" || role == "import" || role == "sdk-import" {
+			if role == "bodyful" || role == "import" || role == "sdk-import" || role == "data" {
 				// Complete ordinary declarations are independently compiled and
 				// rechecked. They add no native permission beyond this actual
 				// numeric frame and its existing full-source proof.
@@ -358,6 +362,12 @@ func TestAMD64OriginalFixedLocalBroaderObservationRetainsFactoryContext(t *testi
 				}
 				amd64OriginalFixedLocalAPIs(t, pkg, file, bound,
 					strings.Replace(string(data), "#include \"textflag.h\"", "#define NOSPLIT 4", 1), false)
+				if role == "data" {
+					amd64OriginalDataSiblingRevocation(t, ctx, request.Directory, binding.Verify)
+					if _, lease, err := observed.BindFixedLocal(ctx, pkg, file, "value_amd64.s", options); err == nil || lease != nil {
+						t.Fatal("restored DATA sibling revived the revoked frame", err)
+					}
+				}
 				return
 			}
 			if !errors.Is(err, plan9asm.ErrProbeNeedsContext) || binding != nil {
@@ -407,4 +417,54 @@ func TestAMD64OriginalFixedLocalOwnedArtifactReplacementFailsCleanupAndRevokes(t
 		t.Fatalf("cleanup deleted a replacement directory: %v", err)
 	}
 	amd64OriginalFixedLocalAPIs(t, pkg, file, bound, assembly, true)
+}
+
+// DATA in an unrequested sibling adds no frame or storage authority, but its
+// bytes remain part of the complete live source owner.
+func amd64OriginalDataSiblingRevocation(t *testing.T, ctx context.Context, directory string, verify func(context.Context) error) {
+	t.Helper()
+	if err := ctx.Err(); err != nil {
+		t.Fatal("source-revocation context expired before its positive control", err)
+	}
+	if err := verify(ctx); err != nil {
+		t.Fatal("DATA sibling mutation needs an initially valid source lease", err)
+	}
+	name := filepath.Join(directory, "data_amd64.s")
+	before, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(name, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restore := func() {
+		if err := os.Chmod(name, 0600); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.WriteFile(name, before, 0600); err != nil {
+			t.Error(err)
+		}
+		if err := os.Chmod(name, info.Mode().Perm()); err != nil {
+			t.Error(err)
+		}
+	}
+	defer restore()
+	if err := os.WriteFile(name, append(append([]byte(nil), before...), '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatal("source-revocation context expired", err)
+	}
+	if err := verify(ctx); err == nil || ctx.Err() != nil {
+		t.Fatal("changed DATA sibling did not revoke its live frame lease", err, ctx.Err())
+	}
+	restore()
+	if err := verify(ctx); err == nil || ctx.Err() != nil {
+		t.Fatal("restoring DATA sibling bytes did not retain its live revocation", err, ctx.Err())
+	}
 }

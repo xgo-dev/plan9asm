@@ -102,6 +102,12 @@ func TestX86ImplicitMultiplyMissingFPResultsThreeAPIs(t *testing.T) {
 							}
 							source := fmt.Sprintf("TEXT ·Value(SB),4,$0-%d\n%s", bytes, body)
 							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+							if tuple && initialized {
+								// No result byte was written. Codegen does not turn
+								// incidental register returns into a source proof.
+								x86PartialTupleCodegenControl(t, source, declaration, target.arch, target.triple, ir, err)
+								return
+							}
 							if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 								t.Fatalf("unwritten declared result escaped whole-source proof: output=%t error=%v", ir != "", err)
 							}

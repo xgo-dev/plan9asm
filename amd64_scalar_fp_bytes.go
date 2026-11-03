@@ -141,14 +141,6 @@ func (c *amd64Ctx) validateScalarFPSourceViews() error {
 	if err := c.validateMixedBoolResultRole(); err != nil {
 		return err
 	}
-	// A tuple's output-only exception must not bypass input or layout checks
-	// when no individual instruction otherwise requests the complete audit.
-	if len(c.fpResults) > 1 && len(x86ScalarTupleResultTypes(c.sig, c.goarch)) != 0 &&
-		x86OrdinaryScalarCodegenSource(c.fpScalarSource, c.sig, c.goarch) {
-		if err := c.scalarFPResultInitialized(); err != nil {
-			return err
-		}
-	}
 	if x86OrdinaryIntegerFPStoreNeedsProof(c.fpScalarSource, c.sig, c.goarch) {
 		if err := c.scalarFPResultInitialized(); err != nil {
 			return err

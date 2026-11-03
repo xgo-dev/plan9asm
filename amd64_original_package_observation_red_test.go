@@ -173,7 +173,7 @@ func TestGoAMD64OriginalPackageObservationKeepsAuthorityBoundaries(t *testing.T)
 					}
 				}()
 			}
-			if variant.name == "bodyful" || variant.name == "import" {
+			if variant.name == "bodyful" || variant.name == "import" || variant.name == "data" {
 				if err != nil || observed == nil {
 					t.Fatalf("ordinary original source lost its sealed observation: %v", err)
 				}

@@ -172,6 +172,60 @@ func TestAMD64DownloadedFramePublicRejectedRoles(t *testing.T) {
 			ctx, cancel := amd64OriginalObservationContext(t)
 			defer cancel()
 			source, err := plan9asm.CaptureGoAMD64DownloadedFrameSource(ctx, pkg, capture)
+			if variant == "data" {
+				if err != nil || source == nil {
+					t.Fatal("unrequested DATA sibling blocked the numerical member", err)
+				}
+				defer func() {
+					if err := source.Close(); err != nil {
+						t.Error(err)
+					}
+				}()
+				if err := source.Verify(ctx); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(filepath.Join(capture.Original.Directory, "value_amd64.s"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				assembly := strings.Replace(string(data), "#include \"textflag.h\"", "#define NOSPLIT 4", 1)
+				file, err := plan9asm.Parse(plan9asm.ArchAMD64, assembly)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sig, err := plan9asm.DeriveGoFuncABI0Signature(pkg.Path+".Value",
+					pkg.Types.Scope().Lookup("Value").(*types.Func), "amd64", types.SizesFor("gc", "amd64"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				options := plan9asm.Options{Goarch: "amd64", TargetTriple: "x86_64-unknown-linux-gnu",
+					ResolveSym: func(symbol string) string { return strings.Replace(symbol, "·", pkg.Path+".", 1) },
+					Sigs:       map[string]plan9asm.FuncSig{sig.Name: sig}}
+				// This simple source already has valid ordinary logical AUTO
+				// storage; observing it adds no native fixed-frame permission.
+				amd64OriginalFixedLocalAPIs(t, pkg, file, options, assembly, false, false)
+				bound, err := source.BindFixedLocal(ctx, pkg, file, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				amd64OriginalFixedLocalAPIs(t, pkg, file, bound, assembly, false)
+				dataOnly, err := plan9asm.Parse(plan9asm.ArchAMD64,
+					"DATA ·constant<>+0(SB)/8,$1\nGLOBL ·constant<>(SB),24,$8\n")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := source.BindFixedLocal(ctx, pkg, dataOnly, options); !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+					t.Fatal("DATA sibling borrowed the selected member's frame", err)
+				}
+				amd64OriginalDataSiblingRevocation(t, ctx, capture.Original.Directory, func(ctx context.Context) error {
+					err := source.Verify(ctx)
+					if err != nil && !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+						t.Fatal("core frame source failed outside its Context contract", err)
+					}
+					return err
+				})
+				return
+			}
 			if source != nil {
 				if err := source.Close(); err != nil {
 					t.Error(err)

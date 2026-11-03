@@ -344,11 +344,12 @@ func TestTranslate386RejectsStaleNamedFPResultOffsets(t *testing.T) {
 }
 
 func TestTranslateX86MOVLScalarResultMemoryForms(t *testing.T) {
-	file, err := Parse(ArchAMD64, `TEXT movlresults(SB),NOSPLIT,$0-8
+	const source = `TEXT movlresults(SB),NOSPLIT,$0-8
 	MOVL $-1, first+0(FP)
 	MOVL AX, second+4(FP)
 	RET
-`)
+`
+	file, err := Parse(ArchAMD64, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +365,7 @@ func TestTranslateX86MOVLScalarResultMemoryForms(t *testing.T) {
 		{goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 	} {
 		t.Run(target.goarch, func(t *testing.T) {
-			ll, err := Translate(file, Options{
+			options := Options{
 				TargetTriple: target.triple,
 				Goarch:       target.goarch,
 				Sigs: map[string]FuncSig{"movlresults": {
@@ -375,11 +376,28 @@ func TestTranslateX86MOVLScalarResultMemoryForms(t *testing.T) {
 						{Offset: 4, Type: I32, Index: 1, Field: -1, Name: "second"},
 					}},
 				}},
-			})
-			if err != nil {
-				t.Fatal(err)
 			}
-			compileLLVMToObject(t, llc, target.triple, "movl-result-forms-"+target.goarch+".ll", "movl-result-forms-"+target.goarch+".o", ll)
+			if err := CheckX86ABI0ResultInitialization(file.Funcs[0], options.Sigs["movlresults"], target.goarch); !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("the original undeclared AX input became a complete source proof", err)
+			}
+			if ir, err := Translate(file, options); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("the original fragment acquired an incoming AX argument", err)
+			}
+			// Preserve both original MOVL result forms. A separate complete
+			// producer initializes the GP input instead of borrowing entry zeroes.
+			initialized := strings.Replace(source, "\tMOVL AX, second+4(FP)", "\tMOVL $7,AX\n\tMOVL AX, second+4(FP)", 1)
+			x86LEAActualTargetGoObject(t, target.goarch, target.triple, "#include \"textflag.h\"\n"+source+strings.Replace(initialized, "movlresults", "initialized", 1))
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run("initialized-"+api, func(t *testing.T) {
+					ir, err := x86ScalarFPBitViewAPI(t, initialized, "func movlresults() (first,second uint32)", target.goarch, target.triple, api)
+					if err != nil || ir == "" {
+						t.Fatal("initialized MOVL result forms rejected", err)
+					}
+					for _, level := range []string{"-O0", "-O2"} {
+						x86PackedStringCompileObject(t, llc, target.triple, ir, level)
+					}
+				})
+			}
 		})
 	}
 }
@@ -2287,7 +2305,7 @@ TEXT mulparts(SB),NOSPLIT,$0-32
 	RET
 `
 	// Retain the complete historical body and its old manual two-I64 result
-	// layout as a missing-byte negative: it writes only the low four bytes of
+	// layout as a missing-byte audit: it writes only the low four bytes of
 	// the first result and none of the second, not two initialized I64s.
 	file, err := Parse(ArchAMD64, x86Source)
 	if err != nil {
@@ -2297,9 +2315,13 @@ TEXT mulparts(SB),NOSPLIT,$0-32
 		Params:  []FrameSlot{{Type: I64, Field: -1}, {Offset: 8, Type: I64, Index: 1, Field: -1}},
 		Results: []FrameSlot{{Offset: 16, Type: I64, Field: -1}, {Offset: 24, Type: I64, Index: 1, Field: -1}},
 	}}
-	if _, err := Translate(file, Options{Goarch: "386", TargetTriple: "i386-unknown-linux-gnu", Sigs: map[string]FuncSig{"mulparts": old}}); !errors.Is(err, ErrProbeNeedsContext) {
-		t.Fatalf("incomplete historical result tuple acquired initialized bytes: %v", err)
-	}
+	ir, err := Translate(file, Options{Goarch: "386", TargetTriple: "i386-unknown-linux-gnu", Sigs: map[string]FuncSig{"mulparts": old}})
+	x86PartialTupleCodegenControl(t, x86Source, "func mulparts(a,b uint64) (hi,lo uint64)", "386", "i386-unknown-linux-gnu", ir, err)
+	// Only the low written word is observed; neither the high word nor the
+	// completely unwritten second tuple element is a deterministic output.
+	defined := "define i32 @DefinedLow() {\n %r = call { i64, i64 } @mulparts(i64 4294967295,i64 2)\n" +
+		" %first = extractvalue { i64, i64 } %r, 0\n %low = trunc i64 %first to i32\n ret i32 %low\n}\n"
+	x86ScalarFPNamedConstantResult(t, ir+defined, "DefinedLow", []uint64{0xffffffff})
 	// The same complete operations have one genuine I32 result. Bind the
 	// actual declaration and exact argument/result extent, not borrowed slots.
 	complete := strings.Replace(x86Source, "$0-32", "$0-20", 1)

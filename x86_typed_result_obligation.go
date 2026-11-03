@@ -9,6 +9,10 @@ func x86TypedFPResultNeedsProof(fn Func, sig FuncSig, arch string) bool {
 	if arch != "386" && arch != "amd64" {
 		return false
 	}
+	if len(sig.Frame.Results) > 1 && len(x86ScalarTupleResultTypes(sig, arch)) != 0 &&
+		x86OrdinaryScalarCodegenSource(fn, sig, arch) {
+		return true // Every lowering route keeps tuple input/layout checks before its output-only exception.
+	}
 	if x86LogicalScalarResultNeedsProof(sig, arch) {
 		return true // An absent or partial AX write must not borrow implementation zeroes.
 	}

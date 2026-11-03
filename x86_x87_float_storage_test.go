@@ -56,7 +56,8 @@ func x86X87FloatingStoresUseOnlyCheckedByteRoles(t *testing.T) {
 				}
 			}
 			// A source-defined F0 is necessary but never supplies permission to
-			// write padding, pointers, parameters or an incomplete result.
+			// write padding, pointers or parameters. An incomplete numerical
+			// tuple remains a failed audit, independently of code generation.
 			paddedOffset := 16
 			if target.arch == "386" {
 				paddedOffset = 12
@@ -79,6 +80,17 @@ func x86X87FloatingStoresUseOnlyCheckedByteRoles(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(target.triple+"/"+op+"/reject-"+row.name+"/"+api, func(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, source, row.declaration, target.arch, target.triple, api)
+						if width == 8 && row.name == "partial-result" {
+							x86PartialTupleCodegenControl(t, source, row.declaration, target.arch, target.triple, ir, err)
+							probe := "\ndefine { i32, i32 } @Probe() {\n" +
+								" %r = call { i32, i32, i32 } @Value(i64 0)\n" +
+								" %lo = extractvalue { i32, i32, i32 } %r, 0\n" +
+								" %hi = extractvalue { i32, i32, i32 } %r, 1\n" +
+								" %a = insertvalue { i32, i32 } undef, i32 %lo, 0\n" +
+								" %b = insertvalue { i32, i32 } %a, i32 %hi, 1\n ret { i32, i32 } %b\n}\n"
+							x86ScalarFPNamedConstantResult(t, ir+probe, "Probe", []uint64{0, 0x3ff00000})
+							return
+						}
 						if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 							t.Fatalf("%s store supplied missing %s authority: output=%t error=%v", scalar, row.name, ir != "", err)
 						}
