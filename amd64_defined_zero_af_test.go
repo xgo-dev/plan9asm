@@ -116,17 +116,9 @@ func TestX86DefinedZeroAFExistingCompareWriterControls(t *testing.T) {
 		for _, op := range []string{"COMISS", "COMISD", "UCOMISS", "UCOMISD", "VCOMISS", "VCOMISD", "VUCOMISS", "VUCOMISD"} {
 			t.Run(arch+"/"+op, func(t *testing.T) {
 				source := x86DefinedZeroAFSource(arch, "status", op+" X0,X1")
-				// Ordinary AMD64 codegen may choose its undeclared scratch;
-				// the unchanged source still has no physical X0/X1 proof.
-				var ir string
-				if arch == "amd64" {
-					x86LEAActualTargetGoObject(t, arch, triple, source)
-					var err error
-					ir, err = x86ScalarFPBitViewAPI(t, source, "func status()", arch, triple, "text")
-					x86VectorScratchCodegenControl(t, source, "func status()", arch, triple, ir, err)
-				} else {
-					ir = x86UnboundVoidScalarFormatObject(t, source, "status", arch, triple)
-				}
+				// The original source has no X0/X1 inputs. Keep its actual Go
+				// object and explicit public Context before inspecting emission.
+				ir := x86UnboundVoidScalarFormatObject(t, source, "status", arch, triple)
 				if strings.Count(ir, "store i1 false, ptr %flags_af") != 2 {
 					t.Fatal("original compare emitter lost AF clearing")
 				}

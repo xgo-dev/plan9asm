@@ -266,6 +266,15 @@ func TestX86LoweredVectorEntryRequiresCompleteAllocationPlan(t *testing.T) {
 	_, file, sig, _ := x86ResultInitializationFixture(t, "amd64", "func Value(value uint32) uint32",
 		fmt.Sprintf("PINSRD $1,value+0(FP),X0\nPEXTRD $0,X0,AX\nMOVL AX,ret+%d(FP)\nRET", sig.Frame.Results[0].Offset))
 	fn := file.Funcs[0]
+	if len(sig.Frame.Params) != 1 || len(sig.Frame.Results) != 1 {
+		t.Fatal("allocation-plan control lost its complete typed ABI0 frame")
+	}
+	var completeOutput strings.Builder
+	complete := newX86Ctx(&completeOutput, fn, sig, func(name string) string { return strings.TrimPrefix(name, "·") },
+		nil, "amd64", "x86_64-unknown-linux-gnu", false)
+	if err := complete.scalarFPResultInitialized(); err != nil || !errors.Is(complete.fpScalarCheckErr, ErrProbeNeedsContext) || completeOutput.Len() != 0 {
+		t.Fatal("complete typed allocation plan did not reach lowering-only refinement", err)
+	}
 	strict := CheckX86ABI0ResultInitialization(fn, sig, "amd64")
 	if !errors.Is(strict, ErrProbeNeedsContext) {
 		t.Fatal("the original partial vector must retain its strict audit", strict)

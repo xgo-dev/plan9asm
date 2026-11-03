@@ -26,8 +26,8 @@ func x86VectorScratchCodegenControl(t *testing.T, source, declaration, arch, tri
 	}
 	for _, fn := range file.Funcs {
 		sig := signatures[resolve(fn.Sym)]
-		if !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
-			t.Fatal("scratch control acquired a private or physical entry role")
+		if len(sig.Frame.Params) == 0 && len(sig.Frame.Results) == 0 || !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
+			t.Fatal("scratch control lacks a typed logical frame or acquired a private entry role")
 		}
 		for _, query := range []func(Func, FuncSig, string) error{
 			CheckX86ABI0ResultInitialization, checkX86ScalarFPResultInitialization,

@@ -877,7 +877,8 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	if customRegisterBool || logicalScalar {
 		return checkX86LogicalRegisterResultInitialization(fn, sig, arch, transfer, customRegisterBool, true)
 	}
-	vectorEntry := arch == "amd64" && nativeMMX == nil && fn.FrameSize == 0
+	vectorEntry := arch == "amd64" && nativeMMX == nil && fn.FrameSize == 0 &&
+		(len(sig.Frame.Params) != 0 || len(sig.Frame.Results) != 0)
 	if vectorEntry && fn.x86ResultFlowBudget == nil {
 		// Keep the original paired attempt and optional entry fallback in one
 		// accumulated envelope, including callers without an existing owner.
