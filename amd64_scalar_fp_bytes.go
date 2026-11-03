@@ -60,7 +60,7 @@ func (c *amd64Ctx) scalarFPResultInitialized() error {
 		return nil // Exact paired success, retaining the failed strict cache.
 	}
 	if _, incomplete := c.fpScalarCheckErr.(*x86IncompleteResultError); incomplete &&
-		(c.fpMixedBoolBytes || x86OrdinaryMixedBoolResultRole(c.fpScalarSource, c.sig, c.goarch)) {
+		(c.fpMixedBoolBytes || x86OrdinaryScalarTupleResultRole(c.fpScalarSource, c.sig, c.goarch)) {
 		// Ordinary Go callers may inspect a numerical tuple field only on the
 		// path that writes it. Keep the actual strict error cached: this does
 		// not grant the complete-proof capabilities guarded by that cache.
@@ -140,6 +140,14 @@ func (c *amd64Ctx) scalarFPViewNeedsInitialization(off int64, bits int, write bo
 func (c *amd64Ctx) validateScalarFPSourceViews() error {
 	if err := c.validateMixedBoolResultRole(); err != nil {
 		return err
+	}
+	// A tuple's output-only exception must not bypass input or layout checks
+	// when no individual instruction otherwise requests the complete audit.
+	if len(c.fpResults) > 1 && len(x86ScalarTupleResultTypes(c.sig, c.goarch)) != 0 &&
+		x86OrdinaryScalarCodegenSource(c.fpScalarSource, c.sig, c.goarch) {
+		if err := c.scalarFPResultInitialized(); err != nil {
+			return err
+		}
 	}
 	if x86OrdinaryIntegerFPStoreNeedsProof(c.fpScalarSource, c.sig, c.goarch) {
 		if err := c.scalarFPResultInitialized(); err != nil {

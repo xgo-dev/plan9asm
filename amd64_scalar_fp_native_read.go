@@ -86,7 +86,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 			})
 	}
 	_, incompleteResults := strictErr.(*x86IncompleteResultError)
-	ordinaryIncomplete := incompleteResults && x86OrdinaryMixedBoolResultRole(fn, sig, arch)
+	ordinaryIncomplete := incompleteResults && x86OrdinaryScalarTupleResultRole(fn, sig, arch)
 	if (strictErr == nil || ordinaryIncomplete) && nativeMMX == nil {
 		// Complete numerical bytes do not authenticate the original source.
 		// Keep the existing native/frame owners independent, but apply the
@@ -909,7 +909,7 @@ func (c *amd64Ctx) checkLoweredVectorEntry(fn Func, sig FuncSig, arch string,
 	// values come only from actual zeroed vector slots, not the complete bank.
 	err := checkX86ABI0ResultInitializationWithVectorEntry(fn, sig, arch, transfer, true, false, true, vectors)
 	if err != nil {
-		if _, partial := err.(*x86IncompleteResultError); !partial || !x86OrdinaryMixedBoolResultRole(fn, sig, arch) {
+		if _, partial := err.(*x86IncompleteResultError); !partial || !x86OrdinaryScalarTupleResultRole(fn, sig, arch) {
 			return err
 		}
 	}

@@ -93,26 +93,38 @@ func x86OrdinaryScalarCodegenSource(fn Func, sig FuncSig, arch string) bool {
 // extent or source authentication. The complete NUM/canonical flow checker
 // independently validates every typed slot, instruction and path to RET.
 func x86OrdinaryMixedBoolResultRole(fn Func, sig FuncSig, arch string) bool {
-	fields, valid := parseLiteralStructFields(sig.Ret)
-	if !valid || len(fields) < 2 || len(fields) != len(sig.Frame.Results) {
+	if !x86OrdinaryScalarTupleResultRole(fn, sig, arch) {
+		return false
+	}
+	for _, slot := range sig.Frame.Results {
+		if slot.Type == I1 {
+			return true
+		}
+	}
+	return false
+}
+
+func x86OrdinaryScalarTupleResultRole(fn Func, sig FuncSig, arch string) bool {
+	fields := x86ScalarTupleResultTypes(sig, arch)
+	if len(fields) == 0 || len(fields) != len(sig.Frame.Results) {
 		return false
 	}
 	if !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
 		return false
 	}
-	end, hasBool := int64(0), false
+	end := int64(0)
 	for index, slot := range sig.Frame.Results {
 		width := x86ResultScalarBytes(slot.Type, arch)
 		if width <= 0 || slot.Type != fields[index] || slot.Index != index || slot.Field != -1 || len(slot.Fields) != 0 ||
 			slot.Offset < end || slot.Offset > 4096-width {
 			return false
 		}
-		end, hasBool = slot.Offset+width, hasBool || slot.Type == I1
+		end = slot.Offset + width
 	}
 	// Omitted TEXT argument size is Go's unknown-size spelling, not an
 	// explicit zero-byte frame. The typed declaration still bounds every
 	// input/result, and an explicit conflicting extent remains invalid.
-	if !hasBool || fn.ArgSize != end && !x86TEXTArgumentsUnspecified(fn) ||
+	if fn.ArgSize != end && !x86TEXTArgumentsUnspecified(fn) ||
 		len(sig.Frame.Params) > 4096 || len(sig.Args) > 4096 {
 		return false
 	}
@@ -130,6 +142,21 @@ func x86OrdinaryMixedBoolResultRole(fn Func, sig FuncSig, arch string) bool {
 		return false
 	}
 	return true
+}
+
+// Select only the existing flat scalar result kinds. Opaque pointers, nested
+// LLVM aggregates and vectors keep their independent lowering contracts.
+func x86ScalarTupleResultTypes(sig FuncSig, arch string) []LLVMType {
+	fields, valid := parseLiteralStructFields(sig.Ret)
+	if !valid || len(fields) < 2 {
+		return nil
+	}
+	for _, field := range fields {
+		if x86ResultScalarBytes(field, arch) == 0 {
+			return nil
+		}
+	}
+	return fields
 }
 
 func x86MixedBoolCanonicalTransfer(transfer x86ResultSourceTransfer) x86ResultSourceTransfer {
