@@ -40,7 +40,7 @@ func x86ScalarStaticLoadProperties(ins Instr, arch string) (x86ScalarStaticLoadF
 // The original module-owned DATA, SDK and raw consumers remain independent.
 func (c *amd64Ctx) lowerGoReadOnlyLoad(ins Instr) (bool, error) {
 	form, known := x86ScalarStaticLoadProperties(ins, c.goarch)
-	if !known || c.goReadOnlyStorage.readFor(ins, c.goarch) == nil {
+	if !known || c.goReadOnlyStorage.readFor(ins, c.goarch) == nil && !c.goReadOnlyStorage.funcvalGlobalRead(ins, c.goarch) {
 		return false, nil
 	}
 	if err := c.scalarFPResultInitialized(); err != nil {

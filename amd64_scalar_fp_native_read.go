@@ -384,6 +384,10 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		return err
 	}
 	ownedVectorReads := c.ownedIndexedVectorReads(fn, c.fpSourceSig, arch)
+	funcvalReads, err := c.goReadOnlyStorage.funcvalReadsFor(fn)
+	if err != nil {
+		return err
+	}
 	transfer := func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 		shiftBits := state.shiftBits
 		state.shiftBits = x86ResultShiftBits{} // Only the immediately following instruction may consume it.
@@ -396,6 +400,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 				state.nativeLEAAddressBits = x86NativeLEAAddressBits{}
 			}
 		}()
+		if accepted, known := goFuncvalReadTransfer(funcvalReads, ordinal, ins, state, arch); known {
+			return accepted
+		}
 		if accepted, known := x86ResultSDKLiteralStep(ins, state, owned, resultOffset, arch); known {
 			return accepted // Consume the exact bound source before an overlapping native-memory family.
 		}

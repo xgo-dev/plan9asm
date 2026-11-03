@@ -80,10 +80,17 @@ func (c *amd64Ctx) checkStaticIntegerResultInitialization() error {
 			return fail("another raw/native instruction needs its own complete effect")
 		}
 	}
-	transfer := func(_ int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
+	funcvalReads, err := c.goReadOnlyStorage.funcvalReadsFor(fn)
+	if err != nil {
+		return err
+	}
+	transfer := func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 		state.loweredStaticReads = c.fpScalarData
 		state.goReadOnlyRead = c.goReadOnlyStorage.readFor(ins, arch)
 		defer func() { state.loweredStaticReads, state.goReadOnlyRead = nil, nil }()
+		if accepted, known := goFuncvalReadTransfer(funcvalReads, ordinal, ins, state, arch); known {
+			return accepted
+		}
 		if view, bound := x86StaticIntegerResultRawView(ins, arch); bound {
 			ins = view // Local effect dispatch only; never rewrite either sealed source snapshot.
 			if accepted, known := x86ResultUnknownSBAddressStep(ins, state, arch); known {

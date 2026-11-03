@@ -27,6 +27,7 @@ type goReadOnlyStorage struct {
 	symbols      map[string]string
 	resolve      func(string) string
 	failure      error
+	funcvalReads map[string]goFuncvalReadPlan
 }
 
 // An empty path denotes the current package; other keys are its actual direct
@@ -231,6 +232,11 @@ func goReadOnlyTypedSyntax(pkg GoPackage, syntax []string, sizes types.Sizes, ob
 	}
 	if err := goReadOnlyCheckAliases(files, typed, objects); err != nil {
 		return nil, err
+	}
+	if goFuncvalObjects(objects) {
+		if err := goFuncvalCheckConvention(pkg.Syntax, typed, objects); err != nil {
+			return nil, err
+		}
 	}
 	return typed, nil
 }
@@ -441,7 +447,7 @@ func bindGoReadOnlyStorage(pkg GoPackage, file *File, sizes types.Sizes, arch st
 				if sizes == nil {
 					return nil, goReadOnlyContext("missing target sizes for a candidate read")
 				}
-				size, spans, shape, err := goReadOnlyLayout(variable.Type(), sizes)
+				size, spans, shape, err := goReadOnlyDeclarationLayout(variable.Type(), sizes)
 				if err != nil {
 					return nil, err
 				}
@@ -469,6 +475,9 @@ func bindGoReadOnlyStorage(pkg GoPackage, file *File, sizes types.Sizes, arch st
 	if len(source.objects) > 32 {
 		return nil, goReadOnlyContext("global declaration inventory exceeds its bound")
 	}
+	if err := source.bindFuncvalReads(file, arch); err != nil {
+		return nil, err
+	}
 	source.file = x86DirectTailSnapshot(file)
 	var err error
 	for _, declarations := range source.declarations {
@@ -485,7 +494,7 @@ func bindGoReadOnlyStorage(pkg GoPackage, file *File, sizes types.Sizes, arch st
 			if !present {
 				return nil, goReadOnlyContext("global %q has no actual variable declaration", name)
 			}
-			size, spans, shape, err := goReadOnlyLayout(actual.Type(), sizes)
+			size, spans, shape, err := goReadOnlyDeclarationLayout(actual.Type(), sizes)
 			if err != nil || size != object.size || shape != object.shape || !reflect.DeepEqual(spans, object.spans) {
 				return nil, goReadOnlyContext("global %q type and syntax layouts differ", name)
 			}
@@ -556,7 +565,7 @@ func (source *goReadOnlyStorage) verify() error {
 				if variable != object.variable {
 					return goReadOnlyContext("global declaration identity changed during binding")
 				}
-				size, spans, shape, err := goReadOnlyLayout(variable.Type(), source.sizes)
+				size, spans, shape, err := goReadOnlyDeclarationLayout(variable.Type(), source.sizes)
 				if err != nil || size != object.size || shape != object.shape || !reflect.DeepEqual(spans, object.spans) {
 					return goReadOnlyContext("global target layout changed during binding")
 				}
