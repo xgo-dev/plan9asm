@@ -326,6 +326,9 @@ func captureGoAMD64FrameSource(ctx context.Context, pkg GoPackage, request GoAMD
 		if err != nil {
 			return nil, err
 		}
+		if name != request.AssemblyFile {
+			continue // Preserve sibling inputs/CPP, without acquiring its frame role.
+		}
 		file, err := ParseWithDefines(ArchAMD64, expanded, nil)
 		if err != nil || len(file.Funcs) == 0 || len(file.UnlinkedPrelude) != 0 {
 			return nil, goAMD64FrameContext("full original assembly lacks complete TEXT: %v", err)

@@ -155,6 +155,7 @@ func TestGoAMD64FrameSourceRefusesSelfReportedSelection(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(request.Directory, "sibling_amd64.s"), []byte("TEXT ·Other(SB),4,$8-0\nRET\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
+				request.AssemblyFile = "sibling_amd64.s"
 			case "dependency":
 				if err := os.WriteFile(filepath.Join(request.Directory, "dep.go"), []byte("package framefixture\nimport _ \"unsafe\"\n"), 0600); err != nil {
 					t.Fatal(err)
@@ -251,8 +252,11 @@ func TestGoAMD64FrameSourceActualTargetAndFullSiblingInventory(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			if len(source.selection.SFiles) != 2 || len(source.functions) != 2 || source.env["GOOS"]+"/"+source.env["GOARCH"] != target {
+			if len(source.selection.SFiles) != 2 || len(source.functions) != 1 || source.env["GOOS"]+"/"+source.env["GOARCH"] != target {
 				t.Fatalf("incomplete actual target/sibling observation: %+v", source.selection)
+			}
+			if _, observed := source.functions[pkg.Path+".Other"]; observed {
+				t.Fatal("unrequested sibling acquired frame facts")
 			}
 		})
 	}
@@ -447,12 +451,13 @@ func TestGoAMD64FrameSourceFailedSiblingCleansOnlyOwnedObjects(t *testing.T) {
 	temporary := t.TempDir()
 	t.Setenv("TMPDIR", t.TempDir())
 	request.Environment = append(request.Environment, "TMPDIR="+temporary, "GOTMPDIR="+temporary)
-	// The first object succeeds. The later selected sibling cannot be bound
-	// to any actual declaration; its failure must not leak the earlier object.
+	// The selected sibling cannot be bound to any actual declaration. Request
+	// it explicitly: its failure must not leak the captured object directory.
 	sibling := filepath.Join(request.Directory, "z_sibling_amd64.s")
 	if err := os.WriteFile(sibling, []byte("TEXT ·Other(SB),4,$160-0\nRET\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	request.AssemblyFile = filepath.Base(sibling)
 	ctx, cancel := runtimeOracleStageContext(t)
 	defer cancel()
 	source, err := CaptureGoAMD64FrameSource(ctx, pkg, request)

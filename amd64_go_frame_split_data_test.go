@@ -230,6 +230,10 @@ RET
 						relocations[2].Offset = int64(shape.prologue + len(shape.code) - 2)
 					case "body call":
 						relocations[1].Type, relocations[1].Target = relocations[3].Type, relocations[3].Target
+						if goAMD64FrameDataRelocationLine(relocations[1], data) == "" ||
+							goAMD64FrameLocalCallTarget(relocations[1], data.Member.Texts) {
+							t.Fatal("ordinary external CALL observation did not reach the independent body-role guard")
+						}
 					case "private index":
 						relocations[2].Target.SymbolIndex++
 					case "private ABI":

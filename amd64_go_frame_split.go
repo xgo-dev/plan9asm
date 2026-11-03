@@ -187,6 +187,7 @@ func goAMD64FrameSplitProjection(fn goAMD64FrameFunction, text gostaticstorage.T
 			generated |= 2
 		default:
 			if data == nil || relocation.Offset < int64(start) || relocation.Offset > int64(end)-relocation.Size ||
+				relocation.Type != 14 && !goAMD64FrameLocalCallTarget(relocation, data.Member.Texts) ||
 				goAMD64FrameDataRelocationLine(relocation, data) == "" {
 				return fail()
 			}
