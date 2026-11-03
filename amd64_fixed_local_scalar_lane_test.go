@@ -241,11 +241,13 @@ func TestGoAMD64FixedLocalScalarLaneBoundaries(t *testing.T) {
 			fn, sig, source := fixedLocalVEXFixture(t, row)
 			if row == "PINSRB $0,(AX),X1" || row == "PEXTRB $0,X1,(AX)" {
 				operand, write := 1, false
+				emitted := "load volatile i8"
 				if row == "PEXTRB $0,X1,(AX)" {
 					operand, write = 2, true
+					emitted = "store volatile i8"
 				}
 				fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64) uint64",
-					row, operand, 1, write, strings.ToLower(strings.Fields(row)[0]))
+					row, operand, 1, write, emitted)
 				return
 			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {

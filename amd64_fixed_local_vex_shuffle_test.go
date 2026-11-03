@@ -99,7 +99,7 @@ func TestGoAMD64FixedLocalVEXShuffleBoundaries(t *testing.T) {
 				fn, sig, source := fixedLocalVEXFixture(t, operation)
 				if args == "$0,(AX),X2" {
 					fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64) uint64",
-						operation, 1, 16, false, strings.ToLower(name))
+						operation, 1, 16, false, "shufflevector <16 x i8>")
 					return
 				}
 				if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {

@@ -208,7 +208,7 @@ func TestGoAMD64FixedLocalVEXBoundaries(t *testing.T) {
 			fn, sig, source := fixedLocalVEXFixture(t, row.operation)
 			if row.name == "numeric pointer" {
 				fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64) uint64",
-					row.operation, 0, 32, false, "vpor")
+					row.operation, 0, 32, false, "load volatile <32 x i8>")
 				return
 			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {

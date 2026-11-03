@@ -86,7 +86,7 @@ func TestGoAMD64FixedLocalPackedMaskMovesCompleteLocalRoles(t *testing.T) {
 					}
 					if name == "BP output" {
 						fixedLocalRequireNumericControl(t, file.Funcs[0], sig, fixedLocalPackedAssembly(changed),
-							"func Value(a uint64) uint64", "VMOVDQA64.Z 64(BP),K1,Z0", 0, 64, false, "vmovdqa64")
+							"func Value(a uint64) uint64", "VMOVDQA64.Z 64(BP),K1,Z0", 0, 64, false, "load volatile i64")
 						return
 					}
 					if _, err := proveX86FixedLocal(file.Funcs[0], sig); !errors.Is(err, ErrProbeNeedsContext) {
