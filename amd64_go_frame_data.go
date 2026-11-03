@@ -157,6 +157,18 @@ func goAMD64FrameDataRelocationLine(relocation gostaticstorage.TextRelocation, o
 	if line := goAMD64FramePrivateCallRelocation(relocation, observed); line != "" {
 		return line // Exact local TEXT identity only; the caller validates its leaf role.
 	}
+	if relocation.Type == 7 && relocation.Size == 4 && relocation.Add == 0 &&
+		relocation.Target.ABIKnown && relocation.Target.ABI == 0 && relocation.Target.Name != "" {
+		for _, text := range observed.Member.Texts {
+			if text.Name == relocation.Target.Name {
+				return "" // A mismatched local TEXT cannot become an external call.
+			}
+		}
+		// Observe the original direct CALL spelling only. Its source, callee
+		// signature and frame permissions are validated independently.
+		return fmt.Sprintf("rel %d+%d t=R_CALL %s+0",
+			relocation.Offset, relocation.Size, relocation.Target.Name)
+	}
 	if relocation.Type != 14 || relocation.Size != 4 || !relocation.Target.ABIKnown {
 		return ""
 	}
