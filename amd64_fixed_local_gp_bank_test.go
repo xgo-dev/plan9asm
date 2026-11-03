@@ -40,7 +40,15 @@ func TestGoAMD64FixedLocalDefinedGPBank(t *testing.T) {
 		} {
 			t.Run(fmt.Sprintf("unbound/%s/%d", register, index), func(t *testing.T) {
 				fn, sig, _ := fixedLocalGPFixture(t, body)
-				if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
+				proved, err := proveX86FixedLocal(fn, sig)
+				if index == 4 {
+					if err != nil {
+						t.Fatal("defined numerical bits lost their faulting native access", err)
+					}
+					fixedLocalRequireNumericNativeRole(t, proved, Reg(register))
+					return
+				}
+				if !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("entry register or numerical bits gained pointer authority", err)
 				}
 			})

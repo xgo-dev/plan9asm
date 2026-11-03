@@ -86,7 +86,7 @@ func TestGoAMD64FixedLocalConstantIndexGuards(t *testing.T) {
 			{"unknown upper index bytes", "MOVW $0,SI\nMOVQ (DI)(SI*1),AX", false},
 			{"defined partial index overwrite", "MOVQ $0,SI\nMOVB $1,SI\nMOVQ (DI)(SI*1),AX", literal},
 			{"pointer used as index", "MOVQ DI,SI\nMOVQ (DI)(SI*1),AX", false},
-			{"numeric base loses origin", "MOVQ $0,DI\nMOVQ $0,SI\nMOVQ (DI)(SI*1),AX", false},
+			{"numeric base loses origin", "MOVQ $0,DI\nMOVQ $0,SI\nMOVQ (DI)(SI*1),AX", true},
 			{"different constants at join", "MOVQ $77,8(SP)\nMOVQ $0,SI\nCMPQ AX,$0\nJEQ joined\nMOVQ $1,SI\njoined:\nMOVQ (DI)(SI*8),AX", literal},
 			{"loaded numerical index", "MOVQ $0,SI\nMOVQ (DI)(SI*1),SI\nMOVQ (DI)(SI*1),AX", literal},
 		} {
@@ -100,12 +100,19 @@ func TestGoAMD64FixedLocalConstantIndexGuards(t *testing.T) {
 				source := requireGoAMD64FrameCapture(t, pkg, request)
 				ctx, cancel := runtimeOracleStageContext(t)
 				defer cancel()
-				_, err := source.BindFixedLocal(ctx, pkg, file, options)
+				bound, err := source.BindFixedLocal(ctx, pkg, file, options)
 				if row.valid && err != nil {
 					t.Fatal("valid constant-index boundary rejected", err)
 				}
 				if !row.valid && !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("unproved constant-index bytes or origin accepted", err)
+				}
+				if row.name == "numeric base loses origin" {
+					proved, err := proveX86FixedLocal(file.Funcs[0], bound.Sigs[pkg.Path+".Value"])
+					if err != nil {
+						t.Fatal(err)
+					}
+					fixedLocalRequireNumericNativeRole(t, proved, DI)
 				}
 			})
 		}

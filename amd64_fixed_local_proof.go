@@ -949,6 +949,18 @@ func fixedLocalMemoryAccess(ins *Instr, index int, state *x86FixedLocalState, pr
 			return 0, x86FixedLocalNativeInput, fixedLocalRecordAccess(ins, index, proof, residue, width, write, true, 0)
 		}
 	}
+	// Defined machine address bits retain their ordinary native access. They
+	// are neither a relocated private pointer nor a reusable pointee fact.
+	if index >= 0 && index < len(ins.Args) && ins.Args[index].Kind == OpMem &&
+		x86ResultNamedPredicateInstruction(*ins) && !pointer && width > 0 && alignment > 0 {
+		memory := ins.Args[index].Mem
+		root, valid := x86CallerGP(memory.Base)
+		if valid && root == memory.Base && fixedLocalNumericRead(Operand{Kind: OpReg, Reg: root}, 8, state) {
+			if _, _, numerical := fixedLocalNativeDisplacement(memory, state); numerical {
+				return 0, x86FixedLocalNativeInput, fixedLocalRecordAccess(ins, index, proof, residue, width, write, true, 0)
+			}
+		}
+	}
 	offset, err := fixedLocalMemory(ins, index, state, proof, residue, width, alignment, write, pointer)
 	return offset, x86FixedLocalPrivateMemory, err
 }

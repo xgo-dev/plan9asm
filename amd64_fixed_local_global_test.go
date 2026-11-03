@@ -77,7 +77,19 @@ func TestGoAMD64FixedLocalGlobalAddressGuards(t *testing.T) {
 			source := requireGoAMD64FrameCapture(t, pkg, request)
 			ctx, cancel := runtimeOracleStageContext(t)
 			defer cancel()
-			if _, err := source.BindFixedLocal(ctx, pkg, file, options); !errors.Is(err, ErrProbeNeedsContext) {
+			bound, err := source.BindFixedLocal(ctx, pkg, file, options)
+			if row.name == "pointer arithmetic" || row.name == "numeric address" {
+				if err != nil {
+					t.Fatal("defined numerical address lost its ordinary native read", err)
+				}
+				proved, err := proveX86FixedLocal(file.Funcs[0], bound.Sigs[pkg.Path+".Value"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixedLocalRequireNumericNativeRole(t, proved, DX)
+				return
+			}
+			if !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("static address acquired unrelated numeric, write or private-frame permission", err)
 			}
 		})

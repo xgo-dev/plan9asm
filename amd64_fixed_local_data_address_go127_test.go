@@ -92,6 +92,7 @@ func TestGoAMD64FixedLocalReadonlyDataAddressGuards(t *testing.T) {
 		"unknown affine offset":  true,
 		"unknown index":          true,
 		"joined offset past end": true,
+		"numeric pointer":        true,
 	}
 	for _, row := range []struct{ name, body string }{
 		{"past end", acquire + "MOVQ 25(SI),DX"},
@@ -121,10 +122,17 @@ func TestGoAMD64FixedLocalReadonlyDataAddressGuards(t *testing.T) {
 			source := requireGoAMD64FrameCapture(t, pkg, request)
 			ctx, cancel := runtimeOracleStageContext(t)
 			defer cancel()
-			_, err := source.BindFixedLocal(ctx, pkg, file, options)
+			bound, err := source.BindFixedLocal(ctx, pkg, file, options)
 			if dynamic[row.name] {
 				if err != nil {
 					t.Fatal("dynamic native address incorrectly required a caller bounds proof", err)
+				}
+				if row.name == "numeric pointer" {
+					proved, err := proveX86FixedLocal(file.Funcs[0], bound.Sigs[pkg.Path+".Value"])
+					if err != nil {
+						t.Fatal(err)
+					}
+					fixedLocalRequireNumericNativeRole(t, proved, SI)
 				}
 				return
 			}

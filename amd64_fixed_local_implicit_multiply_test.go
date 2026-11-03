@@ -161,14 +161,17 @@ func TestGoAMD64FixedLocalImplicitMultiplyBoundaries(t *testing.T) {
 				{"one missing memory byte", "MOVQ AX,8(SP)\n", fmt.Sprintf("%d(SP)", 17-width.width), "", false},
 				{"outside frame", "", "64(SP)", "", false},
 				{"one byte outside frame", "MOVQ AX,56(SP)\n", fmt.Sprintf("%d(SP)", 65-width.width), "", false},
-				{"numerical address", "", "(AX)", "", false},
+				{"numerical address", "", "(AX)", "", true},
 				{"private spill", "MOVQ SP,8(SP)\n", "8(SP)", "", false},
 			} {
 				t.Run(name+"/"+row.name, func(t *testing.T) {
 					fn, sig, _ := fixedLocalGPFixture(t, row.before+name+" "+row.source+"\n"+row.after)
-					_, err := proveX86FixedLocal(fn, sig)
+					proved, err := proveX86FixedLocal(fn, sig)
 					if (err == nil) != row.valid {
 						t.Fatalf("valid=%v: %v", row.valid, err)
+					}
+					if row.name == "numerical address" {
+						fixedLocalRequireNumericNativeRole(t, proved, AX)
 					}
 				})
 			}

@@ -64,8 +64,8 @@ func TestGoAMD64FixedLocalInputMemoryProvenance(t *testing.T) {
 		{"mask native output", "KMOVQ AX,K1\nVMOVDQU8 (SI),Z0\nVMOVDQU8 Z0,K1,(DI)", true},
 		{"numerical loop", "MOVQ $3,CX\nagain:\nADDQ (SI),AX\nSUBQ $1,CX\nJNE again", true},
 		{"same input join", "CMPQ AX,$1\nJEQ left\nMOVQ SI,CX\nJMP join\nleft:\nMOVQ SI,CX\njoin:\nMOVQ (CX),AX", true},
-		{"numerical address", "MOVQ (AX),CX", false},
-		{"loaded integer is not pointer", "MOVQ (SI),CX\nMOVQ (CX),AX", false},
+		{"numerical address", "MOVQ (AX),CX", true},
+		{"loaded integer is not pointer", "MOVQ (SI),CX\nMOVQ (CX),AX", true},
 		{"private pointer escape", "MOVQ SP,CX\nMOVQ CX,(DI)", false},
 		{"opaque pointer store", "MOVQ SI,(DI)", false},
 		{"private pointer arithmetic", "ADDQ SI,AX", false},
@@ -83,9 +83,15 @@ func TestGoAMD64FixedLocalInputMemoryProvenance(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fn, sig, _ := fixedLocalInputFixture(t, row.body)
-			_, err := proveX86FixedLocal(fn, sig)
+			proved, err := proveX86FixedLocal(fn, sig)
 			if (err == nil) != row.valid {
 				t.Fatalf("valid=%v: %v", row.valid, err)
+			}
+			if row.name == "numerical address" {
+				fixedLocalRequireNumericNativeRole(t, proved, AX)
+			}
+			if row.name == "loaded integer is not pointer" {
+				fixedLocalRequireNumericNativeRole(t, proved, CX)
 			}
 		})
 	}

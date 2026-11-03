@@ -85,7 +85,7 @@ func TestGoAMD64FixedLocalTypedGPFlagsAndProvenance(t *testing.T) {
 		{"uninitialized memory", "SUBQ $1,8(SP)", false},
 		{"uninitialized self memory", "XORQ AX,8(SP)", false},
 		{"crossing frame", "ADDQ $1,60(SP)", false},
-		{"numeric not a pointer", "ADDQ $1,(AX)", false},
+		{"numeric not a pointer", "ADDQ $1,(AX)", true},
 		{"dynamic memory bit index", "BTQ AX,0(SP)", false},
 		{"spilled pointer is not numeric", "MOVQ SP,CX\nMOVQ CX,8(SP)\nADDQ $1,8(SP)", false},
 		{"private not numerical", "MOVQ SP,CX\nXORQ CX,AX", false},
@@ -95,9 +95,12 @@ func TestGoAMD64FixedLocalTypedGPFlagsAndProvenance(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fn, sig, _ := fixedLocalGPFixture(t, row.body)
-			_, err := proveX86FixedLocal(fn, sig)
+			proved, err := proveX86FixedLocal(fn, sig)
 			if (err == nil) != row.valid {
 				t.Fatalf("valid=%v: %v", row.valid, err)
+			}
+			if row.name == "numeric not a pointer" {
+				fixedLocalRequireNumericNativeRole(t, proved, AX)
 			}
 		})
 	}

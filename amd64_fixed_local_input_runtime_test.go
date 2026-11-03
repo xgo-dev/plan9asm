@@ -12,6 +12,7 @@ import (
 // The independent volatile-byte reference checks an observable access, not
 // original SIMD execution or any claimed pointee extent from its Go type.
 func TestGoAMD64FixedLocalInputMemoryDeadReadFaults(t *testing.T) {
+	t.Run("native-numeric-address", fixedLocalNativeNumericAddressRuntime)
 	fixedLocalInputMemoryFaults(t, []fixedLocalInputFaultCase{{"MOVQ (SI),CX", 8}, {"CMPQ (SI),$0", 8}})
 }
 

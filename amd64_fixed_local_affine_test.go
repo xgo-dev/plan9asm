@@ -29,10 +29,10 @@ func TestGoAMD64FixedLocalInputAffineAddresses(t *testing.T) {
 		{"dead differing origin", "CMPQ AX,$0\nJEQ left\nMOVQ SI,CX\nJMP join\nleft:\nMOVQ DI,CX\njoin:", true},
 		{"dead conditional spill", "CMPQ AX,$0\nJEQ join\nMOVQ SI,8(SP)\njoin:", true},
 		{"same origin derived join", "CMPQ AX,$0\nJEQ left\nLEAQ 8(SI),CX\nJMP join\nleft:\nLEAQ 16(SI),CX\njoin:\nMOVQ (CX),AX", true},
-		{"pointer plus pointer", "ADDQ DI,SI\nMOVQ (SI),AX", false},
-		{"number minus pointer", "SUBQ SI,AX\nMOVQ (AX),AX", false},
+		{"pointer plus pointer", "ADDQ DI,SI\nMOVQ (SI),AX", true},
+		{"number minus pointer", "SUBQ SI,AX\nMOVQ (AX),AX", true},
 		{"pointer bits escape", "ADDQ SI,AX", false},
-		{"partial pointer arithmetic", "ADDL $8,SI\nMOVQ (SI),AX", false},
+		{"partial pointer arithmetic", "ADDL $8,SI\nMOVQ (SI),AX", true},
 		{"pointer index", "LEAQ (SI)(DI*2),CX\nMOVQ (CX),AX", false},
 		{"aliased pointer index", "LEAQ (SI)(SI*1),CX\nMOVQ (CX),AX", false},
 		{"unknown index", "LEAQ (SI)(R8*2),CX\nMOVQ (CX),AX", false},
@@ -45,12 +45,18 @@ func TestGoAMD64FixedLocalInputAffineAddresses(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			fn, sig, source := fixedLocalInputFixture(t, row.body)
 			original.WriteString(strings.Replace(source, "·Value", fmt.Sprintf("·Value%d", index), 1))
-			_, err := proveX86FixedLocal(fn, sig)
+			proved, err := proveX86FixedLocal(fn, sig)
 			if row.valid && err != nil {
 				t.Fatal("typed input address lost its original identity", err)
 			}
 			if !row.valid && !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("unproved pointer acquired numerical or native access", err)
+			}
+			if row.name == "pointer plus pointer" || row.name == "partial pointer arithmetic" {
+				fixedLocalRequireNumericNativeRole(t, proved, SI)
+			}
+			if row.name == "number minus pointer" {
+				fixedLocalRequireNumericNativeRole(t, proved, AX)
 			}
 		})
 	}
