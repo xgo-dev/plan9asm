@@ -2,6 +2,7 @@ package plan9asm
 
 import (
 	"bytes"
+	"go/types"
 	"path/filepath"
 	"strings"
 
@@ -11,16 +12,9 @@ import (
 
 func (source *GoAMD64FrameSource) observeWindowsUnwind(object []byte, privateLeaves ...[]gostaticstorage.TextRecord) (gostaticstorage.WindowsAMD64AssemblyUnwind, error) {
 	var empty gostaticstorage.WindowsAMD64AssemblyUnwind
-	for _, declaration := range source.declarations {
-		if !fixedLocalTransportRole(declaration.transport) {
-			return empty, goAMD64FrameContext("Windows unwind join requires the closed typed ABI0 transport scope")
-		}
-	}
-	builtin, err := gostaticstorage.WindowsAMD64UnwindSources(source.env["GOVERSION"], func(name string) ([]byte, error) {
-		return source.read(filepath.Join(source.env["GOROOT"], filepath.FromSlash(name)))
-	})
+	builtin, err := source.windowsUnwindBuiltin()
 	if err != nil {
-		return empty, goAMD64FrameContext("Windows unwind actual SDK sources: %v", err)
+		return empty, err
 	}
 	observed, err := gostaticstorage.ObserveWindowsAMD64AssemblyUnwind(object, builtin, privateLeaves...)
 	if err != nil {
@@ -32,39 +26,73 @@ func (source *GoAMD64FrameSource) observeWindowsUnwind(object []byte, privateLea
 	return observed, nil
 }
 
+func (source *GoAMD64FrameSource) windowsUnwindBuiltin() ([]byte, error) {
+	for _, declaration := range source.declarations {
+		if !fixedLocalTransportRole(declaration.transport) {
+			return nil, goAMD64FrameContext("Windows unwind join requires the closed typed ABI0 transport scope")
+		}
+	}
+	builtin, err := gostaticstorage.WindowsAMD64UnwindSources(source.env["GOVERSION"], func(name string) ([]byte, error) {
+		return source.read(filepath.Join(source.env["GOROOT"], filepath.FromSlash(name)))
+	})
+	if err != nil {
+		return nil, goAMD64FrameContext("Windows unwind actual SDK sources: %v", err)
+	}
+	return builtin, nil
+}
+
 // Only the complete original source classification can select leaf records.
 // Keep their full raw object identity, including namespace, ABI, bytes and PCs;
 // neither a static ABI number nor absent SEH metadata establishes this role.
-func goAMD64WindowsPrivateLeafTexts(file *File, pkg GoPackage, listing []byte,
-	data *gostaticstorage.AMD64AssemblyData) ([]gostaticstorage.TextRecord, error) {
+func goAMD64WindowsSourceLeafTexts(file *File, pkg GoPackage, listing []byte,
+	texts []gostaticstorage.TextRecord, order []gostaticstorage.ASMSourceText) ([]gostaticstorage.TextRecord, error) {
 	leaves, err := goAMD64FramePrivateLeaves(file, pkg)
-	if err != nil || len(leaves) == 0 {
+	if err != nil {
 		return nil, err
 	}
-	if data == nil {
-		return nil, goAMD64FrameContext("Windows private leaf requires its original source/object association")
-	}
-	records, err := sdkAMD64FrameNativeRecordsForSource(listing, data.Member.Texts, data.TextOrder)
+	records, err := sdkAMD64FrameNativeRecordsForSource(listing, texts, order)
 	if err != nil || len(records) != len(file.Funcs) {
 		return nil, goAMD64FrameContext("Windows private leaf lacks a complete source/object TEXT association: %v", err)
 	}
 	var result []gostaticstorage.TextRecord
 	for index, fn := range file.Funcs {
-		if !leaves[fn.Sym] {
+		if !leaves[fn.Sym] && !goAMD64DeclaredNoFrameLeaf(fn, pkg) {
 			continue
 		}
-		text := data.Member.Texts[data.TextOrder[index].ObjectOrdinal]
+		text := texts[order[index].ObjectOrdinal]
+		expectedName := strings.TrimSuffix(fn.Sym, "<>")
+		if !leaves[fn.Sym] {
+			expectedName = pkg.Path + "." + strings.TrimPrefix(fn.Sym, "·")
+		}
 		abi, namespace := uint16(0), gostaticstorage.TextSymbolNonpkgDefinition
 		if strings.HasSuffix(fn.Sym, "<>") {
 			abi, namespace = 65535, gostaticstorage.TextSymbolSelf
 		}
-		if text.Name != strings.TrimSuffix(fn.Sym, "<>") || text.ABI != abi || text.Namespace != namespace ||
+		if text.Name != expectedName || text.ABI != abi || text.Namespace != namespace ||
 			!records[index].ordinaryFrameRole() || records[index].Locals != uint64(goAMD64FrameNativeLocals(fn.FrameSize)) {
 			return nil, goAMD64FrameContext("Windows private leaf changed its exact source symbol/ABI/namespace")
 		}
 		result = append(result, text)
 	}
 	return result, nil
+}
+
+// Match the pinned x86 producer's automatic NoFrame leaf rule. This selects
+// metadata observations only; ordinary FP slots still come from the declaration
+// and this function never establishes a private CALL or local backing role.
+func goAMD64DeclaredNoFrameLeaf(fn Func, pkg GoPackage) bool {
+	if fn.FrameSize != 0 || pkg.Types == nil {
+		return false
+	}
+	if _, declared := pkg.Types.Scope().Lookup(strings.TrimPrefix(fn.Sym, "·")).(*types.Func); !declared {
+		return false
+	}
+	for _, ins := range fn.Instrs {
+		if ins.Op == OpCALL || ins.Op == "DUFFCOPY" || ins.Op == "DUFFZERO" {
+			return false
+		}
+	}
+	return true
 }
 
 func goAMD64WindowsUnwindByteRow(line string, offset int, expected []byte) ([]byte, error) {
@@ -114,12 +142,14 @@ func goAMD64FrameWindowsUnwindFunctions(functions map[string]goAMD64FrameFunctio
 				metadata = unwind[aux.Target.Name]
 			}
 		}
-		if fn.privateLeaf && fn.locals == 0 {
+		if fn.locals == 0 {
 			if metadata.Name != "" || fn.prologue != 0 || fn.split {
 				return goAMD64FrameContext("Windows private leaf acquired an automatic frame or SEH prologue")
 			}
-			if err := goAMD64FrameMachineShapeWithCalls(fn, 0, nil); err != nil {
-				return err
+			if fn.privateLeaf {
+				if err := goAMD64FrameMachineShapeWithCalls(fn, 0, nil); err != nil {
+					return err
+				}
 			}
 			if err := goAMD64FrameSourcePCs(text, fn, directory, origins, ""); err != nil {
 				return err

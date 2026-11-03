@@ -152,7 +152,7 @@ func TestGoAMD64WindowsFramedLeafRequiresSEH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	leaves, err := goAMD64WindowsPrivateLeafTexts(file, pkg, listing, data)
+	leaves, err := goAMD64WindowsSourceLeafTexts(file, pkg, listing, data.Member.Texts, data.TextOrder)
 	if err != nil || len(leaves) != 1 {
 		t.Fatal("original source lost its single private framed helper", err)
 	}

@@ -8,6 +8,73 @@ import (
 	"strings"
 )
 
+// ObserveWindowsAMD64AssemblyText observes the complete checked assembler TEXT
+// inventory. It grants no permission to omit unwind metadata or use a frame.
+func ObserveWindowsAMD64AssemblyText(data, builtinSource []byte) ([]TextRecord, error) {
+	_, observed, err := windowsAMD64AssemblyText(data, builtinSource)
+	return observed.Texts, err
+}
+
+func windowsAMD64AssemblyText(data, builtinSource []byte) (*checkedGoObject, WindowsAMD64AssemblyUnwind, error) {
+	var result WindowsAMD64AssemblyUnwind
+	if len(data) == 0 || len(data) > archiveLimit {
+		return nil, result, contextError("Windows assembly object exceeds its byte bound")
+	}
+	version, err := objectHeaderVersion(data, "windows/amd64")
+	if err != nil {
+		return nil, result, err
+	}
+	schema, ok := windowsUnwindFormat(version)
+	if !ok {
+		return nil, result, contextError("unregistered Windows unwind object producer")
+	}
+	builtins, err := textBuiltinsForDigest(builtinSource, schema.builtin)
+	if err != nil {
+		return nil, result, err
+	}
+	end := bytes.Index(data, []byte("\n!\n"))
+	if end < 0 || end > 4096 {
+		return nil, result, contextError("invalid Windows assembly object text header")
+	}
+	body := data[end+3:]
+	object, err := checkedObject(body, 4, false)
+	if err != nil {
+		return nil, result, err
+	}
+	// Record widths/indexing are identical, but old symbol/Aux enums are not.
+	// Reject unknown historical values before invoking the shared byte reader.
+	for _, index := range []int{3, 4, 5, 6, 7} {
+		for pos := 0; pos < len(object.block(index)); pos += 21 {
+			kind := object.block(index)[pos+10]
+			if kind > schema.kind || schema.kind >= 24 && kind == 2 {
+				return nil, result, contextError("unknown or FIPS Windows assembly symbol kind")
+			}
+		}
+	}
+	for pos := 0; pos < len(object.block(15)); pos += 9 {
+		if object.block(15)[pos] > schema.aux {
+			return nil, result, contextError("unknown Windows assembly auxiliary kind")
+		}
+	}
+	for pos := 0; pos < len(object.block(14)); pos += 23 {
+		kind := binary.LittleEndian.Uint16(object.block(14)[pos+5:])
+		if !(kind >= 1 && kind <= schema.relocationMax || kind == 0x8001 || kind == 0x8005) {
+			return nil, result, contextError("unknown Windows assembly relocation kind")
+		}
+	}
+	texts, err := readCheckedTextObjectKinds(object, "windows/amd64", builtins, nil, false)
+	if err != nil {
+		return nil, result, err
+	}
+	if len(texts) == 0 {
+		return nil, result, contextError("Windows metadata lacks its complete TEXT inventory")
+	}
+	result.Texts = texts
+	result.Version, result.AuxType = version, schema.aux
+	result.TextFlags2, result.ListingAlignment = schema.flag2, schema.listingAlignment
+	return object, result, nil
+}
+
 // WindowsAMD64UnwindRecord observes one complete original Go metadata record.
 // It grants no source, frame, handler or native Windows unwind permission.
 type WindowsAMD64UnwindRecord struct {
@@ -34,58 +101,13 @@ func ObserveWindowsAMD64AssemblyUnwind(data, builtinSource []byte, privateLeaves
 	if len(privateLeaves) > 1 {
 		return result, contextError("Windows metadata has multiple private source-role inventories")
 	}
-	if len(data) == 0 || len(data) > archiveLimit {
-		return result, contextError("Windows assembly object exceeds its byte bound")
-	}
-	version, err := objectHeaderVersion(data, "windows/amd64")
+	object, observed, err := windowsAMD64AssemblyText(data, builtinSource)
 	if err != nil {
 		return result, err
 	}
-	schema, ok := windowsUnwindFormat(version)
-	if !ok {
-		return result, contextError("unregistered Windows unwind object producer")
-	}
-	builtins, err := textBuiltinsForDigest(builtinSource, schema.builtin)
-	if err != nil {
-		return result, err
-	}
-	end := bytes.Index(data, []byte("\n!\n"))
-	if end < 0 || end > 4096 {
-		return result, contextError("invalid Windows assembly object text header")
-	}
-	body := data[end+3:]
-	object, err := checkedObject(body, 4, false)
-	if err != nil {
-		return result, err
-	}
-	// Record widths/indexing are identical, but old symbol/Aux enums are not.
-	// Reject unknown historical values before invoking the shared byte reader.
-	for _, index := range []int{3, 4, 5, 6, 7} {
-		for pos := 0; pos < len(object.block(index)); pos += 21 {
-			kind := object.block(index)[pos+10]
-			if kind > schema.kind || schema.kind >= 24 && kind == 2 {
-				return result, contextError("unknown or FIPS Windows assembly symbol kind")
-			}
-		}
-	}
-	for pos := 0; pos < len(object.block(15)); pos += 9 {
-		if object.block(15)[pos] > schema.aux {
-			return result, contextError("unknown Windows assembly auxiliary kind")
-		}
-	}
-	for pos := 0; pos < len(object.block(14)); pos += 23 {
-		kind := binary.LittleEndian.Uint16(object.block(14)[pos+5:])
-		if !(kind >= 1 && kind <= schema.relocationMax || kind == 0x8001 || kind == 0x8005) {
-			return result, contextError("unknown Windows assembly relocation kind")
-		}
-	}
-	texts, err := readTextObjectKinds(body, "windows/amd64", 4, false, builtins, nil, false)
-	if err != nil {
-		return result, err
-	}
-	if len(texts) == 0 {
-		return result, contextError("Windows metadata lacks its complete TEXT inventory")
-	}
+	result = observed
+	texts := result.Texts
+	schema, _ := windowsUnwindFormat(result.Version) // checked by the shared reader
 	var leaves map[uint32]TextRecord
 	if len(privateLeaves) == 1 && len(privateLeaves[0]) != 0 {
 		if len(privateLeaves[0]) > len(texts) {
@@ -205,8 +227,5 @@ func ObserveWindowsAMD64AssemblyUnwind(data, builtinSource []byte, privateLeaves
 	if len(used) != len(byIndex) {
 		return WindowsAMD64AssemblyUnwind{}, contextError("Windows unwind inventory has an orphan definition")
 	}
-	result.Texts = texts
-	result.Version, result.AuxType = version, schema.aux
-	result.TextFlags2, result.ListingAlignment = schema.flag2, schema.listingAlignment
 	return result, nil
 }

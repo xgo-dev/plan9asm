@@ -18,3 +18,12 @@ func x86TEXTArgumentsUnspecified(fn Func) bool {
 	frame, err := parseTEXTFrameSpec(parts)
 	return err == nil && !frame.argsSpecified && frame.frameSize == fn.FrameSize
 }
+
+// The native listing must retain the original TEXT's specified/unspecified
+// distinction. An omitted size obtains its layout only from the Go declaration.
+func goAMD64FrameArgumentsMatch(fn Func, native int64) bool {
+	if x86TEXTArgumentsUnspecified(fn) {
+		return native == -0x80000000 // objabi.ArgsSizeUnknown
+	}
+	return native == fn.ArgSize
+}

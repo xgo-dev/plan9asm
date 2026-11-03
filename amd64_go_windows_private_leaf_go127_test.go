@@ -62,7 +62,7 @@ func TestGoAMD64WindowsPrivateLeafSourceRoleBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			leaves, err := goAMD64WindowsPrivateLeafTexts(file, pkg, listing, data)
+			leaves, err := goAMD64WindowsSourceLeafTexts(file, pkg, listing, data.Member.Texts, data.TextOrder)
 			if err != nil || len(leaves) != 1 {
 				t.Fatal("complete source did not retain its one exact private leaf", err)
 			}
@@ -104,7 +104,7 @@ func TestGoAMD64WindowsPrivateLeafSourceRoleBoundaries(t *testing.T) {
 					if _, err := sdkAMD64FrameNativeRecordsForSource(mutated, copyData.Member.Texts, copyData.TextOrder); err != nil {
 						t.Fatal("role control did not reach the private entry boundary", err)
 					}
-					if _, err := goAMD64WindowsPrivateLeafTexts(file, pkg, mutated, &copyData); !errors.Is(err, ErrProbeNeedsContext) {
+					if _, err := goAMD64WindowsSourceLeafTexts(file, pkg, mutated, copyData.Member.Texts, copyData.TextOrder); !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("special or unknown metadata acquired a Windows private leaf role", err)
 					}
 				})
@@ -186,7 +186,7 @@ func TestGoAMD64WindowsPrivateLeafSourceRoleBoundaries(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := goAMD64WindowsPrivateLeafTexts(parsed, pkg, listing, data); !errors.Is(err, ErrProbeNeedsContext) {
+					if _, err := goAMD64WindowsSourceLeafTexts(parsed, pkg, listing, data.Member.Texts, data.TextOrder); !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("non-leaf source acquired a zero-frame metadata role", err)
 					}
 				})

@@ -228,7 +228,7 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 		expectedName := pkg.Path + "." + strings.TrimPrefix(fn.Sym, "·")
 		sig, supplied := options.Sigs[name]
 		if !found || !supplied || name != expectedName || len(observed.code) == 0 ||
-			observed.locals != goAMD64FrameNativeLocals(fn.FrameSize) || observed.args != fn.ArgSize ||
+			observed.locals != goAMD64FrameNativeLocals(fn.FrameSize) || !goAMD64FrameArgumentsMatch(fn, observed.args) ||
 			!reflect.DeepEqual(sig, observed.signature) || !declared ||
 			!source.matchesFixedLocalDeclaration(name, declaration) {
 			return Options{}, goAMD64FrameContext("fixed local actual declaration/object/symbol mismatch: %s", fn.Sym)

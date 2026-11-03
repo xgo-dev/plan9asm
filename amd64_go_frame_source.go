@@ -388,7 +388,7 @@ func captureGoAMD64FrameSource(ctx context.Context, pkg GoPackage, request GoAMD
 			}
 			var unwind *gostaticstorage.WindowsAMD64AssemblyUnwind
 			if source.request.Target == "windows/amd64" {
-				leaves, readErr := goAMD64WindowsPrivateLeafTexts(file, pkg, listing, observed)
+				leaves, readErr := goAMD64WindowsSourceLeafTexts(file, pkg, listing, observed.Member.Texts, observed.TextOrder)
 				if readErr != nil {
 					return nil, readErr
 				}
@@ -408,7 +408,25 @@ func captureGoAMD64FrameSource(ctx context.Context, pkg GoPackage, request GoAMD
 			}
 		} else if source.request.Target == "windows/amd64" && (gotoolchain.AuditedGo127(source.env["GOVERSION"]) ||
 			bytes.Contains(listing, []byte(" SSEHUNWINDINFO "))) {
-			unwind, readErr := source.observeWindowsUnwind(objectBytes)
+			builtin, readErr := source.windowsUnwindBuiltin()
+			if readErr != nil {
+				return nil, readErr
+			}
+			texts, readErr := gostaticstorage.ObserveWindowsAMD64AssemblyText(objectBytes, builtin)
+			if readErr != nil {
+				return nil, readErr
+			}
+			// The shared reader checked the exact FromAssembly object flag.
+			order, readErr := gostaticstorage.ASMSourceTextOrder([]byte(expanded), pkg.Path,
+				gostaticstorage.ASMDataMember{Flags: 4, Texts: texts})
+			if readErr != nil {
+				return nil, readErr
+			}
+			leaves, readErr := goAMD64WindowsSourceLeafTexts(file, pkg, listing, texts, order)
+			if readErr != nil {
+				return nil, readErr
+			}
+			unwind, readErr := source.observeWindowsUnwind(objectBytes, leaves)
 			if readErr != nil {
 				return nil, readErr
 			}
@@ -1691,7 +1709,7 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 				fn.args != 0 && fn.args != -0x80000000 {
 				return nil, goAMD64FrameContext("original private leaf/native frame identity differs")
 			}
-		} else if !exists || !declared || original.FrameSize < 0 || original.FrameSize%8 != 0 || fn.locals != goAMD64FrameNativeLocals(original.FrameSize) || fn.args != original.ArgSize || strings.Contains(original.Sym, "<") {
+		} else if !exists || !declared || original.FrameSize < 0 || original.FrameSize%8 != 0 || fn.locals != goAMD64FrameNativeLocals(original.FrameSize) || !goAMD64FrameArgumentsMatch(original, fn.args) || strings.Contains(original.Sym, "<") {
 			return nil, goAMD64FrameContext("original ABI0 TEXT/declaration/frame identity mismatch")
 		}
 		var err error
@@ -1706,7 +1724,7 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 					end = next
 				}
 			}
-			if !goabi.MatchesABI0TextSize("amd64", fn.args, end) {
+			if !x86TEXTArgumentsUnspecified(original) && !goabi.MatchesABI0TextSize("amd64", fn.args, end) {
 				return nil, goAMD64FrameContext("original TEXT args disagree with actual declaration")
 			}
 		}
