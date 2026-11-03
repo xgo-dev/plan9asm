@@ -1204,6 +1204,71 @@ func (c *amd64Ctx) fixedLocalMemoryCertified(ins Instr, index int) bool {
 	return valid && !access.nativeInput
 }
 
+// Structural reachability is an emission projection, never an access role.
+// Private expansions and address-taken/indirect entries keep their own graphs.
+func (c *amd64Ctx) fixedLocalBlockReachability() ([]bool, error) {
+	if c.fixedLocal == nil || c.goarch != "amd64" || c.directTail != nil || c.indirectABI0 != nil ||
+		len(c.continuations) != 0 || len(c.indirectLabels) != 0 || c.fpScalarSource.x86ContinuationFlow != nil {
+		return nil, nil
+	}
+	edges, instructions, err := fixedLocalEdges(c.fpScalarSource)
+	if err != nil {
+		return nil, err
+	}
+	seen := make([]bool, len(instructions))
+	work := []int{0}
+	for head := 0; head < len(work); head++ {
+		pc := work[head]
+		if pc < 0 || pc >= len(seen) {
+			return nil, goAMD64FrameContext("fixed local emission reaches an unbound instruction")
+		}
+		if !seen[pc] {
+			seen[pc] = true
+			work = append(work, edges[pc]...)
+		}
+	}
+	if len(c.blockBase) != len(c.blocks) {
+		return nil, goAMD64FrameContext("fixed local emission block mapping differs")
+	}
+	reachable := make([]bool, len(c.blocks))
+	dead := false
+	pc := 0
+	for index, base := range c.blockBase {
+		if base != pc || pc > len(seen) {
+			return nil, goAMD64FrameContext("fixed local emission block has no source instruction")
+		}
+		// Empty adjacent labels share the following instruction's PC. A
+		// trailing unused label has no successor and remains unreachable.
+		reachable[index] = pc < len(seen) && seen[pc]
+		dead = dead || !reachable[index]
+		pc += len(c.blocks[index].instrs)
+	}
+	if pc != len(instructions) {
+		return nil, goAMD64FrameContext("fixed local emission source inventory is incomplete")
+	}
+	if !dead {
+		return nil, nil
+	}
+	// Reuse the complete live binding, declaration, fingerprint, grammar and
+	// independent replay checks before omitting any original instruction.
+	if err := c.checkFixedLocalResultInitialization(); err != nil {
+		return nil, err
+	}
+	pc = 0
+	for _, block := range c.blocks {
+		for _, ins := range block.instrs {
+			if pc >= len(instructions) || !reflect.DeepEqual(ins, c.fpScalarSource.Instrs[instructions[pc]]) {
+				return nil, goAMD64FrameContext("fixed local emission instruction differs from its source")
+			}
+			pc++
+		}
+	}
+	if pc != len(instructions) {
+		return nil, goAMD64FrameContext("fixed local emission source inventory is incomplete")
+	}
+	return reachable, nil
+}
+
 func (c *amd64Ctx) fixedLocalMemoryAccess(ins Instr, index int) (x86FixedLocalAccess, bool) {
 	access, found := ins.x86FixedLocalMemory[index]
 	shape, err := fixedLocalInstructionDigest(ins)

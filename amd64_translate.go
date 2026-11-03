@@ -577,6 +577,10 @@ func (c *amd64Ctx) lowerBlocks() error {
 	if err := c.verifyNamedLockPrefixes(); err != nil {
 		return err
 	}
+	reachable, err := c.fixedLocalBlockReachability()
+	if err != nil {
+		return err
+	}
 	emitBr := func(target string) {
 		fmt.Fprintf(c.b, "  br label %%%s\n", amd64LLVMBlockName(target))
 	}
@@ -589,6 +593,10 @@ func (c *amd64Ctx) lowerBlocks() error {
 		blk := c.blocks[bi]
 		if bi != 0 {
 			fmt.Fprintf(c.b, "\n%s:\n", amd64LLVMBlockName(blk.name))
+		}
+		if reachable != nil && !reachable[bi] {
+			c.b.WriteString("  unreachable\n")
+			continue
 		}
 
 		terminated := false
