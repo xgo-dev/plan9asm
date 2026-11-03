@@ -457,6 +457,20 @@ func (c *amd64Ctx) scanUsedRegs() {
 	}
 }
 
+func (c *amd64Ctx) vectorAllocationWidths() map[int]int {
+	widths := make(map[int]int)
+	for i := range c.usedXRegs {
+		widths[i] = 16
+	}
+	for i := range c.usedYRegs {
+		widths[i] = 32
+	}
+	for i := range c.usedZRegs {
+		widths[i] = 64
+	}
+	return widths
+}
+
 func (c *amd64Ctx) emitEntryAllocas() error {
 	if err := c.prepareLogicalAUTOStorage(); err != nil {
 		return err
@@ -570,16 +584,7 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 	// writers still decide whether to preserve or clear the upper bytes;
 	// source mnemonic prefixes cannot select that effect (Go rewrites some
 	// V-prefixed scalar literals into legacy SSE instructions).
-	widths := make(map[int]int)
-	for i := range c.usedXRegs {
-		widths[i] = 16
-	}
-	for i := range c.usedYRegs {
-		widths[i] = 32
-	}
-	for i := range c.usedZRegs {
-		widths[i] = 64
-	}
+	widths := c.vectorAllocationWidths()
 	indices := make([]int, 0, len(widths))
 	for i := range widths {
 		indices = append(indices, i)

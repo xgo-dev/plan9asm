@@ -67,20 +67,37 @@ func (c *amd64Ctx) validateMixedBoolResultRole() error {
 	return c.scalarFPResultInitialized()
 }
 
-// This is a lowering-only logical frame shape, never a native entry, caller
-// extent or source authentication. The complete NUM/canonical flow checker
-// independently validates every typed slot, instruction and path to RET.
-func x86OrdinaryMixedBoolResultRole(fn Func, sig FuncSig, arch string) bool {
+// A source-shape restriction shared by ordinary lowering checks. It supplies
+// no initialized values, source authentication, frame or caller permission.
+func x86OrdinaryScalarCodegenSource(fn Func, sig FuncSig, arch string) bool {
 	if arch != "amd64" && arch != "386" || fn.FrameSize != 0 || strings.Contains(fn.Sym, "<") ||
 		len(sig.ArgRegs) != 0 || sig.ARMEntry != nil || sig.ARM64GoRegisterABI != nil || sig.ARM64ClosureABI != nil ||
+		sig.arm64FPReadDeclaration != nil || sig.arm64ABI0Declaration != nil || sig.arm64ABI0TailDeclaration != nil || sig.arm64NativeScratch != nil ||
 		sig.WASMContext != "" || sig.WASMNative || sig.x86BorrowedBoolTail || sig.amd64GoArguments != nil ||
-		sig.x86FixedLocal != nil || sig.x86CallerRegions != nil || len(fn.X86RawText) != 0 || fn.x86SourceStack != nil ||
+		sig.x86FixedLocal != nil || sig.x86CallerRegions != nil || len(fn.X86RawText) != 0 || fn.X86RawAlign != 0 || fn.x86SourceStack != nil ||
+		fn.arm64PrivateRegisterEntry || fn.arm64PrivateUnexposedFrame || fn.arm64PrivateTailSource != nil ||
+		fn.arm64PrivateCallSource != nil || fn.arm64ABI0TailSource != nil ||
 		fn.x86FixedLocal != nil || fn.x86DirectTailRoot != nil || fn.x86ContinuationFlow != nil || fn.x86RawReplay != nil ||
 		len(fn.x86ContinuationAddresses) != 0 || len(fn.x86IndirectLabels) != 0 || fn.x86BoolCalls != nil || fn.x86BoolReadonlyInputs {
 		return false
 	}
+	for _, ins := range fn.Instrs {
+		if ins.Op == "CALL" || isX86RawDirective(ins) || !x86ResultNamedPredicateInstruction(ins) {
+			return false
+		}
+	}
+	return true
+}
+
+// This is a lowering-only logical frame shape, never a native entry, caller
+// extent or source authentication. The complete NUM/canonical flow checker
+// independently validates every typed slot, instruction and path to RET.
+func x86OrdinaryMixedBoolResultRole(fn Func, sig FuncSig, arch string) bool {
 	fields, valid := parseLiteralStructFields(sig.Ret)
 	if !valid || len(fields) < 2 || len(fields) != len(sig.Frame.Results) {
+		return false
+	}
+	if !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
 		return false
 	}
 	end, hasBool := int64(0), false
@@ -111,12 +128,6 @@ func x86OrdinaryMixedBoolResultRole(fn Func, sig FuncSig, arch string) bool {
 	}
 	if len(represented) != len(sig.Args) {
 		return false
-	}
-	for _, ins := range fn.Instrs {
-		if ins.Op == "CALL" || isX86RawDirective(ins) || ins.x86Encoded || ins.x86SourceRaw != nil ||
-			ins.x86RawNearReturn != nil || ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride || ins.x86SegmentPrefix != 0 {
-			return false
-		}
 	}
 	return true
 }

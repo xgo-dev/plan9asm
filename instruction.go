@@ -571,5 +571,13 @@ func probeInstructionSequence(arch Arch, goarch string, instrs []Instr) error {
 		wasmABI = WASMABIGo
 	}
 	_, err := translateIRText(file, Options{Goarch: goarch, TargetTriple: triple, Sigs: sigs, WASMABI: wasmABI})
+	if err == nil && arch == ArchAMD64 && x86TypedFPResultNeedsProof(fn, sigs[fn.Sym], goarch) {
+		// A synthetic coverage stub is a source query, not a declared ABI0
+		// caller. Keep mandatory inputs unknown instead of borrowing the
+		// ordinary emitter's permitted vector-scratch realization.
+		query := amd64Ctx{fpScalarSource: fn, fpSourceSig: sigs[fn.Sym], sig: sigs[fn.Sym],
+			goarch: goarch, targetTriple: triple}
+		return query.checkLoweredScalarFPResultInitialization()
+	}
 	return err
 }

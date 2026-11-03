@@ -41,6 +41,15 @@ func checkX86ABI0ResultInitializationAtSource(fn Func, sig FuncSig, goarch strin
 
 func checkX86ABI0ResultInitializationWithTrapOnly(fn Func, sig FuncSig, goarch string,
 	transfer x86ResultSourceTransfer, scalarViews, trapOnly, privateStack bool) error {
+	return checkX86ABI0ResultInitializationWithVectorEntry(fn, sig, goarch, transfer,
+		scalarViews, trapOnly, privateStack, nil)
+}
+
+// Only the paired lowering path supplies its exact planned allocation widths.
+// The public/source-only callers retain the empty entry map. Numerical vector
+// initialization changes no GP, pointer, canonical, stack or logical FP state.
+func checkX86ABI0ResultInitializationWithVectorEntry(fn Func, sig FuncSig, goarch string,
+	transfer x86ResultSourceTransfer, scalarViews, trapOnly, privateStack bool, vectors map[int]int) error {
 	fail := func(reason string) error {
 		return fmt.Errorf("%w: result initialization: %s", ErrProbeNeedsContext, reason)
 	}
@@ -99,6 +108,12 @@ func checkX86ABI0ResultInitializationWithTrapOnly(fn Func, sig FuncSig, goarch s
 		resultOffset = int64(frame)
 	}
 	initial := x86ResultState{fp: make([]bool, frame), pointerFP: make(map[int64]bool)}
+	for index, width := range vectors {
+		if index < 0 || index >= len(initial.xmm) || width != 16 && width != 32 && width != 64 {
+			return fail("invalid lowering vector allocation width")
+		}
+		initial.writeVector(index, width, x86CallerVectorByteMask(int64(width)), true)
+	}
 	if scalarViews && x86X87ValueFlowNeeded(fn) {
 		initial.x87 = new(x86ResultX87State)
 		if x86X87WordStateNeeded(fn) {

@@ -5,6 +5,14 @@ import (
 	"strings"
 )
 
+// Exact private codegen-only outcome after a complete paired recheck. The
+// original strict cause stays cached and cannot grant complete storage roles.
+type x86LoweredVectorEntryAuditError struct{ error }
+
+func (err *x86LoweredVectorEntryAuditError) Unwrap() error {
+	return err.error
+}
+
 // This is a lowering-only numerical availability check. A paired original
 // opcode or volatile unaligned load either faults or produces its active
 // destination bytes; masked inactive bytes retain their separate rule. It does not
@@ -869,11 +877,42 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	if customRegisterBool || logicalScalar {
 		return checkX86LogicalRegisterResultInitialization(fn, sig, arch, transfer, customRegisterBool, true)
 	}
+	vectorEntry := arch == "amd64" && nativeMMX == nil && fn.FrameSize == 0
+	if vectorEntry && fn.x86ResultFlowBudget == nil {
+		// Keep the original paired attempt and optional entry fallback in one
+		// accumulated envelope, including callers without an existing owner.
+		fn.x86ResultFlowBudget = new(x86ResultFlowBudget)
+	}
 	if err := checkX86ABI0ResultInitializationWithTrapOnly(fn, sig, arch, transfer, true, false, true); err != nil {
-		return err
+		if !vectorEntry || !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
+			return err
+		}
+		return c.checkLoweredVectorEntry(fn, sig, arch, transfer, err)
 	}
 	c.nativeMMXRegion = nativeMMX
 	return nil
+}
+
+func (c *amd64Ctx) checkLoweredVectorEntry(fn Func, sig FuncSig, arch string,
+	transfer x86ResultSourceTransfer, strict error) error {
+	if c.usedRegs == nil || c.usedXRegs == nil || c.usedYRegs == nil || c.usedZRegs == nil || c.usedKRegs == nil || len(c.blocks) == 0 {
+		return strict // A standalone audit has no lowering-owned allocation plan.
+	}
+	c.scanUsedRegs()
+	vectors := c.vectorAllocationWidths()
+	if len(vectors) == 0 {
+		return strict
+	}
+	// The same bounded solver and transfer recheck every effect and RET. The
+	// source-graph budget accumulates this fallback; it is never reset. Initial
+	// values come only from actual zeroed vector slots, not the complete bank.
+	err := checkX86ABI0ResultInitializationWithVectorEntry(fn, sig, arch, transfer, true, false, true, vectors)
+	if err != nil {
+		if _, partial := err.(*x86IncompleteResultError); !partial || !x86OrdinaryMixedBoolResultRole(fn, sig, arch) {
+			return err
+		}
+	}
+	return &x86LoweredVectorEntryAuditError{strict}
 }
 
 // Only the lowering observer may consume a paired exact-width volatile load
