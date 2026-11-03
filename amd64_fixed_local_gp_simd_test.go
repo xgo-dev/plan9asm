@@ -184,6 +184,11 @@ func TestGoAMD64FixedLocalGPSIMDConsumerBoundaries(t *testing.T) {
 			t.Run(family.name+"/"+row.name, func(t *testing.T) {
 				fn, sig, source := fixedLocalGPSIMDFixture(t, fixedLocalGPSIMDCase{body: row.body, result: "uint64"})
 				requireX86GoAssemblerResult(t, "amd64", source, true)
+				if row.name == "numeric bits are not address" {
+					fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64,b uint32) uint64",
+						"MOVQ (CX),AX", 0, 8, false, "load volatile i64")
+					return
+				}
 				if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("numeric transfer acquired missing bytes or another binding role", err)
 				}

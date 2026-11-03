@@ -177,7 +177,16 @@ func TestGoAMD64FixedLocalCLMULFullMemoryAndFormGuards(t *testing.T) {
 		"VPCLMULQDQ $256,X1,X2,X3", "VPCLMULQDQ $0.5,X1,X2,X3",
 	} {
 		t.Run(operation, func(t *testing.T) {
-			fn, sig, _ := fixedLocalVEXFixture(t, operation)
+			fn, sig, source := fixedLocalVEXFixture(t, operation)
+			if operation == "PCLMULQDQ $0,(AX),X2" || operation == "VPCLMULQDQ $0,(AX),Y2,Y3" {
+				width := int64(16)
+				if operation == "VPCLMULQDQ $0,(AX),Y2,Y3" {
+					width = 32
+				}
+				fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64) uint64",
+					operation, 1, width, false, "pclmulqdq")
+				return
+			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("unknown storage or unadmitted form acquired a private-frame effect", err)
 			}

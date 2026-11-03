@@ -30,8 +30,20 @@ func TestSDKAMD64PrimaryInventorySeparatesChildSourceRoles(t *testing.T) {
 	}
 	request := GoAMD64FrameCaptureRequest{Directory: root}
 	ordinary := newGoOriginalInputGuard(request)
-	if err := ordinary.snapshotDirectory(); !errors.Is(err, ErrProbeNeedsContext) {
-		t.Fatal("SDK package inventory weakened the ordinary flat role", err)
+	if err := ordinary.snapshotDirectory(); err != nil {
+		t.Fatal("ordinary package omitted a bounded direct-child identity", err)
+	}
+	if !reflect.DeepEqual(ordinary.entries, []string{"generator", "ignored.s", "source.go"}) || len(ordinary.inputs) != 2 ||
+		len(ordinary.childDirectories) != 1 || ordinary.childDirectories[filepath.Join(root, "generator")] == nil {
+		t.Fatal("ordinary inventory confused direct files with child-package contents")
+	}
+	ordinary.owned, err = sourcepath.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinary.ownedInfo, err = sourcepath.Lstat(ordinary.owned)
+	if err != nil {
+		t.Fatal(err)
 	}
 	source := &GoX86SDKASMDataSource{guard: newGoOriginalInputGuard(request), directories: make(map[string]os.FileInfo)}
 	if err := source.snapshotSDKPrimaryDirectory(); err != nil {
@@ -40,6 +52,12 @@ func TestSDKAMD64PrimaryInventorySeparatesChildSourceRoles(t *testing.T) {
 	if !reflect.DeepEqual(source.guard.entries, []string{"generator", "ignored.s", "source.go"}) || len(source.guard.inputs) != 2 ||
 		source.directories[filepath.Join(root, "generator")] == nil {
 		t.Fatal("complete direct/inactive input or separate child identity was omitted")
+	}
+	if err := os.WriteFile(filepath.Join(root, "generator", "source.go"), []byte("package changedChild\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ordinary.verifyInputs(); err != nil {
+		t.Fatal("ordinary selected package read separately owned child contents", err)
 	}
 	if err := os.Rename(filepath.Join(root, "generator"), filepath.Join(root, "original-generator")); err != nil {
 		t.Fatal(err)
@@ -52,6 +70,9 @@ func TestSDKAMD64PrimaryInventorySeparatesChildSourceRoles(t *testing.T) {
 	}
 	if err := source.verifyDirectories(); !errors.Is(err, ErrProbeNeedsContext) {
 		t.Fatal("replacement child directory acquired original selected-package identity", err)
+	}
+	if err := ordinary.verifyInputs(); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("replacement child directory retained the ordinary original identity", err)
 	}
 }
 

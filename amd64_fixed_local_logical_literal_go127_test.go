@@ -91,6 +91,11 @@ func TestGoAMD64FixedLocalLogicalLiteralAccessGuards(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			pkg, request, file, options := fixedLocalTransportFixture(t, row.source,
 				"func Value(input, output *byte)\n", "linux/amd64", "x86_64-unknown-linux-gnu")
+			if row.name == "numeric result supplies no pointer" {
+				fixedLocalRequireNumericControl(t, file.Funcs[0], options.Sigs[pkg.Path+".Value"], row.source,
+					"func Value(input,output *byte)", "MOVQ (BX),AX", 0, 8, false, "load volatile i64")
+				return
+			}
 			source := requireGoAMD64FrameCapture(t, pkg, request)
 			ctx, cancel := runtimeOracleStageContext(t)
 			defer cancel()

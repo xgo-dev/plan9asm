@@ -218,6 +218,11 @@ func TestGoAMD64FixedLocalExchangeCompleteRoles(t *testing.T) {
 		fn, sig, original := fixture(t, row.body)
 		source.WriteString(strings.Replace(original, "·Value", fmt.Sprintf("·Value%d", index), 1))
 		t.Run(row.name, func(t *testing.T) {
+			if row.name == "NUM not address" {
+				fixedLocalRequireNumericControl(t, fn, sig, original, "func Value(a uint64) uint64",
+					"MOVQ (AX),AX", 0, 8, false, "load volatile i64")
+				return
+			}
 			_, err := proveX86FixedLocal(fn, sig)
 			if row.ok && err != nil || !row.ok && !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatalf("complete typed exchange valid=%t: %v", row.ok, err)

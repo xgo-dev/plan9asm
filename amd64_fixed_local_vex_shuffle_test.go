@@ -95,7 +95,13 @@ func TestGoAMD64FixedLocalVEXShuffleBoundaries(t *testing.T) {
 			"$0,(AX),X2", "$0,a+8(FP),X2",
 		} {
 			t.Run(name+"/unproved/"+args, func(t *testing.T) {
-				fn, sig, _ := fixedLocalVEXFixture(t, name+" "+args)
+				operation := name + " " + args
+				fn, sig, source := fixedLocalVEXFixture(t, operation)
+				if args == "$0,(AX),X2" {
+					fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64) uint64",
+						operation, 1, 16, false, strings.ToLower(name))
+					return
+				}
 				if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("uninitialized vector/private extent/numerical address gained backing", err)
 				}

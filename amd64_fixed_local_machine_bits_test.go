@@ -123,7 +123,21 @@ func TestGoAMD64FixedLocalMachineBitsRetainCapabilities(t *testing.T) {
 		{"conditional FP number is not address", "CMPQ AX,AX\nCMOVQEQ a+16(FP),SI\nXORQ $0,SI\nMOVQ SI,AX"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fn, sig, _ := fixedLocalInputFixture(t, row.body)
+			fn, sig, source := fixedLocalInputFixture(t, row.body)
+			operation := ""
+			switch row.name {
+			case "difference is not address", "sum is not address", "truncated result is not address", "carry sum is not address", "carry difference is not address":
+				operation = "MOVQ (SI),AX"
+			case "number minus address", "carry number minus address":
+				operation = "MOVQ (AX),AX"
+			case "NUM is not address":
+				operation = "SUBQ (SI),AX"
+			}
+			if operation != "" {
+				fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p,q *uint64,a uint64) uint64",
+					operation, 0, 8, false, "load volatile i64")
+				return
+			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("machine input acquired unrelated storage, flags or ABI", err)
 			}

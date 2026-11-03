@@ -153,6 +153,11 @@ func TestGoAMD64FixedLocalBPPrivateOriginOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if name == "numeric BP" {
+				fixedLocalRequireNumericControl(t, changed.Funcs[0], sig, assembly, "func Value(a uint64) uint64",
+					"PADDQ 64(BP),X0", 0, 16, false, "paddq")
+				return
+			}
 			if _, err := proveX86FixedLocal(changed.Funcs[0], sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatalf("unknown/numeric/escaping BP obtained local authority: %v", err)
 			}

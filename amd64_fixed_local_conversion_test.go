@@ -91,6 +91,11 @@ func TestGoAMD64FixedLocalConversionWholeSourceNegatives(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if name == "incoming pointer" {
+				fixedLocalRequireNumericControl(t, file.Funcs[0], options.Sigs[pkg.Path+".Value"], source,
+					"func Value(a uint64) uint64", "VCVTDQ2PD 64(BP),Y0", 0, 16, false, "vcvtdq2pd")
+				return
+			}
 			if _, err := proveX86FixedLocal(file.Funcs[0], options.Sigs[pkg.Path+".Value"]); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatalf("unclosed native conversion accepted: %v", err)
 			}

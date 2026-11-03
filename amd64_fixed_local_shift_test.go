@@ -132,7 +132,17 @@ func TestGoAMD64FixedLocalShiftGuards(t *testing.T) {
 		}
 		for _, args := range forms {
 			t.Run(name+" "+args, func(t *testing.T) {
-				fn, sig, _ := fixedLocalVEXFixture(t, name+" "+args)
+				operation := name + " " + args
+				fn, sig, source := fixedLocalVEXFixture(t, operation)
+				if args == "(AX),X2" {
+					mnemonic := strings.ToLower(name)
+					if strings.HasSuffix(mnemonic, "l") {
+						mnemonic = strings.TrimSuffix(mnemonic, "l") + "d"
+					}
+					fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64) uint64",
+						operation, 0, 16, false, mnemonic)
+					return
+				}
 				if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("unbound form, memory or register acquired a frame effect", err)
 				}

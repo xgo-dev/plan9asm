@@ -205,7 +205,12 @@ func TestGoAMD64FixedLocalVEXBoundaries(t *testing.T) {
 		{"MMX", "PADDQ M0,M1"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fn, sig, _ := fixedLocalVEXFixture(t, row.operation)
+			fn, sig, source := fixedLocalVEXFixture(t, row.operation)
+			if row.name == "numeric pointer" {
+				fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64) uint64",
+					row.operation, 0, 32, false, "vpor")
+				return
+			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("unproved form acquired fixed-local permission", err)
 			}

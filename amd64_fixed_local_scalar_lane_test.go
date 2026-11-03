@@ -238,7 +238,16 @@ func TestGoAMD64FixedLocalScalarLaneBoundaries(t *testing.T) {
 		"VPINSRB $0,AX,X1,X16", "VPEXTRB $0,X16,AX", "VPINSRD $0,AX,X1,K1,X2",
 	} {
 		t.Run(row, func(t *testing.T) {
-			fn, sig, _ := fixedLocalVEXFixture(t, row)
+			fn, sig, source := fixedLocalVEXFixture(t, row)
+			if row == "PINSRB $0,(AX),X1" || row == "PEXTRB $0,X1,(AX)" {
+				operand, write := 1, false
+				if row == "PEXTRB $0,X1,(AX)" {
+					operand, write = 2, true
+				}
+				fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p *uint64,a uint64) uint64",
+					row, operand, 1, write, strings.ToLower(strings.Fields(row)[0]))
+				return
+			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("unbound scalar-lane form acquired frame permissions", err)
 			}

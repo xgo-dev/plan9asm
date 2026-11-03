@@ -75,7 +75,12 @@ func TestGoAMD64FixedLocalNativeAddressRetainsBoundaries(t *testing.T) {
 		{"equality does not grant readonly write", fixedLocalChoicePrefix + "CMPQ CX,R8\nJNE done\nMOVQ AX,(CX)\ndone:"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fn, sig, _ := fixedLocalPointerChoiceFixture(t, row.body)
+			fn, sig, source := fixedLocalPointerChoiceFixture(t, row.body)
+			if row.name == "numeric input is not an address" {
+				fixedLocalRequireNumericControl(t, fn, sig, source, "func Value(p,q *uint64,a uint64) uint64",
+					"MOVQ (CX),AX", 0, 8, false, "load volatile i64")
+				return
+			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("native address acquired unrelated storage or numerical permission", err)
 			}

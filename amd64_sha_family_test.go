@@ -186,7 +186,17 @@ func TestGoAMD64FixedLocalSHACompleteFamily(t *testing.T) {
 	}
 	for _, source := range []string{"65(BP)", "256(BP)", "(AX)"} {
 		for _, family := range x86SHAOracleInputs {
-			fn, sig, _ := fixedLocalVEXFixture(t, x86SHAOracleRow(family.name, source, "X2", 0))
+			operation := x86SHAOracleRow(family.name, source, "X2", 0)
+			fn, sig, assembly := fixedLocalVEXFixture(t, operation)
+			if source == "(AX)" {
+				operand := 0
+				if family.name == "SHA1RNDS4" {
+					operand = 1
+				}
+				fixedLocalRequireNumericControl(t, fn, sig, assembly, "func Value(p *uint64,a uint64) uint64",
+					operation, operand, 16, false, strings.ToLower(family.name))
+				continue
+			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("SHA acquired unaligned, uninitialized or unauthenticated memory", family.name, source, err)
 			}

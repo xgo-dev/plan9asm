@@ -174,6 +174,11 @@ func TestGoAMD64FixedLocalBroadcastMemoryAndEncodingBoundaries(t *testing.T) {
 		t.Run(source, func(t *testing.T) {
 			fn, sig, original := fixedLocalVEXFixture(t, source)
 			requireX86GoAssemblerResult(t, "amd64", original, true)
+			if source == "VBROADCASTI128 (AX),Y2" {
+				fixedLocalRequireNumericControl(t, fn, sig, original, "func Value(p *uint64,a uint64) uint64",
+					source, 0, 16, false, "vbroadcasti128")
+				return
+			}
 			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("broadcast invented an EVEX, mask, pointer or memory role", err)
 			}
