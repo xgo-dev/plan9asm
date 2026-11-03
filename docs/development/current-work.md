@@ -56,9 +56,15 @@ retain the original cases, add genuine unknown/partial-address negatives and
 check accepted numerical native accesses through LLVM objects. The local repair
 union passes 110 roots / 40,747 nodes on both endpoint SDKs without FAIL/SKIP.
 The minimum SDK is a fresh complete run; the current SDK combines the unchanged
-production snapshot with all affected shared-helper consumers. This is local
-qualification, not success of a new published CI. The next complete round is
-tracked on [fork PR6](https://github.com/cpunion/plan9asm/pull/6/checks).
+production snapshot with all affected shared-helper consumers. The later
+`3c460f567` candidate has its own
+[focused fork CI](https://github.com/cpunion/plan9asm/actions/runs/41571716829):
+eight jobs pass, with 110 roots / 40,747 nodes per SDK and zero FAIL/SKIP.
+Actual raw lifecycle records include all eleven scanner roots. The first
+diagnostic attempt passed the root package but invoked the scanner from the
+wrong module directory; its failure records remain separate. This focused
+acceptance does not certify the complete 325-job matrix or a later candidate.
+Upstream task CI is stopped; stage subsequent verification in the fork.
 The bounded follow-ups cover CPUID leaf/subleaf input dependencies, initialized
 NUM addresses only in paired native read/store consumers, movemask dependency
 continuation, selected same-module CPP inputs and function-local proof budgets.
@@ -98,7 +104,29 @@ passes all 12 fixed executable pipelines, with 288 memory outcomes and 60 fault
 classifier controls. This is actual emulated execution, not physical-hardware
 acceptance. Required Node and Go policies pass 574 and 484 nodes at `55b480d6f`.
 
-The follow-up batch needs its own source-bound final gates and published CI.
+The local fixed-frame follow-up admits initialized numerical addresses through
+the existing native-access path, without creating private-frame or pointee
+permissions. Its production change adds twelve lines. Current and minimum SDK
+adjacent suites pass 489 and 399 nodes respectively; SDK-specific source owners
+account for the difference. Linux/amd64 emulation passes twenty nodes, including
+288 numerical-address fault observations and independent valid-store redzones.
+This component still needs the combined candidate's gates and fork CI.
+
+Ordinary ABI0 vector scratch may use the emitter's existing zeroed X/Y/Z
+allocation widths for code generation. This declaration-level refinement does
+not initialize physical entry registers or any GP, mask, flag, frame or pointer
+state. The strict audit error stays cached. Standalone source observers retain
+their original result, and instruction probes reuse the paired audit without
+an emitter allocation plan. Both SDKs retain all five official-form baselines
+unchanged; no Context forms are promoted by the scratch choice.
+
+The original four GoHex assembly functions pass 54,176 original-Go calls and
+650,112 translated calls across twelve LLVM execution pipelines under explicit
+Linux/amd64 emulation. The source/tool identity bridge preserves those results
+through the later allocation-plan guard and probe changes. These executions
+do not certify the complete GoHex package or canonical target matrix.
+
+The combined follow-up needs its own source-bound final gates and coverage.
 Do not copy f325 coverage or successful checks onto it. External canonical
 module qualification for the latest two-candidate batch is **0/2 PASS**; two compress object
 logs are object observations only. Rerun the complete canonical batch at the
@@ -114,12 +142,18 @@ requirements. The historical strict SDK/runtime result remains **41/55 PASS,
 14 FAIL**, tracked in [issue47](https://github.com/xgo-dev/plan9asm/issues/47).
 No newer instruction-only result relabels or closes those failures.
 
-[LLGo2694](https://github.com/xgo-dev/llgo/pull/2694) remains published at
-`7be828f55b9005f13f768b4a8a07aae4c57e6798`. The unpublished rebased candidate
-`5feac7a70` is based on upstream `983465e779527ff496857a9a1915c1b57131091f`
-and pins deb6157. Its fresh local adapter/build suite passes 218 nodes with
-zero FAIL/SKIP. Fresh Linux compilation, final linking and execution are pending;
-the older 08e/f325 runtime records do not qualify this candidate.
+[LLGo2694](https://github.com/xgo-dev/llgo/pull/2694) is published through the
+fork at `d72552acccab2be347eff6d57fd5d1c0211565d3`, rebased on upstream
+`043c98b0f6636de5cb2380fc0955399f7133ad0f` and pinned to `3c460f567` through
+normal module authentication. Its fresh adapter/build suite passes 218 nodes
+and all five policy scopes pass 228 nodes, without FAIL/SKIP. Actual Linux/amd64
+emulation compiled, linked and ran the reported CRC32 and libc ABI0 probes at
+the final pin; an explicit compiler-source identity bridge covers the later
+tool/documentation-only rebase. This is not complete SQLite or purego runtime
+acceptance. The current native ARM64 function-value round-trip builds but still
+fails during execution; its one-word unsafe storage assumptions need separate
+LLGo compatibility work. Preserve that failure instead of calling libc wrapper
+success a complete library pass.
 The P1 requires an official upstream fix **and tagged release before merge**;
 a fork pin or successful CI does not resolve it. Keep draft status and record
 zero formal approvals until an actual review changes that state.
