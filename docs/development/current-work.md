@@ -48,13 +48,17 @@ owners; no AMD64 count is a denominator for another architecture.
 
 The instruction follow-ups through `3c05ab50b` are published at fork head
 `deb6157f4`. Its [own CI](https://github.com/cpunion/plan9asm/actions/runs/41506944925)
-is running and has failed source-contract tests under repair. Local follow-ups
+finished with source-contract failures. All 202 failed source jobs and eleven
+derived collector failures were independently audited; their 8,123 failed case
+identities belong to the repaired local scope. One runner-acquisition
+cancellation remains an infrastructure outcome. Local follow-ups
 retain the original cases, add genuine unknown/partial-address negatives and
 check accepted numerical native accesses through LLVM objects. The local repair
 union passes 110 roots / 40,747 nodes on both endpoint SDKs without FAIL/SKIP.
 The minimum SDK is a fresh complete run; the current SDK combines the unchanged
 production snapshot with all affected shared-helper consumers. This is local
-qualification, not success of the still-running published CI.
+qualification, not success of a new published CI. The next complete round is
+tracked on [fork PR6](https://github.com/cpunion/plan9asm/pull/6/checks).
 The bounded follow-ups cover CPUID leaf/subleaf input dependencies, initialized
 NUM addresses only in paired native read/store consumers, movemask dependency
 continuation, selected same-module CPP inputs and function-local proof budgets.
@@ -78,6 +82,13 @@ change removes four net production lines without raising the 128 MiB limit.
 Both endpoint SDKs pass 24 roots / 116 nodes, with the original over-budget and
 source-mutation controls retained. Real compress qualification needs a rerun.
 
+The independent frame factory now retains direct child-directory identities
+without recursively reading unrelated contents. Its 256-member / 16 MiB bounds
+are unchanged. Fresh complete frame suites pass 27 roots / 305 nodes on the
+current SDK and 26 roots / 220 nodes on the minimum SDK; the current-only mixed
+data test accounts for the difference. Ten downloaded-frame owners pass 121
+nodes. Final Node and Go policy suites pass 574 and 484 nodes, without skips.
+
 Unmasked scalar SQRT now preserves ordinary native memory reads through LLVM
 optimization, using the existing observable reader. Previously a literal-null
 read could disappear and leave a register SQRT operating on `undef`. Independent
@@ -89,7 +100,7 @@ acceptance. Required Node and Go policies pass 574 and 484 nodes at `55b480d6f`.
 
 The follow-up batch needs its own source-bound final gates and published CI.
 Do not copy f325 coverage or successful checks onto it. External canonical
-module qualification currently has **0 module PASS**; two compress object
+module qualification for the latest two-candidate batch is **0/2 PASS**; two compress object
 logs are object observations only. Rerun the complete canonical batch at the
 new head before claiming library-level progress.
 

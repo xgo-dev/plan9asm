@@ -57,6 +57,7 @@ type GoAMD64FrameSource struct {
 	inputs             map[string][32]byte
 	entries            []string
 	directoryInfo      os.FileInfo
+	childDirectories   map[string]os.FileInfo
 	directoryInventory *gooriginalsrc.Snapshot // Immutable complete SDK membership; no source or ASM authority.
 	owned              string
 	ownedInfo          os.FileInfo
@@ -610,7 +611,13 @@ func (source *GoAMD64FrameSource) verifyInputs() error {
 	if err := source.verifyOwned(); err != nil {
 		return err
 	}
-	maximum := 256 // Ordinary owned-main retains its original flat bound.
+	maximum := 256 // Ordinary owned-main retains its original member bound.
+	for name, original := range source.childDirectories {
+		info, err := os.Lstat(name)
+		if err != nil || !info.IsDir() || !os.SameFile(original, info) {
+			return goAMD64FrameContext("original child directory identity changed")
+		}
+	}
 	if inventory := source.directoryInventory; inventory != nil {
 		if err := inventory.Verify(); err != nil {
 			return goAMD64FrameContext("complete SDK directory membership changed: %v", err)
@@ -789,12 +796,20 @@ func (source *GoAMD64FrameSource) snapshotDirectory() error {
 		return goAMD64FrameContext("package directory is unavailable or exceeds its bound")
 	}
 	source.directoryInfo = directoryInfo
+	source.childDirectories = make(map[string]os.FileInfo)
 	var total int
 	for _, entry := range entries {
-		if entry.IsDir() {
-			return goAMD64FrameContext("initial source root requires a flat complete inventory")
-		}
 		source.entries = append(source.entries, entry.Name())
+		if entry.IsDir() {
+			info, err := entry.Info()
+			if err != nil || !info.IsDir() {
+				return goAMD64FrameContext("original child directory role changed during capture")
+			}
+			// Child contents belong to separately selected packages/includes.
+			// Retain identity without recursively reading unrelated testdata.
+			source.childDirectories[filepath.Join(resolved, entry.Name())] = info
+			continue
+		}
 		data, err := source.read(filepath.Join(resolved, entry.Name()))
 		if err != nil {
 			return err

@@ -491,7 +491,9 @@ func TestGoAMD64FrameSourceRejectsIndirectedOriginalAndCacheFallback(t *testing.
 					t.Fatal(err)
 				}
 			case "package subtree":
-				if err := os.Mkdir(filepath.Join(request.Directory, "nested"), 0700); err != nil {
+				// Ordinary child directories have an independent positive
+				// owner. An indirected child still cannot become an input.
+				if err := os.Symlink(t.TempDir(), filepath.Join(request.Directory, "nested")); err != nil {
 					t.Fatal(err)
 				}
 			case "implicit cache":
