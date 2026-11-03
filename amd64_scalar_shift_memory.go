@@ -16,7 +16,7 @@ func (c *amd64Ctx) loadScalarShiftOperand(ins Instr, index int, typ LLVMType) (s
 		}
 	}
 	if !isAMD64MemoryOperand(operand) || operand.Kind == OpFP ||
-		!(x86OrdinaryNativeMemoryOperand(operand, c.goarch) ||
+		!(c.nativeMemoryOperand(ins, index) ||
 			x86CallerMemoryCertified(ins, index) || c.fixedLocalMemoryCertified(ins, index)) {
 		value, err := c.evalIntSized(operand, typ)
 		return value, store, err

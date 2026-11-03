@@ -110,10 +110,8 @@ func x86ScalarRegisterLoadProperties(op Op, ins Instr, arch string) (x86ScalarNa
 }
 
 func (c *amd64Ctx) scalarNativeLoadProperties(op Op, ins Instr) (x86ScalarNativeLoadForm, bool, error) {
-	if c.fixedLocal != nil {
-		if access, valid := c.fixedLocalMemoryAccess(ins, 0); valid && access.nativeInput {
-			return x86ScalarRegisterLoadProperties(op, ins, c.goarch)
-		}
+	if c.nativeMemoryOperand(ins, 0) {
+		return x86ScalarRegisterLoadProperties(op, ins, c.goarch)
 	}
 	return x86ScalarNativeLoadProperties(op, ins, c.goarch)
 }

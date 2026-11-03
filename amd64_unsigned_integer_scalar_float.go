@@ -93,7 +93,7 @@ func (c *amd64Ctx) lowerUnsignedIntegerScalarFloat(op Op, ins Instr) (bool, bool
 	if c.fpScalarSource.x86SourceStack != nil || c.fpScalarSource.x86FixedLocal != nil {
 		return true, false, fmt.Errorf("%w: %s retains its independent source/frame owner", ErrProbeNeedsContext, op)
 	}
-	if form.memory >= 0 && ins.Args[0].Kind != OpFP && !x86OrdinaryNativeMemoryOperand(ins.Args[0], c.goarch) {
+	if form.memory >= 0 && ins.Args[0].Kind != OpFP && !c.nativeMemoryOperand(ins, form.memory) {
 		return true, false, fmt.Errorf("%w: %s needs owned FP bits or an original native memory source", ErrProbeNeedsContext, op)
 	}
 	return true, false, c.emitNativeUnsignedIntegerScalarFloat(ins, form)

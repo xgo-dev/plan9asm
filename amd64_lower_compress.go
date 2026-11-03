@@ -30,7 +30,7 @@ func (c *amd64Ctx) lowerPackedCompress(op Op, ins Instr) (ok bool, terminated bo
 	if form.undefinedOpcode() {
 		return c.lowerSyscall("UD2", Instr{Op: "UD2"})
 	}
-	if form.memory >= 0 && x86OrdinaryNativeMemoryOperand(ins.Args[form.memory], c.goarch) {
+	if form.memory >= 0 && c.nativeMemoryOperand(ins, form.memory) {
 		return true, false, c.lowerNativeCompactMemory(ins, form)
 	}
 	laneBits, byteWidth := form.laneBits, form.byteWidth

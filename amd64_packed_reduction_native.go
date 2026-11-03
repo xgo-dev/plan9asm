@@ -29,7 +29,7 @@ func (c *amd64Ctx) lowerNativePackedReduction(op Op, ins Instr) (bool, bool, err
 		}
 	}
 	if form.memory >= 0 && (ins.x86AddressBits != 0 || first.Kind == OpMem &&
-		!x86OrdinaryNativeMemoryOperand(first, c.goarch) && !x86CallerMemoryCertified(ins, form.first) && !c.fixedLocalMemoryCertified(ins, form.first)) {
+		!c.nativeMemoryOperand(ins, form.first) && !x86CallerMemoryCertified(ins, form.first) && !c.fixedLocalMemoryCertified(ins, form.first)) {
 		return true, false, fmt.Errorf("%w: %s needs original native source backing", ErrProbeNeedsContext, op)
 	}
 	// Float carriers are bitcasts only. The exact original packed instruction

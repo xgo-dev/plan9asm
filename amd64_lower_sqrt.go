@@ -32,7 +32,7 @@ func (c *amd64Ctx) lowerSqrt(op Op, ins Instr) (bool, bool, error) {
 		return true, false, c.lowerScalarSqrt(ins, f)
 	}
 	if ins.Args[0].Kind == OpFP || ins.x86AddressBits != 0 || f.memory >= 0 &&
-		ins.Args[0].Kind == OpMem && !x86OrdinaryNativeMemoryOperand(ins.Args[0], c.goarch) {
+		ins.Args[0].Kind == OpMem && !c.nativeMemoryOperand(ins, f.memory) {
 		return true, false, fmt.Errorf("%w: %s packed source lacks its original native memory binding", ErrProbeNeedsContext, op)
 	}
 	carrierBits := f.bits

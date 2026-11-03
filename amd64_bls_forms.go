@@ -111,7 +111,7 @@ func (c *amd64Ctx) evalBLSSource(ins Instr, form x86BLSForm, typ LLVMType) (stri
 		}
 	}
 	if isAMD64MemoryOperand(form.source) && form.source.Kind != OpFP &&
-		(x86OrdinaryNativeMemoryOperand(form.source, c.goarch) ||
+		(c.nativeMemoryOperand(ins, 0) ||
 			x86CallerMemoryCertified(ins, 0) || c.fixedLocalMemoryCertified(ins, 0)) {
 		if ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride {
 			return "", fmt.Errorf("%w: BLS needs its original native address size", ErrProbeNeedsContext)

@@ -111,7 +111,7 @@ func (c *amd64Ctx) lowerVectorTest(op Op, ins Instr) (ok bool, terminated bool, 
 	source, destination := ins.Args[0], ins.Args[1]
 	spec, byteWidth := form.amd64VectorTestSpec, form.byteWidth
 	if source.Kind != OpReg && source.Kind != OpFP {
-		if source.Kind == OpMem && !x86OrdinaryNativeMemoryOperand(source, arch) &&
+		if source.Kind == OpMem && !c.nativeMemoryOperand(ins, 0) &&
 			!x86CallerMemoryCertified(ins, 0) && !c.fixedLocalMemoryCertified(ins, 0) {
 			return true, false, fmt.Errorf("%w: vector test needs its original native memory binding", ErrProbeNeedsContext)
 		}

@@ -27,7 +27,7 @@ func (c *amd64Ctx) lowerPackedPrecisionConvert(op Op, ins Instr) (bool, bool, er
 				return true, false, fmt.Errorf("%w: %s cannot use opaque pointer bits as floating input", ErrProbeNeedsContext, op)
 			}
 		}
-	} else if form.memory >= 0 && !x86OrdinaryNativeMemoryOperand(source, c.goarch) {
+	} else if form.memory >= 0 && !c.nativeMemoryOperand(ins, form.memory) {
 		return true, false, fmt.Errorf("%w: %s needs its original native source address", ErrProbeNeedsContext, op)
 	}
 	base, _, _ := strings.Cut(strings.ToLower(string(op)), ".")

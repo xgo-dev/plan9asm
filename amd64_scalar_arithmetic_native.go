@@ -6,6 +6,14 @@ import "fmt"
 // aliases and carry roles. This query selects only its memory-to-register
 // arithmetic/logical rows; it supplies no memory or entry capability.
 func x86ScalarArithmeticNativeReadProperties(ins Instr, arch string) (x86LockScalarRMWForm, bool, error) {
+	form, known, err := x86ScalarArithmeticReadProperties(ins, arch)
+	if !known || err != nil {
+		return form, known, err
+	}
+	return form, x86OrdinaryNativeMemoryOperand(form.source, arch), nil
+}
+
+func x86ScalarArithmeticReadProperties(ins Instr, arch string) (x86LockScalarRMWForm, bool, error) {
 	form, known, err := x86LockScalarRMWProperties(ins.Op, ins, arch)
 	if !known {
 		return form, false, nil
@@ -19,18 +27,18 @@ func x86ScalarArithmeticNativeReadProperties(ins Instr, arch string) (x86LockSca
 		return form, false, nil
 	}
 	if form.source.Kind != OpMem || form.source.Mem.Sym != "" ||
-		form.destination.Kind != OpReg || !x86OrdinaryNativeMemoryOperand(form.source, arch) {
+		form.destination.Kind != OpReg {
 		return form, false, nil
 	}
 	return form, true, nil
 }
 
 func (c *amd64Ctx) evalScalarArithmeticSource(ins Instr, typ LLVMType) (string, Operand, error) {
-	form, known, err := x86ScalarArithmeticNativeReadProperties(ins, c.goarch)
+	form, known, err := x86ScalarArithmeticReadProperties(ins, c.goarch)
 	if err != nil {
 		return "", Operand{}, err
 	}
-	if !known {
+	if !known || !c.nativeMemoryOperand(ins, 0) {
 		value, err := c.evalIntSized(ins.Args[0], typ)
 		return value, ins.Args[1], err
 	}

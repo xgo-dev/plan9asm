@@ -12,7 +12,7 @@ func (c *amd64Ctx) lowerDwordToQwordMultiplyForm(op Op, ins Instr, form x86Packe
 	if form.legacy && !form.mmx && form.memory >= 0 {
 		virtual := first.Kind == OpFP
 		if first.Kind == OpMem && !x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
-			virtual = !x86OrdinaryNativeMemoryOperand(first, c.goarch)
+			virtual = !c.nativeMemoryOperand(ins, form.first)
 		}
 		if virtual {
 			return true, false, fmt.Errorf("%w: legacy dword product m128 needs original native storage, not virtual FP/SP/BP", ErrProbeNeedsContext)

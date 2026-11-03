@@ -43,7 +43,7 @@ func (c *amd64Ctx) lowerAES(rawOp Op, ins Instr) (ok bool, terminated bool, err 
 			return true, false, fmt.Errorf("%w: legacy AES FP source needs its original native storage and alignment", ErrProbeNeedsContext)
 		}
 		if source.Kind == OpMem &&
-			!x86OrdinaryNativeMemoryOperand(source, c.goarch) &&
+			!c.nativeMemoryOperand(ins, f.memory) &&
 			!x86CallerMemoryCertified(ins, f.memory) && !c.fixedLocalMemoryCertified(ins, f.memory) {
 			return true, false, fmt.Errorf("%w: AES native stack source has no original storage certificate", ErrProbeNeedsContext)
 		}

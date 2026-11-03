@@ -34,7 +34,7 @@ func (c *amd64Ctx) lowerPackedIntegerSubtract(op Op, ins Instr) (ok bool, termin
 	if form.legacy && form.memory >= 0 {
 		virtual := first.Kind == OpFP
 		if first.Kind == OpMem && !x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
-			virtual = !x86OrdinaryNativeMemoryOperand(first, c.goarch)
+			virtual = !c.nativeMemoryOperand(ins, form.first)
 		}
 		if virtual {
 			return true, false, fmt.Errorf("%w: legacy packed subtract needs original native storage, not virtual FP/SP/BP alignment", ErrProbeNeedsContext)

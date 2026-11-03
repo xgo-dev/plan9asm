@@ -48,7 +48,7 @@ func (c *amd64Ctx) lowerPackedIntegerCompare(op Op, ins Instr) (bool, bool, erro
 		if form.memory >= 0 && !form.mmx {
 			virtual := form.source.Kind == OpFP
 			if form.source.Kind == OpMem && !x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
-				virtual = !x86OrdinaryNativeMemoryOperand(form.source, c.goarch)
+				virtual = !c.nativeMemoryOperand(ins, form.first)
 			}
 			if virtual {
 				return true, false, fmt.Errorf("%w: legacy packed integer compare m128 needs original native storage, not virtual FP/SP/BP alignment", ErrProbeNeedsContext)

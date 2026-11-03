@@ -23,7 +23,7 @@ func (c *amd64Ctx) lowerPackedWordMultiplyForm(op Op, ins Instr, form x86PackedP
 	if form.legacy && !form.mmx && form.memory >= 0 {
 		virtual := first.Kind == OpFP
 		if first.Kind == OpMem && !x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
-			virtual = !x86OrdinaryNativeMemoryOperand(first, c.goarch)
+			virtual = !c.nativeMemoryOperand(ins, form.first)
 		}
 		if virtual {
 			return true, false, fmt.Errorf("%w: legacy packed word multiply m128 needs original native storage, not virtual FP/SP/BP", ErrProbeNeedsContext)

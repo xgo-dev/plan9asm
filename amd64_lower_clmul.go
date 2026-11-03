@@ -35,7 +35,7 @@ func (c *amd64Ctx) lowerLegacyCLMULMemory(ins Instr, f x86CLMULForm) error {
 	source := ins.Args[f.source]
 	virtual := source.Kind == OpFP
 	if source.Kind == OpMem && !x86CallerMemoryCertified(ins, f.source) && !c.fixedLocalMemoryCertified(ins, f.source) {
-		virtual = !x86OrdinaryNativeMemoryOperand(source, c.goarch)
+		virtual = !c.nativeMemoryOperand(ins, f.source)
 	}
 	if virtual {
 		return fmt.Errorf("%w: legacy carryless multiply m128 needs original native storage, not virtual FP/SP/BP", ErrProbeNeedsContext)

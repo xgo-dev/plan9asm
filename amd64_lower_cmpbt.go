@@ -22,7 +22,7 @@ func (c *amd64Ctx) lowerCmpBt(op Op, ins Instr) (ok bool, terminated bool, err e
 			return true, false, fmt.Errorf("%w: Go REX byte view needs the original physical SP", ErrProbeNeedsContext)
 		}
 	}
-	native := form.memory >= 0 && (x86OrdinaryNativeMemoryOperand(form.args[form.memory], arch) ||
+	native := form.memory >= 0 && (c.nativeMemoryOperand(ins, form.memory) ||
 		x86CallerMemoryCertified(ins, form.memory) || c.fixedLocalMemoryCertified(ins, form.memory))
 	if native && (ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride) {
 		return true, false, fmt.Errorf("%w: scalar comparison needs its original native address size", ErrProbeNeedsContext)

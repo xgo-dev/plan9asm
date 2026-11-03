@@ -127,7 +127,7 @@ func (c *amd64Ctx) validateConflictFunnelMemory(ins Instr, form x86PackedBinaryF
 		return nil
 	}
 	source := ins.Args[form.memory]
-	if source.Kind == OpMem && !x86OrdinaryNativeMemoryOperand(source, c.goarch) &&
+	if source.Kind == OpMem && !c.nativeMemoryOperand(ins, form.memory) &&
 		!x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
 		return fmt.Errorf("%w: %s needs its original native storage binding", ErrProbeNeedsContext, ins.Op)
 	}

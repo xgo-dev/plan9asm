@@ -33,7 +33,7 @@ func (c *amd64Ctx) lowerIFMA(op Op, ins Instr) (ok bool, terminated bool, err er
 	}
 	source, destination := ins.Args[form.first], ins.Args[form.destination]
 	if form.memory >= 0 {
-		if source.Kind == OpMem && !x86OrdinaryNativeMemoryOperand(source, c.goarch) &&
+		if source.Kind == OpMem && !c.nativeMemoryOperand(ins, form.memory) &&
 			!x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
 			return true, false, fmt.Errorf("%w: IFMA source needs its original native storage binding", ErrProbeNeedsContext)
 		}

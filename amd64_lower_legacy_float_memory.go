@@ -30,7 +30,7 @@ func (c *amd64Ctx) lowerLegacyPackedFloatingMemory(ins Instr, form x86FloatBinar
 		return fmt.Errorf("%w: %s m128 lacks its original native address-size binding", ErrProbeNeedsContext, ins.Op)
 	}
 	if source.Kind == OpMem && !x86CallerMemoryCertified(ins, form.first) {
-		if !x86OrdinaryNativeMemoryOperand(source, c.goarch) {
+		if !c.nativeMemoryOperand(ins, form.first) {
 			return fmt.Errorf("%w: %s m128 needs original native stack backing, not virtual SP/BP", ErrProbeNeedsContext, ins.Op)
 		}
 	}

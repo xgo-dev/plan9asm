@@ -39,7 +39,7 @@ func (c *amd64Ctx) lowerQwordBitLookup(op Op, ins Instr) (ok bool, terminated bo
 			return true, false, err
 		}
 	}
-	if form.memory >= 0 && first.Kind == OpMem && !x86OrdinaryNativeMemoryOperand(first, c.goarch) &&
+	if form.memory >= 0 && first.Kind == OpMem && !c.nativeMemoryOperand(ins, form.memory) &&
 		!x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
 		return true, false, fmt.Errorf("%w: qword lookup needs its original native storage binding", ErrProbeNeedsContext)
 	}

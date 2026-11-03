@@ -27,7 +27,7 @@ func (c *amd64Ctx) lowerPackedIntegerMinMax(op Op, ins Instr) (ok bool, terminat
 	}
 	first := ins.Args[form.first]
 	if form.legacy && form.memory >= 0 &&
-		(first.Kind == OpFP || first.Kind == OpMem && !x86OrdinaryNativeMemoryOperand(first, c.goarch) ||
+		(first.Kind == OpFP || first.Kind == OpMem && !c.nativeMemoryOperand(ins, form.first) ||
 			!x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple)) {
 		return true, false, fmt.Errorf("%w: legacy integer min/max m128 needs its original native storage/target", ErrProbeNeedsContext)
 	}

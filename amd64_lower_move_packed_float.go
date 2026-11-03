@@ -32,7 +32,7 @@ func (c *amd64Ctx) lowerPackedVectorMove(op Op, ins Instr) (ok bool, terminated 
 	src, dst := ins.Args[0], ins.Args[form.destination]
 	byteWidth, elemBits := form.byteWidth, form.spec.elementBits
 	if form.spec.aligned && form.memory >= 0 {
-		if !form.ordinaryMemory(ins, c.goarch) &&
+		if !c.nativeMemoryOperand(ins, form.memory) &&
 			!x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
 			return true, false, fmt.Errorf("%w: %s requires original native memory backing and alignment effects", ErrProbeNeedsContext, op)
 		}
@@ -50,7 +50,7 @@ func (c *amd64Ctx) lowerPackedVectorMove(op Op, ins Instr) (ok bool, terminated 
 		}
 	}
 	if !form.spec.aligned && form.memory >= 0 &&
-		(form.unalignedOrdinaryMemory(ins, c.goarch) || x86CallerMemoryCertified(ins, form.memory) || c.fixedLocalMemoryCertified(ins, form.memory)) {
+		(c.nativeMemoryOperand(ins, form.memory) || x86CallerMemoryCertified(ins, form.memory) || c.fixedLocalMemoryCertified(ins, form.memory)) {
 		return true, false, c.lowerUnalignedPackedMoveMemory(ins, form)
 	}
 

@@ -23,7 +23,7 @@ func (c *amd64Ctx) lowerNativeFloatingHelper(op Op, ins Instr) (bool, bool, erro
 func (c *amd64Ctx) emitNativeFloatingHelper(ins Instr, form x86FloatingHelperForm) error {
 	first := ins.Args[form.first]
 	if ins.x86AddressBits != 0 || first.Kind == OpFP && !form.spec.scalar || first.Kind == OpMem &&
-		!x86OrdinaryNativeMemoryOperand(first, c.goarch) && !c.fixedLocalMemoryCertified(ins, form.first) {
+		!c.nativeMemoryOperand(ins, form.first) && !c.fixedLocalMemoryCertified(ins, form.first) {
 		return fmt.Errorf("%w: %s needs its original native source backing", ErrProbeNeedsContext, ins.Op)
 	}
 	if form.spec.maskResult {

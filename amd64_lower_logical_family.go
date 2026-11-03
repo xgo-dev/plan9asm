@@ -28,7 +28,7 @@ func (c *amd64Ctx) lowerPackedLogicalFamily(op Op, ins Instr) (bool, bool, error
 		}
 		virtual := first.Kind == OpFP
 		if first.Kind == OpMem && !x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
-			virtual = !x86OrdinaryNativeMemoryOperand(first, c.goarch)
+			virtual = !c.nativeMemoryOperand(ins, form.first)
 		}
 		if virtual {
 			return true, false, fmt.Errorf("%w: legacy packed logical m128 needs original native storage, not virtual FP/SP/BP alignment", ErrProbeNeedsContext)
@@ -86,7 +86,7 @@ func (c *amd64Ctx) lowerPackedLogicalFamily(op Op, ins Instr) (bool, bool, error
 		// lanes alone suppress their accesses, including scalar broadcasts.
 		var a string
 		if ins.x86NumericalRead != nil || c.goReadOnlyOperand.allows(first, int64(form.memoryBytes)) ||
-			first.Kind == OpMem && x86OrdinaryNativeMemoryOperand(first, c.goarch) {
+			first.Kind == OpMem && c.nativeMemoryOperand(ins, form.first) {
 			a, err = c.loadX86PackedShiftLanes(first, form.byteWidth, form.spec.laneBits, form.broadcast, mask)
 		} else {
 			a, err = c.loadMaskedPackedCompareLanes(first, form.byteWidth, form.spec.laneBits, form.broadcast, mask)

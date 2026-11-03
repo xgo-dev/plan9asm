@@ -18,7 +18,7 @@ func x86LegacyAlternatingRoundMemorySource(ins Instr, source Operand, arch strin
 func (c *amd64Ctx) emitLegacyAlternatingRoundMemory(ins Instr, form x86FloatBinaryForm, immediate *uint8) error {
 	source := ins.Args[form.first]
 	if !form.legacy || form.byteWidth != 16 || !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) ||
-		!x86LegacyAlternatingRoundMemorySource(ins, source, c.goarch) {
+		!x86ResultNamedPredicateInstruction(ins) || !c.nativeMemoryOperand(ins, form.first) {
 		return fmt.Errorf("%w: %s needs its original ordinary legacy memory source", ErrProbeNeedsContext, ins.Op)
 	}
 	typ := amd64FMA3LLVMType(128/form.bits, form.bits)

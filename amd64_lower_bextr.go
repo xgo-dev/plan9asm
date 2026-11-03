@@ -69,7 +69,7 @@ func (c *amd64Ctx) evalScalarBitFieldSource(ins Instr, form x86ScalarBitFieldFor
 		}
 	}
 	if isAMD64MemoryOperand(form.source) && form.source.Kind != OpFP &&
-		(x86OrdinaryNativeMemoryOperand(form.source, c.goarch) ||
+		(c.nativeMemoryOperand(ins, 1) ||
 			x86CallerMemoryCertified(ins, 1) || c.fixedLocalMemoryCertified(ins, 1)) {
 		if ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride {
 			return "", fmt.Errorf("%w: %s needs its original native address size", ErrProbeNeedsContext, ins.Op)

@@ -14,7 +14,7 @@ func (c *amd64Ctx) emitNativeFloatingCompare(ins Instr, f x86FloatCompareForm) e
 	if first.Kind == OpFP && !f.scalar {
 		return fmt.Errorf("%w: %s packed FP comparison needs original contiguous native storage", ErrProbeNeedsContext, ins.Op)
 	}
-	if !f.scalar && first.Kind == OpMem && !x86OrdinaryNativeMemoryOperand(first, c.goarch) && !c.fixedLocalMemoryCertified(ins, f.first) {
+	if !f.scalar && first.Kind == OpMem && !c.nativeMemoryOperand(ins, f.first) && !c.fixedLocalMemoryCertified(ins, f.first) {
 		// A word-aligned virtual source stack is neither the original native
 		// address nor an m128 alignment witness. Do not strengthen its alloca
 		// alignment or synthesize a native shadow to suppress source faults.

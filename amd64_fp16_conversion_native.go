@@ -8,7 +8,7 @@ import (
 func (c *amd64Ctx) emitNativeFP16Conversion(ins Instr, f x86FP16ConversionForm) error {
 	source := ins.Args[0]
 	if source.Kind == OpFP || ins.x86AddressBits != 0 || source.Kind == OpMem &&
-		!x86OrdinaryNativeMemoryOperand(source, c.goarch) {
+		!c.nativeMemoryOperand(ins, 0) {
 		return fmt.Errorf("%w: FP16 conversion needs original native backing", ErrProbeNeedsContext)
 	}
 	if f.spec.scalar {

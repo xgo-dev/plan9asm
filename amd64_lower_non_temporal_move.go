@@ -20,7 +20,7 @@ func (c *amd64Ctx) lowerNonTemporalVectorMove(op Op, ins Instr) (bool, bool, err
 		(ins.x86Encoded || ins.x86SourceRaw != nil) && ins.x86NumericalRead == nil && ins.x86SDKLiteral == nil {
 		return true, false, fmt.Errorf("%w: non-temporal vector access needs its actual x86 target/encoding", ErrProbeNeedsContext)
 	}
-	if !form.move.ordinaryMemory(ins, c.goarch) &&
+	if !c.nativeMemoryOperand(ins, form.move.memory) &&
 		!x86CallerMemoryCertified(ins, form.move.memory) && !c.fixedLocalMemoryCertified(ins, form.move.memory) {
 		return true, false, fmt.Errorf("%w: non-temporal vector access needs native backing, not logical FP/AUTO bytes", ErrProbeNeedsContext)
 	}

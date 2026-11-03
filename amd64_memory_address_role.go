@@ -55,6 +55,22 @@ func x86RegisterAddressedNativeMemoryOperand(operand Operand, arch string) bool 
 	return operand.Kind == OpMem && operand.Mem.Sym == "" && x86OrdinaryNativeMemoryOperand(operand, arch)
 }
 
+// Select an emitter's address role, never pointee, extent or alignment facts.
+// Logical BP stays non-native unless this exact bound access records otherwise.
+func (c *amd64Ctx) nativeMemoryOperand(ins Instr, index int) bool {
+	if index < 0 || index >= len(ins.Args) {
+		return false
+	}
+	if x86OrdinaryNativeMemoryOperand(ins.Args[index], c.goarch) {
+		return true
+	}
+	if access, found := ins.x86FixedLocalMemory[index]; !found || !access.nativeInput {
+		return false
+	}
+	access, valid := c.fixedLocalMemoryAccess(ins, index)
+	return valid && access.nativeInput
+}
+
 // The key includes the complete effective displacement, not Operand.String:
 // raw AST memory can hold a displacement in addition to its symbolic offset.
 type x86StaticSBAddress struct {

@@ -32,7 +32,7 @@ func (c *amd64Ctx) lowerSHA(op Op, ins Instr) (bool, bool, error) {
 	if f.memory >= 0 {
 		source := f.sourceOperand
 		if source.Kind == OpFP || !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) ||
-			source.Kind == OpMem && !x86OrdinaryNativeMemoryOperand(source, c.goarch) &&
+			source.Kind == OpMem && !c.nativeMemoryOperand(ins, f.source) &&
 				!x86CallerMemoryCertified(ins, f.source) && !c.fixedLocalMemoryCertified(ins, f.source) {
 			return true, false, fmt.Errorf("%w: SHA m128 needs original native storage and x86 target", ErrProbeNeedsContext)
 		}

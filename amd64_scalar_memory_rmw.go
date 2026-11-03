@@ -20,7 +20,7 @@ func (c *amd64Ctx) loadScalarRMWDestination(op Op, ins Instr, destination Operan
 	if err != nil {
 		return "", nil, err
 	}
-	if !known || !x86OrdinaryNativeMemoryOperand(form.destination, c.goarch) {
+	if !known || !c.nativeMemoryOperand(ins, len(ins.Args)-1) {
 		if form.spec.stem == "INC" || form.spec.stem == "DEC" {
 			// Preserve the existing logical GP/FP/AUTO byte-view consumer;
 			// only actual native memory gets the new paired access above it.

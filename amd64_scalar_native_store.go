@@ -58,10 +58,8 @@ func x86ScalarRegisterStoreProperties(op Op, ins Instr, arch string) (x86ScalarN
 }
 
 func (c *amd64Ctx) scalarNativeStoreProperties(op Op, ins Instr) (x86ScalarNativeStoreForm, bool, error) {
-	if c.fixedLocal != nil {
-		if access, valid := c.fixedLocalMemoryAccess(ins, 1); valid && access.nativeInput {
-			return x86ScalarRegisterStoreProperties(op, ins, c.goarch)
-		}
+	if c.nativeMemoryOperand(ins, 1) {
+		return x86ScalarRegisterStoreProperties(op, ins, c.goarch)
 	}
 	return x86ScalarNativeStoreProperties(op, ins, c.goarch)
 }

@@ -14,7 +14,7 @@ func (c *amd64Ctx) lowerScalarExtensionMove(op Op, ins Instr) error {
 	sourceType := amd64IntegerTypeForBits(spec.sourceBits)
 	destinationType := amd64IntegerTypeForBits(spec.destinationBits)
 	var value string
-	native := x86OrdinaryNativeMemoryOperand(form.source, c.goarch) ||
+	native := c.nativeMemoryOperand(ins, 0) ||
 		x86CallerMemoryCertified(ins, 0) || c.fixedLocalMemoryCertified(ins, 0)
 	if native {
 		if ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride {

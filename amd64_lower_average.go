@@ -17,7 +17,7 @@ func (c *amd64Ctx) lowerPackedAverageForm(op Op, ins Instr, form x86PackedPhysic
 		// Only the existing exact fixed-local certificate supplies that backing.
 		virtual := first.Kind == OpFP
 		if first.Kind == OpMem {
-			virtual = !x86OrdinaryNativeMemoryOperand(first, c.goarch) && !c.fixedLocalMemoryCertified(ins, form.memory)
+			virtual = !c.nativeMemoryOperand(ins, form.first) && !c.fixedLocalMemoryCertified(ins, form.memory)
 		}
 		if virtual {
 			return true, false, fmt.Errorf("%w: legacy packed average m128 needs original native storage, not virtual FP/SP/BP alignment", ErrProbeNeedsContext)

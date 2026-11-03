@@ -19,7 +19,7 @@ func (c *amd64Ctx) emitDuplicateMove(ins Instr, form x86DuplicateMoveForm) error
 	if form.legacy && form.spec.laneBytes == 4 && form.memory >= 0 {
 		if !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) ||
 			form.source.Kind == OpFP || form.source.Kind == OpMem &&
-			!x86OrdinaryNativeMemoryOperand(form.source, c.goarch) &&
+			!c.nativeMemoryOperand(ins, form.memory) &&
 			!x86CallerMemoryCertified(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
 			return fmt.Errorf("%w: legacy duplicate m128 needs its original native alignment and storage", ErrProbeNeedsContext)
 		}

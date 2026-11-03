@@ -21,7 +21,7 @@ func (c *amd64Ctx) lowerMOVNTI(op Op, ins Instr) (ok bool, terminated bool, err 
 		!x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil {
 		return true, false, fmt.Errorf("%w: MOVNTI needs its original named x86 target and address size", ErrProbeNeedsContext)
 	}
-	if !x86OrdinaryNativeMemoryOperand(form.destination, c.goarch) {
+	if !c.nativeMemoryOperand(ins, 1) {
 		return true, false, fmt.Errorf("%w: MOVNTI needs native storage, not logical FP/AUTO bytes", ErrProbeNeedsContext)
 	}
 	return true, false, c.emitMOVNTI(form)

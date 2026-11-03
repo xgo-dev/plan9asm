@@ -22,7 +22,7 @@ func (c *amd64Ctx) emitNativeFloatingOperands(ins Instr, f x86NativeFloatingOper
 	source := ins.Args[0]
 	logicalFP := source.Kind == OpFP && (f.logicalFPBits == 32 || f.logicalFPBits == 64)
 	if source.Kind == OpFP && !logicalFP || ins.x86AddressBits != 0 || source.Kind == OpMem &&
-		!x86OrdinaryNativeMemoryOperand(source, c.goarch) {
+		!c.nativeMemoryOperand(ins, 0) {
 		return fmt.Errorf("%w: %s needs original native backing", ErrProbeNeedsContext, ins.Op)
 	}
 	typ := fmt.Sprintf("<%d x float>", f.byteWidth/4) // Bit carrier, never arithmetic precision.

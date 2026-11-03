@@ -44,7 +44,7 @@ func (c *amd64Ctx) lowerLegacyPackedMove(op Op, ins Instr) (bool, bool, error) {
 		// Existing checked virtual FP/AUTO views are not native addresses.
 		// They keep their independent layout handling; this rule gives them
 		// neither native alignment nor permission to read adjacent storage.
-		virtual := !x86OrdinaryNativeMemoryOperand(memory, arch)
+		virtual := !c.nativeMemoryOperand(ins, form.memory)
 		if memory.Kind == OpMem && (x86CallerMemoryCertified(ins, form.memory) || c.fixedLocalMemoryCertified(ins, form.memory)) {
 			virtual = false
 		}

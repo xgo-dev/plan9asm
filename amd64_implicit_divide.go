@@ -71,7 +71,7 @@ func (c *amd64Ctx) lowerImplicitDivide(op Op, ins Instr) (bool, bool, error) {
 		if x86LogicalSourceFrameRegister(form.source.Reg, c.goarch) {
 			return true, false, fmt.Errorf("%w: division cannot consume an unbound physical SP/BP source", ErrProbeNeedsContext)
 		}
-	} else if form.source.Kind != OpFP && !x86OrdinaryNativeMemoryOperand(form.source, c.goarch) {
+	} else if form.source.Kind != OpFP && !c.nativeMemoryOperand(ins, 0) {
 		return true, false, fmt.Errorf("%w: division needs owned logical FP bytes or original native memory backing", ErrProbeNeedsContext)
 	}
 	return true, false, c.emitNativeImplicitDivide(form)

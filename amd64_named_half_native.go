@@ -31,7 +31,7 @@ func (c *amd64Ctx) lowerNamedHalfConversion(op Op, ins Instr) (bool, bool, error
 					return true, false, fmt.Errorf("%w: %s cannot convert opaque pointer bits", ErrProbeNeedsContext, op)
 				}
 			}
-		} else if !x86OrdinaryNativeMemoryOperand(memory, c.goarch) {
+		} else if !c.nativeMemoryOperand(ins, f.memory) {
 			return true, false, fmt.Errorf("%w: %s requires its original native address", ErrProbeNeedsContext, op)
 		}
 	}
