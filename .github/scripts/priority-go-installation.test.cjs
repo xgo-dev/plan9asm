@@ -72,11 +72,41 @@ esac
       env: {
         PATH: directory,
         REQUESTED_GO_VERSION: options.requested ?? '1.27.2',
+        RESOLVED_GO_VERSION: options.resolved ?? options.installed ?? '1.27.2',
         INSTALLED_GO_VERSION: options.installed ?? '1.27.2',
         MOCK_GO_VERSION: options.actual ?? '1.27.2',
         GOTOOLCHAIN: 'auto',
       },
     });
+  } finally {
+    fs.rmSync(directory, {recursive: true, force: true});
+  }
+}
+
+function resolve(requested, toolCache = 'unused-runner-cache') {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'plan9asm-go-resolve-'));
+  try {
+    const step = action.split(/(?=^    - name:)/m).find(part =>
+      part.startsWith('    - name: Resolve exact Go version\n'));
+    assert.ok(step, 'the installer needs a deterministic SDK resolver');
+    const start = step.indexOf('      run: |\n');
+    assert.ok(start >= 0);
+    const script = step.slice(start + '      run: |\n'.length)
+      .split('\n').map(line => line.startsWith('        ') ? line.slice(8) : line)
+      .join('\n');
+    const output = path.join(directory, 'output');
+    fs.writeFileSync(output, '');
+    const result = spawnSync('/bin/bash', ['--noprofile', '--norc', '-c', script], {
+      encoding: 'utf8',
+      timeout: 5000,
+      env: {
+        PATH: directory,
+        REQUESTED_GO_VERSION: requested,
+        RUNNER_TOOL_CACHE: toolCache,
+        GITHUB_OUTPUT: output,
+      },
+    });
+    return {...result, output: fs.readFileSync(output, 'utf8')};
   } finally {
     fs.rmSync(directory, {recursive: true, force: true});
   }
@@ -91,8 +121,71 @@ test('setup verifies a real selected command without downloading another toolcha
   assert.match(result.stdout, /Verified Go 1\.27\.2/);
 });
 
+test('a runner cache cannot substitute another patch for the frozen SDK', () => {
+  const result = verify({
+    requested: '1.26.x', resolved: '1.26.10',
+    installed: '1.26.9', actual: '1.26.9',
+  });
+  assert.ifError(result.error);
+  assert.notEqual(result.status, 0, 'the actual mixed-SDK CI group must fail closed');
+  assert.doesNotMatch(result.stdout, /Verified Go/);
+});
+
+test('the installer receives the same repository-frozen exact SDK in every job', () => {
+  const resolver = action.split(/(?=^    - name:)/m).find(part =>
+    part.startsWith('    - name: Resolve exact Go version\n'));
+  assert.ok(resolver, 'wildcard SDK labels need one deterministic tracked mapping');
+  assert.ok(action.indexOf(resolver) < action.indexOf('    - name: Set up Go\n'));
+  const installer = action.split(/(?=^    - name:)/m).find(part =>
+    part.startsWith('    - name: Set up Go\n'));
+  assert.match(installer, /go-version: \$\{\{ steps\.resolve_go\.outputs\.go-version \}\}/);
+  assert.match(action, /RESOLVED_GO_VERSION: \$\{\{ steps\.resolve_go\.outputs\.go-version \}\}/);
+});
+
+test('every compatibility selector is independent of runner cache and release timing', () => {
+  const pins = {
+    '1.20.x': '1.20.14', '1.21.x': '1.21.13',
+    '1.22.x': '1.22.12', '1.23.x': '1.23.12',
+    '1.24.x': '1.24.13', '1.25.x': '1.25.14',
+    '1.26.x': '1.26.10', '1.27.x': '1.27.3',
+  };
+  for (const file of fs.readdirSync('.github/workflows').filter(name => name.endsWith('.yml'))) {
+    const workflow = fs.readFileSync(path.join('.github/workflows', file), 'utf8');
+    for (const match of workflow.matchAll(/\b1\.[0-9]+\.x\b/g)) {
+      assert.ok(Object.hasOwn(pins, match[0]), file + ': missing frozen SDK selector');
+    }
+  }
+  for (const [requested, version] of Object.entries(pins)) {
+    for (const cache of ['image-with-old-sdk', 'image-with-new-sdk']) {
+      const result = resolve(requested, cache);
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.output, `go-version=${version}\n`);
+    }
+  }
+});
+
+test('an explicit stable SDK is preserved without a floating lookup', () => {
+  for (const version of ['1.20.14', '1.24.11', '1.27.1', '1.27.2', '1.27.3']) {
+    const result = resolve(version);
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.output, `go-version=${version}\n`);
+  }
+});
+
+test('unregistered or malformed SDK selectors fail before installation', () => {
+  for (const version of ['', 'stable', '1.28.x', '1.26', '1.26.*', '1.26.10rc1',
+    '1.26.x\n1.27.2', '1.26.x; echo unexpected']) {
+    const result = resolve(version);
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0, version);
+    assert.equal(result.output, '');
+  }
+});
+
 test('historical minor selectors verify their own resolved stable patch', () => {
-  for (const [requested, installed] of [['1.20.x', '1.20.14'], ['1.26.x', '1.26.8']]) {
+  for (const [requested, installed] of [['1.20.x', '1.20.14'], ['1.26.x', '1.26.10']]) {
     const result = verify({requested, installed, actual: installed});
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
@@ -108,6 +201,10 @@ test('an interrupted installer cannot borrow a preinstalled Go or an empty outpu
     {actual: '1.28.0'},
     {installed: '1.27.2rc1', actual: '1.27.2rc1'},
     {installed: '1.27.2\n1.27.2'},
+    {resolved: ''},
+    {resolved: '1.27.2rc1'},
+    {resolved: '1.27.2\n1.27.2'},
+    {resolved: '1.27.1'},
     {actual: '1.27.2\n1.27.2'},
     {requested: '1.26.x'},
     {requested: ''},

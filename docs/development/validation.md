@@ -76,6 +76,13 @@ CI also verifies the actual installed Go against the installer's resolved
 version and uses the shared exact Node22.23.4 action. A successful installer
 outcome without its version output is not a valid tool observation.
 
+Compatibility matrix labels such as `1.26.x` resolve to tracked exact SDK pins
+in `.github/actions/setup-go/action.yml`. Update the shared pins deliberately
+from the official Go release metadata and run the complete publication policy
+suite. Every partition and collector must use the same exact compiler and SDK
+source; a runner cache or a release during CI must not change that identity.
+Explicit stable version inputs retain their requested patch.
+
 The rich CLI's complete ARM64 fallback-frame oracle runs natively on supported
 ARM64 hosts and under pinned QEMU in the required Linux cross job. One outer
 owner runs its exact nested-module root; a fresh strict reader verifies both
