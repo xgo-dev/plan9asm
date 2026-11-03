@@ -22,6 +22,7 @@ validation in the allowed fork.
 | Product `cf4ac631a`, diagnostic `0ec1ed29c` | [Staged CI](https://github.com/cpunion/plan9asm/actions/runs/41605057011): 32/32 SUCCESS; 10,530 root and 429,875 child PASS | Linux ordinary coverage and source/compiler gates; separate 299 root and eight child SKIPs are not passes |
 | Product `cf4ac631a` | [Full round](https://github.com/cpunion/plan9asm/actions/runs/41612231250): 110 SUCCESS, 206 CANCELLED | Cancelled to conserve resources; complete 325-job acceptance was not obtained |
 | SDK-pin product `b1fbc7db7`, diagnostic `324911934` | [Focused CI](https://github.com/cpunion/plan9asm/actions/runs/41621190680): 6/6 SUCCESS; installer 10/10, CLI 31 root and 29 child PASS | Complete Go 1.26 CLI group plus installer regression; not full CI |
+| Product `229da7d5b`, diagnostic `896c95e60` | [Source round](https://github.com/cpunion/plan9asm/actions/runs/41672574193): three gates PASS; all 18 translator owners finished, 12 SUCCESS and six FAIL | Eight failed test roots retained; CLI producers unexecuted, two derived collectors failed and the last collector was cancelled to conserve resources; not complete acceptance |
 
 The cancelled round exposed a real group-contract failure: runners resolved
 `1.26.x` to both Go 1.26.9 and 1.26.10. The fix freezes all eight compatibility
@@ -32,7 +33,7 @@ Keep the old failure; do not weaken scope equality or reuse a cancelled collecto
 ## Current local source batch
 
 The verified instruction/source-contract snapshot is
-`7259fd6ff0d9923a7d2c1b3a32313b14a49e9c1d`.
+`235d47b6462be05536093be7d304e605560e56b9`.
 It includes the SDK-pin fix. It is not yet published or covered by a complete
 current-head fork round. Local component gates below retain their own source
 snapshots; their totals must not be added into a fictitious whole-suite result.
@@ -43,6 +44,17 @@ snapshots; their totals must not be added into a fictitious whole-suite result.
 | `9a1aa9d2e` | Preserve omitted TEXT argument size as Go's unknown-size sentinel; observe declared Windows frameless leaves without private-entry promotion | Current 97 / 1,278; minimum 62 / 694; all PASS; Windows leaf controls also pass on each intermediate SDK |
 | `0c2cf492a` | Omit only authenticated, structurally unreachable ordinary fixed-frame blocks; retain full grammar and live access checks | Current 80 / 1,629; minimum 65 / 1,482; all PASS |
 | `7259fd6ff` | Share ordinary typed scalar-tuple shape and cached validation; allow only the exact partial-output audit outcome for code generation | Current and minimum each 35 / 2,794; all PASS; 48 portable executables and 576 defined-only observations per SDK |
+| `235d47b64` | Move the tuple proof selector into the existing shared direct/fallback entry; retain original incomplete-output cases and requested-member DATA boundaries | Current and minimum main-package selection each 55 / 4,925 PASS; profile current 10 / 143, minimum five / 115 PASS; Node 579 and Go policy 484 PASS |
+
+The last profile qualification combines eight unchanged roots with two freshly
+retested mutation owners; the minimum profile selection is a fresh complete run.
+The new regression reproduces the AMD64 direct path accepting undefined AX.
+All APIs now share the original complete checker. This repair removes four net
+production lines and preserves initialized producers and output-only exceptions.
+DATA in an unrequested sibling neither blocks the numerical member nor grants a
+DATA frame: binding a different file still fails, and changing then restoring the
+sibling permanently revokes its lease. Ordinary logical AUTO storage can remain
+valid without native-frame binding; tests distinguish these roles explicitly.
 
 Each final component also passes the complete Node policy suite (579 tests) and
 Go policy suite (484 nodes), without FAIL or SKIP. The numeric-tuple change
