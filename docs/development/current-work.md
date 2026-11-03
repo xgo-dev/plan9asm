@@ -24,6 +24,7 @@ validation in the allowed fork.
 | SDK-pin product `b1fbc7db7`, diagnostic `324911934` | [Focused CI](https://github.com/cpunion/plan9asm/actions/runs/41621190680): 6/6 SUCCESS; installer 10/10, CLI 31 root and 29 child PASS | Complete Go 1.26 CLI group plus installer regression; not full CI |
 | Product `229da7d5b`, diagnostic `896c95e60` | [Source round](https://github.com/cpunion/plan9asm/actions/runs/41672574193): three gates PASS; all 18 translator owners finished, 12 SUCCESS and six FAIL | Eight failed test roots retained; CLI producers unexecuted, two derived collectors failed and the last collector was cancelled to conserve resources; not complete acceptance |
 | Product `7abb59775`, diagnostic `edb34fdc5` | [Repaired source round](https://github.com/cpunion/plan9asm/actions/runs/41685791598): 32/32 SUCCESS, 39/39 required artifacts; all 705 previous failed-case identities freshly PASS | Main coverage 88.5%, CLI 70.5% / 79.1%; 307 explicit SKIPs remain separate. Full 325-job and forced cross-runtime acceptance remain separate |
+| Product `014765e8e`, diagnostic `8c15748a5` | [Source and forced-runtime round](https://github.com/cpunion/plan9asm/actions/runs/41719298543): 49/49 SUCCESS, all 56 required artifacts accepted; original 705 cases freshly PASS | Ordinary component: 441,014 PASS / 307 explicit SKIP; cross component: 533 roots and 3,940 children PASS, zero SKIP; separate rich-CLI forced ARM64 oracle: five unique RUN/PASS nodes. Full 325-job, Windows/race, Codecov and native hardware qualification remain separate |
 
 The cancelled round exposed a real group-contract failure: runners resolved
 `1.26.x` to both Go 1.26.9 and 1.26.10. The fix freezes all eight compatibility
@@ -33,16 +34,32 @@ Keep the old failure; do not weaken scope equality or reuse a cancelled collecto
 
 ## Current local source batch
 
-The verified instruction/source-contract snapshot is
-`235d47b6462be05536093be7d304e605560e56b9`.
-It includes the SDK-pin fix and is published with documentation as `7abb59775`.
-The repaired staged fork round above verifies that exact product. Its 10,549
-root and 430,393 child PASS outcomes have no FAIL or incomplete cases. All
-source, tool, raw outcome and profile joins use fresh required artifacts.
-The 299 root and eight child SKIPs are not passes. In particular, the CLI ARM64
-complete-argument oracle still needs its forced-cross execution. Local component
-gates below retain their own source snapshots; their totals must not be added
-into a fictitious whole-suite result.
+The verified instruction/source-contract code is
+`14e9b3d7b7354c2dd6786b0576a77e0a830b8f7e`, published on the allowed fork's
+`codex/go-funcval-global-0147-20261104` branch. Documentation-only successors
+do not change its qualified Go source. The 49-job round above certifies its
+parent `014765e8e`, not this later read-class change. Keep component snapshots
+separate; never add their counts into a fictitious whole-suite result.
+
+The parent implements actual same-package numerical Go-body ABI0 calls, with
+compiler-observed call relocations, typed outgoing arguments/results and full
+scratch clobbers. Its local union passes 1,350 current and 701 minimum-SDK nodes.
+Private continuations, formatting and `Options.Sigs` alone grant no such call.
+
+The later read class binds an actual local Go function variable to an exact
+descriptor-word/code-word MOV pair in one validated CFG segment. Both volatile
+reads remain, including dead-result nil faults. The descriptor supplies no NUM,
+environment, callable ABI, writable backing or frame role. Numerical spans are
+unchanged, and numerical-only files avoid an additional function scan. Unknown
+imported or inferred alias conventions remain Context.
+
+Current and minimum SDK each pass all 45 roots / 1,444 nodes, zero FAIL/SKIP;
+Node 579 and Go policy 484 pass. Each SDK includes ten original Go package
+archives, twenty LLVM22 objects and eight actual-host portable C executions
+checking 72 values and sixteen nil-fault signals. This is not original Go runtime
+or whole-purego qualification. Five-architecture official reports retain their
+own source snapshots and the explicit final word-guard equivalence bridge.
+The older component history below keeps its original scope and counts.
 
 | Component | Mechanism | Actual local qualification |
 |---|---|---|
@@ -91,6 +108,8 @@ or caches; keep source mutation, closure and ownership guards.
 | LLGo rebased descriptor `ab3597d60`, core pin `229da7d5b` | Full SSA 1,588 / ABI 30 PASS, original fixture programs and FileCheck 31 PASS, five policy suites 229 PASS; 45 native ARM64 runtime roots / 69 nodes PASS at explicit O2 | Full `cl` and `internal/build`, Linux and current WASI qualification remain pending |
 | Same LLGo compiler and pin | Fresh Go/LLGo SQLite v1.58.0/libc v1.75.7 query, rollback, two independently captured UDFs and GC PASS; compress v1.20.0 ARM64 huff0 table-log 4/9 PASS with both original assembly kernels and final symbols | Exact versions and native ARM64 only; not whole compress v1.20.1 or other targets |
 | LLGo repin `461ce105e`, core `7abb59775` | Normal SumDB-authenticated dependency, complete SSA 1,588 / ABI 30 PASS | New compiler, runtime programs, policies and full package jobs must retain this new source/pin identity |
+| LLGo `479573933`, core `7abb59775` | [Complete `cl` and `internal/build`](https://github.com/cpunion/llgo/actions/runs/41716937542): 4,613 PASS / 60 explicit SKIP / zero FAIL or incomplete cases; original 34 failed leaves freshly PASS, unchanged SKIP identity set | Exact clean source/compiler/tool observations; not every platform or reported library |
+| LLGo merge `98e2acc11`, core `14e9b3d7b` | Includes main `dd109ecb9`; full SSA 1,601, ABI 30, allocation-neighbor 86 and policy 229 nodes PASS; related O2 closure/method/cgo programs execute | Pre-commit native binary is identified as `479+modified` with exact source-byte bridge; clean-source fork CI and Linux library execution remain next checks |
 
 The Go/C variadic cache collision is repaired by preserving the original typed
 signature when the cache's native variadic role differs. Function-descriptor
@@ -106,9 +125,10 @@ evidence, including 17 repaired and 66 preservation nodes. SDK provisioning
 still needs actual completion; bounded timeout tests do not install an SDK.
 
 [LLGo2694](https://github.com/xgo-dev/llgo/pull/2694) remains draft at its published
-`d72552acc` head. Its local contribution stack has been rebased onto upstream
-`fe431355cb7a494865c600b374c151dbfb7c41f8`; rebase and new source repairs need
-fresh complete package, current-pin GC/runtime and reported-library gates. Keep the rejected
+`d72552acc` head. Its contribution stack was rebased onto upstream `fe431355c`;
+the later local merge `98e2acc11` incorporates main `dd109ecb9` and preserves
+both the one-word descriptor and immediate-closure stack-allocation contracts.
+That new source/pin needs its own clean-source complete-package and reported-library gates. Keep the rejected
 SSA-shape matcher out of its ancestry. Use coherent function-descriptor storage,
 typed call roles and independent original-source/runtime oracles.
 
@@ -130,14 +150,22 @@ Thirteen Zpseudo and four Zbyte rows, plus the ymovtab sentinel, remain separate
 These are source identities, not IR/object/runtime coverage. Preserve all five
 architectures' independent owners; an AMD64 denominator does not describe them.
 
-Next, finish ordinary Go ABI0 calls without promoting callees into private
-leaves. Qualify their typed arguments, results, outgoing extent and scratch
-clobbers independently from private continuations. The S2 decoder calls
+Same-package numerical Go-body calls are implemented without promoting their
+callees into private leaves. The next foreign-call class remains distinct: the S2 decoder calls
 `runtime.memmove` with pointer arguments; the same-package numeric Go-body
 contract cannot certify that foreign assembly callee. Retain the original
-source failure until its separate SDK, ABI and pointer contract is verified.
-Run LLGo's complete `cl` and `internal/build` owners independently in the allowed
-fork, followed by reported Linux programs at the final core pin. Keep actual
+source failure until its SDK ABI0-wrapper association, opaque pointer arguments,
+preserved spills and escape invalidation are verified.
+
+Verify the clean latest-main LLGo source in the allowed fork, then execute all
+five original purego probes independently at latest v0.11.3. Both that module
+and core `14e9b3d7b` have normal Go/SumDB and complete ZIP/cache/Git identity
+authentication; authentication is not compilation or runtime acceptance.
+Keep the historical v0.9.1 outcomes. The read class does not solve native CALL
+argument/result banks, Go-versus-C register ABI, frames, environments or GC and
+callback lifetimes. Reuse the existing address-only native carrier and shared
+typed families; do not guess a six-integer C prototype or add a library-specific
+whitelist. Keep actual
 PASS, host-inapplicable SKIP and missing-tool failures distinct.
 Update compatibility ledgers only from their actual complete qualification.
 
