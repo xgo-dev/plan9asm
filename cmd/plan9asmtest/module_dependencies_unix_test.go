@@ -209,6 +209,7 @@ func TestModuleActualCLIRejectsMissingNodeConsumer(t *testing.T) {
 	}
 	// Keep the real SDK and LLVM tools, but no Node interpreter. This is an
 	// actual Go module execution, not a script impersonating a compiler.
+	t.Setenv("LLVM_CONFIG", llvmConfig)
 	t.Setenv("PATH", strings.Join([]string{filepath.Dir(goBinary), filepath.Dir(llvmConfig), gitDirectory}, string(os.PathListSeparator)))
 	if _, err := exec.LookPath("node"); err == nil {
 		t.Fatal("missing-Node fixture still has an interpreter")
