@@ -131,7 +131,9 @@ func TestX86PSLogicalParameterStoreKeepsIndependentRoles(t *testing.T) {
 						// The existing complete-span binder diagnoses an absent
 						// field before the result observer; this is still an error,
 						// not numerical initialization or storage permission.
-						if err == nil || ir != "" || row.name != "padding" && !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && (row.name == "unknown-source" || row.name == "missing-selected-byte") {
+							x86VectorScratchCodegenControl(t, source, row.declaration+"\n", arch, testTargetTriple("linux", arch), ir, err)
+						} else if err == nil || ir != "" || row.name != "padding" && !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatalf("%s unsupported storage/source acquired permission: %v, IR bytes %d", api, err, len(ir))
 						}
 					}

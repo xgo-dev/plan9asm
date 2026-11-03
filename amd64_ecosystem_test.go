@@ -2252,6 +2252,10 @@ done:
 					x86LEAActualTargetGoObject(t, target.arch, target.triple, "#include \"textflag.h\"\n"+incomplete)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, incomplete, liveDeclaration, target.arch, target.triple, api)
+						if target.arch == "amd64" && strings.HasPrefix(missing, "VPXOR ") {
+							x86VectorScratchCodegenControl(t, incomplete, liveDeclaration, target.arch, target.triple, ir, err)
+							continue
+						}
 						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("live result acquired missing control or vector inputs", api, err)
 						}
@@ -3416,6 +3420,10 @@ TEXT packedmovemaskforms(SB),NOSPLIT,$0-0
 		for _, api := range []string{"text", "module", "Go"} {
 			t.Run("undefined-input/"+name+"/"+api, func(t *testing.T) {
 				ir, err := x86ScalarFPBitViewAPI(t, undefined, "func "+name+"() uint64", "amd64", "x86_64-unknown-linux-gnu", api)
+				if form.byteWidth != 8 {
+					x86VectorScratchCodegenControl(t, undefined, "func "+name+"() uint64", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					return
+				}
 				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("mask result acquired an undefined physical source", original, err)
 				}

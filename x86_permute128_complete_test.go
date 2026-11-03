@@ -245,6 +245,8 @@ func TestX86Permute128VoidDoesNotInventSelectedInputs(t *testing.T) {
 								if err != nil || ir == "" {
 									t.Fatal("two immediate-zero register halves require no vector input", err)
 								}
+							} else if unused && !memory {
+								x86VectorScratchCodegenControl(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("Void/unused bool fabricated vector bytes or a pointer for zero/dead memory", err)
 							}

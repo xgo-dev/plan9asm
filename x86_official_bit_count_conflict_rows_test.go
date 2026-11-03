@@ -1,7 +1,6 @@
 package plan9asm
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -46,8 +45,8 @@ func TestX86OfficialBitCountConflictOldDestinationIsOnlyMergeInput(t *testing.T)
 						if err != nil || ir == "" {
 							t.Fatal("zeroing unary operation borrowed an unnecessary old destination", err)
 						}
-					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatal("merging unary operation borrowed its absent old bytes", err)
+					} else {
+						x86VectorScratchCodegenControl(t, missing, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 					}
 				})
 			}

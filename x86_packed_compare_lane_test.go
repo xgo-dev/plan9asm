@@ -147,7 +147,9 @@ func TestX86PackedCompareLaneKeepsUnknownUses(t *testing.T) {
 					t.Run(fmt.Sprintf("%s/%s/memory=%t/%s/%s", row.op, row.bank, memory, change.name, api), func(t *testing.T) {
 						ir, err := x86PackedIntegerCompareAPI(t, change.source,
 							"func query(input *[32]byte) uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if change.name != "missing-native-address" {
+							x86VectorScratchCodegenControl(t, change.source, "func query(input *[32]byte) uint32\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("partial comparison invented missing data or native address facts", err)
 						}
 					})

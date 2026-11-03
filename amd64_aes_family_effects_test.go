@@ -95,7 +95,11 @@ func TestX86AESFamilyWholeSourceResultsCannotLaunderUndefinedInputs(t *testing.T
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(name+"/"+target.triple+"/"+api, func(t *testing.T) {
 					source := fmt.Sprintf("TEXT ·F(SB),4,$0-4\n%s\nMOVL X%d,AX\nMOVL AX,ret+0(FP)\nRET\n", row, destination)
-					_, err := x86ScalarFPBitViewAPI(t, source, "func F() uint32\n", target.arch, target.triple, api)
+					ir, err := x86ScalarFPBitViewAPI(t, source, "func F() uint32\n", target.arch, target.triple, api)
+					if target.arch == "amd64" {
+						x86VectorScratchCodegenControl(t, source, "func F() uint32\n", target.arch, target.triple, ir, err)
+						return
+					}
 					if err == nil {
 						t.Fatal("undefined AES byte escaped through GP result-store fallback")
 					}

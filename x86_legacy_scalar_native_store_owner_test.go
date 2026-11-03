@@ -90,6 +90,8 @@ func TestX86LegacyScalarNativeStoreOwnsPureVoidInputProof(t *testing.T) {
 									if ir == "" || err != nil {
 										t.Fatal("pure legacy initialized store lost its independent input owner", err)
 									}
+								} else if arch == "amd64" && (test.name == "missing-source" || strings.HasPrefix(test.name, "missing-source-byte-")) {
+									x86VectorScratchCodegenControl(t, source, test.declaration, arch, triple, ir, err)
 								} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("pure legacy store bypassed its own source/address byte proof", ir != "", err)
 								}

@@ -124,12 +124,10 @@ func TestX86PackedIntegerCompareLogicalFPSpanRequiresEveryByteEvenMaskZero(t *te
 						t.Fatal(err)
 					}
 					options := Options{Goarch: "amd64", TargetTriple: "x86_64-unknown-linux-gnu", ResolveSym: resolve, Sigs: sigs}
-					if ir, err := Translate(file, options); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatal("zero mask supplied the missing second vector input", err)
-					}
-					// This test owns FP byte spans, not an exception to vector
-					// initialization. Keep the original source as a negative and
-					// initialize every second-input byte in the positive control.
+					ir, err := Translate(file, options)
+					x86VectorScratchCodegenControl(t, source, "func query("+parameters.String()+")", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					// Keep explicit initialization as a separate positive control;
+					// every logical FP byte remains independently required.
 					initialized := strings.Replace(source, "KMOVQ AX,K1\n", "KMOVQ AX,K1\nVPXORD Z1,Z1,Z1\n", 1)
 					x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", initialized)
 					file, err = Parse(ArchAMD64, initialized)

@@ -112,7 +112,16 @@ func TestX86SignedIntegerFloatUnknownUpperResultThreeAPIs(t *testing.T) {
 					}
 					body += op + " " + args + "\nMOVQ " + destination + ",ret+RESULT(FP)"
 					source := x86ResultGPSIMDAdmissionSource(t, arch, declaration, body)
-					x86ResultGPSIMDAdmissionAPIs(t, arch, source, declaration, known)
+					if arch == "amd64" && !known {
+						for _, api := range []string{"text", "module", "Go"} {
+							t.Run(api, func(t *testing.T) {
+								ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, "x86_64-unknown-linux-gnu", api)
+								x86VectorScratchCodegenControl(t, source, declaration, arch, "x86_64-unknown-linux-gnu", ir, err)
+							})
+						}
+					} else {
+						x86ResultGPSIMDAdmissionAPIs(t, arch, source, declaration, known)
+					}
 				})
 			}
 		}

@@ -88,7 +88,16 @@ func TestX86PackedStringPlainIndexNoProbeRequiresWholeSource(t *testing.T) {
 					}
 					// No extra GP/X move or BSF probe can hide a missed cost gate.
 					source := x86ResultGPSIMDAdmissionSource(t, arch, declaration, body)
-					x86ResultGPSIMDAdmissionAPIs(t, arch, source, declaration, known)
+					if arch == "amd64" && !known && !strings.Contains(op, "ESTR") {
+						for _, api := range []string{"text", "module", "Go"} {
+							t.Run(api, func(t *testing.T) {
+								ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, "x86_64-unknown-linux-gnu", api)
+								x86VectorScratchCodegenControl(t, source, declaration, arch, "x86_64-unknown-linux-gnu", ir, err)
+							})
+						}
+					} else {
+						x86ResultGPSIMDAdmissionAPIs(t, arch, source, declaration, known)
+					}
 				})
 			}
 		}
@@ -123,7 +132,16 @@ func TestX86PackedStringWholeFamilyThreeAPIsStatusAndMask(t *testing.T) {
 					body += "SETCS BL\nMOVBLZX BL,BX\nADDL BX,AX\nMOVL AX,ret+RESULT(FP)"
 					declaration := "func view() uint32\n"
 					source := x86ResultGPSIMDAdmissionSource(t, arch, declaration, body)
-					x86ResultGPSIMDAdmissionAPIs(t, arch, source, declaration, missing == "none" || !row.explicit && (missing == "AX" || missing == "DX"))
+					if arch == "amd64" && (missing == "source" || missing == "left") {
+						for _, api := range []string{"text", "module", "Go"} {
+							t.Run(api, func(t *testing.T) {
+								ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, "x86_64-unknown-linux-gnu", api)
+								x86VectorScratchCodegenControl(t, source, declaration, arch, "x86_64-unknown-linux-gnu", ir, err)
+							})
+						}
+					} else {
+						x86ResultGPSIMDAdmissionAPIs(t, arch, source, declaration, missing == "none" || !row.explicit && (missing == "AX" || missing == "DX"))
+					}
 				})
 			}
 		}

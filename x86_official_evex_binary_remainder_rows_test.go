@@ -1,7 +1,6 @@
 package plan9asm
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -126,9 +125,7 @@ func TestX86OfficialEVEXBinaryZeroingCannotSupplyNumericalOldDestination(t *test
 						t.Fatal("initialized numerical old-destination control rejected", err)
 					}
 					ir, err = x86ScalarFPBitViewAPI(t, missing, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatal("zeroing borrowed the absent numerical old destination", err)
-					}
+					x86VectorScratchCodegenControl(t, missing, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 				})
 			}
 		})

@@ -100,7 +100,9 @@ func TestX86FMA3AArch64AdmissionAndIndependentAddressSources(t *testing.T) {
 				for _, missing := range []string{"MOVQ q+0(FP),AX\n", "PXOR X1,X1\n", "PXOR X2,X2\n"} {
 					changed := strings.Replace(memory, missing, "", 1)
 					ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, "amd64", triple, api)
-					if !x86FMA3PortableAccessContext(t, ir, err, instruction) {
+					if missing == "PXOR X1,X1\n" || missing == "PXOR X2,X2\n" {
+						x86VectorScratchCodegenControl(t, changed, declaration, "amd64", triple, ir, err)
+					} else if !x86FMA3PortableAccessContext(t, ir, err, instruction) {
 						t.Fatal("dead FMA borrowed a missing actual pointer/arithmetic input", missing)
 					}
 				}

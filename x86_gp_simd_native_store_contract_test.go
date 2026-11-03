@@ -132,7 +132,9 @@ func TestX86GPSIMDNativeStoreVoidCannotInventInputs(t *testing.T) {
 					x86LEAActualTargetGoObject(t, arch, triple, source)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" {
+							x86VectorScratchCodegenControl(t, source, declaration, arch, triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("Void or unused bool invented the stored vector bytes", api, err)
 						}
 					}

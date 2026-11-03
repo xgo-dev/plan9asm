@@ -204,6 +204,8 @@ func TestX86LegacyAlternatingRoundMemoryRequiresActualInputs(t *testing.T) {
 							if err != nil || ir == "" {
 								t.Fatal("complete manual Ptr inputs rejected", api, err)
 							}
+						} else if arch == "amd64" && change == "missing-old" {
+							x86VectorScratchCodegenControl(t, source, declaration, arch, triple, ir, err)
 						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("missing address/old input borrowed implementation bytes", api, err)
 						}

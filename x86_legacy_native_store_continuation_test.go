@@ -44,7 +44,10 @@ func TestX86LegacyNativeStoreCompletePairedNumericalFamily(t *testing.T) {
 				} {
 					t.Run(name, func(t *testing.T) {
 						for _, api := range []string{"text", "module", "Go"} {
-							if ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, target.arch, target.triple, api); !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+							ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, target.arch, target.triple, api)
+							if target.arch == "amd64" && name == "unknown-data" {
+								x86VectorScratchCodegenControl(t, changed, declaration, target.arch, target.triple, ir, err)
+							} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 								t.Fatal("legacy native store borrowed data/address authority", api, err)
 							}
 						}

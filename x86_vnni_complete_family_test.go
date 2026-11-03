@@ -207,7 +207,9 @@ func TestX86VNNIIntegerVoidAndMissingNativeInputs(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(fmt.Sprintf("%s/%s/unused=%t/%s", arch, member.op, unused, api), func(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && unused {
+							x86VectorScratchCodegenControl(t, source, declaration, arch, triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("Void or unused bool supplied missing dot-product sources/accumulator", ir != "", err)
 						}
 					})

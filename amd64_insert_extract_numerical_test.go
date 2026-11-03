@@ -1,7 +1,6 @@
 package plan9asm
 
 import (
-	"errors"
 	"fmt"
 	"go/types"
 	"strings"
@@ -210,9 +209,7 @@ func TestX86LegacyInsertCannotInventObservedUpperBytes(t *testing.T) {
 		for _, api := range []string{"text", "module", "Go"} {
 			t.Run(target.triple+"/"+api, func(t *testing.T) {
 				ir, err := x86ScalarFPBitViewAPI(t, source, "func fault(out,input *byte)", "amd64", target.triple, api)
-				if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
-					t.Fatal("legacy X zeroing manufactured initialized Y/Z aliases", err)
-				}
+				x86VectorScratchCodegenControl(t, source, "func fault(out,input *byte)", "amd64", target.triple, ir, err)
 			})
 		}
 	}

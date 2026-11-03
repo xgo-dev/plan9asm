@@ -209,7 +209,9 @@ func TestX86FMA3DoesNotInventInputsOrPhysicalAuthority(t *testing.T) {
 							t.Fatal("independent missing-input control did not change source", missing, row)
 						}
 						ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, arch, triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && (missing == "first" || missing == "second" || missing == "old destination") {
+							x86VectorScratchCodegenControl(t, changed, declaration, arch, triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("FMA acquired an absent numerical, address, mask or FLAGS fact", row, missing, err)
 						}
 					}

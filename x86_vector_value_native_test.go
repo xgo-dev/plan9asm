@@ -144,6 +144,8 @@ func TestX86VectorValueNativeMissingInputsStayContext(t *testing.T) {
 						x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
 						x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
 						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if name == "unknown-vector" || name == "unknown-merge" {
+						x86VectorScratchCodegenControl(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("native result invented a pointer, index, mask, merge or vector", name, api, err)
 					}

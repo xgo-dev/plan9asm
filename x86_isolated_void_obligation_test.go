@@ -59,7 +59,9 @@ func x86CheckIsolatedVoidSamples(t *testing.T, arch string, samples []x86Isolate
 									t.Fatal("Go-rejected byte-SP syntax became a source-context or accepted program", err)
 								}
 							} else if sample.context {
-								if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+								if arch == "amd64" && strings.HasSuffix(sample.name, "_memory/missing-right") && !strings.Contains(sample.name, "_raw_") {
+									x86VectorScratchCodegenControl(t, sample.source, sample.declaration, arch, target, ir, err)
+								} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("isolated Void instruction acquired absent input or storage authority", err)
 								}
 							} else if strings.HasSuffix(sample.name, "/numeric-pointer") {

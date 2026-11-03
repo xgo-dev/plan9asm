@@ -219,6 +219,8 @@ func TestX86LegacyScalarNativeStorePublicInputsAndFramePermissions(t *testing.T)
 							if err != nil || ir == "" {
 								t.Fatal("actual typed scalar store lost incoming pointer/source/FLAGS", api, err)
 							}
+						} else if arch == "amd64" && control.name == "partial-source" {
+							x86VectorScratchCodegenControl(t, control.source, control.declaration, arch, triple, ir, err)
 						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("scalar native store borrowed missing numerical/FLAGS/frame authority", api, err)
 						}

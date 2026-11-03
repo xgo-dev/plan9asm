@@ -88,7 +88,9 @@ func TestX86ResultCompareExchangePrefixAndAuthorityBoundaries(t *testing.T) {
 					}
 					source = strings.Replace(source, row.from, row.to, 1)
 					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
-					if err == nil || ir != "" {
+					if arch == "amd64" && row.name == "undefined-vector-result" {
+						x86VectorScratchCodegenControl(t, source, declaration, arch, triple, ir, err)
+					} else if err == nil || ir != "" {
 						t.Fatal("unproved prefix/result/native role was published", row.name, err)
 					}
 				})

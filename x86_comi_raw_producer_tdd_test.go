@@ -296,7 +296,9 @@ func TestX86COMIRawNativeProducerCannotInventMissingInputs(t *testing.T) {
 			t.Run(row.name, func(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, row.source, row.declaration, arch, x86AddressMemoryTargets(arch)[0], api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					if arch == "amd64" && strings.Contains(row.name, "/raw=false/whole-upper-bytes") {
+						x86VectorScratchCodegenControl(t, row.source, row.declaration, arch, x86AddressMemoryTargets(arch)[0], ir, err)
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("COMI continuation supplied an absent reaching input", api, err)
 					}
 				}

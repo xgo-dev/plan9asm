@@ -82,6 +82,8 @@ func TestX86VNNIIntegerNativeInputsCannotBorrowMemoryOrFlags(t *testing.T) {
 									x86RequireSameNativeMemoryEffects(t, pointerIR, ir)
 									x86NumericNativeAddressObject(t, ir, testTargetTriple("linux", arch))
 								}
+							} else if arch == "amd64" && (control == "old" || control == "second" || control == "first" && input == "register") {
+								x86VectorScratchCodegenControl(t, changed, declaration, arch, testTargetTriple("linux", arch), ir, err)
 							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("integer-dot borrowed absent accumulator/mask/source/FLAGS/address permission", api, err)
 							}

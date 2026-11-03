@@ -276,7 +276,9 @@ func TestX86LegacyIntegerMinMaxDeadNativeInputsAndOriginalAccess(t *testing.T) {
 							x86NumericNativeAddressObject(t, output, triple)
 							continue
 						}
-						if output != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && mutation.name == "old-destination" {
+							x86VectorScratchCodegenControl(t, changed, "func Read(input *byte)", arch, triple, output, err)
+						} else if output != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("dead native min/max invented an old input/address", mutation.name, err)
 						}
 					}

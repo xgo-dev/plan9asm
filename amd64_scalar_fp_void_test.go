@@ -102,6 +102,10 @@ func TestX86ScalarFPBitViewsVoidUnknownInputsRemainContext(t *testing.T) {
 				}
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, source, fixture.declaration, target.arch, target.triple, api)
+					if target.arch == "amd64" && (fixture.name == "unknown-merge" || fixture.name == "partial-lane" || fixture.name == "branch-only") {
+						x86VectorScratchCodegenControl(t, source, fixture.declaration, target.arch, target.triple, ir, err)
+						continue
+					}
 					if fixture.name == "native-address" {
 						if err != nil || !strings.Contains(ir, "load volatile i32,") {
 							t.Fatal("complete numerical address lost its fault-preserving scalar read", api, err)

@@ -75,7 +75,10 @@ func TestX86PackedPrecisionInitializedPublicInputsCannotBorrowOtherRoles(t *test
 							if changed == source {
 								t.Fatal("source/input mutation did not apply", name)
 							}
-							if ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, arch, triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+							ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, arch, triple, api)
+							if arch == "amd64" && name == "source vector" {
+								x86VectorScratchCodegenControl(t, changed, declaration, arch, triple, ir, err)
+							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("packed precision borrowed undeclared/native/pointer authority", name, err)
 							}
 						}

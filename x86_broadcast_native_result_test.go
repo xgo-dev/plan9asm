@@ -134,7 +134,9 @@ func TestX86BroadcastPairedNativeReadKeepsSourceAndQueryBoundaries(t *testing.T)
 				changed := strings.Replace(source, missing, "", 1)
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, arch, triple, api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					if arch == "amd64" && missing == "VPXORD Z2,Z2,Z2\n" {
+						x86VectorScratchCodegenControl(t, changed, declaration, arch, triple, ir, err)
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("broadcast invented a missing native input", arch, row, missing, api, err)
 					}
 				}

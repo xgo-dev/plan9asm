@@ -166,7 +166,9 @@ func TestX86EVEXPackedMoveMissingInputDoesNotBorrowVoid(t *testing.T) {
 					x86LEAActualTargetGoObject(t, arch, triple, source)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, source, "func Move(p *[80]byte)", arch, triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && missing == "source" {
+							x86VectorScratchCodegenControl(t, source, "func Move(p *[80]byte)", arch, triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("missing actual EVEX move input acquired a value/address", api, err)
 						}
 					}

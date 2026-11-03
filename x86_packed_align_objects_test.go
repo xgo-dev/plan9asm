@@ -122,7 +122,9 @@ func TestX86PackedAlignDeadUnknownIsNotObservableNumericalData(t *testing.T) {
 						x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
 						for _, api := range []string{"text", "module", "Go"} {
 							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
-							if want && (err != nil || ir == "") || !want && (ir != "" || !errors.Is(err, ErrProbeNeedsContext)) {
+							if target.arch == "amd64" && role == "result" && !want {
+								x86VectorScratchCodegenControl(t, source, declaration, target.arch, target.triple, ir, err)
+							} else if want && (err != nil || ir == "") || !want && (ir != "" || !errors.Is(err, ErrProbeNeedsContext)) {
 								t.Fatal("unknown dead data was rejected or became observable NUM/address/mask data", want, api, err)
 							}
 						}

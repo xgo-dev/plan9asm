@@ -58,11 +58,13 @@ RET
 `
 		goAssemblerOracleOutput(t, "amd64", source, "", true)
 		for _, api := range []string{"text", "module", "Go"} {
-			_, err := x86ScalarFPBitViewAPI(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
+			ir, err := x86ScalarFPBitViewAPI(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
 			if otherBranch == "VZEROUPPER" && err != nil {
 				t.Fatal("both-path upper initialization lost", api, err)
 			}
-			if otherBranch == "NOP" && !errors.Is(err, ErrProbeNeedsContext) {
+			if otherBranch == "NOP" {
+				x86VectorScratchCodegenControl(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+			} else if otherBranch == "NOP" && !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("source-wide top or one predecessor defined the missing upper bytes", api, err)
 			}
 		}
@@ -245,7 +247,9 @@ RET
 						if initialized && err != nil {
 							t.Errorf("%s lost independently initialized upper bytes: %v", api, err)
 						}
-						if !initialized && !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && !initialized {
+							x86VectorScratchCodegenControl(t, source, "func view(a uint32) uint32\n", arch, triple, ir, err)
+						} else if !initialized && !errors.Is(err, ErrProbeNeedsContext) {
 							t.Errorf("%s promoted unknown upper bytes through register transport: %v", api, err)
 						}
 						if initialized && err == nil {

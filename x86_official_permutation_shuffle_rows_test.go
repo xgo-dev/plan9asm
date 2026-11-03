@@ -59,7 +59,9 @@ func TestX86PermutationShuffleInputsAndZeroingStayIndependent(t *testing.T) {
 						t.Fatal("missing-input negative did not change its source", seed)
 					}
 					ir, err := x86ScalarFPBitViewAPI(t, changed, declarations, "amd64", "x86_64-unknown-linux-gnu", api)
-					if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					if !strings.HasPrefix(seed, "KMOV") {
+						x86VectorScratchCodegenControl(t, changed, declarations, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatal("missing source/control/mask/merge input gained authority", witness.Instruction, api, seed, err)
 					}
 				}

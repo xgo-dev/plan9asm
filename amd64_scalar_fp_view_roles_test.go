@@ -19,7 +19,7 @@ func TestX86ScalarFPBitViewsNewParameterReadsRequireWholeSourceFacts(t *testing.
 		// Go's four-operand masked register rows are AMD64-only. Keep
 		// their original mode32 rejection separate from numerical Context.
 		reject386 := fixture.name != "unknown-low" && fixture.name != "branch-only-low"
-		x86ScalarFPViewContextFixture(t, fixture, reject386, false)
+		x86ScalarFPViewContextFixture(t, fixture, reject386, !reject386)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestX86ScalarFPBitViewsHighBankFactsIntersectAllPaths(t *testing.T) {
 		{name: "branch-only-high", declaration: "func view(x uint64) uint64\n", body: "MOVL $1,AX\nKMOVD AX,K1\nCMPL AX,$0\nJE joined\nVMOVSD.Z x+0(FP),K1,X31\njoined:\nVMOVSD X31,ret+8(FP)"},
 		{name: "unknown-upper-fullX", declaration: "func view(x uint64) uint32\n", body: "MOVSS x+0(FP),X1\nVMOVSS X1,X31,X31\nVADDPS X31,X31,X31\nVMOVSS X31,ret+8(FP)"},
 	} {
-		x86ScalarFPInitializationContextFixture(t, fixture)
+		x86ScalarFPInitializationContextFixture(t, fixture, fixture.name != "unknown-high-mask")
 	}
 	left, right := x86ResultState{}, x86ResultState{}
 	for index := range left.xmm {

@@ -1,7 +1,6 @@
 package plan9asm
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -88,9 +87,7 @@ func TestX86OfficialFloatBinaryMergeAndZeroingInputs(t *testing.T) {
 								t.Fatal("missing-input control did not remove its initialization", load)
 							}
 							ir, err := x86ScalarFPBitViewAPI(t, negative, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-							if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-								t.Fatal("ordinary floating arithmetic borrowed an absent input or merge destination", load, err)
-							}
+							x86VectorScratchCodegenControl(t, negative, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 						}
 					})
 				}

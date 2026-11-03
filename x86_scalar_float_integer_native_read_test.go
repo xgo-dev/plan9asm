@@ -153,7 +153,9 @@ func TestX86ScalarFloatIntegerPairedReadRequiresIndependentInputs(t *testing.T) 
 					t.Run(api, func(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, item.source, item.decl, arch, triple, api)
 						positive := item.variant == "index" || item.variant == "initialized-vector" || item.variant == "numeric-pointer"
-						if positive && err != nil || !positive && !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && item.variant == "missing-vector" {
+							x86VectorScratchCodegenControl(t, item.source, item.decl, arch, triple, ir, err)
+						} else if positive && err != nil || !positive && !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("native input/pointer role mismatch", positive, err)
 						}
 						if item.variant == "numeric-pointer" {

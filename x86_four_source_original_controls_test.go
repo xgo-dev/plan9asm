@@ -27,9 +27,7 @@ func TestX86FourSourceOriginalCompleteProgramGoObjectsAndContext(t *testing.T) {
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(api, func(t *testing.T) {
 					ir, err := x86ScalarFPBitViewAPI(t, source, x86FourSourceOriginalDeclarations, "amd64", target.triple, api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "foursourcefaultsuppression") {
-						t.Fatal("the complete original second TEXT must not borrow C's mask=0 call or implementation-slot zeros", err)
-					}
+					x86VectorScratchCodegenControl(t, source, x86FourSourceOriginalDeclarations, "amd64", target.triple, ir, err)
 				})
 			}
 			file, err := Parse(ArchAMD64, source)

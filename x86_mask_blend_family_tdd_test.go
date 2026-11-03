@@ -18,7 +18,9 @@ func TestX86MaskBlendVoidAndUnusedBoolNeverSupplyInputs(t *testing.T) {
 			source := fmt.Sprintf("TEXT ·Missing(SB),4,$0-%d\n%s\nRET\n", extent, row)
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				if unusedBool && !strings.Contains(row, "(") && !strings.Contains(row, ",K") {
+					x86VectorScratchCodegenControl(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+				} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("Void or unused bool supplied unbound blend inputs", row, unusedBool, api, err)
 				}
 			}

@@ -84,6 +84,10 @@ func TestX86PackedReductionVoidRetainsMeaningfulInputsAndNativeBoundaries(t *tes
 						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 						continue
 					}
+					if strings.HasPrefix(name, "missing-") {
+						x86VectorScratchCodegenControl(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+						continue
+					}
 					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Error("Void invented a meaningful arithmetic input or native storage permission", api, err)
 					}

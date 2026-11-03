@@ -35,7 +35,7 @@ func TestX86ScalarFPBitViewsMaskedParameterLoadsRequireDefinedInputs(t *testing.
 					declaration: fmt.Sprintf("func view(x uint64) uint%d\n", bits),
 					body:        before + fmt.Sprintf("V%s%s x+0(FP),K1,X7\n%s X7,ret+8(FP)", op, suffix, op),
 				}
-				x86ScalarFPInitializationContextFixture(t, fixture)
+				x86ScalarFPInitializationContextFixture(t, fixture, name == "unknown merge" || name == "partial merge")
 			}
 		}
 	}
@@ -50,11 +50,11 @@ func TestX86ScalarFPBitViewsWholeNumericStoresRequireDefinedSource(t *testing.T)
 		{name: "partial-register", declaration: "func view(x uint64) uint64\n", body: "MOVSS x+0(FP),X1\nMOVSS X1,X7\nVMOVSD X7,ret+8(FP)"},
 		{name: "branch-only-register", declaration: "func view(x uint64) uint32\n", body: "MOVL $1,AX\nCMPL AX,$0\nJE joined\nMOVSS x+0(FP),X7\njoined:\nMOVSS X7,ret+8(FP)"},
 	} {
-		x86ScalarFPInitializationContextFixture(t, fixture)
+		x86ScalarFPInitializationContextFixture(t, fixture, true)
 	}
 }
 
-func x86ScalarFPInitializationContextFixture(t *testing.T, fixture x86ScalarFPBitFixture) {
+func x86ScalarFPInitializationContextFixture(t *testing.T, fixture x86ScalarFPBitFixture, ordinaryScratch ...bool) {
 	t.Helper()
 	for _, target := range x86RawReturnTargets {
 		t.Run(fixture.name+"/"+target.triple, func(t *testing.T) {
@@ -62,7 +62,7 @@ func x86ScalarFPInitializationContextFixture(t *testing.T, fixture x86ScalarFPBi
 			x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, fixture.declaration, target.arch, target.triple, api)
-				if target.arch == "amd64" && (fixture.name == "Y-unmodeled-wide" || fixture.name == "Z-unmodeled-wide") {
+				if target.arch == "amd64" && (fixture.name == "Y-unmodeled-wide" || fixture.name == "Z-unmodeled-wide" || len(ordinaryScratch) == 1 && ordinaryScratch[0]) {
 					x86VectorScratchCodegenControl(t, source, fixture.declaration, target.arch, target.triple, ir, err)
 					continue
 				}

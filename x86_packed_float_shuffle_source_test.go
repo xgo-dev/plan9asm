@@ -331,6 +331,8 @@ func TestX86PackedFloatShuffleMissingNativeInputsAndDeadAccess(t *testing.T) {
 							}
 							x86RequireNumericNativeSourceContext(t, changed, "func Read(input *byte,mask uint64)", "amd64")
 							x86NumericNativeAddressObject(t, output, "x86_64-unknown-linux-gnu")
+						} else if mutation.name == "register-source" || mutation.name == "old-destination" {
+							x86VectorScratchCodegenControl(t, changed, "func Read(input *byte,mask uint64)", "amd64", "x86_64-unknown-linux-gnu", output, err)
 						} else if output != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("dead shuffle acquired an absent pointer/index/mask", mutation.name, err)
 						}
@@ -362,7 +364,9 @@ func TestX86PackedFloatShuffleMissingSelectedBytesCannotReachStore(t *testing.T)
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(fmt.Sprintf("%s/%s/seed=%q/%s", arch, row.op, seed, api), func(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, source, "func Missing(out *byte)", arch, testTargetTriple("linux", arch), api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" {
+							x86VectorScratchCodegenControl(t, source, "func Missing(out *byte)", arch, testTargetTriple("linux", arch), ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("a missing selected source byte reached an observable store", err)
 						}
 					})

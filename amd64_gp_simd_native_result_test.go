@@ -118,6 +118,10 @@ func TestX86GPSIMDNativeResultsRetainSourceBoundaries(t *testing.T) {
 							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 							continue
 						}
+						if name == "unknown store data" || name == "missing path" {
+							x86VectorScratchCodegenControl(t, bad, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+							continue
+						}
 						if !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("unproved native transfer boundary accepted", api, err)
 						}

@@ -68,6 +68,8 @@ func TestX86LegacyPackedRegisterMoveSelectedByteThreeAPIs(t *testing.T) {
 								if err != nil || ir == "" {
 									t.Fatal("selected byte lost after a legacy register copy", err)
 								}
+							} else if arch == "amd64" {
+								x86VectorScratchCodegenControl(t, source, "func view(c byte) uint32\n", arch, triple, ir, err)
 							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("unknown adjacent source byte became observable", err)
 							}

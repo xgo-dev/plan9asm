@@ -129,7 +129,10 @@ func TestX86ImmediateShuffleNativeReadDoesNotInventInputsOrQueryRights(t *testin
 		source, declarations, _ := x86ImmediateShuffleNativePrograms("amd64")
 		changed := strings.ReplaceAll(source, mutation.before, mutation.after)
 		for _, api := range []string{"text", "module", "Go"} {
-			if ir, err := x86ScalarFPBitViewAPI(t, changed, declarations, "amd64", "x86_64-unknown-linux-gnu", api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+			ir, err := x86ScalarFPBitViewAPI(t, changed, declarations, "amd64", "x86_64-unknown-linux-gnu", api)
+			if mutation.before == "VXORPS X1,X1,X1\n" {
+				x86VectorScratchCodegenControl(t, changed, declarations, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+			} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("merge shuffle invented actual mask/old-destination bytes", api, err)
 			}
 		}

@@ -401,7 +401,10 @@ func TestX86LegacyMediaRemainderInitializedInputsRemainRequired(t *testing.T) {
 			}
 			source = strings.Replace(source, item.removed, "", 1)
 			for _, api := range []string{"text", "module", "Go"} {
-				if ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+				if item.operation != "PADDB M0,M1" {
+					x86VectorScratchCodegenControl(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+				} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("source transport supplied missing NUM/old bytes or MMX state", api, err)
 				}
 			}

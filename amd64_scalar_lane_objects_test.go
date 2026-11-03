@@ -106,15 +106,23 @@ func TestX86ScalarLaneMode32HighBanksAndNamedQKeepContext(t *testing.T) {
 }
 
 func TestX86ScalarLaneFPDoesNotGrantPointerPaddingOrPartialResults(t *testing.T) {
-	for _, tc := range []struct{ decl, body string }{
-		{"func view(k *byte) uint32\n", "PINSRB $0,k+0(FP),X0\nMOVL X0,ret+8(FP)\n"},
-		{"func view(a byte,b uint32) uint32\n", "PINSRW $0,hole+1(FP),X0\nMOVL X0,ret+8(FP)\n"},
-		{"func view(k uint64) uint64\n", "MOVQ k+0(FP),X0\nPEXTRB $0,X0,ret+8(FP)\n"},
-		{"func view(k uint32) uint32\n", "PINSRD $1,k+0(FP),X0\nPEXTRD $0,X0,AX\nMOVL AX,ret+8(FP)\n"},
-		{"func view(k uint32) uint32\n", "PINSRD $0,BX,X0\nMOVL k+0(FP),AX\nMOVL AX,ret+8(FP)\n"},
+	for _, tc := range []struct {
+		decl, body      string
+		ordinaryCodegen bool
+	}{
+		{"func view(k *byte) uint32\n", "PINSRB $0,k+0(FP),X0\nMOVL X0,ret+8(FP)\n", false},
+		{"func view(a byte,b uint32) uint32\n", "PINSRW $0,hole+1(FP),X0\nMOVL X0,ret+8(FP)\n", false},
+		{"func view(k uint64) uint64\n", "MOVQ k+0(FP),X0\nPEXTRB $0,X0,ret+8(FP)\n", false},
+		{"func view(k uint32) uint32\n", "PINSRD $1,k+0(FP),X0\nPEXTRD $0,X0,AX\nMOVL AX,ret+8(FP)\n", true},
+		{"func view(k uint32) uint32\n", "PINSRD $0,BX,X0\nMOVL k+0(FP),AX\nMOVL AX,ret+8(FP)\n", false},
 	} {
 		for _, api := range []string{"text", "module", "Go"} {
-			ir, err := x86ScalarFPBitViewAPI(t, "TEXT ·view(SB),4,$0-24\n"+tc.body+"RET\n", tc.decl, "amd64", "x86_64-unknown-linux-gnu", api)
+			source := "TEXT ·view(SB),4,$0-24\n" + tc.body + "RET\n"
+			ir, err := x86ScalarFPBitViewAPI(t, source, tc.decl, "amd64", "x86_64-unknown-linux-gnu", api)
+			if tc.ordinaryCodegen {
+				x86VectorScratchCodegenControl(t, source, tc.decl, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+				continue
+			}
 			if err == nil || ir != "" {
 				t.Fatalf("unproved FP/mixed/unused input acquired initialization: %s %v", api, err)
 			}

@@ -52,7 +52,9 @@ func TestX86MultiplyAddVoidCannotInventInputs(t *testing.T) {
 					source := fmt.Sprintf("TEXT ·Value(SB),4,$0-%d\n%s\nRET\n", extent, row)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && unused && !strings.Contains(row, "(") && !strings.Contains(row, ",K") {
+							x86VectorScratchCodegenControl(t, source, declaration, arch, triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("Void or unused bool supplied absent vector, address or mask inputs", api, err)
 						}
 					}

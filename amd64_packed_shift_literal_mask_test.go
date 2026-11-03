@@ -97,9 +97,8 @@ func TestX86PackedShiftLiteralMaskKeepsUnknownBits(t *testing.T) {
 				t.Run(row.shift+"/"+row.bank+"/"+mutation.name+"/"+api, func(t *testing.T) {
 					ir, err := x86ScalarFPBitViewAPI(t, source, "func view(input *byte) uint32\n",
 						"amd64", "x86_64-unknown-linux-gnu", api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatalf("unknown source bits became defined: output=%t err=%v", ir != "", err)
-					}
+					x86VectorScratchCodegenControl(t, source, "func view(input *byte) uint32\n",
+						"amd64", "x86_64-unknown-linux-gnu", ir, err)
 				})
 			}
 		}
@@ -121,7 +120,10 @@ func TestX86PackedShiftLiteralMaskKeepsSourceAndMemoryBoundaries(t *testing.T) {
 			{"unknown-native-base", strings.Replace(source, "MOVQ input+0(FP),SI\n", "", 1)},
 			{"unknown-selected-byte", strings.Replace(source, "PINSRB $0,(SI),X0\n", "", 1)},
 			{"unknown-index", strings.Replace(source, "(SI),X0", "(SI)(CX*1),X0", 1)},
+			// The original mutation first renames GLOBL, leaving the DATA
+			// and the actual read at mask<>. Keep that source/case intact.
 			{"unknown-literal", strings.Replace(source, " mask<>(SB),", " external(SB),", 1)},
+			{"unbound-read-symbol", strings.Replace(source, maskLine, logical+" external(SB),", 1)},
 			{"mutable-mask", strings.Replace(source, "GLOBL mask<>(SB),8,", "GLOBL mask<>(SB),0,", 1)},
 			{"short-literal", strings.Replace(source, maskLine, logical+" mask<>+1(SB),", 1)},
 			{"intervening-nop", strings.Replace(source, maskLine, "NOP\n"+maskLine, 1)},
@@ -132,6 +134,22 @@ func TestX86PackedShiftLiteralMaskKeepsSourceAndMemoryBoundaries(t *testing.T) {
 				t.Run(row.shift+"/"+row.bank+"/"+mutation.name+"/"+api, func(t *testing.T) {
 					ir, err := x86ScalarFPBitViewAPI(t, mutation.source, "func view(input *byte) uint32\n",
 						"amd64", "x86_64-unknown-linux-gnu", api)
+					if mutation.name == "unbound-read-symbol" {
+						prefix, _, _ := strings.Cut(source, "TEXT ")
+						changedPrefix, _, _ := strings.Cut(mutation.source, "TEXT ")
+						if prefix != changedPrefix || strings.Count(mutation.source, logical+" external(SB),") != 1 {
+							t.Fatal("unbound read must change exactly the instruction, not DATA/GLOBL")
+						}
+					}
+					switch mutation.name {
+					case "unknown-literal", "mutable-mask":
+						x86ShiftMutableMaskCodegenControl(t, mutation.source, row.width, api, ir, err)
+						return
+					case "unknown-selected-byte", "intervening-nop", "intervening-other-register", "intervening-branch":
+						x86VectorScratchCodegenControl(t, mutation.source, "func view(input *byte) uint32\n",
+							"amd64", "x86_64-unknown-linux-gnu", ir, err)
+						return
+					}
 					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatalf("missing source/readonly/address role was manufactured: output=%t err=%v", ir != "", err)
 					}
@@ -139,4 +157,57 @@ func TestX86PackedShiftLiteralMaskKeepsSourceAndMemoryBoundaries(t *testing.T) {
 			}
 		}
 	}
+}
+
+// An actual read of complete mutable DATA is separate from a literal that may
+// eliminate an input dependency. Keep native effects through O2; an unwritten
+// private object's ordinary load may be folded by the optimizer.
+func x86ShiftMutableMaskCodegenControl(t *testing.T, source string, width int, api, ir string, codegenErr error) {
+	t.Helper()
+	const declaration = "func view(input *byte) uint32\n"
+	const triple = "x86_64-unknown-linux-gnu"
+	x86VectorScratchCodegenControl(t, source, declaration, "amd64", triple, ir, codegenErr)
+
+	file, err := Parse(ArchAMD64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve := testResolveSym("scratch")
+	values := x86LoweredStaticAddressValues(file, resolve, nil, "amd64")
+	literals := x86LoweredShiftLiterals(file, resolve, values, "amd64")
+	if literal := literals[x86StaticSBAddress{symbol: "mask<>"}]; literal.width != 0 {
+		t.Fatal("mutable or undeclared GLOBL acquired immutable mask bytes")
+	}
+
+	const load = "MOVQ input+0(FP),SI\n"
+	if strings.Count(source, load) != 1 {
+		t.Fatal("the native-read control lost its one input initialization")
+	}
+	initialized := strings.Replace(source, load, "VPXORD Z0,Z0,Z0\nVPXORD Z1,Z1,Z1\n"+load, 1)
+	before, err := x86ScalarFPBitViewAPI(t, initialized, declaration, "amd64", triple, api)
+	if err != nil || before == "" {
+		t.Fatal("explicit-vector native-read control failed", err)
+	}
+	wantGlobal := fmt.Sprintf("@mask = internal global [%d x i8] c\"%s\"", width, strings.Repeat("\\0F", width))
+	if !strings.Contains(ir, wantGlobal) {
+		t.Fatal("the read mask lost its complete mutable DATA initializer", width)
+	}
+	legacyRead := strings.Contains(ir, "asm sideeffect \"pand (")
+	if legacyRead {
+		if width != 16 || !strings.Contains(ir, "~{memory}") {
+			t.Fatal("legacy mask lost its original m128 PAND")
+		}
+	} else if strings.Count(ir, fmt.Sprintf("load <%d x i8>, ptr @mask, align 1", width)) != 1 {
+		t.Fatal("the owned mask lost its complete ordinary read", width)
+	}
+	if x86NumericNativeVolatileReadBytes(t, ir) != 1 {
+		t.Fatal("the independent PINSRB byte read was lost")
+	}
+	x86RequireSameNativeMemoryEffects(t, before, ir)
+	optimized := x86DwordProductIROptimize(t, ir)
+	if x86NumericNativeVolatileReadBytes(t, optimized) != 1 {
+		t.Fatal("optimization lost the independent PINSRB byte read")
+	}
+	x86RequireSameNativeMemoryEffects(t, before, optimized)
+	x86NumericNativeAddressObject(t, optimized, triple)
 }

@@ -86,8 +86,12 @@ func TestX86PackedConversionResultAndStorageBoundaries(t *testing.T) {
 			}
 			assembly := fmt.Sprintf("TEXT ·f(SB),4,$0-4\n%s%s %s0,%s1\nPEXTRD $0,X1,AX\nMOVL AX,ret+0(FP)\nRET\n", setup, spec.name, bank[shape.source], bank[shape.destination])
 			for _, api := range []string{"text", "module", "Go"} {
-				_, err := x86ScalarFPBitViewAPI(t, assembly, "func f() uint32", "amd64", "x86_64-unknown-linux-gnu", api)
-				if initialized && err != nil || !initialized && !errors.Is(err, ErrProbeNeedsContext) {
+				ir, err := x86ScalarFPBitViewAPI(t, assembly, "func f() uint32", "amd64", "x86_64-unknown-linux-gnu", api)
+				if !initialized {
+					x86VectorScratchCodegenControl(t, assembly, "func f() uint32", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					continue
+				}
+				if err != nil {
 					t.Fatal("uninitialized conversion result boundary", spec.name, initialized, api, err)
 				}
 			}

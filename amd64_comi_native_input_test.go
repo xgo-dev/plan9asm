@@ -110,6 +110,10 @@ func TestX86COMINativeInputCannotSupplyOtherRoles(t *testing.T) {
 							x86NumericNativeAddressObject(t, ir, triple)
 							continue
 						}
+						if arch == "amd64" && row.name == "vector-input" {
+							x86VectorScratchCodegenControl(t, source, "var external [8]byte\nfunc view(p *byte) uintptr\n", arch, triple, ir, err)
+							continue
+						}
 						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("native comparison supplied missing input or storage authority", api, err)
 						}

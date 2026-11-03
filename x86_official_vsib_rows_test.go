@@ -109,7 +109,16 @@ func TestX86VSIBInitializedSourceRequiresActualInputs(t *testing.T) {
 						t.Fatal("input mutation does not own one exact initializer", removed)
 					}
 					changed := strings.Replace(source, removed, "", 1)
-					if _, err := x86ScalarFPBitViewAPI(t, changed, declarations, "amd64", "x86_64-unknown-linux-gnu", api); err == nil {
+					ir, err := x86ScalarFPBitViewAPI(t, changed, declarations, "amd64", "x86_64-unknown-linux-gnu", api)
+					switch removed {
+					case "VPXOR Y0,Y0,Y0\n", "VPXOR Y1,Y1,Y1\nVPCMPEQD Y1,Y1,Y1\n", "VPXORD Z16,Z16,Z16\n", "VMOVUPS (BX),Z18\n":
+						// VSIB indices and VEX masks are vector values. Their
+						// allocated scratch choice supplies neither the GP base
+						// nor an EVEX K mask, which remain negative controls.
+						x86VectorScratchCodegenControl(t, changed, declarations, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+						continue
+					}
+					if err == nil {
 						t.Fatal("missing actual indexed-memory input was accepted", api, removed)
 					}
 				}

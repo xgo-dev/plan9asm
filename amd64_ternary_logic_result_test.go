@@ -23,8 +23,12 @@ func TestX86TernaryResultWholeCFGAndUnknownInputs(t *testing.T) {
 		source := "TEXT ·view(SB),4,$0-4\n" + fixture.row + "\nPEXTRD $0,X2,AX\nMOVL AX,ret+0(FP)\nRET\n"
 		goAssemblerOracleOutput(t, "amd64", source, "", true)
 		for _, api := range []string{"text", "module", "Go"} {
-			_, err := x86ScalarFPBitViewAPI(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
-			if fixture.pass && err != nil || !fixture.pass && !errors.Is(err, ErrProbeNeedsContext) {
+			ir, err := x86ScalarFPBitViewAPI(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
+			if !fixture.pass {
+				x86VectorScratchCodegenControl(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+				continue
+			}
+			if err != nil {
 				t.Fatal(fixture.row, api, err)
 			}
 		}
@@ -46,8 +50,12 @@ RET
 `
 		goAssemblerOracleOutput(t, "amd64", source, "", true)
 		for _, api := range []string{"text", "module", "Go"} {
-			_, err := x86ScalarFPBitViewAPI(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
-			if other == "NOP" && !errors.Is(err, ErrProbeNeedsContext) || other != "NOP" && err != nil {
+			ir, err := x86ScalarFPBitViewAPI(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
+			if other == "NOP" {
+				x86VectorScratchCodegenControl(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+				continue
+			}
+			if err != nil {
 				t.Fatal("CFG joined an unknown predecessor as initialized", api, err)
 			}
 		}

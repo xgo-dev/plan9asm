@@ -182,7 +182,9 @@ func TestX86IntegerTestMaskUnknownInputsDoNotBorrowCompareIdentities(t *testing.
 				"KMOVQ K0,AX\nMOVQ AX,ret+8(FP)\nRET\n"
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, "func UnknownTestMask(p *[64]byte) uint64\n", "amd64", "x86_64-unknown-linux-gnu", api)
-				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				if change != "write mask" {
+					x86VectorScratchCodegenControl(t, source, "func UnknownTestMask(p *[64]byte) uint64\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+				} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("test-to-mask invented numerical inputs or used an EQ/GT identity", op, change, api, err)
 				}
 			}

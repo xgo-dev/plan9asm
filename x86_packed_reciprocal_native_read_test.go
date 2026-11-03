@@ -267,7 +267,10 @@ func TestX86PackedReciprocalTypedInputsAndInitializedPublicSources(t *testing.T)
 						if negative == source {
 							t.Fatal("missing-input control lost its actual source")
 						}
-						if ir, err := x86ScalarFPBitViewAPI(t, negative, declaration, "amd64", "x86_64-unknown-linux-gnu", api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						ir, err := x86ScalarFPBitViewAPI(t, negative, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+						if !memory {
+							x86VectorScratchCodegenControl(t, negative, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("packed estimate supplied an observed numerical source or native address", err)
 						}
 					})

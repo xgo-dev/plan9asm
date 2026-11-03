@@ -181,6 +181,11 @@ func TestGoModuleOrdinaryGlobalVectorReadRetainsAuthorityBoundaries(t *testing.T
 				source := "TEXT ·view(SB),4,$0-4\n" + test.prefix + test.instruction +
 					"\nPEXTRD $0,X0,AX\nMOVL AX,ret+0(FP)\nRET\n"
 				ir, err := ordinaryGlobalReadRequest(t, pkg, []byte(source), "amd64", "x86_64-unknown-linux-gnu", api)
+				switch test.name {
+				case "unknown-register", "unknown-AES-state", "unknown-merge":
+					x86VectorScratchCodegenPackageControl(t, source, pkg, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					return
+				}
 				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("a numerical-global read lent another authority or missing input", ir != "", err)
 				}

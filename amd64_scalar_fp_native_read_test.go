@@ -142,6 +142,17 @@ func TestX86LoweredScalarResultNativeReadBoundaries(t *testing.T) {
 						}
 						continue
 					}
+					if arch == "amd64" && (name == "unknown lane" || name == "unknown store data" || name == "missing path") {
+						x86VectorScratchCodegenControl(t, source, "func view(p *[16]byte) uint32\n", arch, triple, ir, err)
+						accesses := 1
+						if name == "unknown store data" {
+							accesses = 2
+						}
+						if strings.Count(ir, "asm sideeffect \"movdqu ") != accesses || strings.Count(ir, "~{memory}") < accesses {
+							t.Fatal("scratch choice lost the original m128 MOVOU accesses", api)
+						}
+						continue
+					}
 					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatalf("%s borrowed native/result authority: %v", api, err)
 					}

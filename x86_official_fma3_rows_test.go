@@ -1,7 +1,6 @@
 package plan9asm
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -115,9 +114,7 @@ func TestX86OfficialFMA3ZeroingStillRequiresOldDestination(t *testing.T) {
 						t.Fatal("independently initialized zeroing FMA3 lost its positive continuation", err)
 					}
 					ir, err = x86ScalarFPBitViewAPI(t, missing, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-						t.Fatal("zeroing supplied the missing FMA3 arithmetic destination", err)
-					}
+					x86VectorScratchCodegenControl(t, missing, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 				})
 			}
 		})

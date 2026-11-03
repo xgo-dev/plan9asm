@@ -155,7 +155,10 @@ func TestX86DuplicateMoveDeadVoidRetainsInputAndMaskObligations(t *testing.T) {
 							}
 							source := fmt.Sprintf("TEXT ·Value(SB),4,$0-%d\n%s%s %s0,%s%s2\nRET\n", extent, setup, row.name, bank, mask, bank)
 							for _, api := range []string{"text", "module", "Go"} {
-								if ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+								ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+								if target.arch == "amd64" && unused && control != "mask" {
+									x86VectorScratchCodegenControl(t, source, declaration, target.arch, target.triple, ir, err)
+								} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("dead duplicate operation borrowed unknown data/mask/merge bytes", api, err)
 								}
 							}

@@ -181,6 +181,8 @@ func TestX86OwnedPackedArithmeticRetainsAuthorityBoundaries(t *testing.T) {
 						t.Fatal("numerical base lost the original m128 PADDD access", api, err)
 					}
 					x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+				} else if change.name == "unknown vector" {
+					x86VectorScratchCodegenControl(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 				} else if err == nil || ir != "" {
 					t.Fatal("owned DATA arithmetic borrowed a different input/extent/origin contract", api, err)
 				}

@@ -192,6 +192,10 @@ func TestX86PackedZeroExtendNativeResultsKeepWholeSourceBoundaries(t *testing.T)
 							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 							continue
 						}
+						if mutation == "missing path" {
+							x86VectorScratchCodegenControl(t, source, "func Value(p *[32]byte) uint32", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+							continue
+						}
 						if !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("widening result borrowed another source contract", mutation, api, err)
 						}

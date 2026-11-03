@@ -54,6 +54,8 @@ func TestX86PairedNativeFamiliesRetainIndependentInputs(t *testing.T) {
 							x86RequireSameNativeMemoryEffects(t, originalIR, ir)
 							x86RequireNumericNativeSourceContext(t, changed, "func Value(p *byte)", arch)
 							x86NumericNativeAddressObject(t, ir, triple)
+						} else if arch == "amd64" && name == "unknown-vector" {
+							x86VectorScratchCodegenControl(t, changed, "func Value(p *byte)", arch, triple, ir, err)
 						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Error("native continuation invented an independent input", api, name, err)
 						}

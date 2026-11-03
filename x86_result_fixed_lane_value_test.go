@@ -139,7 +139,10 @@ func TestX86FixedLaneValueResultInputsStayIndependent(t *testing.T) {
 					t.Run(member.name+"/"+bank+"/"+mode+"/"+omit, func(t *testing.T) {
 						goAssemblerOracleOutput(t, "amd64", body, "", true)
 						for _, api := range []string{"text", "module", "Go"} {
-							if _, err := x86ScalarFPBitViewAPI(t, body, "func Value() uint32", "amd64", "x86_64-unknown-linux-gnu", api); !errors.Is(err, ErrProbeNeedsContext) {
+							ir, err := x86ScalarFPBitViewAPI(t, body, "func Value() uint32", "amd64", "x86_64-unknown-linux-gnu", api)
+							if omit == "Z0" || omit == "Z1" || omit == "Z2" {
+								x86VectorScratchCodegenControl(t, body, "func Value() uint32", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+							} else if !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("value family acquired an unknown input/result", api, err)
 							}
 						}

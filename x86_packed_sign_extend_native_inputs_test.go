@@ -77,7 +77,9 @@ func TestX86PackedSignExtendE5DeadReadsAndActualNativeInputs(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, row.source, declaration, arch, triple, api)
 					if row.missing != "none" {
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && row.missing == "old" {
+							x86VectorScratchCodegenControl(t, row.source, declaration, arch, triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("dead/E5 widening invented a pointer/index/mask/observed merge input", api, err)
 						}
 						continue

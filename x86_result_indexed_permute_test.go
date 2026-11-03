@@ -141,7 +141,10 @@ func TestX86IndexedPermuteResultInputsStayIndependent(t *testing.T) {
 					t.Run(arch+"/"+op+"/"+bank+"/"+missing, func(t *testing.T) {
 						goAssemblerOracleOutput(t, arch, source, "", true)
 						for _, api := range []string{"text", "module", "Go"} {
-							if _, err := x86ScalarFPBitViewAPI(t, source, "func Value() uint32", arch, triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+							ir, err := x86ScalarFPBitViewAPI(t, source, "func Value() uint32", arch, triple, api)
+							if arch == "amd64" && missing != "result" {
+								x86VectorScratchCodegenControl(t, source, "func Value() uint32", arch, triple, ir, err)
+							} else if !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("indexed-permute acquired an unknown input/result", api, err)
 							}
 						}

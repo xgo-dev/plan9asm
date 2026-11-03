@@ -295,7 +295,12 @@ func TestX86PackedMoveResultSourceBoundaries(t *testing.T) {
 			for name, body := range bodies {
 				source := fmt.Sprintf("TEXT ·view(SB),4,$0-%d\n%sPEXTRD $0,X1,CX\nMOVL CX,ret+%d(FP)\nRET\n", word+4, body, word)
 				for _, api := range []string{"text", "module", "Go"} {
-					if _, err := x86ScalarFPBitViewAPI(t, source, "func view(p *[64]byte) uint32\n", arch, triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+					ir, err := x86ScalarFPBitViewAPI(t, source, "func view(p *[64]byte) uint32\n", arch, triple, api)
+					if arch == "amd64" && (name == "unknown store source" || name == "unknown path" || name == "undefined merge") {
+						x86VectorScratchCodegenControl(t, source, "func view(p *[64]byte) uint32\n", arch, triple, ir, err)
+						continue
+					}
+					if !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("source closure or incoming identity bypass", arch, row.name, name, api, err)
 					}
 				}

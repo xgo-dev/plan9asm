@@ -1,7 +1,6 @@
 package plan9asm
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -157,10 +156,10 @@ RET
 `
 	x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", original)
 	for _, api := range []string{"text", "module", "Go"} {
-		if ir, err := x86ScalarFPBitViewAPI(t, original,
-			"func zero_mask(source,out *byte,mask uint64)", "amd64", triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-			t.Fatal("original unbound input/merging destination acquired numerical bytes", api, err)
-		}
+		ir, err := x86ScalarFPBitViewAPI(t, original,
+			"func zero_mask(source,out *byte,mask uint64)", "amd64", triple, api)
+		x86VectorScratchCodegenControl(t, original, "func zero_mask(source,out *byte,mask uint64)",
+			"amd64", triple, ir, err)
 	}
 	// Keep the original source above. This separate initialized program owns
 	// the actual masked-off NULL read, not an invented incoming Y0/Y1 value.

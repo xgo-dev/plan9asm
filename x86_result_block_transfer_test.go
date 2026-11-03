@@ -105,13 +105,15 @@ RET
 `, otherBranch, selection)
 			goAssemblerOracleOutput(t, "amd64", source, "", true)
 			for _, api := range []string{"text", "module", "Go"} {
-				_, err := x86ScalarFPBitViewAPI(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
+				ir, err := x86ScalarFPBitViewAPI(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
 				accepted := otherBranch == "VZEROUPPER" || selection == 0
 				if accepted && err != nil {
 					// Unknown unselected source bytes are not dependencies.
 					t.Fatal("selected initialized chunk lost", api, otherBranch, selection, err)
 				}
-				if !accepted && !errors.Is(err, ErrProbeNeedsContext) {
+				if !accepted {
+					x86VectorScratchCodegenControl(t, source, "func view(a uint32) uint32\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+				} else if !accepted && !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("one predecessor or shape state defined the selected chunk", api, otherBranch, selection, err)
 				}
 			}

@@ -143,7 +143,9 @@ func TestX86Reciprocal14InitializedAndMissingInputsThreeAPIs(t *testing.T) {
 							t.Fatal("undefined-input control did not remove its source", input)
 						}
 						ir, err = x86ScalarFPBitViewAPI(t, negative, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if !strings.HasPrefix(input, "KMOV") {
+							x86VectorScratchCodegenControl(t, negative, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("reciprocal14 borrowed an absent numerical/upper/mask input", input, err)
 						}
 					}

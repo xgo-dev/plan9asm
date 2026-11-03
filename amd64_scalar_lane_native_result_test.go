@@ -217,6 +217,11 @@ func TestX86ScalarLaneNativeResultsKeepWholeSourceBoundaries(t *testing.T) {
 							}
 							x86RequireNumericNativeSourceContext(t, bad, decl, "amd64")
 							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+						} else if name == "unknown lane" || name == "missing path" {
+							x86VectorScratchCodegenControl(t, bad, decl, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+							if x86NumericNativeVolatileReadBytes(t, ir) != row.width {
+								t.Fatal("scratch insertion changed its original native read width", api)
+							}
 						} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 							t.Fatal("native insertion widened another source contract", api, err)
 						}

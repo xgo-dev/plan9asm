@@ -312,7 +312,9 @@ func TestX86ScalarPrecisionInitializedInputRevocationsAndZeroing(t *testing.T) {
 						}
 						return
 					}
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					if mutation.name == "copied-upper" || mutation.name == "old-destination" || mutation.name == "active-input" && row.source == "register" {
+						x86VectorScratchCodegenControl(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("complete initialized conversion borrowed a revoked active/upper/mask/old/native input", mutation.name, err)
 					}
 				})

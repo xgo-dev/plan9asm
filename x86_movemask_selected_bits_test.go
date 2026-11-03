@@ -69,7 +69,9 @@ func TestX86MoveMaskSelectedOutputBitsThreeAPIs(t *testing.T) {
 					for _, api := range []string{"text", "module", "Go"} {
 						t.Run(api, func(t *testing.T) {
 							ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(value uint8) uint32", arch, triple, api)
-							if control.pass && (err != nil || ir == "") || !control.pass && (!errors.Is(err, ErrProbeNeedsContext) || ir != "") {
+							if arch == "amd64" && !control.pass && control.name != "overwritten-result" && control.name != "and-does-not-define-AF" {
+								x86VectorScratchCodegenControl(t, source, "func Value(value uint8) uint32", arch, triple, ir, err)
+							} else if control.pass && (err != nil || ir == "") || !control.pass && (!errors.Is(err, ErrProbeNeedsContext) || ir != "") {
 								t.Fatal("adjacent observation invented or lost numerical bits", err)
 							}
 						})

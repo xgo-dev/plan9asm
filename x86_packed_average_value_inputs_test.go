@@ -221,6 +221,8 @@ func x86FixedBinaryNativeInputBoundaries(t *testing.T, inventory func(string) []
 						}
 						x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
 						x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
+					} else if name == "unknown-vector" || name == "unknown-destination" {
+						x86VectorScratchCodegenControl(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 					} else if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 						t.Fatal("average acquired unknown memory/vector/mask inputs", api, err)
 					}

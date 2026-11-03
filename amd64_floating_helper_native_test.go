@@ -77,8 +77,12 @@ func TestX86FloatingHelperVoidAndUnusedBoolCannotSupplyInputs(t *testing.T) {
 			source := fmt.Sprintf("TEXT ·Missing(SB),4,$0-%d\n%s\nRET\n", extent, instruction)
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+				if unusedBool {
+					x86VectorScratchCodegenControl(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					continue
+				}
 				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-					t.Fatal("Void or unused bool invented missing floating inputs", member.name, unusedBool, api, err)
+					t.Fatal("empty Void invented missing floating inputs", member.name, unusedBool, api, err)
 				}
 			}
 		}

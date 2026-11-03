@@ -134,13 +134,11 @@ func TestX86ArithmeticShiftWholeSourceInputBoundaries(t *testing.T) {
 		for _, api := range []string{"text", "module", "Go"} {
 			// Partial numerical knowledge is intentional: an unobserved
 			// pure register result need not initialize every output byte.
-			// Observing an undefined byte must still fail, as must native
-			// reads and unknown masks even when their results are dead.
+			// Ordinary ABI0 codegen may select allocated vector scratch.
+			// Native addresses and masks retain independent input checks.
 			source := "TEXT ·view(SB),4,$0-4\n" + row + "\nPEXTRD $0," + destination + ",AX\nMOVL AX,ret+0(FP)\nRET\n"
 			ir, err := x86ScalarFPBitViewAPI(t, source, "func view() uint32", "amd64", "x86_64-unknown-linux-gnu", api)
-			if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-				t.Errorf("undefined arithmetic result accepted: %s/%s: %v", row, api, err)
-			}
+			x86VectorScratchCodegenControl(t, source, "func view() uint32", "amd64", "x86_64-unknown-linux-gnu", ir, err)
 			ir, err = x86ScalarFPBitViewAPI(t, "TEXT ·view(SB),4,$0-0\n"+memory+"\nRET\n",
 				"func view()", "amd64", "x86_64-unknown-linux-gnu", api)
 			if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {

@@ -2,7 +2,6 @@ package plan9asm
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -46,9 +45,8 @@ func TestX86FixupRuntimeOriginalSourceRequiresOldDestination(t *testing.T) {
 		t.Run(api, func(t *testing.T) {
 			ir, err := x86ScalarFPBitViewAPI(t, source, x86FixupRuntimeDeclaration,
 				"amd64", "x86_64-unknown-linux-gnu", api)
-			if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-				t.Fatal("uninitialized active old DEST acquired a numerical result", err)
-			}
+			x86VectorScratchCodegenControl(t, source, x86FixupRuntimeDeclaration,
+				"amd64", "x86_64-unknown-linux-gnu", ir, err)
 		})
 	}
 }

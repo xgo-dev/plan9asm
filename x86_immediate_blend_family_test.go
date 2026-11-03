@@ -371,6 +371,8 @@ func TestX86ImmediateBlendSelectedRegisterInputsCannotBeInvented(t *testing.T) {
 							if err != nil || ir == "" {
 								t.Fatal("complete explicit numerical source producers rejected", api, err)
 							}
+						} else if arch == "amd64" {
+							x86VectorScratchCodegenControl(t, source.String(), "func Value(out *[32]byte)", arch, triple, ir, err)
 						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("a selected source or legacy old-destination byte became numerical without its producer", api, missing, err)
 						}

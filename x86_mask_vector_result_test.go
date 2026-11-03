@@ -175,7 +175,9 @@ func TestX86MaskVectorVoidInputsCannotBorrowImplementationZeros(t *testing.T) {
 					x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if target.arch == "amd64" && unusedBool && !strings.HasPrefix(row, "VPMOVM2") {
+							x86VectorScratchCodegenControl(t, source, declaration, target.arch, target.triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Error("missing source mask/vector data became initialized private zeros", api, err)
 						}
 					}

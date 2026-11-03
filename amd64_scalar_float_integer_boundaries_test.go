@@ -150,7 +150,11 @@ func TestX86ScalarFloatIntegerWholeFileTargetAndResultBoundaries(t *testing.T) {
 					setup = "XORPS X0,X0\n"
 				}
 				source := "TEXT ·view(SB),4,$0-4\n" + setup + name + " X0,AX\nMOVL AX,X1\nPEXTRD $0,X1,AX\nMOVL AX,ret+0(FP)\nRET\n"
-				_, err := x86ScalarFPBitViewAPI(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
+				ir, err := x86ScalarFPBitViewAPI(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
+				if !initialized {
+					x86VectorScratchCodegenControl(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					continue
+				}
 				if initialized && err != nil || !initialized && !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("result initialization boundary", name, api, initialized, err)
 				}

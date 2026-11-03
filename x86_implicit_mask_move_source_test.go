@@ -159,7 +159,9 @@ func TestX86ImplicitMaskMoveUnknownInputsRemainContext(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(arch+"/"+op+"/"+name+"/"+api, func(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, arch, testTargetTriple("linux", arch), api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && op != "MASKMOVQ" && (name == "mask" || name == "data") {
+							x86VectorScratchCodegenControl(t, changed, declaration, arch, testTargetTriple("linux", arch), ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("implicit store invented source bytes or its DI destination", err)
 						}
 					})

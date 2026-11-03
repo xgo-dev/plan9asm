@@ -105,6 +105,8 @@ func TestX86Permute128NativeInputsAndAddressRoles(t *testing.T) {
 								x86RequireNumericNativeSourceContext(t, changed, declaration, "amd64")
 								x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 							}
+						} else if control == "second" || control == "first" && !memory {
+							x86VectorScratchCodegenControl(t, changed, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("permute128 borrowed absent source/address/FLAGS/frame authority", api, err)
 						}

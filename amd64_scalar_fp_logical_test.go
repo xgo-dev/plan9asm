@@ -239,6 +239,13 @@ func TestX86ScalarFPLogicalKeepsUnknownResultAndNativeMemoryBoundaries(t *testin
 			goAssemblerOracleOutput(t, "amd64", source, "", true)
 			for _, api := range []string{"text", "module", "Go"} {
 				ir, err := x86ScalarFPBitViewAPI(t, source, "func view() uint64\n", "amd64", "x86_64-unknown-linux-gnu", api)
+				if name == "unknown input" || name == "partial low qword" || name == "unknown merge" || name == "unknown wider bank" || name == "native pointer read" {
+					x86VectorScratchCodegenControl(t, source, "func view() uint64\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					if name == "native pointer read" && (!strings.Contains(ir, "call <4 x float> asm sideeffect \"pxor ($2), $0\"") || !strings.Contains(ir, "~{memory}")) {
+						t.Fatal("NUM address lost its original m128 PXOR read", api)
+					}
+					continue
+				}
 				if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 					t.Fatalf("%s acquired result or memory permission: %v\n%s", api, err, ir)
 				}

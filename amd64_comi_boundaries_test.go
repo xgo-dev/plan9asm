@@ -34,8 +34,12 @@ func TestX86COMIWholeFileNativeTargetAndDefinedFlags(t *testing.T) {
 					}
 				}
 				source := "TEXT ·view(SB),4,$0-4\n" + setup.String() + "XORL AX,AX\n" + name + " X0,X1\nSETEQ AL\nMOVL AX,X2\nPEXTRD $0,X2,AX\nMOVL AX,ret+0(FP)\nRET\n"
-				_, err := x86ScalarFPBitViewAPI(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
-				if missing == -1 && err != nil || missing != -1 && !errors.Is(err, ErrProbeNeedsContext) {
+				ir, err := x86ScalarFPBitViewAPI(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", api)
+				if missing != -1 {
+					x86VectorScratchCodegenControl(t, source, "func view() uint32\n", "amd64", "x86_64-unknown-linux-gnu", ir, err)
+					continue
+				}
+				if err != nil {
 					t.Fatal("undefined input acquired public result permission", name, api, missing, err)
 				}
 			}

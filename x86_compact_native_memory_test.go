@@ -105,7 +105,10 @@ func TestX86CompactNativeMemoryCannotInventSourceOrDestinationFacts(t *testing.T
 					t.Run(arch+"/"+op+"/"+bank+"/"+name, func(t *testing.T) {
 						goAssemblerOracleOutput(t, arch, source, "", true)
 						for _, api := range []string{"text", "module", "Go"} {
-							if _, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+							if arch == "amd64" && name == "unknown-source" {
+								x86VectorScratchCodegenControl(t, source, declaration, arch, triple, ir, err)
+							} else if !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("native compact sequence acquired an unknown input/result", api, err)
 							}
 						}

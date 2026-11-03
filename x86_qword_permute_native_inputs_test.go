@@ -160,6 +160,8 @@ func TestX86QwordPermuteVoidDeadAndZeroMaskNeedActualInputs(t *testing.T) {
 							x86RequireNumericNativeSourceContext(t, source, declaration, "amd64")
 							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 						}
+					} else if missing == "control" {
+						x86VectorScratchCodegenControl(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("Void/zero mask invented a missing actual native address/control/mask", api, missing, err)
 					}

@@ -217,7 +217,9 @@ func TestX86SingleSourceNarrowingMergeUsesOnlyActiveOldBytes(t *testing.T) {
 				source = strings.Replace(source, "MOVSS X3,X1\n", "", 1)
 			}
 			ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
-			if change == "valid" && err != nil || change != "valid" && (ir != "" || !errors.Is(err, ErrProbeNeedsContext)) {
+			if change != "valid" {
+				x86VectorScratchCodegenControl(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
+			} else if change == "valid" && err != nil || change != "valid" && (ir != "" || !errors.Is(err, ErrProbeNeedsContext)) {
 				t.Fatal("public API changed partial-byte admission", api, change, err)
 			}
 			if change == "valid" {

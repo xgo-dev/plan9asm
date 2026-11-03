@@ -143,7 +143,10 @@ func TestX86FloatingCompareVoidCannotInventInputs(t *testing.T) {
 							t.Fatal("initialized Void comparison lost its original native effect", api, err)
 						}
 						for role, missing := range map[string]string{"first source": changed, "both sources": both} {
-							if ir, err := x86ScalarFPBitViewAPI(t, missing, declaration, arch, triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+							ir, err := x86ScalarFPBitViewAPI(t, missing, declaration, arch, triple, api)
+							if arch == "amd64" && unusedBool {
+								x86VectorScratchCodegenControl(t, missing, declaration, arch, triple, ir, err)
+							} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 								t.Fatal("Void or unused bool supplied undefined comparison bytes", role, api, err)
 							}
 						}

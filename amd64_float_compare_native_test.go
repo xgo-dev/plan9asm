@@ -240,10 +240,15 @@ func TestX86FloatCompareNativeScalarFPIndependentByteFields(t *testing.T) {
 		source := strings.Replace(original, row+"\n", prefix+row+"\n", 1)
 		x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", source)
 		for _, api := range []string{"text", "module", "Go"} {
-			if ir, err := x86ScalarFPBitViewAPI(t, original, declaration, "amd64", "x86_64-unknown-linux-gnu", api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-				t.Fatal("original FP format invented its vector or mask input", opcode, api, err)
+			ir, err := x86ScalarFPBitViewAPI(t, original, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+			if strings.HasPrefix(opcode, "V") {
+				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("original FP format invented its mask input", opcode, api, err)
+				}
+			} else {
+				x86VectorScratchCodegenControl(t, original, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 			}
-			ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+			ir, err = x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
 			if err != nil {
 				t.Fatal(err)
 			}

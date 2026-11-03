@@ -399,7 +399,9 @@ func TestX86FourSourceMissingActualInputsRemainContext(t *testing.T) {
 							x86NumericNativeAddressObject(t, ir, triple)
 							continue
 						}
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && (strings.HasPrefix(missing, "source") || missing == "old") {
+							x86VectorScratchCodegenControl(t, source, declaration, arch, triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("actual aligned-block/old/mask/native-address input was manufactured", api, err)
 						}
 					}

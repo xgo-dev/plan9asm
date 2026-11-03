@@ -227,6 +227,8 @@ func TestX86InLanePermuteVoidReadsNeedActualInputs(t *testing.T) {
 									if err != nil || !strings.Contains(ir, "load volatile ") {
 										t.Fatal("dead native permute lost its exact observable input read", err)
 									}
+								} else if target.arch == "amd64" && missing == "data" {
+									x86VectorScratchCodegenControl(t, source, "func Value(p *[64]byte)", target.arch, target.triple, ir, err)
 								} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 									t.Fatal("Void invented a missing pointer/index/numerical input", err)
 								}

@@ -124,7 +124,9 @@ func TestX86SADUnknownVoidInputs(t *testing.T) {
 				for _, declaration := range []string{"func Value()", "func Value(unused bool)"} {
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, original, declaration, arch, triple, api)
-						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						if arch == "amd64" && declaration == "func Value(unused bool)" && !strings.Contains(instruction, ",K") {
+							x86VectorScratchCodegenControl(t, original, declaration, arch, triple, ir, err)
+						} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("dead SAD output invented input data", declaration, api, err)
 						}
 					}
@@ -264,6 +266,8 @@ func TestX86SADNativeInputsStayIndependent(t *testing.T) {
 							x86RequireNumericNativeSourceContext(t, variant.source, declaration, "amd64")
 							x86NumericNativeAddressObject(t, ir, "x86_64-unknown-linux-gnu")
 						}
+					} else if variant.name == "unknown-second" || variant.name == "unknown-merge" {
+						x86VectorScratchCodegenControl(t, variant.source, declaration, "amd64", "x86_64-unknown-linux-gnu", ir, err)
 					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("SAD acquired unknown memory/vector/mask inputs", api, err)
 					}

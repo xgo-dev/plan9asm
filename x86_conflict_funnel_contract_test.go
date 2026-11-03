@@ -205,7 +205,9 @@ func TestX86ConflictFunnelVoidAndUnusedBoolNeedActualInputs(t *testing.T) {
 				source := "TEXT ·Value(SB),4,$0\n" + instruction + "\nRET\n"
 				for _, api := range []string{"text", "module", "Go"} {
 					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
-					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					if target.arch == "amd64" && declaration == "func Value(unused bool)" {
+						x86VectorScratchCodegenControl(t, source, declaration, target.arch, target.triple, ir, err)
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 						t.Fatal("dead result silently acquired numerical input bytes", target, row.op, declaration, api, err)
 					}
 				}
