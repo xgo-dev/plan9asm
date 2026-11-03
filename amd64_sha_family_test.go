@@ -190,7 +190,7 @@ func TestGoAMD64FixedLocalSHACompleteFamily(t *testing.T) {
 			fn, sig, assembly := fixedLocalVEXFixture(t, operation)
 			if source == "(AX)" {
 				operand := 0
-				if family.name == "SHA1RNDS4" {
+				if family.name == "SHA1RNDS4" || family.name == "SHA256RNDS2" {
 					operand = 1
 				}
 				fixedLocalRequireNumericControl(t, fn, sig, assembly, "func Value(p *uint64,a uint64) uint64",
