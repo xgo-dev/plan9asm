@@ -111,20 +111,22 @@ func goAMD64FrameLocalCallTarget(r gostaticstorage.TextRelocation, texts []gosta
 }
 
 // Machine CALL fields must match the complete original source call order and
-// exact local object target. Generated split calls are outside this projection.
-func goAMD64FramePrivateCallPCs(fn goAMD64FrameFunction, original Func, text gostaticstorage.TextRecord,
-	leaves map[string]bool, names map[string]string) (map[int]bool, error) {
+// exact observed object target. Each caller supplies independently established
+// source roles; this association grants no private-leaf or ordinary-call ABI.
+// Generated split calls are outside this projection.
+func goAMD64FrameSourceCallPCs(fn goAMD64FrameFunction, original Func, text gostaticstorage.TextRecord,
+	allowed map[string]bool, names map[string]string) (map[int]bool, error) {
 	var targets []string
 	for _, ins := range original.Instrs {
 		if ins.Op != OpCALL {
 			continue
 		}
 		if len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
-			return nil, goAMD64FrameContext("original CALL lacks a direct leaf target")
+			return nil, goAMD64FrameContext("original CALL lacks a direct observed target")
 		}
 		name, offset, valid := parseSBRef(ins.Args[0].Sym)
-		if !valid || offset != 0 || !leaves[name] || names[name] == "" {
-			return nil, goAMD64FrameContext("original CALL target has no complete private leaf role")
+		if !valid || offset != 0 || !allowed[name] || names[name] == "" {
+			return nil, goAMD64FrameContext("original CALL target has no complete observed source role")
 		}
 		targets = append(targets, names[name])
 	}

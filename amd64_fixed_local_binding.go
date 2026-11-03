@@ -26,6 +26,7 @@ type x86FixedLocalBinding struct {
 	leaves         map[string]string // Original source symbol to observed native TEXT, never a signature.
 	symbols        map[string]string
 	declarations   map[string]goAMD64FrameDeclaration
+	callees        map[string]goAMD64FrameDeclaration // Independently typed Go bodies, not source TEXTs.
 	numericalReads *GoX86NumericalReadBinding
 	literalData    map[string]x86FixedLocalData
 	globals        map[string]goReadOnlyObject
@@ -64,6 +65,13 @@ func (source *GoAMD64FrameSource) BindFixedLocal(ctx context.Context, pkg GoPack
 	resolved := make(map[string]string, len(file.Funcs))
 	for _, fn := range file.Funcs {
 		resolved[fn.Sym] = options.ResolveSym(fn.Sym)
+		for _, ins := range fn.Instrs {
+			if ins.Op == OpCALL && len(ins.Args) == 1 && ins.Args[0].Kind == OpSym {
+				if name, offset, valid := parseSBRef(ins.Args[0].Sym); valid && offset == 0 {
+					resolved[name] = options.ResolveSym(name)
+				}
+			}
+		}
 	}
 	for _, global := range file.Globl {
 		if name, valid := fixedLocalDataSymbol(global.Sym); valid {
@@ -165,6 +173,10 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 	if err != nil {
 		return Options{}, err
 	}
+	callees, err := source.ordinaryCallDeclarations(pkg, actual)
+	if err != nil || !reflect.DeepEqual(callees, source.callees) {
+		return Options{}, errors.Join(goAMD64FrameContext("ordinary Go call declarations changed"), err)
+	}
 	binding := &x86FixedLocalBinding{
 		source:         source,
 		context:        lifetime,
@@ -177,6 +189,7 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 		leaves:         make(map[string]string),
 		symbols:        make(map[string]string),
 		declarations:   make(map[string]goAMD64FrameDeclaration),
+		callees:        callees,
 		numericalReads: options.NumericalReads,
 		globals:        globals,
 	}
@@ -208,6 +221,17 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 	if err != nil {
 		return Options{}, err
 	}
+	for name, declaration := range callees {
+		sig, supplied := options.Sigs[name]
+		symbol := "·" + strings.TrimPrefix(name, pkg.Path+".")
+		if !supplied || !reflect.DeepEqual(sig, declaration.signature) ||
+			resolve(symbol) != name && resolve(name) != name {
+			return Options{}, goAMD64FrameContext("ordinary Go callee signature or resolution changed: %s", name)
+		}
+		binding.signatures[name] = actualSignatures[name]
+		binding.declarations[name] = declaration
+		binding.symbols[symbol], binding.symbols[name] = name, name
+	}
 	leafSources := make(map[string]string)
 	for name, observed := range source.functions {
 		if observed.privateLeaf {
@@ -216,6 +240,19 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 	}
 	for _, fn := range actual.Funcs {
 		name := resolve(fn.Sym)
+		for _, ins := range fn.Instrs {
+			if ins.Op != OpCALL || len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
+				continue
+			}
+			symbol, _, _ := parseSBRef(ins.Args[0].Sym)
+			target := pkg.Path + "." + strings.TrimPrefix(symbol, "·")
+			if _, ordinary := callees[symbol]; ordinary {
+				target = symbol
+			}
+			if _, ordinary := callees[target]; ordinary && resolve(symbol) != target {
+				return Options{}, goAMD64FrameContext("ordinary Go callsite changed its exact target resolution")
+			}
+		}
 		if native, leaf := leafSources[fn.Sym]; leaf {
 			if _, supplied := options.Sigs[name]; supplied || name == "" {
 				return Options{}, goAMD64FrameContext("private leaf cannot acquire a supplied callable signature")
@@ -246,7 +283,7 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 		binding.symbols[fn.Sym] = name
 		options.Sigs[name] = sig
 	}
-	if len(options.Sigs)+len(binding.leaves) != len(actual.Funcs) {
+	if len(options.Sigs)+len(binding.leaves) != len(actual.Funcs)+len(callees) {
 		return Options{}, goAMD64FrameContext("fixed local complete entry/leaf signature inventory differs")
 	}
 	if len(binding.frames) == 0 {
@@ -377,6 +414,14 @@ func verifyX86FixedLocalBindings(file *File, options Options) ([]*x86FixedLocalB
 		}
 		for _, fn := range file.Funcs {
 			name := options.ResolveSym(fn.Sym)
+			for _, ins := range fn.Instrs {
+				if _, ordinary := fixedLocalOrdinaryCall(ins, binding); ordinary {
+					symbol, _, _ := parseSBRef(ins.Args[0].Sym)
+					if options.ResolveSym(symbol) != binding.symbols[symbol] {
+						return nil, goAMD64FrameContext("ordinary Go callsite consumer resolution changed")
+					}
+				}
+			}
 			if _, leaf := binding.leaves[fn.Sym]; leaf {
 				if _, supplied := options.Sigs[name]; supplied || name != binding.symbols[fn.Sym] {
 					return nil, goAMD64FrameContext("private leaf consumer changed its non-callable identity")
@@ -393,6 +438,11 @@ func verifyX86FixedLocalBindings(file *File, options Options) ([]*x86FixedLocalB
 			if !found || !declared || name != binding.symbols[fn.Sym] || !reflect.DeepEqual(actual, expected) ||
 				options.Sigs[name].x86FixedLocal != frame {
 				return nil, goAMD64FrameContext("fixed local consumer declaration or unique symbol binding changed")
+			}
+		}
+		for name := range binding.callees {
+			if actual, found := options.Sigs[name]; !found || !reflect.DeepEqual(actual, binding.signatures[name]) {
+				return nil, goAMD64FrameContext("ordinary Go callee consumer signature or identity changed")
 			}
 		}
 		for _, global := range file.Globl {
@@ -428,6 +478,13 @@ func (binding *x86FixedLocalBinding) verify() error {
 	}
 	for name, signature := range binding.signatures {
 		declaration, found := binding.declarations[name]
+		if callee, ordinary := binding.callees[name]; ordinary {
+			if !found || binding.frames[name] || !reflect.DeepEqual(callee, declaration) ||
+				!reflect.DeepEqual(callee, binding.source.callees[name]) || !reflect.DeepEqual(signature, callee.signature) {
+				return goAMD64FrameContext("ordinary Go callee source identity changed")
+			}
+			continue
+		}
 		if !found || !reflect.DeepEqual(signature, declaration.signature) ||
 			!binding.source.matchesFixedLocalDeclaration(name, declaration) ||
 			binding.frames[name] != (binding.source.functions[name].locals > 0) {

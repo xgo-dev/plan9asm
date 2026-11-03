@@ -195,6 +195,9 @@ func fixedLocalEffectPlan(fn Func, binding *x86FixedLocalBinding) (map[int]x86Ty
 		if fn.x86DirectTailRoot.privateCallTransition(index) {
 			continue // Complete private source graph owns only this control edge.
 		}
+		if _, ordinary := fixedLocalOrdinaryCall(ins, binding); ordinary {
+			continue // Exact outgoing layout and state are checked by the transfer.
+		}
 		if effect, known, err := fixedLocalVectorByteEffect(ins); known {
 			if err != nil {
 				return nil, err
@@ -997,6 +1000,9 @@ func fixedLocalStepWithGP(ins *Instr, state *x86FixedLocalState, sig FuncSig, pr
 	}
 	if ins.Op == OpTEXT {
 		return nil
+	}
+	if ins.Op == OpCALL {
+		return fixedLocalOrdinaryCallStep(*ins, state, proof)
 	}
 	if _, known, err := x86OrderingHintProperties(ins.Op, *ins, "amd64"); known {
 		return err // Exact native fences change no byte, pointer or FLAGS facts.

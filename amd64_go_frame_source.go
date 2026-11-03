@@ -63,6 +63,7 @@ type GoAMD64FrameSource struct {
 	ownedInfo          os.FileInfo
 	functions          map[string]goAMD64FrameFunction
 	declarations       map[string]goAMD64FrameDeclaration
+	callees            map[string]goAMD64FrameDeclaration // Actual selected Go bodies, never ASM entries or private leaves.
 	imports            map[string]goAMD64FrameSelection
 	origins            map[string]int
 	downloadedOrigin   *gooriginalsrc.OriginSet
@@ -333,6 +334,10 @@ func captureGoAMD64FrameSource(ctx context.Context, pkg GoPackage, request GoAMD
 		if err != nil || len(file.Funcs) == 0 || len(file.UnlinkedPrelude) != 0 {
 			return nil, goAMD64FrameContext("full original assembly lacks complete TEXT: %v", err)
 		}
+		source.callees, err = source.ordinaryCallDeclarations(pkg, file)
+		if err != nil {
+			return nil, err
+		}
 		object := filepath.Join(source.owned, name+".o")
 		assemblyInput := name
 		if source.numericalBinding != nil {
@@ -399,7 +404,7 @@ func captureGoAMD64FrameSource(ctx context.Context, pkg GoPackage, request GoAMD
 				unwind = &value
 			}
 			functions, err = goAMD64FrameListingWithDataObject(filtered, file, pkg, source.origins, observed, unwind,
-				source.request.Target, source.request.Directory, "")
+				source.request.Target, source.request.Directory, "", source.callees)
 			if err == nil {
 				err = goAMD64FrameDataTextJoin(functions, observed, source.request.Directory, source.origins, "")
 			}
@@ -997,6 +1002,12 @@ func (source *GoAMD64FrameSource) typedNumericalDeclarationsForArchRole(pkg GoPa
 func (source *GoAMD64FrameSource) typedDeclarationsForSourceRole(pkg GoPackage, numericOnly bool, arch string,
 	opaqueUnsafePointer bool, entries map[string]bool, floatingScalars bool, globals ...map[string]goReadOnlyObject,
 ) (map[string]goAMD64FrameDeclaration, error) {
+	return source.typedSourceDeclarations(pkg, numericOnly, arch, opaqueUnsafePointer, entries, floatingScalars, false, globals...)
+}
+
+func (source *GoAMD64FrameSource) typedSourceDeclarations(pkg GoPackage, numericOnly bool, arch string,
+	opaqueUnsafePointer bool, entries map[string]bool, floatingScalars, bodies bool, globals ...map[string]goReadOnlyObject,
+) (map[string]goAMD64FrameDeclaration, error) {
 	if len(globals) > 1 {
 		return nil, goAMD64FrameContext("ambiguous original Go variable inventory")
 	}
@@ -1004,6 +1015,10 @@ func (source *GoAMD64FrameSource) typedDeclarationsForSourceRole(pkg GoPackage, 
 	var syntax []*ast.File
 	var compiled []string
 	bodyless := make(map[string]bool)
+	var implemented map[string]bool
+	if bodies {
+		implemented = make(map[string]bool)
+	}
 	for _, name := range source.selection.GoFiles {
 		filename := filepath.Join(source.request.Directory, name)
 		data, err := source.read(filename)
@@ -1019,6 +1034,9 @@ func (source *GoAMD64FrameSource) typedDeclarationsForSourceRole(pkg GoPackage, 
 			case *ast.FuncDecl:
 				if declaration.Body == nil && declaration.Recv == nil {
 					bodyless[declaration.Name.Name] = true
+				}
+				if bodies && declaration.Body != nil && declaration.Recv == nil {
+					implemented[declaration.Name.Name] = true
 				}
 			case *ast.GenDecl:
 				if declaration.Tok != token.TYPE && declaration.Tok != token.IMPORT &&
@@ -1075,6 +1093,17 @@ func (source *GoAMD64FrameSource) typedDeclarationsForSourceRole(pkg GoPackage, 
 	if !reflect.DeepEqual(typed.Scope().Names(), pkg.Types.Scope().Names()) {
 		return nil, goAMD64FrameContext("actual selected declarations differ from supplied types")
 	}
+	if bodies {
+		names, err := numericalGoDeclarationLinknames(syntax, typed)
+		if err != nil {
+			return nil, err
+		}
+		for name := range entries {
+			if _, linked := names.localToNative[name]; linked {
+				return nil, goAMD64FrameContext("ordinary Go CALL requires its original unaliased implementation")
+			}
+		}
+	}
 	if len(globals) == 1 {
 		if err := joinFixedLocalGlobalDeclarations(typed, pkg.Types, syntax, sizes, globals[0]); err != nil {
 			return nil, err
@@ -1098,9 +1127,9 @@ func (source *GoAMD64FrameSource) typedDeclarationsForSourceRole(pkg GoPackage, 
 			// parameter/result is independently compared in full below.
 			continue
 		}
-		// Bodies and values are independently typechecked, but only original
-		// bodyless assembly declarations enter the frame observation table.
-		if !bodyless[name] {
+		// The default table contains only bodyless assembly declarations.
+		// A requested Go-body table is independently typed and kept separate.
+		if !bodies && !bodyless[name] || bodies && !implemented[name] {
 			continue
 		}
 		if entries != nil && !entries[name] {
@@ -1191,6 +1220,9 @@ func (source *GoAMD64FrameSource) typedDeclarationsForSourceRole(pkg GoPackage, 
 		declarations[actual.Name] = goAMD64FrameDeclaration{signature: actual, transport: role, languageType: language.String()}
 	}
 	if entries != nil && len(declarations) != len(entries) {
+		if bodies {
+			return nil, goAMD64FrameContext("original CALL needs its complete same-source leaf or selected Go body")
+		}
 		return nil, goAMD64FrameContext("complete selected ASM entry declaration inventory differs")
 	}
 	return declarations, nil
@@ -1493,7 +1525,8 @@ func goAMD64FrameListingWithObservations(listing []byte, file *File, pkg GoPacka
 }
 
 func goAMD64FrameListingWithDataObject(listing []byte, file *File, pkg GoPackage, origins map[string]int,
-	data *gostaticstorage.AMD64AssemblyData, unwind *gostaticstorage.WindowsAMD64AssemblyUnwind, target, directory, root string) (map[string]goAMD64FrameFunction, error) {
+	data *gostaticstorage.AMD64AssemblyData, unwind *gostaticstorage.WindowsAMD64AssemblyUnwind, target, directory, root string,
+	callees ...map[string]goAMD64FrameDeclaration) (map[string]goAMD64FrameFunction, error) {
 	if data == nil || unwind != nil && !reflect.DeepEqual(data.Member.Texts, unwind.Texts) {
 		return nil, goAMD64FrameContext("mixed DATA/Windows complete object TEXT observations differ")
 	}
@@ -1501,10 +1534,14 @@ func goAMD64FrameListingWithDataObject(listing []byte, file *File, pkg GoPackage
 	if err != nil {
 		return nil, err
 	}
-	return goAMD64FrameListingRecords(listing, file, pkg, origins, texts, unwind, data, target, directory, root)
+	return goAMD64FrameListingRecords(listing, file, pkg, origins, texts, unwind, data, target, directory, root, callees...)
 }
 
-func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origins map[string]int, texts []gostaticstorage.TextRecord, unwind *gostaticstorage.WindowsAMD64AssemblyUnwind, data *gostaticstorage.AMD64AssemblyData, splitTarget, splitDirectory, splitRoot string) (map[string]goAMD64FrameFunction, error) {
+func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origins map[string]int, texts []gostaticstorage.TextRecord, unwind *gostaticstorage.WindowsAMD64AssemblyUnwind, data *gostaticstorage.AMD64AssemblyData, splitTarget, splitDirectory, splitRoot string,
+	callees ...map[string]goAMD64FrameDeclaration) (map[string]goAMD64FrameFunction, error) {
+	if len(callees) > 1 {
+		return nil, goAMD64FrameContext("ambiguous ordinary Go call declarations")
+	}
 	leaves, err := goAMD64FramePrivateLeaves(file, pkg)
 	if err != nil {
 		return nil, err
@@ -1728,7 +1765,23 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 				return nil, goAMD64FrameContext("original TEXT args disagree with actual declaration")
 			}
 		}
-		if err := goAMD64FrameSourceInstructions(original, leaves); err != nil {
+		callTargets, callNames := leaves, names
+		if len(callees) == 1 && len(callees[0]) != 0 && original.FrameSize > 0 && !fn.privateLeaf {
+			callTargets = make(map[string]bool, len(leaves)+len(callees[0]))
+			for name := range leaves {
+				callTargets[name] = true
+			}
+			callNames = make(map[string]string, len(names)+len(callees[0]))
+			for name, target := range names {
+				callNames[name] = target
+			}
+			for name := range callees[0] {
+				symbol := "·" + strings.TrimPrefix(name, pkg.Path+".")
+				callTargets[symbol], callTargets[name] = true, true
+				callNames[symbol], callNames[name] = name, name
+			}
+		}
+		if err := goAMD64FrameSourceInstructions(original, callTargets); err != nil {
 			return nil, err
 		}
 		if original.FrameSize > 0 {
@@ -1740,7 +1793,7 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 				}
 				fn.prologue = shape.prologue
 			}
-			calls, err := goAMD64FramePrivateCallPCs(shape, original, objects[observed], leaves, names)
+			calls, err := goAMD64FrameSourceCallPCs(shape, original, objects[observed], callTargets, callNames)
 			if err != nil {
 				return nil, err
 			}
