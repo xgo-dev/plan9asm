@@ -53,11 +53,12 @@ func TestLoweredNumericalReadsDispatchBeforeNativeFamilies(t *testing.T) {
 			t.Fatal("a generic native role preceded authenticated source dispatch")
 		}
 		first = append(first, name.Name)
-		if len(first) == 2 {
+		if len(first) == 3 {
 			break
 		}
 	}
-	if len(first) != 2 || first[0] != "x86ResultSDKLiteralStep" || first[1] != "x86ResultNumericalReadStep" {
+	if len(first) != 3 || first[0] != "goFuncvalReadTransfer" ||
+		first[1] != "x86ResultSDKLiteralStep" || first[2] != "x86ResultNumericalReadStep" {
 		t.Fatal("native families shadow authenticated source consumers", first)
 	}
 }

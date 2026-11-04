@@ -9,7 +9,7 @@ import (
 )
 
 // This is an ordering invariant, not a mnemonic allowlist. A newly added
-// family cannot precede either complete-source owner, even when its own
+// family cannot precede any complete-source owner, even when its own
 // operand grammar would accept the same numerical bytes or native pointer.
 func TestX86ExistingSDKOwnersAreFirstNativeTransferConsumers(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "amd64_scalar_fp_native_read.go", nil, 0)
@@ -52,11 +52,13 @@ func TestX86ExistingSDKOwnersAreFirstNativeTransferConsumers(t *testing.T) {
 					t.Fatal("native transfer acquired an unmodeled owner/receiver")
 				}
 				consumers = append(consumers, callee.Name)
-				if len(consumers) == 2 {
+				if len(consumers) == 3 {
 					break
 				}
 			}
-			if !reflect.DeepEqual(consumers, []string{"x86ResultSDKLiteralStep", "x86ResultNumericalReadStep"}) {
+			if !reflect.DeepEqual(consumers, []string{
+				"goFuncvalReadTransfer", "x86ResultSDKLiteralStep", "x86ResultNumericalReadStep",
+			}) {
 				t.Fatal("native family preempted the complete original source owners", consumers)
 			}
 		}
