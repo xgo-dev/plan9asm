@@ -99,7 +99,9 @@ func observeAssemblyCPP(src string, opt AssemblyPreprocessOptions, retainOutput 
 }
 
 // These observation bounds do not enlarge any existing source, include,
-// recursion, output or corpus budget. Exhaustion is an error, never truncation.
+// recursion, output or corpus budget. The byte quota bounds retained token
+// strings and shared filename storage, not a serialized JSON encoding.
+// Exhaustion is an error, never truncation.
 const (
 	ppGoObservationEvents = 100000
 	ppGoObservationTokens = 1000000
@@ -110,6 +112,7 @@ const (
 type ppGoObservation struct {
 	result                     AssemblyCPPObservation
 	sources                    map[string]AssemblyCPPObservedSource
+	paths                      map[string]string
 	active, tokens, tokenBytes int
 	eventLimit                 int
 	positions                  *sdkCPPPositionObservation
@@ -121,12 +124,16 @@ func (observer *ppGoObservation) emitOutput(token ppGoToken, start, end int) err
 	if !observer.retainOutput {
 		return nil
 	}
-	if err := observer.chargeToken(len(token.text) + len(token.file)); err != nil {
+	file, err := observer.retainPath(token.file)
+	if err != nil {
+		return err
+	}
+	if err := observer.chargeToken(len(token.text)); err != nil {
 		return err
 	}
 	observer.outputTokens = append(observer.outputTokens, AssemblyCPPOutputToken{
 		Kind: token.kind, Text: token.text, Start: start, End: end,
-		Position:  AssemblyCPPObservedPosition{File: token.file, Line: token.line},
+		Position:  AssemblyCPPObservedPosition{File: file, Line: token.line},
 		Expansion: token.expansion, Include: token.includeEvent,
 	})
 	return nil
@@ -135,11 +142,16 @@ func (observer *ppGoObservation) emitOutput(token ppGoToken, start, end int) err
 func newPPGoObservation() *ppGoObservation {
 	return &ppGoObservation{
 		sources: make(map[string]AssemblyCPPObservedSource), active: -1,
+		paths:      make(map[string]string),
 		eventLimit: ppGoObservationEvents,
 	}
 }
 
 func (observer *ppGoObservation) source(file, source string) error {
+	file, err := observer.retainPath(file)
+	if err != nil {
+		return err
+	}
 	identity := AssemblyCPPObservedSource{
 		File: file, Bytes: len(source), SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(source))),
 	}
@@ -169,9 +181,13 @@ func (input *ppGoInput) beginObservation(kind string, origin ppGoToken) (int, er
 		return -1, input.errorf("CPP observation has overlapping raw-token captures")
 	}
 	index := len(observer.result.Events)
+	file, err := observer.retainPath(origin.file)
+	if err != nil {
+		return -1, err
+	}
 	observer.result.Events = append(observer.result.Events, AssemblyCPPEvent{
 		Ordinal: index + 1, Kind: kind, Expansion: origin.expansion, Include: origin.includeEvent,
-		Position:      AssemblyCPPObservedPosition{File: origin.file, Line: origin.line},
+		Position:      AssemblyCPPObservedPosition{File: file, Line: origin.line},
 		EnabledBefore: input.enabled(), DepthBefore: len(input.conditions),
 	})
 	observer.active = index
@@ -198,13 +214,17 @@ func (observer *ppGoObservation) capture(token ppGoToken) error {
 	if observer.active < 0 {
 		return nil
 	}
-	if err := observer.chargeToken(len(token.text) + len(token.value) + len(token.file)); err != nil {
+	file, err := observer.retainPath(token.file)
+	if err != nil {
+		return err
+	}
+	if err := observer.chargeToken(len(token.text) + len(token.value)); err != nil {
 		return err
 	}
 	event := &observer.result.Events[observer.active]
 	event.Tokens = append(event.Tokens, AssemblyCPPObservedToken{
 		Kind: token.kind, Text: token.text, RecordedValue: token.value,
-		Position: AssemblyCPPObservedPosition{File: token.file, Line: token.line},
+		Position: AssemblyCPPObservedPosition{File: file, Line: token.line},
 	})
 	return nil
 }
@@ -216,6 +236,21 @@ func (observer *ppGoObservation) chargeToken(bytes int) error {
 	observer.tokens++
 	observer.tokenBytes += bytes
 	return nil
+}
+
+// Reader and macro tokens share filenames. Keep one canonical string for each
+// exact name and charge its storage once, including logical SDK #line names.
+// This pool belongs only to the current observation and grants no source role.
+func (observer *ppGoObservation) retainPath(file string) (string, error) {
+	if previous, exists := observer.paths[file]; exists {
+		return previous, nil
+	}
+	if len(file) > ppGoObservationBytes-observer.tokenBytes {
+		return "", fmt.Errorf("CPP observation exceeds its explicit token/byte bound")
+	}
+	observer.tokenBytes += len(file)
+	observer.paths[file] = file
+	return file, nil
 }
 
 func ppGoCopyParameters(parameters []string) []string {

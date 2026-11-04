@@ -24,22 +24,36 @@ func TestGoX86SDKASMDataOriginalVendorPackageNamespace(t *testing.T) {
 	}
 	defer data.Close()
 	cpp, positions := data.observation.CPP[0], data.observation.Positions[0]
-	var eventTokens, positionBytes, eventBytes, sourceBytes int
+	var eventTokens, positionBytes, eventBytes, sourceBytes, pathBytes int
+	paths := make(map[string]bool)
+	path := func(file string) {
+		if !paths[file] {
+			paths[file] = true
+			pathBytes += len(file)
+		}
+	}
 	for _, event := range cpp.Events {
+		path(event.Position.File)
+		path(event.Included)
 		eventTokens += len(event.Tokens)
 		for _, token := range event.Tokens {
-			eventBytes += len(token.Text) + len(token.RecordedValue) + len(token.Position.File)
+			eventBytes += len(token.Text) + len(token.RecordedValue)
+			path(token.Position.File)
 		}
 	}
 	for _, token := range positions.Tokens {
-		positionBytes += len(token.Text) + len(token.Position.File) + len(token.Position.Base.File) + len(token.Position.FinalBase.File)
+		positionBytes += len(token.Text)
+		path(token.Position.File)
+		path(token.Position.Base.File)
+		path(token.Position.FinalBase.File)
 	}
 	for _, source := range cpp.Sources {
 		sourceBytes += source.Bytes
+		path(source.File)
 	}
-	used := eventBytes + positionBytes + len(positions.Mapped)
-	t.Logf("complete CPP bytes: original=%d sources=%d event=%d position=%d mapped=%d used=%d/%d; tokens=%d+%d/%d",
-		len(original), sourceBytes, eventBytes, positionBytes, len(positions.Mapped), used, ppGoObservationBytes,
+	used := eventBytes + positionBytes + pathBytes + len(positions.Mapped)
+	t.Logf("complete CPP payload bytes: original=%d sources=%d event=%d position=%d paths=%d mapped=%d used=%d/%d; tokens=%d+%d/%d",
+		len(original), sourceBytes, eventBytes, positionBytes, pathBytes, len(positions.Mapped), used, ppGoObservationBytes,
 		eventTokens, len(positions.Tokens), ppGoObservationTokens)
 	if used > ppGoObservationBytes || eventTokens+len(positions.Tokens) > ppGoObservationTokens {
 		t.Fatal("complete SDK position observation escaped its unchanged shared budget")

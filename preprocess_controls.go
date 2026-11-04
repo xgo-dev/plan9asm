@@ -217,6 +217,7 @@ func (input *ppGoInput) include(origin ppGoToken) error {
 		if err := input.observer.source(file, sourceText); err != nil {
 			return err
 		}
+		file = input.observer.sources[file].File
 	}
 	reader := newPPGoReader(file, sourceText)
 	if input.observer != nil && input.observer.positions != nil {

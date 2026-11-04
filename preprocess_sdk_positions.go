@@ -61,7 +61,14 @@ func (observer *ppGoObservation) emitSDKPosition(token ppGoToken, final *sdkCPPP
 	position := *token.position
 	position.FinalBase = *final
 	position.base = nil // The retained tape never aliases mutable reader state.
-	if err := observer.chargeToken(len(token.text) + len(position.File) + len(position.Base.File) + len(final.File)); err != nil {
+	for _, file := range []*string{&position.File, &position.Base.File, &position.FinalBase.File} {
+		retained, err := observer.retainPath(*file)
+		if err != nil {
+			return err
+		}
+		*file = retained
+	}
+	if err := observer.chargeToken(len(token.text)); err != nil {
 		return err
 	}
 	observer.positions.Tokens = append(observer.positions.Tokens, sdkCPPPositionToken{
