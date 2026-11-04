@@ -895,6 +895,7 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 	for _, fn := range file.Funcs {
 		callerResolved := b.resolve(goTextSymbolForResolution(fn.Sym))
 		callerSig, hasCallerSig := b.sigs[callerResolved]
+		tailTarget, pureTail := x86OrdinaryExternalTailTarget(fn)
 		for _, ins := range fn.Instrs {
 			base, tailJump, ok := goReferencedFunc(ins)
 			if !ok {
@@ -903,17 +904,23 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 			if b.directTail && (strings.HasSuffix(base, "<>") || b.fixedLocalLeaves[base]) {
 				continue // Bound only by complete source nodes and root must-state.
 			}
-			if target, pure := x86OrdinaryExternalTailTarget(fn); b.directTail && pure && tailJump && target == base &&
+			if b.directTail && pureTail && tailJump && tailTarget == base && hasCallerSig &&
+				!x86DirectTailSigNeedsOwnBoolFrame(callerSig, fn, b.goarch) &&
 				goReadOnlyLocalName(b.packageData, b.resolve(base)) == "" {
-				fs, err := goX86ImportedTailSignature(b.packageData, b.resolve(base), b.goarch, b.sz, b.frameSz)
-				if err != nil {
-					return err
+				path, _ := goReadOnlyImportedName(b.resolve(base))
+				// Missing imports are deferred to the complete consumer. Source-only
+				// declaration collection must preserve independent bool/alias checks.
+				if b.packageData.Imports[path] != nil {
+					fs, err := goX86ImportedTailSignature(b.packageData, b.resolve(base), b.goarch, b.sz, b.frameSz)
+					if err != nil {
+						return err
+					}
+					if manual, ok := goLookupManualSig(b.manualSig, b.resolve(base)); ok && !reflect.DeepEqual(manual, fs) {
+						return x86DirectTailContext("manual signature differs from actual imported Go declaration")
+					}
+					b.sigs[b.resolve(base)] = fs
+					continue
 				}
-				if manual, ok := goLookupManualSig(b.manualSig, b.resolve(base)); ok && !reflect.DeepEqual(manual, fs) {
-					return x86DirectTailContext("manual signature differs from actual imported Go declaration")
-				}
-				b.sigs[b.resolve(base)] = fs
-				continue
 			}
 			if err := b.addGoDeclSig(base); err != nil {
 				return err
@@ -928,7 +935,7 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 					continue
 				}
 			}
-			if b.directTail && tailJump {
+			if b.directTail && tailJump && !pureTail {
 				return x86DirectTailContext("ordinary external terminal lacks an actual declaration or explicit signature: %s", base)
 			}
 			if tailJump && hasCallerSig {

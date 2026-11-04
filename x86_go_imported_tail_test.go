@@ -170,6 +170,115 @@ func TestX86GoImportedTailPublicModule(t *testing.T) {
 	}
 }
 
+func TestX86GoImportedTailSignatureCollectionKeepsIndependentConsumers(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			pkg := importedTailPackageSource(t, arch, importedTailDeclarations+`
+func Boolean(x bool) bool
+func Numeric(x uint32) uint32
+`)
+			// One real imported numerical tail must not make unrelated assembly
+			// aliases require imports during declaration collection. Their actual
+			// consumers still validate the callee independently before translation.
+			source := importedTailAssembly(arch, "Syscall") + `
+TEXT ·Boolean(SB),4,$0
+JMP outside·boolean(SB)
+TEXT ·Numeric(SB),4,$0
+JMP outside·numeric(SB)
+`
+			file, err := Parse(ArchAMD64, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sigs, err := goSigsForAsmFile(pkg, file, testResolveSym(pkg.Path), arch, nil, nil, nil)
+			if err != nil {
+				t.Fatal("unrelated alias stole declaration collection", err)
+			}
+			if !sigs["outside.boolean"].x86BorrowedBoolTail {
+				t.Fatal("unresolved bool alias lost its copied-caller denial")
+			}
+			if _, found := sigs["syscall.Syscall"]; !found {
+				t.Fatal("actual selected imported declaration was not collected")
+			}
+			triple := "x86_64-unknown-linux-gnu"
+			if arch == "386" {
+				triple = "i386-unknown-linux-gnu"
+			}
+			translated, err := TranslateGoModule(pkg, []byte(source), GoModuleOptions{
+				GOOS: "linux", GOARCH: arch, TargetTriple: triple, ResolveSym: testResolveSym(pkg.Path)})
+			if translated != nil {
+				translated.Module.Dispose()
+			}
+			if translated != nil || !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("unresolved alias acquired its caller's declaration", err)
+			}
+		})
+	}
+}
+
+func TestX86GoImportedTailBoolInputCannotBypassSelectedImport(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			pkg := mustGoPackage(t, "tailinput", "package tailinput\nfunc Forward(flag bool) uint32\n")
+			source := []byte("TEXT ·Forward(SB),4,$0\nJMP outside·target(SB)\n")
+			file, err := Parse(ArchAMD64, string(source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolve := testResolveSym(pkg.Path)
+			sigs, err := goSigsForAsmFile(pkg, file, resolve, arch, nil, nil, nil)
+			if err != nil {
+				t.Fatal("source-only alias declaration collection", err)
+			}
+			if sigs["outside.target"].Ret != I32 || sigs["outside.target"].x86BorrowedBoolTail {
+				t.Fatal("fixture must reach the numerical-result consumer")
+			}
+			triple := "x86_64-unknown-linux-gnu"
+			if arch == "386" {
+				triple = "i386-unknown-linux-gnu"
+			}
+			translated, err := TranslateGoModule(pkg, source, GoModuleOptions{
+				GOOS: "linux", GOARCH: arch, TargetTriple: triple, ResolveSym: resolve})
+			if translated != nil {
+				translated.Module.Dispose()
+			}
+			if translated != nil || !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "complete selected typed import") {
+				t.Fatal("bool input bypassed the independent numerical tail declaration", err)
+			}
+		})
+	}
+}
+
+func TestX86GoImportedTailResolverCannotEraseSourceBeforeCapture(t *testing.T) {
+	for at := 1; at <= 12; at++ {
+		t.Run(fmt.Sprint(at), func(t *testing.T) {
+			file, err := Parse(ArchAMD64, "TEXT ·Forward(SB),4,$0\nJMP outside·target(SB)\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkg := mustGoPackage(t, "callbacktail", "package callbacktail\nfunc Forward()\n")
+			resolve := testResolveSym(pkg.Path)
+			sigs, err := goSigsForAsmFile(pkg, file, resolve, "amd64", nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			options := Options{Goarch: "amd64", TargetTriple: "x86_64-unknown-linux-gnu", Sigs: sigs}
+			options.ResolveSym = func(symbol string) string {
+				calls++
+				if calls == at {
+					file.Funcs[0].Instrs[1] = Instr{Op: OpRET, Raw: "RET"}
+				}
+				return resolve(symbol)
+			}
+			prepared, err := PrepareX86DirectTailSource(file, options)
+			if prepared != nil || !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("resolver erased the undeclared terminal before source capture", calls, err)
+			}
+		})
+	}
+}
+
 func TestX86GoImportedTailShapeGuards(t *testing.T) {
 	for _, row := range []struct{ name, old, replacement string }{
 		{"parameter", "trap, a1, a2, a3 uintptr", "trap, a1, a2, a3 uint32"},

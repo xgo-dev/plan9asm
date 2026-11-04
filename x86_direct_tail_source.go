@@ -65,7 +65,8 @@ func x86DirectTailSourceNeeded(file *File) bool {
 		return false
 	}
 	for _, fn := range file.Funcs {
-		if x86DirectTailRootNeeded(fn) {
+		_, pure := x86OrdinaryExternalTailTarget(fn)
+		if pure || x86DirectTailRootNeeded(fn) {
 			return true
 		}
 	}
@@ -81,9 +82,6 @@ func x86DirectTailRootNeededExceptCalls(fn Func, ordinary map[string]bool) bool 
 }
 
 func x86DirectTailRootTargets(fn Func, helpers, ordinary map[string]bool) bool {
-	if _, pure := x86OrdinaryExternalTailTarget(fn); pure {
-		return true
-	}
 	for _, ins := range fn.Instrs {
 		if ins.Op != OpJMP && ins.Op != OpCALL || len(ins.Args) != 1 {
 			continue
@@ -171,10 +169,19 @@ func PrepareX86DirectTailSource(file *File, options Options) (*File, error) {
 			helpers[fn.Sym] = true
 		}
 	}
-	pureTail := false
+	pureTail, privateTail := false, false
 	for _, fn := range file.Funcs {
 		_, pure := x86OrdinaryExternalTailTarget(fn)
+		if calls != nil {
+			if plan := calls.callers[fn.Sym]; plan != nil && plan.tail != nil {
+				pure = false // Already checked by the independent canonical bool consumer.
+			}
+		}
 		pureTail = pureTail || pure
+		privateTail = privateTail || x86DirectTailRootNeeded(fn)
+	}
+	if !pureTail && !privateTail {
+		return file, nil // Canonical bool terminals retain their independent consumer.
 	}
 	if len(helpers) == 0 && !pureTail {
 		return nil, x86DirectTailContext("private tail target has no original source TEXT")
@@ -202,14 +209,15 @@ func PrepareX86DirectTailSource(file *File, options Options) (*File, error) {
 	reached := make(map[string]bool)
 	combined := 0
 	for index, fn := range graph.original.Funcs {
-		if helpers[fn.Sym] || !x86DirectTailRootNeededExceptCalls(fn, ordinary) {
+		_, pure := x86OrdinaryExternalTailTarget(fn)
+		pure = pure && !x86ABI0BoolResultNeedsProof(signatures[graph.symbols[fn.Sym]], goarch)
+		if helpers[fn.Sym] || !pure && !x86DirectTailRootNeededExceptCalls(fn, ordinary) {
 			continue
 		}
 		view, err := graph.root(index, byName, 4096-combined, true)
 		if err != nil {
 			return nil, err
 		}
-		_, pure := x86OrdinaryExternalTailTarget(fn)
 		if len(view.points) == len(x86DirectTailInstructions(fn)) && !pure {
 			continue // This entry has no edge into the private helper graph.
 		}

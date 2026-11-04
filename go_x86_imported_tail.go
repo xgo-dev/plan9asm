@@ -184,7 +184,7 @@ func goX86ImportedTailSignature(pkg GoPackage, resolved, arch string, sizes, fra
 func (graph *x86DirectTailGraph) verifyPureGoTails() error {
 	for _, fn := range graph.original.Funcs {
 		target, pure := x86OrdinaryExternalTailTarget(fn)
-		if !pure {
+		if !pure || x86ABI0BoolResultNeedsProof(graph.signatures[graph.symbols[fn.Sym]], graph.goarch) {
 			continue
 		}
 		if graph.goPackage == nil {
