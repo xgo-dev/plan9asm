@@ -102,7 +102,6 @@ func TestAMD64RegisterResultRejectsUnmodeledTransport(t *testing.T) {
 		"func view(value [2]uint64,seed uint64) uint64",
 		"func view(value float64,seed uint64) uint64",
 		"func view(value bool,seed uint64) uint64",
-		"func view(value,seed uint64) (uint64,uint64)",
 		"func view(value,seed uint64) *uint64",
 		"func view(value,seed uint64) bool",
 		"func view(" + strings.TrimSuffix(strings.Repeat("uint64,", 10), ",") + ") uint64",
@@ -125,5 +124,30 @@ func TestAMD64RegisterResultRejectsUnmodeledTransport(t *testing.T) {
 				t.Fatal("register role escaped into the standalone ABI0 observer:", err)
 			}
 		})
+	}
+}
+
+func TestAMD64RegisterResultCompleteTupleKeepsSeparateABI0Observer(t *testing.T) {
+	// This original source already initializes both numerical result registers:
+	// AX holds value^seed and BX retains the complete second input. Admission
+	// by the paired register observer does not initialize either ABI0 FP slot.
+	const declaration = "func view(value,seed uint64) (uint64,uint64)"
+	source := amd64RegisterLaneFixture("PINSRQ", 1)
+	pkg := mustGoPackage(t, "registerresult", "package registerresult\n"+declaration)
+	sig, err := DeriveGoFuncABI0Signature("view", pkg.Types.Scope().Lookup("view").(*types.Func), "amd64", types.SizesFor("gc", "amd64"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := Parse(ArchAMD64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, api := range []string{"text", "module", "Go"} {
+		if _, err := x86ScalarFPBitViewPackageAPI(t, source, pkg, "amd64", "x86_64-unknown-linux-gnu", api); err != nil {
+			t.Errorf("%s: the existing complete numerical tuple was rejected: %v", api, err)
+		}
+	}
+	if err := CheckX86ABI0ResultInitialization(file.Funcs[0], sig, "amd64"); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("register result role escaped into the standalone ABI0 observer:", err)
 	}
 }

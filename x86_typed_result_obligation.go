@@ -9,6 +9,9 @@ func x86TypedFPResultNeedsProof(fn Func, sig FuncSig, arch string) bool {
 	if arch != "386" && arch != "amd64" {
 		return false
 	}
+	if amd64RegisterTupleResultNeedsProof(fn, sig, arch) {
+		return true // Plain MOV/RET and invalid layouts cannot bypass register-result initialization.
+	}
 	if len(sig.Frame.Results) > 1 && len(x86ScalarTupleResultTypes(sig, arch)) != 0 &&
 		x86OrdinaryScalarCodegenSource(fn, sig, arch) {
 		return true // Every lowering route keeps tuple input/layout checks before its output-only exception.

@@ -766,19 +766,21 @@ func (b *goSigBuilder) addDeclaredFuncSigs(file *File) error {
 			continue // No ManualSig/zero-arg/caller signature becomes a helper ABI.
 		}
 		if ms, ok := goLookupManualSig(b.manualSig, resolved); ok {
+			if amd64RegisterTupleResultNeedsProof(file.Funcs[i], ms, b.goarch) {
+				name, err := b.declaredAsmFuncName(sym, resolved)
+				if err == nil {
+					if fn, known := b.scope.Lookup(name).(*types.Func); known && !goAMD64NumericalRegisterResults(fn) {
+						return fmt.Errorf("%w: %s Go result assignment is outside the modeled numerical register tuple", ErrProbeNeedsContext, resolved)
+					}
+				}
+			}
 			b.sigs[resolved] = ms
 			continue
 		}
 
-		declName := ""
-		if strings.HasPrefix(resolved, b.pkgPath+".") {
-			declName = strings.TrimPrefix(resolved, b.pkgPath+".")
-		} else {
-			var err error
-			declName, err = goDeclNameForSymbol(sym, b.linknames)
-			if err != nil {
-				return err
-			}
+		declName, err := b.declaredAsmFuncName(sym, resolved)
+		if err != nil {
+			return err
 		}
 		obj := b.scope.Lookup(declName)
 		if obj == nil {
@@ -804,6 +806,9 @@ func (b *goSigBuilder) addDeclaredFuncSigs(file *File) error {
 		if err != nil {
 			return err
 		}
+		if amd64RegisterTupleResultNeedsProof(file.Funcs[i], fs, b.goarch) && !goAMD64NumericalRegisterResults(fn) {
+			return fmt.Errorf("%w: %s Go result assignment is outside the modeled numerical register tuple", ErrProbeNeedsContext, resolved)
+		}
 		if b.goarch == "arm64" && strings.HasSuffix(textSym, "<ABIInternal>") {
 			fs.ARM64GoRegisterABI, err = DeriveARM64GoRegisterABI(fn, fs)
 			if err != nil {
@@ -813,6 +818,13 @@ func (b *goSigBuilder) addDeclaredFuncSigs(file *File) error {
 		b.sigs[resolved] = fs
 	}
 	return nil
+}
+
+func (b *goSigBuilder) declaredAsmFuncName(sym, resolved string) (string, error) {
+	if strings.HasPrefix(resolved, b.pkgPath+".") {
+		return strings.TrimPrefix(resolved, b.pkgPath+"."), nil
+	}
+	return goDeclNameForSymbol(sym, b.linknames)
 }
 
 func wasmGoNativeFuncSig(name string) (FuncSig, bool) {
