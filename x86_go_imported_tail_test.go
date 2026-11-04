@@ -288,3 +288,137 @@ func TestX86GoImportedTailUnspecifiedTEXT(t *testing.T) {
 	}
 	translated.Module.Dispose()
 }
+
+func TestX86GoImportedTailPreservesLocalGoTarget(t *testing.T) {
+	for _, target := range []string{"·scalar", "example.com∕tail·scalar"} {
+		t.Run(target, func(t *testing.T) {
+			pkg := importedTailPackageSource(t, "amd64", `package tail
+func Forward(x uintptr) uintptr
+func scalar(x uintptr) uintptr { return x + 1 }
+`)
+			source := "TEXT ·Forward(SB),4,$0-16\nJMP " + target + "(SB)\n"
+			translated, err := TranslateGoModule(pkg, []byte(source), GoModuleOptions{
+				GOOS: "linux", GOARCH: "amd64", TargetTriple: "x86_64-unknown-linux-gnu", ResolveSym: testResolveSym(pkg.Path)})
+			if err != nil {
+				t.Fatal("existing same-package Go tail regressed", err)
+			}
+			defer translated.Module.Dispose()
+			function := translated.Module.NamedFunction(pkg.Path + ".Forward")
+			calls := 0
+			for _, block := range function.BasicBlocks() {
+				for instruction := block.FirstInstruction(); !instruction.IsNil(); instruction = llvm.NextInstruction(instruction) {
+					if instruction.InstructionOpcode() == llvm.Call {
+						calls++
+						if instruction.CalledValue().Name() != pkg.Path+".scalar" || instruction.Type().String() != "i64" {
+							t.Fatal("same-package tail lost its actual Go signature", instruction.String())
+						}
+					}
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("same-package tail has %d calls, want one", calls)
+			}
+		})
+	}
+}
+
+func TestX86GoImportedTailSelectedDeclarationConsistency(t *testing.T) {
+	for _, role := range []string{"caller", "callee", "resolver mutation"} {
+		t.Run(role, func(t *testing.T) {
+			pkg := importedTailPackage(t, "amd64")
+			resolve := testResolveSym(pkg.Path)
+			wrongSource := "package syscall\nfunc Syscall() uintptr\nfunc Syscall6() uintptr\n"
+			if role == "caller" {
+				wrongSource = "package tail\nfunc Forward() uintptr\nfunc Forward6() uintptr\n"
+			}
+			wrong, err := parser.ParseFile(token.NewFileSet(), "changed.go", wrongSource, parser.ParseComments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate := func() {
+				if role == "caller" {
+					pkg.Syntax = []*ast.File{wrong}
+				} else {
+					pkg.ImportSyntax["syscall"] = []*ast.File{wrong}
+				}
+			}
+			file, err := Parse(ArchAMD64, importedTailAssembly("amd64", "Syscall"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			signatures, err := goSigsForAsmFile(pkg, file, resolve, "amd64", nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := Options{Goarch: "amd64", TargetTriple: "x86_64-unknown-linux-gnu", ResolveSym: resolve, Sigs: signatures, goPackage: &pkg}
+			if role == "resolver mutation" {
+				file, err = PrepareX86DirectTailSource(file, options)
+				if err != nil {
+					t.Fatal("valid initial selected declarations", err)
+				}
+				options.ResolveSym = func(symbol string) string {
+					mutate()
+					return resolve(symbol)
+				}
+			} else {
+				mutate()
+			}
+			_, err = Translate(file, options)
+			if !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatalf("selected declaration changed while typed objects stayed fixed: %v", err)
+			}
+		})
+	}
+}
+
+func TestX86GoImportedTailTargetSizedDeclaration(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			pkg := importedTailPackageSource(t, arch, `package tail
+import "unsafe"
+func Forward(x *[unsafe.Sizeof(uintptr(0))]byte) uintptr
+`)
+			sizes := types.SizesFor("gc", arch)
+			if _, err := goX86TailFunction(pkg, "Forward", true, sizes); err != nil {
+				t.Fatal("target-sized actual declaration rejected", err)
+			}
+			wrong := "8"
+			if arch == "amd64" {
+				wrong = "4"
+			}
+			declaration, err := parser.ParseFile(token.NewFileSet(), "changed.go",
+				"package tail\nfunc Forward(x *["+wrong+"]byte) uintptr\n", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkg.Syntax = []*ast.File{declaration}
+			if _, err := goX86TailFunction(pkg, "Forward", true, sizes); !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatalf("wrong target-sized array accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestX86GoImportedTailBodyOnlyImport(t *testing.T) {
+	pkg := importedTailPackageSource(t, "amd64", `package tail
+import "strings"
+//go:noinline
+func scalar(x uintptr) uintptr {
+	if strings.Contains("original", "missing") { return x + 1 }
+	return x
+}
+`)
+	// Go export packages may omit imports used only inside function bodies.
+	// Keep the actual checked function and selected source, changing only this
+	// optional dependency inventory to its valid export-data projection.
+	pkg.Types.SetImports(nil)
+	if _, err := goX86TailFunction(pkg, "scalar", false, types.SizesFor("gc", "amd64")); err != nil {
+		t.Fatal("body-only import rejected an unchanged scalar declaration", err)
+	}
+
+	pkg = importedTailPackage(t, "amd64")
+	pkg.Types.SetImports(nil)
+	if _, err := goX86TailFunction(pkg, "Forward", true, types.SizesFor("gc", "amd64")); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("missing import actually used by the signature supplied a type: %v", err)
+	}
+}

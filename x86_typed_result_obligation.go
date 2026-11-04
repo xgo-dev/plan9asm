@@ -31,6 +31,9 @@ func x86TypedFPResultNeedsProof(fn Func, sig FuncSig, arch string) bool {
 	}
 	opaqueAddressResult := x86OpaqueAddressPointerResultRole(fn, sig, arch)
 	for ordinal, ins := range fn.Instrs {
+		if ins.Op == "SYSCALL" {
+			return true // Every source argument and the target-aware raw transition remain obligations, including Void.
+		}
 		if form, known, err := x86ScalarCompareProperties(ins.Op, ins, arch); known && err == nil && form.memory >= 0 {
 			return true // Dead compare/test FLAGS do not remove the original faulting read or its inputs.
 		}

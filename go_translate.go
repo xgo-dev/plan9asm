@@ -885,7 +885,8 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 			if b.directTail && (strings.HasSuffix(base, "<>") || b.fixedLocalLeaves[base]) {
 				continue // Bound only by complete source nodes and root must-state.
 			}
-			if target, pure := x86OrdinaryExternalTailTarget(fn); b.directTail && pure && tailJump && target == base {
+			if target, pure := x86OrdinaryExternalTailTarget(fn); b.directTail && pure && tailJump && target == base &&
+				goReadOnlyLocalName(b.packageData, b.resolve(base)) == "" {
 				fs, err := goX86ImportedTailSignature(b.packageData, b.resolve(base), b.goarch, b.sz, b.frameSz)
 				if err != nil {
 					return err

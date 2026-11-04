@@ -1670,6 +1670,7 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 	}
 
 	sysc, sysb := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.sys", Ret: Void}, nil)
+	sysc.targetTriple = "x86_64-unknown-linux-gnu" // SYSCALL has a Linux kernel ABI, not an ambient hosted convention.
 	for _, tc := range []struct {
 		r Reg
 		v string
@@ -1724,8 +1725,8 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 		"zext i8",
 		"store i16",
 		"store i32",
-		"@syscall(i64",
-		"@cliteErrno()",
+		"asm sideeffect \"syscall\"",
+		"={ax},0,{di},{si},{dx},{r10},{r8},{r9},~{rcx},~{r11}",
 		"@llvm.x86.sse42.crc32.32.8",
 		"@llvm.x86.sse42.crc32.32.16",
 		"@llvm.x86.sse42.crc32.32.32",
@@ -1735,6 +1736,9 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
 		}
+	}
+	if strings.Contains(sysb.String(), "@syscall(") || strings.Contains(sysb.String(), "@cliteErrno(") {
+		t.Fatal("raw Linux instruction used a hosted errno-changing wrapper", sysb.String())
 	}
 }
 

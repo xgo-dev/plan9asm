@@ -2,8 +2,10 @@ package plan9asm
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/goabi"
@@ -11,7 +13,7 @@ import (
 
 // Ordinary Go declarations retain their source convention. A structurally
 // identical C/custom function or a renamed entry cannot supply an ABI0 tail.
-func goX86TailFunction(pkg GoPackage, name string, bodyless bool) (*types.Func, error) {
+func goX86TailFunction(pkg GoPackage, name string, bodyless bool, sizes types.Sizes) (*types.Func, error) {
 	if pkg.Types == nil || pkg.Types.Scope() == nil || pkg.Types.Name() == "C" {
 		return nil, x86DirectTailContext("tail declaration lacks an ordinary Go package")
 	}
@@ -33,7 +35,7 @@ func goX86TailFunction(pkg GoPackage, name string, bodyless bool) (*types.Func, 
 		}
 		for _, node := range file.Decls {
 			declaration, ok := node.(*ast.FuncDecl)
-			if !ok || declaration.Recv != nil || declaration.Name.Name != name {
+			if !ok || declaration == nil || declaration.Name == nil || declaration.Recv != nil || declaration.Name.Name != name {
 				continue
 			}
 			if found {
@@ -41,6 +43,9 @@ func goX86TailFunction(pkg GoPackage, name string, bodyless bool) (*types.Func, 
 			}
 			if bodyless && declaration.Body != nil {
 				return nil, x86DirectTailContext("tail caller is not a bodyless assembly declaration")
+			}
+			if err := goX86TailSyntaxType(pkg, file, declaration, sig, sizes); err != nil {
+				return nil, err
 			}
 			found = true
 			if declaration.Doc != nil {
@@ -64,6 +69,89 @@ func goX86TailFunction(pkg GoPackage, name string, bodyless bool) (*types.Func, 
 	return fn, nil
 }
 
+// Recheck only the selected function type against its actual package objects
+// and imports. This uses Go's type checker with the requested architecture's
+// sizes; it neither rechecks bodies nor formats/reloads a complete package.
+func goX86TailSyntaxType(pkg GoPackage, file *ast.File, declaration *ast.FuncDecl,
+	expected *types.Signature, sizes types.Sizes) error {
+	if declaration.Type == nil || sizes == nil {
+		return x86DirectTailContext("tail lacks a target-sized declaration type")
+	}
+	owner := types.NewPackage(pkg.Types.Path(), pkg.Types.Name())
+	referenced := make(map[string]bool)
+	ast.Inspect(declaration.Type, func(node ast.Node) bool {
+		if identifier, ok := node.(*ast.Ident); ok {
+			referenced[identifier.Name] = true
+			if object := pkg.Types.Scope().Lookup(identifier.Name); object != nil {
+				owner.Scope().Insert(object)
+			}
+		}
+		return true
+	})
+	for _, specification := range file.Imports {
+		if specification == nil || specification.Path == nil {
+			return x86DirectTailContext("tail declaration has an invalid import")
+		}
+		path, err := strconv.Unquote(specification.Path.Value)
+		if err != nil {
+			return x86DirectTailContext("tail declaration has an invalid import path")
+		}
+		var dependency *types.Package
+		for _, imported := range pkg.Types.Imports() {
+			if imported.Path() == path {
+				dependency = imported
+				break
+			}
+		}
+		if dependency == nil {
+			// Export data may omit imports used only by a function body.
+			// Add no guessed object: a signature which actually needs this
+			// import still fails the type check below as an unresolved name.
+			continue
+		}
+		name := dependency.Name()
+		if specification.Name != nil {
+			name = specification.Name.Name
+		}
+		if name == "." {
+			for identifier := range referenced {
+				if object := dependency.Scope().Lookup(identifier); object != nil && object.Exported() {
+					if previous := owner.Scope().Insert(object); previous != nil && previous != object {
+						return x86DirectTailContext("tail declaration has ambiguous imported types")
+					}
+				}
+			}
+		} else if referenced[name] {
+			if path == "C" || owner.Scope().Insert(types.NewPkgName(token.NoPos, owner, name, dependency)) != nil {
+				return x86DirectTailContext("tail declaration has a native or ambiguous import")
+			}
+		}
+	}
+	information := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue)}
+	syntax := &ast.File{Name: ast.NewIdent(owner.Name()), Decls: []ast.Decl{
+		&ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{
+			&ast.ValueSpec{Names: []*ast.Ident{ast.NewIdent("_")}, Type: declaration.Type},
+		}},
+	}}
+	checker := types.NewChecker(&types.Config{Sizes: sizes}, token.NewFileSet(), owner, information)
+	if err := checker.Files([]*ast.File{syntax}); err != nil {
+		return x86DirectTailContext("tail selected declaration cannot be checked: %v", err)
+	}
+	actual, ok := information.Types[declaration.Type].Type.(*types.Signature)
+	if !ok || !types.Identical(actual, expected) {
+		return x86DirectTailContext("tail selected declaration differs from its actual Go type")
+	}
+	for index, tuple := range []*types.Tuple{actual.Params(), actual.Results()} {
+		wanted := []*types.Tuple{expected.Params(), expected.Results()}[index]
+		for field := 0; field < tuple.Len(); field++ {
+			if tuple.At(field).Name() != wanted.At(field).Name() {
+				return x86DirectTailContext("tail selected declaration field names differ from its actual Go type")
+			}
+		}
+	}
+	return nil
+}
+
 func goX86ImportedTailSignature(pkg GoPackage, resolved, arch string, sizes, frames types.Sizes) (FuncSig, error) {
 	path, name := goReadOnlyImportedName(resolved)
 	if path == "" || path == "C" || path == pkg.Path || pkg.Types == nil {
@@ -81,7 +169,10 @@ func goX86ImportedTailSignature(pkg GoPackage, resolved, arch string, sizes, fra
 		return FuncSig{}, x86DirectTailContext("tail import differs from actual typed dependency: %s", path)
 	}
 	owner := GoPackage{Path: path, Types: dependency, Syntax: pkg.ImportSyntax[path]}
-	fn, err := goX86TailFunction(owner, name, false)
+	if sizes == nil {
+		sizes = types.SizesFor("gc", arch)
+	}
+	fn, err := goX86TailFunction(owner, name, false, sizes)
 	if err != nil {
 		return FuncSig{}, err
 	}
@@ -100,8 +191,12 @@ func (graph *x86DirectTailGraph) verifyPureGoTails() error {
 			return x86DirectTailContext("pure external tail needs its actual GoModule declaration source")
 		}
 		pkg := *graph.goPackage
+		calleeName := graph.externalSymbols[target]
+		if goReadOnlyLocalName(pkg, calleeName) != "" {
+			continue // Same-package Go tails keep their pre-existing declaration path.
+		}
 		name := goReadOnlyLocalName(pkg, fn.Sym)
-		declaration, err := goX86TailFunction(pkg, name, true)
+		declaration, err := goX86TailFunction(pkg, name, true, types.SizesFor("gc", graph.goarch))
 		if err != nil {
 			return err
 		}
@@ -132,7 +227,6 @@ func (graph *x86DirectTailGraph) verifyPureGoTails() error {
 			!x86TEXTArgumentsUnspecified(fn) && !goabi.MatchesABI0TextSize(graph.goarch, fn.ArgSize, end) {
 			return x86DirectTailContext("tail TEXT extent differs from actual ordinary Go ABI0 declaration")
 		}
-		calleeName := graph.externalSymbols[target]
 		callee, err := goX86ImportedTailSignature(pkg, calleeName, graph.goarch, nil, nil)
 		if err != nil {
 			return err

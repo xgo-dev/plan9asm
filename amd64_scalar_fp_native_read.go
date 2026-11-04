@@ -409,6 +409,12 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultNumericalReadStep(ins, state, owned, resultOffset, arch); known {
 			return accepted // A checked mutable SB source keeps its own lifetime and byte effects.
 		}
+		if accepted, known := c.loweredElidedSchedulerHookStep(ins, state, arch); known {
+			return accepted // The existing elision does not supply a callable ABI.
+		}
+		if accepted, known := x86LoweredLinuxSyscallStep(ins, state, owned, resultOffset, arch, c.targetTriple); known {
+			return accepted // The paired raw kernel transition supplies no libc, pointer or continuation role.
+		}
 		if operand, width, valid := x86OwnedIndexedVectorReadAt(ownedVectorReads, ordinal, ins); valid {
 			// Ordinary private tables never precede complete SDK source owners.
 			state.literalMemoryOperand, state.literalMemoryBytes = &operand, width

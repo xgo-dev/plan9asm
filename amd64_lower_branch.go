@@ -347,7 +347,7 @@ func (c *amd64Ctx) callSym(symOp Operand) error {
 	callee := c.resolve(s)
 	// Syscall stubs invoke runtime entersyscall/exitsyscall around SYSCALL.
 	// llgo runtime does not require these scheduler hooks at this layer.
-	if callee == "runtime.entersyscall" || callee == "runtime.exitsyscall" {
+	if arm64ElidesSchedulerHook(callee) {
 		return nil
 	}
 

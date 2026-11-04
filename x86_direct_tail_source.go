@@ -116,7 +116,7 @@ func x86OrdinaryExternalTailTarget(fn Func) (string, bool) {
 		return "", false
 	}
 	name, offset, valid := parseSBRef(jump.Args[0].Sym)
-	return name, valid && offset == 0 && !strings.ContainsAny(name, "<*")
+	return name, valid && offset == 0 && !strings.HasPrefix(name, "·") && !strings.ContainsAny(name, "<*")
 }
 
 // PrepareX86DirectTailSource audits the complete source before any root filter
@@ -478,5 +478,5 @@ func (graph *x86DirectTailGraph) verify(file *File, options Options) (result err
 		!reflect.DeepEqual(x86DirectTailSnapshot(file), before) {
 		return x86DirectTailContext("resolver changed source/signatures during verification")
 	}
-	return nil
+	return graph.verifyPureGoTails()
 }
