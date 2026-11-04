@@ -227,6 +227,9 @@ type Options struct {
 	x86OriginalFile   *File
 	x86BoolCallSource *x86ABI0BoolCallSource
 	goReadOnlyStorage *goReadOnlyStorage
+	// Same-request declarations for ordinary external-tail roots. Public
+	// signature maps cannot recreate the original Go declaration source.
+	goPackage *GoPackage
 }
 
 // Translate converts a parsed Plan 9 asm File into LLVM IR text (`.ll`).

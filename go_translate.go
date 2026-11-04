@@ -346,7 +346,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 		}
 		request := Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple,
 			ResolveSym: resolve, Sigs: completeSigs, NumericalReads: opt.NumericalReads, X86TLSMoves: opt.X86TLSMoves,
-			WASMABI: opt.WASMABI, X87Mode: opt.X87Mode, AnnotateSource: opt.AnnotateSource, goReadOnlyStorage: readOnlyStorage}
+			WASMABI: opt.WASMABI, X87Mode: opt.X87Mode, AnnotateSource: opt.AnnotateSource, goReadOnlyStorage: readOnlyStorage, goPackage: &pkg}
 		calls, err := prepareX86ABI0BoolCalls(file, request)
 		if err != nil {
 			return nil, err
@@ -423,7 +423,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 		request, signatures := file, sigs
 		defer func() {
 			final := graph.verify(request, Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple, ResolveSym: resolve, Sigs: signatures,
-				NumericalReads: opt.NumericalReads, WASMABI: opt.WASMABI, X87Mode: opt.X87Mode, AnnotateSource: opt.AnnotateSource, goReadOnlyStorage: readOnlyStorage})
+				NumericalReads: opt.NumericalReads, WASMABI: opt.WASMABI, X87Mode: opt.X87Mode, AnnotateSource: opt.AnnotateSource, goReadOnlyStorage: readOnlyStorage, goPackage: &pkg})
 			if sha256.Sum256(originalSource) != originalSourceDigest {
 				final = errors.Join(final, x86DirectTailContext("original Go assembly input changed during consumption"))
 			}
@@ -457,7 +457,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 		callOriginal = completeFile
 		boolCalls = registerBoolCalls
 		if boolCalls == nil {
-			boolCalls, err = prepareX86ABI0BoolCalls(completeFile, Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple, ResolveSym: resolve, Sigs: sigs, goReadOnlyStorage: readOnlyStorage})
+			boolCalls, err = prepareX86ABI0BoolCalls(completeFile, Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple, ResolveSym: resolve, Sigs: sigs, goReadOnlyStorage: readOnlyStorage, goPackage: &pkg})
 			if err != nil {
 				return nil, err
 			}
@@ -480,6 +480,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 	}
 	mod, err := TranslateModuleInContext(ctx, file, Options{
 		goReadOnlyStorage:      readOnlyStorage,
+		goPackage:              &pkg,
 		x86OriginalFile:        callOriginal,
 		x86BoolCallSource:      boolCalls,
 		TargetTriple:           opt.TargetTriple,
@@ -615,17 +616,18 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 		frameSz = sz
 	}
 	b := goSigBuilder{
-		sigs:       make(map[string]FuncSig, len(file.Funcs)),
-		localSigs:  make(map[string]bool),
-		scope:      pkg.Types.Scope(),
-		sz:         sz,
-		frameSz:    frameSz,
-		linknames:  goLinknameRemoteToLocal(pkg.Syntax),
-		pkgPath:    pkg.Path,
-		resolve:    resolve,
-		goarch:     goarch,
-		manualSig:  manualSig,
-		directTail: (goarch == "amd64" || goarch == "386") && x86DirectTailSourceNeeded(file),
+		sigs:        make(map[string]FuncSig, len(file.Funcs)),
+		localSigs:   make(map[string]bool),
+		scope:       pkg.Types.Scope(),
+		sz:          sz,
+		frameSz:     frameSz,
+		linknames:   goLinknameRemoteToLocal(pkg.Syntax),
+		pkgPath:     pkg.Path,
+		resolve:     resolve,
+		goarch:      goarch,
+		manualSig:   manualSig,
+		packageData: pkg,
+		directTail:  (goarch == "amd64" || goarch == "386") && x86DirectTailSourceNeeded(file),
 	}
 	if goarch == "amd64" {
 		b.fixedLocalLeaves = goFixedLocalLeafSymbols(file, resolve, manualSig)
@@ -744,6 +746,7 @@ type goSigBuilder struct {
 	manualSig        func(string) (FuncSig, bool)
 	directTail       bool            // source-cost detection only; the graph must prove every node
 	fixedLocalLeaves map[string]bool // Observed non-callable source roles, not helper signatures.
+	packageData      GoPackage
 }
 
 func (b *goSigBuilder) addDeclaredFuncSigs(file *File) error {
@@ -881,6 +884,17 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 			}
 			if b.directTail && (strings.HasSuffix(base, "<>") || b.fixedLocalLeaves[base]) {
 				continue // Bound only by complete source nodes and root must-state.
+			}
+			if target, pure := x86OrdinaryExternalTailTarget(fn); b.directTail && pure && tailJump && target == base {
+				fs, err := goX86ImportedTailSignature(b.packageData, b.resolve(base), b.goarch, b.sz, b.frameSz)
+				if err != nil {
+					return err
+				}
+				if manual, ok := goLookupManualSig(b.manualSig, b.resolve(base)); ok && !reflect.DeepEqual(manual, fs) {
+					return x86DirectTailContext("manual signature differs from actual imported Go declaration")
+				}
+				b.sigs[b.resolve(base)] = fs
+				continue
 			}
 			if err := b.addGoDeclSig(base); err != nil {
 				return err

@@ -26,6 +26,7 @@ type x86DirectTailGraph struct {
 	texts           map[string]int // Immutable original TEXT lookup; no expanded views.
 	numerical       *GoX86NumericalReadBinding
 	fixedLocal      *x86FixedLocalBinding
+	goPackage       *GoPackage // Same request source, never supplied through public signatures.
 }
 
 type x86DirectTailRoot struct {
@@ -80,6 +81,9 @@ func x86DirectTailRootNeededExceptCalls(fn Func, ordinary map[string]bool) bool 
 }
 
 func x86DirectTailRootTargets(fn Func, helpers, ordinary map[string]bool) bool {
+	if _, pure := x86OrdinaryExternalTailTarget(fn); pure {
+		return true
+	}
 	for _, ins := range fn.Instrs {
 		if ins.Op != OpJMP && ins.Op != OpCALL || len(ins.Args) != 1 {
 			continue
@@ -98,6 +102,21 @@ func x86DirectTailRootTargets(fn Func, helpers, ordinary map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// Routing only: the existing graph must independently close the declaration,
+// exact incoming/result ABI0 roles, source identity and external terminal.
+func x86OrdinaryExternalTailTarget(fn Func) (string, bool) {
+	if fn.FrameSize != 0 || strings.Contains(fn.Sym, "<") || len(fn.X86RawText) != 0 ||
+		len(fn.Instrs) != 2 || fn.Instrs[0].Op != OpTEXT {
+		return "", false
+	}
+	jump := fn.Instrs[1]
+	if jump.Op != OpJMP || len(jump.Args) != 1 || jump.Args[0].Kind != OpSym {
+		return "", false
+	}
+	name, offset, valid := parseSBRef(jump.Args[0].Sym)
+	return name, valid && offset == 0 && !strings.ContainsAny(name, "<*")
 }
 
 // PrepareX86DirectTailSource audits the complete source before any root filter
@@ -152,7 +171,12 @@ func PrepareX86DirectTailSource(file *File, options Options) (*File, error) {
 			helpers[fn.Sym] = true
 		}
 	}
-	if len(helpers) == 0 {
+	pureTail := false
+	for _, fn := range file.Funcs {
+		_, pure := x86OrdinaryExternalTailTarget(fn)
+		pureTail = pureTail || pure
+	}
+	if len(helpers) == 0 && !pureTail {
 		return nil, x86DirectTailContext("private tail target has no original source TEXT")
 	}
 	if options.X86TLSMoves != nil || options.ARM64ByteCarrierSource != nil ||
@@ -185,7 +209,8 @@ func PrepareX86DirectTailSource(file *File, options Options) (*File, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(view.points) == len(x86DirectTailInstructions(fn)) {
+		_, pure := x86OrdinaryExternalTailTarget(fn)
+		if len(view.points) == len(x86DirectTailInstructions(fn)) && !pure {
 			continue // This entry has no edge into the private helper graph.
 		}
 		combined += len(view.points)
@@ -290,7 +315,8 @@ func newX86DirectTailGraph(file *File, options Options, helpers map[string]bool,
 		resolve = func(symbol string) string { return symbol }
 	}
 	graph := &x86DirectTailGraph{origin: file, original: x86DirectTailSnapshot(file), goarch: goarch, helpers: helpers,
-		symbols: make(map[string]string), externalSymbols: make(map[string]string), roots: make(map[string]*x86DirectTailRoot), numerical: options.NumericalReads}
+		symbols: make(map[string]string), externalSymbols: make(map[string]string), roots: make(map[string]*x86DirectTailRoot), numerical: options.NumericalReads,
+		goPackage: options.goPackage}
 	signatures, err := numericalCloneSignatures(options.Sigs)
 	if err != nil {
 		return nil, nil, err
@@ -319,6 +345,9 @@ func newX86DirectTailGraph(file *File, options Options, helpers map[string]bool,
 		return nil, nil, x86DirectTailContext("resolver changed complete source or signatures")
 	}
 	if err := graph.auditReferences(); err != nil {
+		return nil, nil, err
+	}
+	if err := graph.verifyPureGoTails(); err != nil {
 		return nil, nil, err
 	}
 	return graph, byName, nil
@@ -394,6 +423,9 @@ func (graph *x86DirectTailGraph) verify(file *File, options Options) (result err
 		if err := verifyNormalizedNumericalReads(file, options); err != nil {
 			return err
 		}
+	}
+	if err := graph.verifyPureGoTails(); err != nil {
+		return err
 	}
 	before := x86DirectTailSnapshot(file)
 	selected := x86DirectTailSnapshot(file)
