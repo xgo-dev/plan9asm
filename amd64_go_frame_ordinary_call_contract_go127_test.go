@@ -60,6 +60,32 @@ func TestGoAMD64FrameOrdinaryCallKeepsPrivateLeafAndPrototypeBoundaries(t *testi
 					}
 				}()
 			}
+			if test.name == "pointer-callee" {
+				if err != nil {
+					t.Fatal("actual typed pointer callee source was rejected", err)
+				}
+				file, err := Parse(ArchAMD64, ordinaryGoFrameCallAssembly)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Run("signatures-alone", func(t *testing.T) {
+					fixedLocalAPIs(t, pkg, file, options, func(t *testing.T, ir string, err error) {
+						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+							t.Fatal("a pointer callee signature granted an unobserved physical caller frame", err, ir)
+						}
+					})
+				})
+				t.Run("source-bound", func(t *testing.T) {
+					fixedLocalFreshAPIs(t, pkg, request, options, []string{"Translate", "Module", "GoModule"},
+						func(t *testing.T, ir string, err error) {
+							if err != nil || !strings.Contains(ir, "call i64 "+llvmGlobal(pkg.Path+".Callee")+"(ptr ") {
+								t.Fatal("an initialized word did not retain its exact opaque-pointer call", err, ir)
+							}
+							ordinaryGoFrameCallObjects(t, ir)
+						})
+				})
+				return
+			}
 			if !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("an unresolved target or prototype alone granted a callee/source contract", err)
 			}

@@ -69,6 +69,13 @@ func currentSDKObjectIsText(kind uint8) bool {
 	return kind == 1 || kind == 2 // STEXT, STEXTFIPS.
 }
 
+func (definitions sdkAssemblyNamedDefinitions) observeCallText(symbol indexedObjectSymbol, assembly bool, calls map[string]bool) error {
+	if calls != nil && !calls[symbol.Name] && !currentSDKObjectIsText(symbol.Kind) {
+		return nil // Unrelated storage is never selected or returned as a callee.
+	}
+	return definitions.observe(symbol, assembly)
+}
+
 func (definitions sdkAssemblyNamedDefinitions) observe(symbol indexedObjectSymbol, assembly bool) error {
 	if symbol.Namespace == TextSymbolNonpkgReference || symbol.Name == "" {
 		return nil

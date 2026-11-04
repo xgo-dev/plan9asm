@@ -26,7 +26,7 @@ type x86FixedLocalBinding struct {
 	leaves         map[string]string // Original source symbol to observed native TEXT, never a signature.
 	symbols        map[string]string
 	declarations   map[string]goAMD64FrameDeclaration
-	callees        map[string]goAMD64FrameDeclaration // Independently typed Go bodies, not source TEXTs.
+	callees        map[string]goAMD64FrameDeclaration // Separate typed Go/SDK callees, not private source TEXTs.
 	numericalReads *GoX86NumericalReadBinding
 	literalData    map[string]x86FixedLocalData
 	globals        map[string]goReadOnlyObject
@@ -34,7 +34,8 @@ type x86FixedLocalBinding struct {
 
 // BindFixedLocal binds a complete original typed ABI0 file to its actual Go
 // object observation. It does not support dynamic incoming frames, pointees,
-// imported declarations, native entries or arbitrary local-memory effects.
+// unauthenticated imported declarations, native entries or arbitrary local-memory
+// effects. Foreign SDK calls require their captured declaration and ABI0 entry.
 // The returned Options are independent copies; their private signatures may
 // also be transported by GoModuleOptions.ManualSig. The capture context must
 // remain live through translation. Close or any failed Verify revokes them.
@@ -213,7 +214,23 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 	for name, sum := range source.inputs {
 		binding.inputs[name] = sum
 	}
-	options.Sigs, err = cloneFixedLocalSigs(options.Sigs)
+	// Only the authenticated foreign SDK owner can supply a missing callee.
+	// Keep explicit consumer signatures strict and copy before exposing slices.
+	joined := make(map[string]FuncSig, len(options.Sigs)+len(callees))
+	for name, sig := range options.Sigs {
+		joined[name] = sig
+	}
+	for name, declaration := range callees {
+		path, _ := goReadOnlyImportedName(name)
+		if _, supplied := joined[name]; !supplied && path != pkg.Path {
+			selected, captured := source.imports[path]
+			if !captured || !selected.Standard || selected.Module != nil {
+				return Options{}, goAMD64FrameContext("ordinary callee defaults require their actual SDK owner")
+			}
+			joined[name] = declaration.signature
+		}
+	}
+	options.Sigs, err = cloneFixedLocalSigs(joined)
 	if err != nil {
 		return Options{}, err
 	}
@@ -223,14 +240,12 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 	}
 	for name, declaration := range callees {
 		sig, supplied := options.Sigs[name]
-		symbol := "·" + strings.TrimPrefix(name, pkg.Path+".")
-		if !supplied || !reflect.DeepEqual(sig, declaration.signature) ||
-			resolve(symbol) != name && resolve(name) != name {
+		if !supplied || !reflect.DeepEqual(sig, declaration.signature) {
 			return Options{}, goAMD64FrameContext("ordinary Go callee signature or resolution changed: %s", name)
 		}
 		binding.signatures[name] = actualSignatures[name]
 		binding.declarations[name] = declaration
-		binding.symbols[symbol], binding.symbols[name] = name, name
+		binding.symbols[name] = name
 	}
 	leafSources := make(map[string]string)
 	for name, observed := range source.functions {
@@ -245,12 +260,12 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 				continue
 			}
 			symbol, _, _ := parseSBRef(ins.Args[0].Sym)
-			target := pkg.Path + "." + strings.TrimPrefix(symbol, "·")
-			if _, ordinary := callees[symbol]; ordinary {
-				target = symbol
-			}
+			target := goAMD64FrameCallName(pkg.Path, symbol)
 			if _, ordinary := callees[target]; ordinary && resolve(symbol) != target {
 				return Options{}, goAMD64FrameContext("ordinary Go callsite changed its exact target resolution")
+			}
+			if _, ordinary := callees[target]; ordinary {
+				binding.symbols[symbol] = target
 			}
 		}
 		if native, leaf := leafSources[fn.Sym]; leaf {

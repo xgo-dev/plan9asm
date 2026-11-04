@@ -16,6 +16,7 @@ func (source *GoAMD64FrameSource) ordinaryCallDeclarations(pkg GoPackage, file *
 		return nil, err
 	}
 	entries := make(map[string]bool)
+	foreign := make(map[string]map[string]bool)
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
 			if ins.Op != OpCALL || len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
@@ -25,20 +26,75 @@ func (source *GoAMD64FrameSource) ordinaryCallDeclarations(pkg GoPackage, file *
 			if valid && offset == 0 && leaves[name] {
 				continue
 			}
-			local := strings.TrimPrefix(name, "·")
-			if local == name {
-				local = strings.TrimPrefix(name, pkg.Path+".")
+			path, local := goReadOnlyImportedName(goAMD64FrameCallName(pkg.Path, name))
+			if !valid || offset != 0 || path == "" {
+				return nil, goAMD64FrameContext("ordinary CALL needs an exact selected Go target")
 			}
-			if !valid || offset != 0 || local == name || local == "" || strings.ContainsAny(local, "·./<>") {
-				return nil, goAMD64FrameContext("ordinary CALL needs a selected same-package Go body")
+			if path == pkg.Path {
+				entries[local] = true
+			} else {
+				if foreign[path] == nil {
+					foreign[path] = make(map[string]bool)
+				}
+				foreign[path][local] = true
 			}
-			entries[local] = true
 		}
 	}
-	if len(entries) == 0 {
+	if len(entries)+len(foreign) == 0 {
 		return nil, nil
 	}
-	return source.typedSourceDeclarations(pkg, true, "amd64", false, entries, false, true)
+	declarations := make(map[string]goAMD64FrameDeclaration)
+	if len(entries) != 0 {
+		declarations, err = source.typedSourceDeclarations(pkg, false, "amd64", true, entries, false, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for path, names := range foreign {
+		selected, err := source.ordinarySDKCallDeclarations(path, names)
+		if err != nil {
+			return nil, err
+		}
+		for name, declaration := range selected {
+			declarations[name] = declaration
+		}
+	}
+	for _, declaration := range declarations {
+		if !goAMD64FrameScalarCall(declaration.signature) {
+			return nil, goAMD64FrameContext("ordinary CALL has a non-scalar transport")
+		}
+	}
+	return declarations, nil
+}
+
+func goAMD64FrameCallName(path, symbol string) string {
+	if strings.HasPrefix(symbol, "·") {
+		symbol = path + "." + strings.TrimPrefix(symbol, "·")
+	}
+	owner, name := goReadOnlyImportedName(symbol)
+	if owner == "" {
+		return ""
+	}
+	return owner + "." + name
+}
+
+func goAMD64FrameScalarCall(sig FuncSig) bool {
+	scalar := func(typ LLVMType) bool {
+		return typ == Ptr || typ == I1 || typ == I8 || typ == I16 || typ == I32 || typ == I64
+	}
+	for _, typ := range sig.Args {
+		if !scalar(typ) {
+			return false
+		}
+	}
+	if sig.Ret == Void || scalar(sig.Ret) {
+		return true
+	}
+	fields, valid := parseLiteralStructFields(sig.Ret)
+	for _, typ := range fields {
+		valid = valid && scalar(typ)
+	}
+	return valid
 }
 
 func fixedLocalOrdinaryCall(ins Instr, binding *x86FixedLocalBinding) (FuncSig, bool) {
@@ -50,11 +106,12 @@ func fixedLocalOrdinaryCall(ins Instr, binding *x86FixedLocalBinding) (FuncSig, 
 	declaration, found := binding.callees[name]
 	sig, supplied := binding.signatures[name]
 	return sig, valid && offset == 0 && found && supplied &&
-		declaration.transport == goAMD64FrameNumericTransport && reflect.DeepEqual(sig, declaration.signature)
+		(declaration.transport == goAMD64FrameNumericTransport || declaration.transport == goAMD64FrameCompositeTransport) &&
+		goAMD64FrameScalarCall(sig) && reflect.DeepEqual(sig, declaration.signature)
 }
 
 // The existing ABI0 emitter reads outgoing slots and writes only typed result
-// slots. No pointer or physical scratch state crosses this numeric contract.
+// slots. Opaque pointer words supply no private-frame or pointee authority.
 // A Go callee may overwrite its entire outgoing extent and every scratch bank;
 // only unescaped caller locals outside that extent remain initialized.
 func fixedLocalOrdinaryCallStep(ins Instr, state *x86FixedLocalState, proof *x86FixedLocalProof) error {
@@ -71,10 +128,17 @@ func fixedLocalOrdinaryCallStep(ins Instr, state *x86FixedLocalState, proof *x86
 	for group, slots := range [][]FrameSlot{sig.Frame.Params, sig.Frame.Results} {
 		for _, slot := range slots {
 			width := frameTypeSize(slot.Type, 8)
-			if slot.Type == Ptr || width <= 0 || slot.Offset < 0 || slot.Offset > proof.frame-width ||
-				group == 0 && (!state.bytes.all(slot.Offset, width) ||
-					slot.Type == I1 && !state.booleanBytes.all(slot.Offset, width)) {
-				return goAMD64FrameContext("ordinary CALL reads uninitialized or nonnumeric outgoing bytes")
+			if width <= 0 || slot.Offset < 0 || slot.Offset > proof.frame-width {
+				return goAMD64FrameContext("ordinary CALL slot exceeds its exact outgoing frame")
+			}
+			initialized := state.bytes.all(slot.Offset, width)
+			if slot.Type == Ptr && group == 0 {
+				origin := state.opaqueCells[slot.Offset]
+				_, private := state.addresses[slot.Offset]
+				initialized = width == 8 && !private && (initialized || origin.valid() && !origin.readonly())
+			}
+			if group == 0 && (!initialized || slot.Type == I1 && !state.booleanBytes.all(slot.Offset, width)) {
+				return goAMD64FrameContext("ordinary CALL reads uninitialized or noncanonical outgoing bytes")
 			}
 			if end := slot.Offset + width; end > extent {
 				extent = end
@@ -90,8 +154,11 @@ func fixedLocalOrdinaryCallStep(ins Instr, state *x86FixedLocalState, proof *x86
 	fixedLocalRevokeSpillRoles(state, 0, extent)
 	for _, slot := range sig.Frame.Results {
 		width := frameTypeSize(slot.Type, 8)
-		state.bytes.setRange(slot.Offset, width, true)
+		state.bytes.setRange(slot.Offset, width, slot.Type != Ptr)
 		state.booleanBytes.setRange(slot.Offset, width, slot.Type == I1)
+		if slot.Type == Ptr {
+			state.opaqueCells[slot.Offset] = fixedLocalOrigin(x86FixedLocalOrigin{})
+		}
 	}
 	// This is the existing architectural GP bank, not a native-MMX grant.
 	for _, reg := range x86NativeMMXGPRegisters {

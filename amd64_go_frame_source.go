@@ -63,7 +63,7 @@ type GoAMD64FrameSource struct {
 	ownedInfo          os.FileInfo
 	functions          map[string]goAMD64FrameFunction
 	declarations       map[string]goAMD64FrameDeclaration
-	callees            map[string]goAMD64FrameDeclaration // Actual selected Go bodies, never ASM entries or private leaves.
+	callees            map[string]goAMD64FrameDeclaration // Actual separate Go/SDK callees, never private leaves.
 	imports            map[string]goAMD64FrameSelection
 	origins            map[string]int
 	downloadedOrigin   *gooriginalsrc.OriginSet
@@ -800,7 +800,11 @@ func goAMD64FrameReadBound(name string, maximum int64) (_ []byte, readErr error)
 }
 
 func (source *GoAMD64FrameSource) read(name string) ([]byte, error) {
-	data, err := goAMD64FrameRead(name)
+	return source.readBound(name, 64<<20)
+}
+
+func (source *GoAMD64FrameSource) readBound(name string, maximum int64) ([]byte, error) {
+	data, err := goAMD64FrameReadBound(name, maximum)
 	if err != nil {
 		return nil, err
 	}
@@ -1775,10 +1779,14 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 			for name, target := range names {
 				callNames[name] = target
 			}
-			for name := range callees[0] {
-				symbol := "·" + strings.TrimPrefix(name, pkg.Path+".")
-				callTargets[symbol], callTargets[name] = true, true
-				callNames[symbol], callNames[name] = name, name
+			for _, instruction := range original.Instrs {
+				if instruction.Op == OpCALL && len(instruction.Args) == 1 && instruction.Args[0].Kind == OpSym {
+					symbol, offset, valid := parseSBRef(instruction.Args[0].Sym)
+					name := goAMD64FrameCallName(pkg.Path, symbol)
+					if _, found := callees[0][name]; valid && offset == 0 && found {
+						callTargets[symbol], callNames[symbol] = true, name
+					}
+				}
 			}
 		}
 		if err := goAMD64FrameSourceInstructions(original, callTargets); err != nil {

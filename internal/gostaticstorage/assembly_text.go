@@ -70,10 +70,10 @@ func observeX86AssemblyArchive(data, builtinSource []byte, target string, source
 }
 
 func observeAssemblyArchive(data, builtinSource []byte, target string, sources []string, sdk bool) ([]TextMember, error) {
-	return observeAssemblyArchiveReferences(data, builtinSource, target, sources, sdk, nil)
+	return observeAssemblyArchiveReferences(data, builtinSource, target, sources, sdk, nil, nil)
 }
 
-func observeAssemblyArchiveReferences(data, builtinSource []byte, target string, sources []string, sdk bool, referenced sdkReferencedSymbols) ([]TextMember, error) {
+func observeAssemblyArchiveReferences(data, builtinSource []byte, target string, sources []string, sdk bool, referenced sdkReferencedSymbols, calls map[string]bool) ([]TextMember, error) {
 	builtins, err := textBuiltins(builtinSource)
 	if err != nil {
 		return nil, err
@@ -151,7 +151,7 @@ func observeAssemblyArchiveReferences(data, builtinSource []byte, target string,
 				return nil, err
 			}
 			for _, symbol := range symbols {
-				if err := sdkDefinitions.observe(symbol, index != 0); err != nil {
+				if err := sdkDefinitions.observeCallText(symbol, index != 0, calls); err != nil {
 					return nil, err
 				}
 			}
@@ -210,5 +210,26 @@ func ObserveX86SDKAssemblyArchiveReferences(data, builtinSource []byte, target s
 	if err != nil {
 		return nil, err
 	}
-	return observeAssemblyArchiveReferences(data, builtinSource, target, sources, true, symbols)
+	return observeAssemblyArchiveReferences(data, builtinSource, target, sources, true, symbols, nil)
+}
+
+// ObserveX86SDKCallArchiveReferences projects callable TEXT only. Unrelated
+// compiler/assembly storage keeps its complete object/reference validation,
+// but supplies no DATA identity, selected winner or memory permission. Every
+// TEXT collision and every requested name's storage collision remains strict.
+func ObserveX86SDKCallArchiveReferences(data, builtinSource []byte, target string, sources []string,
+	referenced map[string]SDKReferencedArchive, calls map[string]bool) ([]TextMember, error) {
+	if !X86SDKTarget(target) || len(calls) == 0 || len(calls) > 4096 {
+		return nil, contextError("SDK call TEXT needs its bounded target inventory")
+	}
+	for name, requested := range calls {
+		if name == "" || !requested {
+			return nil, contextError("SDK call TEXT has an invalid requested name")
+		}
+	}
+	symbols, err := sdkReferencedArchiveSymbols(referenced, target)
+	if err != nil {
+		return nil, err
+	}
+	return observeAssemblyArchiveReferences(data, builtinSource, target, sources, true, symbols, calls)
 }
