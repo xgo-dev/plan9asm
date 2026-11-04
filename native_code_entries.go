@@ -8,9 +8,9 @@ import (
 
 var nativeCodeObjectName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9.]*$`)
 
-// A bound bare TEXT is an address-only native import tail stub, never an
-// inferred Go declaration or an inferred C prototype. Its complete source
-// establishes that it does not allocate a Go/native frame or touch registers.
+// A bound bare TEXT is an address-only, zero-frame native stub, never an
+// inferred Go declaration or C prototype. Its complete source contains either
+// only RET or an exact native import tail; neither allocates or accesses a frame.
 func validateNativeCodeEntry(fn Func, opts NativeOptions) error {
 	if !nativeName.MatchString(fn.Sym) || len(fn.Instrs) < 2 || len(fn.Instrs) > 3 {
 		return fmt.Errorf("native code entry requires a bare import tail stub: %s", fn.Sym)
@@ -27,6 +27,9 @@ func validateNativeCodeEntry(fn Func, opts NativeOptions) error {
 		return fmt.Errorf("native code entry requires NOSPLIT|NOFRAME: %s", fn.Sym)
 	}
 	tail := fn.Instrs[1]
+	if len(fn.Instrs) == 2 && tail.Op == OpRET && len(tail.Args) == 0 {
+		return nil
+	}
 	if (tail.Op != "JMP" && (opts.GOARCH != "arm64" || tail.Op != "B")) || len(tail.Args) != 1 || tail.Args[0].Kind != OpSym {
 		return fmt.Errorf("native code entry requires a direct native import tail: %s", fn.Sym)
 	}

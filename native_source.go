@@ -42,8 +42,8 @@ type NativeOptions struct {
 	Imports      map[string]string
 	// CodeEntries binds source-native, bare TEXT address tokens to distinct
 	// object symbols. It is not a Go/C signature. Only explicit zero-frame,
-	// NOFRAME native import tail stubs qualify; all other bare TEXT stays on
-	// the declaration-driven path. The default does not bind any entry.
+	// NOSPLIT|NOFRAME return leaves or native import tails qualify; other bare
+	// TEXT remains declaration-driven. The default does not bind any entry.
 	CodeEntries map[string]string
 }
 
