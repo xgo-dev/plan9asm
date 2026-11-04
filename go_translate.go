@@ -326,6 +326,12 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 			return nil, err
 		}
 	}
+	var tailPackage *GoPackage
+	// Numerical reads already bind the actual package and retain sealed Options.
+	// The separate imported-tail source must not change that consumer profile.
+	if opt.NumericalReads == nil {
+		tailPackage = &pkg
+	}
 	var registerBoolCalls *x86ABI0BoolCallSource
 	if (opt.GOARCH == "amd64" || opt.GOARCH == "386") &&
 		(x86DirectTailSourceNeeded(file) || len(goFixedLocalLeafSymbols(file, resolve, opt.ManualSig)) != 0) {
@@ -346,7 +352,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 		}
 		request := Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple,
 			ResolveSym: resolve, Sigs: completeSigs, NumericalReads: opt.NumericalReads, X86TLSMoves: opt.X86TLSMoves,
-			WASMABI: opt.WASMABI, X87Mode: opt.X87Mode, AnnotateSource: opt.AnnotateSource, goReadOnlyStorage: readOnlyStorage, goPackage: &pkg}
+			WASMABI: opt.WASMABI, X87Mode: opt.X87Mode, AnnotateSource: opt.AnnotateSource, goReadOnlyStorage: readOnlyStorage, goPackage: tailPackage}
 		calls, err := prepareX86ABI0BoolCalls(file, request)
 		if err != nil {
 			return nil, err
@@ -423,7 +429,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 		request, signatures := file, sigs
 		defer func() {
 			final := graph.verify(request, Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple, ResolveSym: resolve, Sigs: signatures,
-				NumericalReads: opt.NumericalReads, WASMABI: opt.WASMABI, X87Mode: opt.X87Mode, AnnotateSource: opt.AnnotateSource, goReadOnlyStorage: readOnlyStorage, goPackage: &pkg})
+				NumericalReads: opt.NumericalReads, WASMABI: opt.WASMABI, X87Mode: opt.X87Mode, AnnotateSource: opt.AnnotateSource, goReadOnlyStorage: readOnlyStorage, goPackage: tailPackage})
 			if sha256.Sum256(originalSource) != originalSourceDigest {
 				final = errors.Join(final, x86DirectTailContext("original Go assembly input changed during consumption"))
 			}
@@ -457,7 +463,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 		callOriginal = completeFile
 		boolCalls = registerBoolCalls
 		if boolCalls == nil {
-			boolCalls, err = prepareX86ABI0BoolCalls(completeFile, Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple, ResolveSym: resolve, Sigs: sigs, goReadOnlyStorage: readOnlyStorage, goPackage: &pkg})
+			boolCalls, err = prepareX86ABI0BoolCalls(completeFile, Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple, ResolveSym: resolve, Sigs: sigs, goReadOnlyStorage: readOnlyStorage, goPackage: tailPackage})
 			if err != nil {
 				return nil, err
 			}
@@ -480,7 +486,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 	}
 	mod, err := TranslateModuleInContext(ctx, file, Options{
 		goReadOnlyStorage:      readOnlyStorage,
-		goPackage:              &pkg,
+		goPackage:              tailPackage,
 		x86OriginalFile:        callOriginal,
 		x86BoolCallSource:      boolCalls,
 		TargetTriple:           opt.TargetTriple,

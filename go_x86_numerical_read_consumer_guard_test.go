@@ -56,6 +56,36 @@ func TestGoX86NumericalSBReadGoWrapperSealedFunctionMetadata(t *testing.T) {
 	}
 }
 
+func TestGoX86NumericalSBReadGoWrapperKeepsSealedPackageProfile(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			pkg, _, _, create := numericalConsumerFactory(t, arch)
+			source, options := create(t)
+			binding := options.NumericalReads
+			if binding.options.goPackage != nil {
+				t.Fatal("numerical binding acquired an external-tail package role")
+			}
+			result, err := TranslateGoModule(pkg, numericalWrapperOriginal(t, source), GoModuleOptions{
+				FileName: source.request.AssemblyFile, GOOS: "linux", GOARCH: arch,
+				TargetTriple: options.TargetTriple, NumericalReads: binding, ResolveSym: options.ResolveSym,
+			})
+			if result != nil && !result.Module.IsNil() {
+				defer result.Module.Dispose()
+			}
+			if err != nil || result == nil || result.Module.IsNil() || len(result.Functions) != 1 ||
+				result.Functions[0].ResolvedSymbol != pkg.Path+".Feature" {
+				t.Fatal("unchanged numerical Go wrapper lost its sealed package profile", err)
+			}
+			if binding.options.goPackage != nil {
+				t.Fatal("Go wrapper changed the sealed numerical options")
+			}
+			if err := source.Verify(binding.context); err != nil {
+				t.Fatal("successful Go wrapper revoked the unchanged source", err)
+			}
+		})
+	}
+}
+
 func TestGoX86NumericalSBReadGoWrapperCompleteProfileGuards(t *testing.T) {
 	pkg, _, _, create := numericalConsumerFactory(t, "amd64")
 	for _, test := range []struct {
@@ -260,7 +290,7 @@ func numericalConsumerFactory(t *testing.T, arch string) (GoPackage, *File, Opti
 }
 
 func TestGoX86NumericalSBReadConsumerCompleteOptionAndSignatureGuards(t *testing.T) {
-	_, file, _, create := numericalConsumerFactory(t, "amd64")
+	pkg, file, _, create := numericalConsumerFactory(t, "amd64")
 	for _, test := range []struct {
 		name   string
 		mutate func(*Options)
@@ -271,6 +301,8 @@ func TestGoX86NumericalSBReadConsumerCompleteOptionAndSignatureGuards(t *testing
 		{"x87", func(o *Options) { o.X87Mode = X87Software }},
 		{"annotation", func(o *Options) { o.AnnotateSource = true }},
 		{"tail groups", func(o *Options) { o.X86TailGroups = []X86TailGroup{{}} }},
+		{"private Go package", func(o *Options) { o.goPackage = &pkg }},
+		{"foreign private Go package", func(o *Options) { o.goPackage = &GoPackage{Path: "foreign"} }},
 		{"missing resolver", func(o *Options) { o.ResolveSym = nil }},
 		{"foreign resolver", func(o *Options) { o.ResolveSym = func(s string) string { return s } }},
 		{"missing signatures", func(o *Options) { o.Sigs = nil }},
@@ -368,7 +400,7 @@ func TestGoX86NumericalSBReadBindingDeclarationIdentityAndWrapperGuards(t *testi
 			t.Fatal("same-shaped foreign private type package replaced the live declaration owner")
 		}
 	})
-	for _, mutation := range []string{"missing syntax", "changed syntax", "source selection", "manual signature"} {
+	for _, mutation := range []string{"changed types", "changed imports", "missing syntax", "changed syntax", "source selection", "manual signature"} {
 		t.Run(mutation, func(t *testing.T) {
 			_, options := create(t)
 			binding := options.NumericalReads
@@ -376,6 +408,10 @@ func TestGoX86NumericalSBReadBindingDeclarationIdentityAndWrapperGuards(t *testi
 			opt := GoModuleOptions{FileName: binding.source.request.AssemblyFile, GOOS: "linux", GOARCH: "amd64",
 				TargetTriple: options.TargetTriple, NumericalReads: binding, ResolveSym: options.ResolveSym}
 			switch mutation {
+			case "changed types":
+				wrapperPkg.Types = types.NewPackage(pkg.Path, pkg.Types.Name())
+			case "changed imports":
+				wrapperPkg.Imports = map[string]*types.Package{"foreign": types.NewPackage("example.invalid/foreign", "foreign")}
 			case "missing syntax":
 				wrapperPkg.Syntax = nil
 			case "changed syntax":
@@ -390,7 +426,11 @@ func TestGoX86NumericalSBReadBindingDeclarationIdentityAndWrapperGuards(t *testi
 			case "manual signature":
 				opt.ManualSig = func(name string) (FuncSig, bool) { return options.Sigs[name], true }
 			}
-			if err := verifyGoNumericalReadInputs(binding, wrapperPkg, opt); !errors.Is(err, ErrProbeNeedsContext) {
+			result, err := TranslateGoModule(wrapperPkg, numericalWrapperOriginal(t, binding.source), opt)
+			if result != nil && !result.Module.IsNil() {
+				result.Module.Dispose()
+			}
+			if result != nil || !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("unbound Go wrapper declaration/source role survived the precondition", mutation, err)
 			}
 			if !errors.Is(binding.source.Verify(binding.context), ErrProbeNeedsContext) {
