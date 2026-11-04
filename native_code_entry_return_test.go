@@ -98,12 +98,22 @@ func TestNativeCodeEntryReturnLeafRejectsUnprovedContracts(t *testing.T) {
 			{"unowned sibling", source + "\nTEXT other(SB), NOSPLIT|NOFRAME, $0-0\nRET\n"},
 		} {
 			t.Run(arch+"/"+row.name, func(t *testing.T) {
-				ctx := llvm.NewContext()
-				defer ctx.Dispose()
-				mod, err := TranslateNativeModule(ctx, []byte(row.source), NativeOptions{
+				opts := NativeOptions{
 					GOOS: "linux", GOARCH: arch, PackagePath: "probe",
 					CodeEntries: map[string]string{"rawEntry": "probe.native_return"},
-				})
+				}
+				if row.name == "missing NOFRAME" || row.name == "register access" ||
+					arch == "amd64" && row.name == "nonzero frame" {
+					nativePhysicalOriginalObject(t, "linux", arch, row.source)
+					ir := nativeAMD64PhysicalObjects(t, row.source, opts)
+					if !strings.Contains(ir, "naked noinline") || !strings.Contains(ir, "probe.native_return") {
+						t.Fatal("physical entry lost its exact address-only identity", ir)
+					}
+					return
+				}
+				ctx := llvm.NewContext()
+				defer ctx.Dispose()
+				mod, err := TranslateNativeModule(ctx, []byte(row.source), opts)
 				if err == nil {
 					mod.Dispose()
 					t.Fatal("unproved source inherited the closed address-entry role")

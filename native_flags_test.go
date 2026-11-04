@@ -143,6 +143,13 @@ func TestNativeNumericFlagsKeepRequiredEntryBits(t *testing.T) {
 				source := "TEXT tail(SB)," + flags + ",$0\nJMP imported(SB)\n"
 				options := NativeOptions{GOOS: "linux", GOARCH: arch, PackagePath: "probe",
 					Imports: map[string]string{"imported": "body"}, CodeEntries: map[string]string{"tail": "probe.tail"}}
+				if flags == "4" {
+					// NOSPLIT remains required. An explicit zero Go frame may
+					// use the assembler's ordinary leaf frame policy.
+					nativePhysicalOriginalObject(t, "linux", arch, "#include \"textflag.h\"\n"+source)
+					nativeAMD64PhysicalObjects(t, source, options)
+					return
+				}
 				if output, data, err := TranslateNativeSource([]byte(source), options); err == nil || output != "" || data != nil {
 					t.Fatal("native code entry ignored missing/foreign flag bits", output, data, err)
 				}

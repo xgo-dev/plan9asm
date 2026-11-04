@@ -146,7 +146,26 @@ func TestNativeCodeEntryRejectsUnprovedContracts(t *testing.T) {
 			t.Run(arch+"/"+tc.name, func(t *testing.T) {
 				opts := nativeCodeEntryOptions("linux", arch)
 				opts.CodeEntries = tc.entries
-				if asm, _, err := TranslateNativeSource([]byte(tc.src), opts); err == nil || asm != "" {
+				physical := tc.name == "no NOFRAME" || tc.name == "call is not tail" ||
+					arch == "amd64" && tc.name == "nonzero frame" ||
+					arch == "arm64" && (tc.name == "data before tail" || tc.name == "dead data is not leaf proof")
+				if physical {
+					nativePhysicalOriginalObject(t, "linux", arch, "#include \"textflag.h\"\n"+tc.src)
+					assembly, _, err := TranslateNativeSource([]byte(tc.src), opts)
+					if err != nil {
+						t.Fatal("explicit physical entry rejected", err)
+					}
+					nativePhysicalAssemblyObject(t, assembly, arch)
+					if tc.name != "dead data is not leaf proof" {
+						ir := nativeAMD64PhysicalObjects(t, tc.src, opts)
+						if !strings.Contains(ir, "naked noinline") {
+							t.Fatal("physical entry acquired a typed call convention", ir)
+						}
+						return
+					}
+					// The original dead instruction remains legal assembly, but
+					// does not complete a returning LLVM carrier.
+				} else if asm, _, err := TranslateNativeSource([]byte(tc.src), opts); err == nil || asm != "" {
 					t.Fatalf("accepted unproved contract: %v\n%s", err, asm)
 				}
 				ctx := llvm.NewContext()

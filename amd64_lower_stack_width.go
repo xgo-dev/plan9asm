@@ -90,6 +90,9 @@ func x86StackWidthProperties(ins Instr, arch string) (amd64StackWidthSpec, bool,
 		return spec, true, fmt.Errorf("%s %s expects %s: %q", arch, base, role, ins.Raw)
 	}
 	arg := ins.Args[0]
+	if arg.Kind == OpImm && (arg.ImmRaw != "" || arg.ImmIsFloat || arg.Imm < -2147483648 || arg.Imm > 4294967295) {
+		return fail()
+	}
 	if x86SegmentRegisterOperand(arg) {
 		if !spec.segments.contains(arg.Reg) {
 			return fail()

@@ -8,39 +8,15 @@ import (
 
 var nativeCodeObjectName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9.]*$`)
 
-// A bound bare TEXT is an address-only, zero-frame native stub, never an
-// inferred Go declaration or C prototype. Its complete source contains either
-// only RET or an exact native import tail; neither allocates or accesses a frame.
+// A bound bare TEXT is an address-only native entry, never an
+// inferred Go declaration or C prototype. The physical backend validates
+// its complete body and assembler-managed frame independently.
 func validateNativeCodeEntry(fn Func, opts NativeOptions) error {
-	if !nativeName.MatchString(fn.Sym) || len(fn.Instrs) < 2 || len(fn.Instrs) > 3 {
-		return fmt.Errorf("native code entry requires a bare import tail stub: %s", fn.Sym)
+	if !nativeName.MatchString(fn.Sym) || len(fn.Instrs) < 2 {
+		return fmt.Errorf("native code entry requires complete bare TEXT: %s", fn.Sym)
 	}
-	parts := strings.Split(fn.Instrs[0].Raw, ",")
-	if len(parts) != 3 || (strings.TrimSpace(parts[2]) != "$0" && strings.TrimSpace(parts[2]) != "$0-0") {
-		return fmt.Errorf("native code entry requires zero frame and arguments: %s", fn.Sym)
-	}
-	flags, err := nativeFlags(parts[1], "NOSPLIT", "NOFRAME")
-	if err != nil {
-		return err
-	}
-	if !flags["NOSPLIT"] || !flags["NOFRAME"] {
-		return fmt.Errorf("native code entry requires NOSPLIT|NOFRAME: %s", fn.Sym)
-	}
-	tail := fn.Instrs[1]
-	if len(fn.Instrs) == 2 && tail.Op == OpRET && len(tail.Args) == 0 {
-		return nil
-	}
-	if (tail.Op != "JMP" && (opts.GOARCH != "arm64" || tail.Op != "B")) || len(tail.Args) != 1 || tail.Args[0].Kind != OpSym {
-		return fmt.Errorf("native code entry requires a direct native import tail: %s", fn.Sym)
-	}
-	target := strings.TrimSuffix(tail.Args[0].Sym, "(SB)")
-	if tail.Args[0].Sym != target+"(SB)" || !nativeName.MatchString(target) || opts.Imports[target] == "" {
-		return fmt.Errorf("native code entry has no exact declared native import: %s", fn.Sym)
-	}
-	if len(fn.Instrs) == 3 && (fn.Instrs[2].Op != "RET" || len(fn.Instrs[2].Args) != 0) {
-		return fmt.Errorf("native code entry only permits an unreachable zero-operand RET: %s", fn.Sym)
-	}
-	return nil
+	_, err := nativeTextFrame(fn, opts)
+	return err
 }
 
 func validateNativeCodeBindings(f *File, opts NativeOptions) error {

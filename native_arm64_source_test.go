@@ -261,6 +261,17 @@ func TestNativeARM64RejectsUnsupportedSource(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			assembly, data, err := TranslateNativeARM64Source([]byte(tc.source), map[string]string{"imported": "strlen"}, "probe")
+			if tc.name == "data only" {
+				if err != nil || len(data) != 1 || data[0].Size != 8 || assembly == "" {
+					t.Fatal("legal BSS-only source rejected", err, data, assembly)
+				}
+				nativePhysicalOriginalObject(t, "darwin", "arm64", "#include \"textflag.h\"\n"+tc.source)
+				ir := nativeAMD64PhysicalObjects(t, tc.source, NativeOptions{GOOS: "darwin", GOARCH: "arm64", PackagePath: "probe"})
+				if !strings.Contains(ir, "zeroinitializer") || strings.Contains(ir, "define ") {
+					t.Fatal("BSS-only source acquired a fabricated function", ir)
+				}
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err=%v; want %q", err, tc.want)
 			}

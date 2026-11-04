@@ -94,6 +94,9 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts NativeOptions) (mo
 			}
 		}
 		if alias, ok := opts.Imports[name]; ok {
+			if strings.HasPrefix(name, "·") && !data {
+				return llvm.Value{}, fmt.Errorf("native data binding is not a callable entry: %s", s)
+			}
 			if v, ok := imports[alias]; ok {
 				return v, nil
 			}
@@ -158,7 +161,7 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts NativeOptions) (mo
 			return mod, err
 		}
 		last := string(fn.Instrs[len(fn.Instrs)-1].Op)
-		if last != "RET" && last != "JMP" && last != "B" {
+		if last != "RET" && last != "JMP" && last != "B" && !(last == "CALL" && opts.GOARCH == "amd64") {
 			return mod, fmt.Errorf("native naked TEXT must end with RET or an unconditional branch: %s", fn.Sym)
 		}
 		// Escape literal x86 '$' immediates before adding LLVM template operands.

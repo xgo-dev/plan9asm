@@ -46,6 +46,17 @@ mnemonics, comments or unused constants. Empty portable compiler barriers retain
 their independently compiled generic constraints. Matching native requests avoid
 the additional instruction walk.
 
+The separate native-source backend consumes shared typed operand forms and
+explicit physical-register instructions. Its naked carriers do not infer Go/C
+call prototypes, initialized inputs or logical frame permissions. On amd64,
+explicit NOSPLIT fixed TEXT frames follow the current Go assembler's BP/local
+entry and return contract; NOFRAME retains the source's physical stack policy.
+The minimum Go compiler can build and use this contract. That does not reproduce
+historical Go frame sequences: Go 1.20 uses a different BP-save sequence and
+leaves zero-local nonleaf entries frameless. Object observations distinguish
+those epochs; they do not establish equal historical incoming FLAGS. Ordinary
+typed IR and official instruction coverage remain on their existing path.
+
 ## Family and format normalization
 
 The implementation should scale with the **sum of legal format groups per

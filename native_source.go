@@ -39,11 +39,13 @@ func ForeignNativeFunctions(src []byte, goarch string) map[string]bool {
 type NativeOptions struct {
 	GOOS, GOARCH string
 	PackagePath  string
-	Imports      map[string]string
+	// Bare imports name external machine entries. A ·name key binds an
+	// external package-global address for memory operands, never CALL/JMP.
+	Imports map[string]string
 	// CodeEntries binds source-native, bare TEXT address tokens to distinct
-	// object symbols. It is not a Go/C signature. Only explicit zero-frame,
-	// NOSPLIT|NOFRAME return leaves or native import tails qualify; other bare
-	// TEXT remains declaration-driven. The default does not bind any entry.
+	// object symbols. It is not a Go/C signature. Complete physical forms and
+	// explicit NOSPLIT fixed frames are validated by the native backend;
+	// unbound bare TEXT stays declaration-driven. No entry is bound by default.
 	CodeEntries map[string]string
 }
 
@@ -53,7 +55,8 @@ func SupportsNativeTarget(goos, goarch string) bool {
 }
 
 // TranslateNativeSource translates checked Plan 9 source directly to native
-// assembly, without Go object files, implicit frames, or signature inference.
+// assembly, without Go object files or signature inference. Explicit fixed
+// TEXT frames retain their target entry/return transformation.
 func TranslateNativeSource(src []byte, opts NativeOptions) (string, []NativeData, error) {
 	f, ep, data, err := prepareNativeSource(src, opts)
 	if err != nil {
@@ -140,15 +143,17 @@ func prepareNativeSource(src []byte, opts NativeOptions) (*File, *nativeEmitter,
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if len(f.Funcs) == 0 {
-		return nil, nil, nil, fmt.Errorf("native assembly requires TEXT")
+	if len(f.Funcs) == 0 && len(f.Globl) == 0 {
+		return nil, nil, nil, fmt.Errorf("native assembly requires TEXT or GLOBL")
 	}
 	if err := validateNativeCodeBindings(f, opts); err != nil {
 		return nil, nil, nil, err
 	}
 	e := nativeEmitter{target: opts, funcs: map[string]string{}, globals: map[string]string{}, imports: imports}
 	for name, alias := range imports {
-		if !nativeName.MatchString(name) || !nativeName.MatchString(alias) {
+		function := nativeName.MatchString(name) && nativeName.MatchString(alias)
+		data := strings.HasPrefix(name, "·") && nativeName.MatchString(strings.TrimPrefix(name, "·")) && nativeDataObjectName.MatchString(alias)
+		if !function && !data {
 			return nil, nil, nil, fmt.Errorf("unsupported native import %q -> %q", name, alias)
 		}
 	}
@@ -170,21 +175,8 @@ func prepareNativeSource(src []byte, opts NativeOptions) (*File, *nativeEmitter,
 		if bound {
 			e.funcs[fn.Sym] = strconv.Quote(e.prefix() + object)
 		}
-		parts := strings.Split(fn.Instrs[0].Raw, ",")
-		if len(parts) != 3 || (strings.TrimSpace(parts[2]) != "$0" && strings.TrimSpace(parts[2]) != "$0-0") {
-			return nil, nil, nil, fmt.Errorf("native TEXT requires zero Go frame and arguments: %s", fn.Sym)
-		}
-		flags, err := nativeFlags(parts[1], "NOSPLIT", "NOFRAME")
-		if err != nil {
+		if _, err := nativeTextFrame(fn, opts); err != nil {
 			return nil, nil, nil, err
-		}
-		if !flags["NOSPLIT"] {
-			return nil, nil, nil, fmt.Errorf("native TEXT requires NOSPLIT: %s", fn.Sym)
-		}
-		for _, ins := range fn.Instrs {
-			if (ins.Op == "BL" || ins.Op == "CALL") && !flags["NOFRAME"] {
-				return nil, nil, nil, fmt.Errorf("native non-leaf TEXT requires NOFRAME: %s", fn.Sym)
-			}
 		}
 	}
 	var data []NativeData
@@ -219,6 +211,7 @@ func prepareNativeSource(src []byte, opts NativeOptions) (*File, *nativeEmitter,
 }
 
 var nativeName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
+var nativeDataObjectName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9./-]*$`)
 var nativePseudoRegister = regexp.MustCompile(`\b(?:SP|FP|g|G|R18_PLATFORM|R18|R31|W[0-9]+)\b`)
 
 // The general parser deliberately tolerates ignored includes and symbolic
@@ -253,7 +246,18 @@ func nativeSource(src []byte, goarch string) (string, error) {
 				for _, raw := range splitTopLevelCSV(rest) {
 					raw = strings.TrimSpace(raw)
 					if !strings.HasPrefix(raw, "$") && strings.HasSuffix(raw, ")") && !strings.HasSuffix(raw, "(SB)") {
-						if i := strings.LastIndex(raw, "("); i >= 0 {
+						i := strings.LastIndex(raw, "(")
+						if goarch == "amd64" && i >= 0 && strings.HasSuffix(raw[:i], ")") {
+							// Strip a real base before an index suffix, keeping
+							// parenthesized constant displacements intact.
+							base := strings.LastIndex(raw[:i], "(")
+							if base >= 0 {
+								if _, register := parseReg(strings.TrimSpace(raw[base+1 : i-1])); register {
+									i = base
+								}
+							}
+						}
+						if i >= 0 {
 							offset := strings.TrimSpace(raw[:i])
 							if offset != "" {
 								if _, ok := parseImmExpr(offset); !ok {
@@ -364,6 +368,9 @@ func (e *nativeEmitter) symbol(s string, data bool) (string, error) {
 		}
 	}
 	if alias, ok := e.imports[name]; ok {
+		if strings.HasPrefix(name, "·") && !data {
+			return "", fmt.Errorf("native data binding is not a callable entry: %s", s)
+		}
 		return strconv.Quote(e.prefix() + alias), nil
 	}
 	return "", fmt.Errorf("undeclared foreign symbol or unsupported native reference %s", s)
@@ -400,16 +407,26 @@ func (e *nativeEmitter) functionLabels(fn Func, i int) error {
 	return nil
 }
 func (e *nativeEmitter) functionBody(out *strings.Builder, fn Func) error {
+	plan, frameErr := nativeTextFrame(fn, e.target)
+	if frameErr != nil {
+		return frameErr
+	}
 	for _, ins := range fn.Instrs {
 		var err error
 		if e.target.GOARCH == "arm64" {
 			err = (&nativeARM64{e}).instruction(out, ins)
 		} else {
-			err = (&nativeAMD64{e}).instruction(out, ins)
+			err = (&nativeAMD64{nativeEmitter: e, frame: plan}).instruction(out, ins)
 		}
 		if err != nil {
 			return fmt.Errorf("native %s: %s: %w", fn.Sym, ins.Raw, err)
 		}
+	}
+	if e.target.GOARCH == "amd64" && fn.Instrs[len(fn.Instrs)-1].Op == "CALL" {
+		// Preserve every five-byte address-sensitive CALL slot. A function
+		// ending in CALL has no declared returning continuation; explicitly
+		// bound the final fallthrough without inventing a machine RET.
+		out.WriteString("\tud2\n")
 	}
 	return nil
 }
