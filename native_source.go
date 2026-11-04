@@ -406,6 +406,24 @@ func (e *nativeEmitter) functionLabels(fn Func, i int) error {
 	}
 	return nil
 }
+
+// A trailing call keeps its address-sensitive slots and explicitly bounds
+// the final continuation. It never invents a returning machine instruction.
+func nativeFunctionEnd(op Op, arch string) (trap string, valid bool) {
+	switch op {
+	case OpRET, "JMP", "B":
+		return "", true
+	case "CALL", "BL":
+		if arch == "amd64" {
+			return "\tud2\n", true
+		}
+		if arch == "arm64" {
+			return "\tbrk #0\n", true
+		}
+	}
+	return "", false
+}
+
 func (e *nativeEmitter) functionBody(out *strings.Builder, fn Func) error {
 	plan, frameErr := nativeTextFrame(fn, e.target)
 	if frameErr != nil {
@@ -422,12 +440,8 @@ func (e *nativeEmitter) functionBody(out *strings.Builder, fn Func) error {
 			return fmt.Errorf("native %s: %s: %w", fn.Sym, ins.Raw, err)
 		}
 	}
-	if e.target.GOARCH == "amd64" && fn.Instrs[len(fn.Instrs)-1].Op == "CALL" {
-		// Preserve every five-byte address-sensitive CALL slot. A function
-		// ending in CALL has no declared returning continuation; explicitly
-		// bound the final fallthrough without inventing a machine RET.
-		out.WriteString("\tud2\n")
-	}
+	trap, _ := nativeFunctionEnd(fn.Instrs[len(fn.Instrs)-1].Op, e.target.GOARCH)
+	out.WriteString(trap)
 	return nil
 }
 

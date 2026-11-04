@@ -160,8 +160,7 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts NativeOptions) (mo
 		if err = e.functionBody(&body, fn); err != nil {
 			return mod, err
 		}
-		last := string(fn.Instrs[len(fn.Instrs)-1].Op)
-		if last != "RET" && last != "JMP" && last != "B" && !(last == "CALL" && opts.GOARCH == "amd64") {
+		if _, complete := nativeFunctionEnd(fn.Instrs[len(fn.Instrs)-1].Op, opts.GOARCH); !complete {
 			return mod, fmt.Errorf("native naked TEXT must end with RET or an unconditional branch: %s", fn.Sym)
 		}
 		// Escape literal x86 '$' immediates before adding LLVM template operands.
