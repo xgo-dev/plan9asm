@@ -120,9 +120,9 @@ type goAMD64FramePostContext struct {
 
 func (ctx *goAMD64FramePostContext) Err() error {
 	ctx.samples++
-	if ctx.samples == 3 {
-		// The first two samples capture the caller lifetime. This sample is
-		// the final callback boundary after the complete locked command round.
+	if ctx.samples == 5 {
+		// Capture samples Err three times; the final verification samples it
+		// twice more after the complete locked command round.
 		ctx.callback()
 	}
 	return ctx.Context.Err()

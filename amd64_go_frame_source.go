@@ -560,6 +560,12 @@ func (source *GoAMD64FrameSource) verifyFrameOnly(ctx context.Context) (verifyEr
 			verifyErr = goAMD64FrameContext("source closed during caller context callbacks")
 		}
 		if verifyErr == nil {
+			driver, err := goAMD64FrameSourceDriverPath(source.request.GoBinary)
+			if err != nil || driver != filepath.Join(source.env["GOROOT"], "bin", gotoolchain.HostExecutable("go")) {
+				verifyErr = errors.Join(goAMD64FrameContext("actual driver route changed after caller context callbacks"), err)
+			}
+		}
+		if verifyErr == nil {
 			verifyErr = errors.Join(source.verifyInputs(), source.verifyDownloadedOrigin())
 		}
 		if verifyErr != nil {
