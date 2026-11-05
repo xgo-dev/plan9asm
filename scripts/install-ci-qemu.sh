@@ -19,7 +19,10 @@ destination=$(cd "$destination" && pwd)
 scratch=$(mktemp -d)
 trap 'rm -r "$scratch"' EXIT
 archive="$scratch/qemu.tar.gz"
-curl -fLsS --connect-timeout 15 --max-time 180 --retry 2 \
+# Release gateways can fail across three consecutive requests. Wait between
+# bounded retries, retaining the exact archive checksum before extraction.
+curl -fLsS --connect-timeout 15 --max-time 180 --retry 5 \
+  --retry-all-errors --retry-delay 5 --retry-max-time 180 \
   "https://github.com/tonistiigi/binfmt/releases/download/$release/qemu_v${version}_linux-amd64.tar.gz" \
   -o "$archive"
 echo "$checksum  $archive" | sha256sum --check --status
