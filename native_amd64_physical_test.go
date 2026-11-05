@@ -94,6 +94,18 @@ func nativeAMD64PhysicalObjects(t *testing.T, source string, options NativeOptio
 	return mod.String()
 }
 
+// The SysV runtime owner cannot execute on every host. Its complete original
+// assembly and both LLVM object pipelines remain mandatory independently.
+func TestNativeAMD64PhysicalABIFixtureObjects(t *testing.T) {
+	source, _ := nativeAMD64PhysicalABIFixture()
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			nativeAMD64OriginalObject(t, goos, source)
+			nativeAMD64PhysicalObjects(t, source, NativeOptions{GOOS: goos, GOARCH: "amd64", PackagePath: "probe"})
+		})
+	}
+}
+
 // Each row is an independently assemblable function. These are physical
 // instructions, never synthetic Go arguments, initial values or call results.
 func TestNativeAMD64TypedPhysicalFormatFamilies(t *testing.T) {

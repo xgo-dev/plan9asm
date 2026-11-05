@@ -112,6 +112,9 @@ int main(void) {
 }
 
 func TestCrossLinuxRuntimeMatrixX86NativePhysicalABIArguments(t *testing.T) {
+	if !SupportsNativeTarget(runtime.GOOS, "amd64") {
+		t.Skip("SysV native execution requires Linux or Darwin; mandatory Linux/amd64 counterpart: TestCrossLinuxRuntimeMatrixX86NativePhysicalABIArguments")
+	}
 	llc, clang, triple, prefix := x86FloatAddSubRuntimeTools(t)
 	source, mainC := nativeAMD64PhysicalABIFixture()
 	nativeAMD64OriginalObject(t, runtime.GOOS, source)
