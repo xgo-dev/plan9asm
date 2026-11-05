@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/gostaticstorage"
+	"github.com/xgo-dev/plan9asm/internal/sourcepath"
 )
 
 // The existing selected dependency graph supplies both language declarations
@@ -23,10 +24,14 @@ func (source *GoAMD64FrameSource) ordinarySDKCallDeclarations(path string, entri
 	if !found || !selected.Standard || selected.Module != nil || selected.ImportPath != path || selected.Export == "" {
 		return nil, goAMD64FrameContext("ordinary foreign CALL lacks its actual selected SDK source: %s", path)
 	}
+	directory, err := sourcepath.Resolve(selected.Dir)
+	if err != nil || directory != filepath.Join(source.env["GOROOT"], "src", filepath.FromSlash(path)) {
+		return nil, goAMD64FrameContext("ordinary foreign CALL lacks its physical SDK package: %s: %v", path, err)
+	}
 	fset := token.NewFileSet()
 	var syntax []*ast.File
 	for _, name := range selected.GoFiles {
-		filename := filepath.Join(selected.Dir, name)
+		filename := filepath.Join(directory, name)
 		data, err := source.read(filename)
 		if err != nil {
 			return nil, err
