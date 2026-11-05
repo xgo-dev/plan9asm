@@ -853,7 +853,11 @@ func (source *GoAMD64FrameSource) snapshotDirectory() error {
 }
 
 func (source *GoAMD64FrameSource) observe(ctx context.Context) error {
-	if _, err := source.read(source.request.GoBinary); err != nil {
+	driver, err := goAMD64FrameSourceDriverPath(source.request.GoBinary)
+	if err != nil {
+		return err
+	}
+	if _, err := source.read(driver); err != nil {
 		return err
 	}
 	data, err := source.run(ctx, "env", "-json", "GOROOT", "GOTOOLDIR", "GOCACHE", "GOMODCACHE", "GOPATH", "GOTMPDIR", "GOVERSION", "GOOS", "GOARCH", "GOFLAGS", "GOEXPERIMENT", "GOAMD64")
@@ -873,7 +877,7 @@ func (source *GoAMD64FrameSource) observe(ctx context.Context) error {
 	}
 	env["command/GOROOT"], env["GOROOT"] = env["GOROOT"], root
 	if env["GOOS"]+"/"+env["GOARCH"] != source.request.Target || env["GOFLAGS"] != "" || env["GOEXPERIMENT"] != "" ||
-		filepath.Join(env["GOROOT"], "bin", gotoolchain.HostExecutable("go")) != source.request.GoBinary {
+		filepath.Join(env["GOROOT"], "bin", gotoolchain.HostExecutable("go")) != driver {
 		return goAMD64FrameContext("actual driver/target/CPU/source routing needs a separate audited contract")
 	}
 	switch env["GOAMD64"] {

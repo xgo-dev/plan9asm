@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/xgo-dev/plan9asm/internal/goasmcmd"
+	"github.com/xgo-dev/plan9asm/internal/sourcepath"
 )
 
 func requireGoAMD64FrameCapture(t *testing.T, pkg GoPackage, request GoAMD64FrameCaptureRequest) *GoAMD64FrameSource {
@@ -74,7 +75,7 @@ func goAMD64FrameSourceFixture(t *testing.T) (GoPackage, GoAMD64FrameCaptureRequ
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary, err = filepath.EvalSymlinks(binary)
+	binary, err = sourcepath.Resolve(binary)
 	if err != nil {
 		t.Fatal(err)
 	}
