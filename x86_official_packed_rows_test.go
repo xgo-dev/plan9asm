@@ -149,7 +149,7 @@ func x86OfficialPackedRowsObjectsForTarget(t *testing.T, arch, triple string,
 	}
 	_, driverHash := x86LEAActualSDKDriver(t)
 	t.Logf("row-owned oracle SDK=%s driverSHA=%x; %s only, MMX excluded", runtime.Version(), driverHash, arch)
-	passed := 0
+	passed, backendObjects := 0, 0
 	for start := 0; start < len(cases); start += 32 {
 		end := start + 32
 		if end > len(cases) {
@@ -173,6 +173,11 @@ func x86OfficialPackedRowsObjectsForTarget(t *testing.T, arch, triple string,
 					}
 					inspect(t, ir, batch)
 					x86ResultInitializationObject(t, llc, triple, ir, api)
+					backendObjects++
+					t.Run("backend-O2", func(t *testing.T) {
+						x86PackedStringCompileObject(t, llc, triple, ir, "-O2")
+						backendObjects++
+					})
 				})
 			}
 		}) {
@@ -182,8 +187,12 @@ func x86OfficialPackedRowsObjectsForTarget(t *testing.T, arch, triple string,
 	if passed != len(cases) {
 		t.Fatalf("only %d/%d row-owned formats passed all original-encoding/public-API/object gates", passed, len(cases))
 	}
-	t.Logf("%d canonical rows / %d legal format witnesses plus %d aliases: original Go encoding and row-owned functions through all three public APIs + LLVM22 objects passed; no runtime claim",
-		wantRows, wantFormats, wantAliases)
+	wantObjects := (len(cases) + 31) / 32 * 3 * 2 // Every batch, three APIs, both backend levels.
+	if backendObjects != wantObjects {
+		t.Fatalf("incomplete row-owned backend O0/O2 object matrix: got %d, want %d", backendObjects, wantObjects)
+	}
+	t.Logf("%d canonical rows / %d legal format witnesses plus %d aliases: original Go encoding and row-owned functions through all three public APIs + %d LLVM22 backend O0/O2 objects passed; no extra IR optimization or runtime claim",
+		wantRows, wantFormats, wantAliases, backendObjects)
 	return cases
 }
 

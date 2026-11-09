@@ -187,7 +187,11 @@ entries are not inherited. Complete environment equality remains strict; never
 remove PATH from the verifier to accept unrelated execution environments.
 The readonly DATA consumer matrix has three complete target roots, placed in
 different Windows scheduling owners. Each retains all119 operations, all three
-APIs and O0/O2 objects; root splitting is not a reduced test denominator.
+APIs and both original/`default<O2>` IR variants, each compiled at backend O0;
+root splitting is not a reduced test denominator. Shared packed official-row
+object owners separately compile ordinary IR at backend O0 and O2, without an
+additional IR optimization pass. Fixed-local/read-only owners using
+`compileLLVMToObject` still require separate backend O2 qualification.
 The two current-Go bytealg CLI object owners likewise keep complete Count and
 IndexByte files in separate scheduling owners, each with its own original
 five-minute context. A previous root shared that context across both files;
