@@ -351,6 +351,53 @@ func x86Legacy127SaveIdentity(t *testing.T, variable string, value interface{}) 
 	}
 }
 
+func x86LegacyMediaInitializedCases(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) []x86OfficialPackedCase {
+	t.Helper()
+	rows, err := goasmrules.X86LegacyMediaRemainderRows(catalog, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []x86OfficialPackedCase
+	for _, row := range rows {
+		for _, witness := range row.Witnesses {
+			cases = append(cases, x86OfficialPackedCase{row: row.ID, witness: witness})
+		}
+	}
+	literal, err := goasmrules.X86LegacyLiteralSIMDRows(catalog, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]goasmrules.X86PackedBinaryRow)
+	for _, row := range literal {
+		byID[row.ID] = row
+	}
+	crypto := map[string]bool{}
+	for _, entry := range catalog.Optab {
+		if entry.Ytab != "yaes" {
+			continue
+		}
+		for _, row := range entry.Rows {
+			crypto[fmt.Sprintf("optab/%d/%s/%s/%d", entry.TableIndex, entry.Opcode, entry.Ytab, row.RowIndex)] = true
+		}
+	}
+	for _, original := range x86LegacyLiteralSIMDSourceCases(t, catalog, false) {
+		if !crypto[original.row] {
+			continue
+		}
+		matched := false
+		for _, witness := range byID[original.row].Witnesses {
+			if witness.Instruction == original.witness.Instruction {
+				matched = bytes.Equal(witness.Encoding, original.witness.Encoding)
+			}
+		}
+		if !matched {
+			t.Fatal("initialized legacy AES/SHA row differs from independent original bytes", original.row, original.witness.Instruction)
+		}
+		cases = append(cases, original)
+	}
+	return cases
+}
+
 func TestX86OfficialLegacyMediaRemainderRowsObjects(t *testing.T) {
 	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
 	if err != nil {
@@ -363,10 +410,14 @@ func TestX86OfficialLegacyMediaRemainderRowsObjects(t *testing.T) {
 			t.Fatal(err)
 		}
 		modes[arch] = rows
-		var cases []x86OfficialPackedCase
+		original := map[string]bool{}
 		for _, row := range rows {
-			for _, witness := range row.Witnesses {
-				cases = append(cases, x86OfficialPackedCase{row: row.ID, witness: witness})
+			original[row.ID] = true
+		}
+		var cases []x86OfficialPackedCase
+		for _, fixture := range x86LegacyMediaInitializedCases(t, catalog, arch) {
+			if original[fixture.row] {
+				cases = append(cases, fixture)
 			}
 		}
 		want := 160
@@ -383,6 +434,115 @@ func TestX86OfficialLegacyMediaRemainderRowsObjects(t *testing.T) {
 			Source goasmrules.X86LegacyCatalog
 			Modes  map[string][]goasmrules.X86LegacyMediaRow
 		}{catalog, modes})
+	}
+}
+
+func TestX86LegacyCryptoOriginalRowsReachInitializedObjects(t *testing.T) {
+	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arch := range []string{"amd64", "386"} {
+		t.Run(arch, func(t *testing.T) {
+			expected := map[string]int{}
+			for _, entry := range catalog.Optab {
+				if entry.Ytab != "yaes" {
+					continue
+				}
+				for _, row := range entry.Rows {
+					id := fmt.Sprintf("optab/%d/%s/%s/%d", entry.TableIndex, entry.Opcode, entry.Ytab, row.RowIndex)
+					expected[id] = 0
+				}
+			}
+			if len(expected) != 10 {
+				t.Fatal("complete original legacy AES/SHA format changed", len(expected))
+			}
+			cases := x86LegacyMediaInitializedCases(t, catalog, arch)
+			// Audit the actual existing initialized input stream only after
+			// its stock-Go bytes and public API/object pipeline have run.
+			x86Legacy127Objects(t, arch, cases, x86LegacyMediaInitializedFunction)
+			if t.Failed() {
+				return
+			}
+			for _, fixture := range cases {
+				if _, selected := expected[fixture.row]; selected {
+					expected[fixture.row]++
+				}
+			}
+			for id, count := range expected {
+				if count != 2 {
+					t.Errorf("original legacy AES/SHA row lost its initialized reg/memory pair: %s: got %d, want 2", id, count)
+				}
+			}
+		})
+	}
+}
+
+func TestX86LegacyCryptoInitializedInputBoundaries(t *testing.T) {
+	for _, arch := range []string{"amd64", "386"} {
+		for _, item := range []struct {
+			operation, removed string
+			input              Reg
+		}{
+			{"AESENC X0,X1", "MOVOU (AX),X0\n", "X0"},
+			{"AESENC X0,X1", "MOVOU (BX),X1\n", "X1"},
+			{"SHA1MSG1 X0,X1", "MOVOU (AX),X0\n", "X0"},
+			{"SHA256MSG2 X0,X1", "MOVOU (BX),X1\n", "X1"},
+		} {
+			t.Run(arch+"/"+item.operation+"/"+strings.TrimSpace(item.removed), func(t *testing.T) {
+				instruction := x86ScalarLaneInstruction(t, item.operation)
+				effect, known, err := x86TypedInstructionByteEffect(instruction.Op, instruction, arch)
+				if !known || err != nil {
+					t.Fatal("complete typed crypto input contract absent", err)
+				}
+				read := false
+				for _, operand := range effect.operands {
+					read = read || operand.read && operand.operand.Kind == OpReg && operand.operand.Reg == item.input
+				}
+				if !read {
+					t.Fatal("negative did not remove a required numerical source or old destination", item.input)
+				}
+				source, declaration := x86LegacyMediaInitializedFunction("CryptoInputs", item.operation, arch)
+				if strings.Count(source, item.removed) != 1 {
+					t.Fatal("negative must remove exactly one original source or old destination")
+				}
+				for _, api := range []string{"text", "module", "Go"} {
+					if ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, testTargetTriple("linux", arch), api); err != nil || ir == "" {
+						t.Fatal("complete numerical input control rejected", api, err)
+					}
+					missing := strings.Replace(source, item.removed, "", 1)
+					ir, err := x86ScalarFPBitViewAPI(t, missing, declaration, arch, testTargetTriple("linux", arch), api)
+					if arch == "386" {
+						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) ||
+							!strings.Contains(err.Error(), "result initialization: unknown effect or undefined input") ||
+							!strings.Contains(err.Error(), "MOVOU X1,0(DX)") {
+							t.Fatal("mode32 invented undefined vector inputs", api, err)
+						}
+					} else {
+						x86VectorScratchCodegenControl(t, missing, declaration, arch, testTargetTriple("linux", arch), ir, err)
+					}
+				}
+			})
+		}
+		// AESIMC is unary. The same removal must not invent an old-destination
+		// dependency merely because the neighboring AES rounds consume it.
+		instruction := x86ScalarLaneInstruction(t, "AESIMC X0,X1")
+		effect, known, err := x86TypedInstructionByteEffect(instruction.Op, instruction, arch)
+		if !known || err != nil {
+			t.Fatal("unary AESIMC typed contract absent", err)
+		}
+		for _, operand := range effect.operands {
+			if operand.operand.Reg == "X1" && operand.read {
+				t.Fatal("unary AESIMC was granted an old-destination read")
+			}
+		}
+		source, declaration := x86LegacyMediaInitializedFunction("CryptoUnary", "AESIMC X0,X1", arch)
+		source = strings.Replace(source, "MOVOU (BX),X1\n", "", 1)
+		for _, api := range []string{"text", "module", "Go"} {
+			if ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, testTargetTriple("linux", arch), api); err != nil || ir == "" {
+				t.Fatal("unary AESIMC borrowed an old-destination requirement", arch, api, err)
+			}
+		}
 	}
 }
 
