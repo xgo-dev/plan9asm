@@ -298,10 +298,9 @@ func x86X87ValueProperties(ins Instr, arch string) (x86X87ValueForm, bool, error
 			if isX87F0(last) && (memory(first) || constant(first) || spec.width == 'D' && register(first)) {
 				form.left, form.right = last, first
 			} else if spec.width == 'D' && isX87F0(first) && register(last) {
-				// Retain Go's complete reverse FCOMD/DP grammar without
-				// interpreting its undocumented DC /2,/3 register encoding
-				// as a new logical compare proof.
-				form.left, form.right, form.unprovedEncoding = last, first, true
+				// Go's DC /2,/3 register spelling still compares F0 to Fi.
+				// It does not reverse the machine comparison operands.
+				form.left, form.right = first, last
 			} else {
 				return fail("expects memory source or x87-register source and F0 destination")
 			}

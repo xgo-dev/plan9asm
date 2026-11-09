@@ -72,30 +72,32 @@ func TestX86X87ValueCompleteGrammarAndMode(t *testing.T) {
 	}
 }
 
-// These Go rows are recognized but are not yet numerical witnesses. The reverse
-// FCOMD/DP register rows and non-F1 two-pop rows have table-level botch notes;
-// the existing independent byte oracle deliberately does not certify them.
+func TestX86X87ReverseCompareUsesEncodedF0Order(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		for _, op := range []string{"FCOMD", "FCOMDP"} {
+			for lane := 1; lane < 8; lane++ {
+				instruction := fmt.Sprintf("%s F0,F%d", op, lane)
+				form, known, err := x86X87ValueProperties(x86X87ValueInstruction(t, instruction), arch)
+				if !known || err != nil || form.unprovedEncoding || form.left.Reg != "F0" || form.right.Reg != Reg(fmt.Sprint("F", lane)) {
+					t.Fatalf("%s %s order=%s,%s unproved=%t: %v", arch, instruction, form.left.Reg, form.right.Reg, form.unprovedEncoding, err)
+				}
+			}
+		}
+	}
+}
+
+// Go accepts these spellings and emits the original bytes. Non-F1 two-pop
+// carriers do not identify the FCOMPP/FUCOMPP machine instruction; the F7
+// carriers independently fault in the original Go native oracle.
 func TestX86X87UnobservedEncodingRowsRetainContext(t *testing.T) {
 	for _, target := range x86RawReturnTargets {
 		if target.arch != "386" {
 			continue
 		}
-		for _, op := range []string{"FCOMD", "FCOMDP", "FCOMDPP", "FUCOMPP"} {
+		for _, op := range []string{"FCOMDPP", "FUCOMPP"} {
 			for lane := 0; lane < 8; lane++ {
-				pops := 0
-				switch op {
-				case "FCOMD", "FCOMDP":
-					if lane == 0 {
-						continue // F0,F0 uses the earlier ordinary register row.
-					}
-					if op == "FCOMDP" {
-						pops = 1
-					}
-				default:
-					if lane == 1 {
-						continue // The documented two-pop dependency is exactly F0,F1.
-					}
-					pops = 2
+				if lane == 1 {
+					continue // The documented two-pop dependency is exactly F0,F1.
 				}
 				instruction := fmt.Sprintf("%s F0,F%d", op, lane)
 				form, known, err := x86X87ValueProperties(x86X87ValueInstruction(t, instruction), target.arch)
@@ -103,7 +105,7 @@ func TestX86X87UnobservedEncodingRowsRetainContext(t *testing.T) {
 					t.Fatal("unobserved Go row lost its explicit proof boundary", instruction, known, err)
 				}
 				body := strings.Repeat("FLD1\n", 8) + instruction + "\nFMOVDP F0,ret+28(FP)\n" +
-					strings.Repeat("FMOVDP F0,F0\n", 7-pops)
+					strings.Repeat("FMOVDP F0,F0\n", 5)
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(target.triple+"/"+instruction+"/"+api, func(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, x86X87ValueSource(body), x86X87ValueDeclaration,
