@@ -17,6 +17,9 @@ for package in "${packages[@]}"; do
 done
 
 if [[ "$installed" != true ]]; then
+  # Include key/source preparation and any fallback in one budget. Leave the
+  # enclosing 14-minute CI step time for timeout's kill grace and tool checks.
+  deadline=$((SECONDS + 13 * 60))
   script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
   architecture=$(dpkg --print-architecture)
   ubuntu_archive=$(sudo python3 "$script_dir/configure-ci-ubuntu-mirrors.py" /etc/apt "$architecture")
@@ -35,17 +38,32 @@ if [[ "$installed" != true ]]; then
     -o Acquire::ForceIPv4=true -o APT::Update::Error-Mode=any
     -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
   )
+  bounded_apt() {
+    local maximum=$1
+    shift
+    local remaining=$((deadline - SECONDS))
+    if ((remaining <= 0)); then
+      echo "LLVM 22 installation budget exhausted" >&2
+      return 124
+    fi
+    if ((remaining > maximum)); then
+      remaining=$maximum
+    fi
+    sudo timeout -k 10s "${remaining}s" "$@"
+  }
   update() {
-    sudo timeout -k 10s 2m apt-get "${apt_options[@]}" update
+    bounded_apt 120 apt-get "${apt_options[@]}" update
   }
   install() {
-    sudo timeout -k 10s 4m env DEBIAN_FRONTEND=noninteractive \
+    # A cold LLVM transaction can fetch hundreds of megabytes before unpacking.
+    bounded_apt 600 env DEBIAN_FRONTEND=noninteractive \
       apt-get "${apt_options[@]}" install -y "${packages[@]}"
   }
 
   if ! update || ! install; then
     # Isolate the fallback sources, retaining the same official architecture
     # route rather than returning to the runner's unreliable mirror candidates.
+    # Keep APT's archive cache so completed downloads survive this bounded retry.
     fallback=/etc/apt/sources.list.d/plan9asm-ci-fallback.list
     {
       echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $ubuntu_archive $suite main universe restricted multiverse"

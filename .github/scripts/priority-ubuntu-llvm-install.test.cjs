@@ -75,8 +75,15 @@ function runInstaller(t, options = {}) {
   const script = `
 updates=0
 installs=0
+# The installer uses Bash's elapsed clock. Unsetting its special behavior lets
+# the mocked transactions advance it without sleeping or changing production.
+unset SECONDS
+SECONDS=0
+timeout_seconds=0
 IFS=, read -r -a update_statuses <<< "$MOCK_UPDATES"
 IFS=, read -r -a install_statuses <<< "$MOCK_INSTALLS"
+IFS=, read -r -a update_seconds <<< "$MOCK_UPDATE_SECONDS"
+IFS=, read -r -a install_seconds <<< "$MOCK_INSTALL_SECONDS"
 dpkg() {
   case "$1" in
     -s) return "$MOCK_INSTALLED" ;;
@@ -106,10 +113,27 @@ env() {
 }
 timeout() {
   test "$1" = -k && test "$2" = 10s || return 99
-  case "$3" in 2m|4m) ;; *) return 99 ;; esac
+  case "$3" in
+    2m) timeout_seconds=120 ;;
+    4m) timeout_seconds=240 ;;
+    *s) timeout_seconds=\${3%s} ;;
+    *) return 99 ;;
+  esac
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || return 99
   printf 'TIMEOUT %s\\n' "$3"
   shift 3
   "$@"
+}
+transaction_time() {
+  local elapsed=$1 status=$2
+  if ((elapsed > timeout_seconds)); then
+    SECONDS=$((SECONDS + timeout_seconds))
+    printf 'ELAPSED %s\\n' "$SECONDS"
+    return 124
+  fi
+  SECONDS=$((SECONDS + elapsed))
+  printf 'ELAPSED %s\\n' "$SECONDS"
+  return "$status"
 }
 apt-get() {
   printf 'APT_BEGIN\\n' >&2
@@ -118,10 +142,18 @@ apt-get() {
     case "$arg" in
       update)
         updates=$((updates + 1))
-        return "\${update_statuses[updates - 1]:-99}" ;;
+        transaction_time "\${update_seconds[updates - 1]:-0}" "\${update_statuses[updates - 1]:-99}"
+        return $? ;;
       install)
         installs=$((installs + 1))
-        return "\${install_statuses[installs - 1]:-99}" ;;
+        if [[ "$installs" = 1 ]]; then
+          printf 'downloaded package bytes\\n' > "$MOCK_APT/archive.deb"
+        else
+          test -s "$MOCK_APT/archive.deb" || return 98
+          printf 'REUSED_ARCHIVE\\n'
+        fi
+        transaction_time "\${install_seconds[installs - 1]:-0}" "\${install_statuses[installs - 1]:-99}"
+        return $? ;;
     esac
   done
   return 99
@@ -144,6 +176,10 @@ sudo() {
 llvm-config-22() { printf '%s\\n' "$MOCK_LLVM_VERSION"; }
 clang-22() { return 0; }
 llc-22() { return 0; }
+command() {
+  if [[ "$1" = -v && "$2" = "$MOCK_MISSING_TOOL" ]]; then return 1; fi
+  builtin command "$@"
+}
 source "$1" gcc-i686-linux-gnu libc6-dev-i386-cross
 `;
   const result = spawnSync('bash', ['--noprofile', '--norc', '-c', script, 'installer-test', installer], {
@@ -155,6 +191,9 @@ source "$1" gcc-i686-linux-gnu libc6-dev-i386-cross
       MOCK_INSTALLED: options.installed ? '0' : '1',
       MOCK_UPDATES: (options.updates || [0]).join(','),
       MOCK_INSTALLS: (options.installs || [0]).join(','),
+      MOCK_UPDATE_SECONDS: (options.updateSeconds || [0]).join(','),
+      MOCK_INSTALL_SECONDS: (options.installSeconds || [0]).join(','),
+      MOCK_MISSING_TOOL: options.missingTool || '',
       MOCK_CONFIG_EXIT: String(options.configurationExit || 0),
       MOCK_CONFIG_OUTPUT: options.configurationOutput === undefined
         ? '__actual_helper__' : options.configurationOutput,
@@ -177,8 +216,8 @@ test('actual Ubuntu installer configures mirrors before strict IPv4 update and i
       assert.ok(command.includes('<' + option + '>'), command);
     }
   }
-  assert.match(result.stdout, /TIMEOUT 2m\n/);
-  assert.match(result.stdout, /TIMEOUT 4m\n/);
+  assert.match(result.stdout, /TIMEOUT 120s\n/);
+  assert.match(result.stdout, /TIMEOUT 600s\n/);
   assert.match(result.stdout, /<install> <-y> <llvm-22-dev> <clang-22> <libclang-22-dev> <lld-22> <libunwind-22-dev> <libc\+\+-22-dev> <gcc-i686-linux-gnu> <libc6-dev-i386-cross>/);
   assert.equal(fs.readFileSync(path.join(result.directory, 'apt-mirrors.txt'), 'utf8'),
     'https://archive.ubuntu.com/ubuntu/\n');
@@ -206,7 +245,7 @@ test('two exhausted updates retain exit 124 without installation or PATH publica
   assert.equal(result.environment, '');
 });
 
-test('fallback keeps strict network options, the identical package transaction and original budgets', t => {
+test('fallback keeps strict options, the identical package transaction and downloaded archives', t => {
   const result = runInstaller(t, {updates: [0, 0], installs: [100, 0]});
   assert.equal(result.status, 0, result.stderr);
   const commands = result.stdout.split('\n').filter(line => line.startsWith('APT '));
@@ -217,8 +256,56 @@ test('fallback keeps strict network options, the identical package transaction a
   }
   assert.equal(commands[1].slice(commands[1].indexOf('<install>')),
     commands[3].slice(commands[3].indexOf('<install>')));
-  assert.equal((result.stdout.match(/^TIMEOUT 2m$/gm) || []).length, 2);
-  assert.equal((result.stdout.match(/^TIMEOUT 4m$/gm) || []).length, 2);
+  assert.equal((result.stdout.match(/^TIMEOUT 120s$/gm) || []).length, 2);
+  assert.equal((result.stdout.match(/^TIMEOUT 600s$/gm) || []).length, 2);
+  assert.match(result.stdout, /^REUSED_ARCHIVE$/m);
+  assert.doesNotMatch(result.stdout, /<clean>|<autoclean>|<Dir::Cache/);
+});
+
+test('a five-minute cold LLVM install succeeds once without restarting its download', t => {
+  const result = runInstaller(t, {
+    updates: [0, 0], installs: [0, 0], installSeconds: [300, 300],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const commands = result.stdout.split('\n').filter(line => line.startsWith('APT '));
+  assert.equal(commands.length, 2);
+  assert.ok(commands[0].endsWith('<update>'));
+  assert.ok(commands[1].includes('<install>'));
+  assert.match(result.stdout, /^TIMEOUT 600s$/m);
+  assert.match(result.environment, /^PATH=\/usr\/lib\/llvm-22\/bin:/);
+});
+
+test('slow primary and fallback installs share thirteen minutes, not two ten-minute budgets', t => {
+  const result = runInstaller(t, {
+    updates: [0, 0], installs: [100, 0], installSeconds: [600, 600],
+  });
+  assert.equal(result.status, 124, result.stderr);
+  assert.deepEqual([...result.stdout.matchAll(/^TIMEOUT (\d+)s$/gm)].map(match => Number(match[1])),
+    [120, 600, 120, 180]);
+  assert.match(result.stdout, /^ELAPSED 780$/m);
+  assert.equal(result.environment, '');
+});
+
+test('an exhausted fallback update cannot start another package transaction', t => {
+  const result = runInstaller(t, {
+    updates: [0, 0], updateSeconds: [120, 60],
+    installs: [100, 0], installSeconds: [600, 0],
+  });
+  assert.equal(result.status, 124, result.stderr);
+  const commands = result.stdout.split('\n').filter(line => line.startsWith('APT '));
+  assert.equal(commands.length, 3);
+  assert.ok(commands[2].endsWith('<update>'));
+  assert.deepEqual([...result.stdout.matchAll(/^TIMEOUT (\d+)s$/gm)].map(match => Number(match[1])),
+    [120, 600, 60]);
+  assert.match(result.stderr, /LLVM 22 installation budget exhausted/);
+  assert.equal(result.environment, '');
+});
+
+test('the shared installation clock begins before key and source configuration', () => {
+  const source = fs.readFileSync(installer, 'utf8');
+  const clock = source.indexOf('deadline=$((SECONDS + 13 * 60))');
+  assert.ok(clock >= 0 && clock < source.indexOf('script_dir='));
+  assert.doesNotMatch(source, /(?:apt-get|apt) (?:clean|autoclean)|Dir::Cache/);
 });
 
 test('isolated fallback uses the same official Ubuntu architecture route as the repaired mirror lists', async t => {
@@ -300,5 +387,14 @@ test('failed package installation and wrong LLVM version cannot publish success'
     assert.equal(wrong.status, 1, wrong.stderr);
     assert.match(wrong.stderr, /does not select LLVM 22/);
     assert.equal(wrong.environment, '');
+  }
+});
+
+test('a missing LLVM 22 tool remains fatal after package installation', t => {
+  for (const missingTool of ['llvm-config-22', 'clang-22', 'llc-22']) {
+    const result = runInstaller(t, {missingTool});
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, new RegExp('missing LLVM 22 tool after installation: ' + missingTool));
+    assert.equal(result.environment, '');
   }
 });
