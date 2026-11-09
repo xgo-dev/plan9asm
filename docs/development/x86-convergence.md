@@ -453,3 +453,30 @@ claim: LLVM may split its predicate vectors. Shared splat formatting has constan
 allocation count but necessarily linear output size. Keep the independent
 runtime oracles and measure generated-program performance on actual AMD64
 hardware before claiming that whole-axis improvement.
+
+The scalar CMP/TEST join now selects the complete semantic family before
+formatting official rows. This restores four TESTB rows that used the shared
+`yxorb` table and were silently excluded by a format-table-name filter. All
+eight B/W/L/Q members retain 35 ordered rows, 54 AMD64 witnesses and 40 mode386
+witnesses; nine original mode386 frontend refusals remain distinct. Independent
+literal TESTB encoding anchors and missing-input controls do not repeat the
+production selection predicate. Both endpoint SDKs pass 32 roots / 3,470 nodes
+through the original-byte checks, three public APIs and five-target O0/O2
+objects. This changes row projection, not numerical lowering.
+
+Read-only BTW/BTL/BTQ uses the same family-first selection and initialized object
+driver. Six ordered rows produce twelve AMD64 witnesses; mode386 admits four
+rows / eight witnesses and retains the two actual BTQ frontend refusals. The
+initializer preserves old ZF and the original data operand while exposing CF;
+undefined AF is not asserted. Twelve independent encoding anchors keep the
+syntax and object checks separate. The complete affected union passes 3,181
+nodes on current Go and 3,178 on minimum Go; the difference is the original
+SDK-dependent RDPID reader scope. Each SDK also executes all twelve existing
+portable C-oracle pipelines.
+
+The separate Linux/AMD64 qualification of `f0d322e5` runs all six original
+CMP/TEST/BT numerical and fault roots on both endpoint SDKs: twelve root
+executions and 140 child executions, all 152 PASS with zero FAIL/SKIP. Source,
+LLVM 22 tools, full Go JSON and both actual artifacts are checked independently.
+This closes those native owners; it does not certify every encoding row's
+semantics, native386, AVX512 hardware or whole-source performance.
