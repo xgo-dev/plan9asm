@@ -9,7 +9,8 @@ func (c *amd64Ctx) x87PortableIR(format string, arguments ...any) string {
 }
 
 // x87PortableFromFloat widens the actual IEEE encoding without an intermediate
-// floating operation. This preserves subnormals, signed zero and NaN payloads.
+// floating operation. Masked FLD loads quiet signaling NaNs while retaining
+// their sign and remaining payload. Software exception flags are separate.
 func (c *amd64Ctx) x87PortableFromFloat(value string, bits int) (x87Value, error) {
 	precision, bias, maximum, typ := 53, 1023, 2047, "double"
 	if bits == 32 {
@@ -37,6 +38,10 @@ func (c *amd64Ctx) x87PortableFromFloat(value string, bits int) (x87Value, error
 	significand = c.x87PortableIR("shl i64 %s, %d", significand, 64-precision)
 	normalExponent := c.x87PortableIR("add i64 %s, %d", exponent, 16383-bias)
 	special := c.x87PortableIR("icmp eq i64 %s, %d", exponent, maximum)
+	nonzeroFraction := c.x87PortableIR("xor i1 %s, true", zero)
+	isNaN := c.x87PortableIR("and i1 %s, %s", special, nonzeroFraction)
+	quiet := c.x87PortableIR("or i64 %s, 4611686018427387904", significand)
+	significand = c.x87PortableIR("select i1 %s, i64 %s, i64 %s", isNaN, quiet, significand)
 	normalExponent = c.x87PortableIR("select i1 %s, i64 32767, i64 %s", special, normalExponent)
 	isSubnormal := c.x87PortableIR("icmp eq i64 %s, 0", exponent)
 	significand = c.x87PortableIR("select i1 %s, i64 %s, i64 %s", isSubnormal, subnormal, significand)

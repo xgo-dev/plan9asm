@@ -50,15 +50,19 @@ func x87PortableScalarModule(t *testing.T) string {
 // The oracle widens a finite IEEE value with Go's arbitrary-precision binary
 // arithmetic. It does not call the emitter or reuse its normalization steps.
 func x87PortableWidenOracle(raw uint64, width int) x87PortableBits {
-	precision, sign := 53, raw>>63
+	sign := raw >> 63
 	value := math.Float64frombits(raw)
 	if width == 32 {
-		precision, sign = 24, (raw>>31)&1
+		sign = (raw >> 31) & 1
 		value = float64(math.Float32frombits(uint32(raw)))
 	}
 	if math.IsNaN(value) || math.IsInf(value, 0) {
-		payload := raw & (uint64(1)<<(precision-1) - 1)
-		return x87PortableBits{1<<63 | payload<<(64-precision), uint16(sign<<15 | 32767)}
+		for _, observed := range x87PortableNativeLoads {
+			if observed.width == width && observed.input == raw {
+				return observed.want
+			}
+		}
+		panic("special IEEE input requires an independent native load anchor")
 	}
 	if value == 0 {
 		return x87PortableBits{0, uint16(sign << 15)}
