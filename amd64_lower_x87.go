@@ -609,10 +609,10 @@ func (c *amd64Ctx) lowerX87Compare(op Op, ins Instr, form x86X87ValueForm) error
 	var rhs string
 	switch form.spec.width {
 	case 'D':
-		rhs, err = c.evalX87F64(form.right)
+		rhs, err = c.loadX87FloatingMove(form.right, 64)
 	case 'F':
 		var narrow string
-		narrow, err = c.evalF32(form.right)
+		narrow, err = c.loadX87FloatingMove(form.right, 32)
 		if err == nil {
 			wide := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = fpext float %s to double\n", wide, narrow)
@@ -624,7 +624,7 @@ func (c *amd64Ctx) lowerX87Compare(op Op, ins Instr, form x86X87ValueForm) error
 			typ = I32
 		}
 		var integer string
-		integer, err = c.evalIntSized(form.right, typ)
+		integer, err = c.loadStackValue(form.right, int(form.memoryBytes()*8))
 		if err == nil {
 			wide := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = sitofp %s %s to double\n", wide, typ, integer)

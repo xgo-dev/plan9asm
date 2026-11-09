@@ -7,6 +7,120 @@ import (
 	"golang.org/x/arch/x86/x86asm"
 )
 
+// Go's unprefixed DC register compare rows are aliases of the ordinary
+// F0-versus-Fi comparison. The pinned decoder does not recognize them.
+// Keep their original two bytes and instruction boundary; no other unknown
+// x87 opcode or prefix is inferred from this exact family.
+func decodedX86X87CompareAlias(code []byte, mode int) (Instr, int, bool) {
+	if mode != 32 && mode != 64 || len(code) < 2 || code[0] != 0xdc || code[1]&0xf0 != 0xd0 {
+		return Instr{}, 0, false
+	}
+	op := Op("FCOMD")
+	if code[1]&8 != 0 {
+		op = "FCOMDP"
+	}
+	last := Reg(fmt.Sprint("F", code[1]&7))
+	instruction := Instr{Op: op, Args: []Operand{{Kind: OpReg, Reg: "F0"}, {Kind: OpReg, Reg: last}}}
+	instruction.Raw = fmt.Sprintf("%s F0,%s", op, last)
+	return instruction, 2, true
+}
+
+// Normalize the actual decoder's complete compare shape, including integer
+// memory widths and implicit F0 operands. Physical memory is restored by the
+// existing handoff below; this text grants no address or numerical role.
+func decodedX86X87CompareSyntax(inst x86asm.Inst, encoding []byte) (string, bool, error) {
+	switch inst.Op {
+	case x86asm.FCOM, x86asm.FCOMP, x86asm.FICOM, x86asm.FICOMP,
+		x86asm.FCOMI, x86asm.FCOMIP, x86asm.FUCOMI, x86asm.FUCOMIP,
+		x86asm.FUCOM, x86asm.FUCOMP, x86asm.FCOMPP, x86asm.FUCOMPP:
+	default:
+		return "", false, nil
+	}
+	fail := func() (string, bool, error) {
+		return "", true, fmt.Errorf("%w: raw x87 compare lacks its exact unprefixed decoder shape", ErrProbeNeedsContext)
+	}
+	witness, err := x86asm.Decode(encoding, inst.Mode)
+	if err != nil || inst.Mode != 32 && inst.Mode != 64 || inst.Len != len(encoding) ||
+		witness != inst || inst.Prefix != (x86asm.Prefixes{}) {
+		return fail()
+	}
+	register := func(arg x86asm.Arg) (string, bool) {
+		reg, ok := arg.(x86asm.Reg)
+		if !ok || reg < x86asm.F0 || reg > x86asm.F7 {
+			return "", false
+		}
+		return reg.String(), true
+	}
+	for _, arg := range inst.Args[2:] {
+		if arg != nil {
+			return fail()
+		}
+	}
+	name := inst.Op.String()
+	switch inst.Op {
+	case x86asm.FCOMPP, x86asm.FUCOMPP:
+		if inst.Args[0] != nil || inst.Args[1] != nil {
+			return fail()
+		}
+		if inst.Op == x86asm.FCOMPP {
+			name = "FCOMDPP"
+		}
+		return name + " F0,F1", true, nil
+	case x86asm.FCOMI, x86asm.FCOMIP, x86asm.FUCOMI, x86asm.FUCOMIP:
+		first, firstOK := register(inst.Args[0])
+		last, lastOK := register(inst.Args[1])
+		if !firstOK || first != "F0" || !lastOK {
+			return fail()
+		}
+		if inst.Op == x86asm.FUCOMI || inst.Op == x86asm.FUCOMIP {
+			return name + " F0," + last, true, nil
+		}
+		return name + " " + last + ",F0", true, nil
+	}
+	if inst.Args[1] != nil {
+		return fail()
+	}
+	if reg, ok := register(inst.Args[0]); ok {
+		switch inst.Op {
+		case x86asm.FCOM:
+			return "FCOMD " + reg + ",F0", true, nil
+		case x86asm.FCOMP:
+			return "FCOMDP " + reg + ",F0", true, nil
+		case x86asm.FUCOM, x86asm.FUCOMP:
+			return name + " F0," + reg, true, nil
+		default:
+			return fail()
+		}
+	}
+	if _, memory := inst.Args[0].(x86asm.Mem); !memory {
+		return fail()
+	}
+	suffix := ""
+	integer := inst.Op == x86asm.FICOM || inst.Op == x86asm.FICOMP
+	if integer && inst.MemBytes == 2 {
+		suffix = "W"
+	} else if integer && inst.MemBytes == 4 {
+		suffix = "L"
+	} else if !integer && inst.MemBytes == 4 {
+		suffix = "F"
+	} else if !integer && inst.MemBytes == 8 {
+		suffix = "D"
+	} else {
+		return fail()
+	}
+	if inst.Op == x86asm.FUCOM || inst.Op == x86asm.FUCOMP {
+		return fail()
+	}
+	if inst.Op == x86asm.FCOMP || inst.Op == x86asm.FICOMP {
+		suffix += "P"
+	}
+	_, operand, formatted := strings.Cut(x86asm.GoSyntax(inst, 0, nil), " ")
+	if !formatted {
+		return fail()
+	}
+	return "FCOM" + suffix + " " + operand + ",F0", true, nil
+}
+
 // parseDecodedX86PhysicalInstruction is the private decoder handoff, not a Go
 // source grammar extension. GoSyntax orders operands and selects the audited
 // mnemonic; the actual decoder Mem supplies the physical address. In

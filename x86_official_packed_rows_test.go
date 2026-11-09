@@ -308,8 +308,21 @@ func x86OfficialPackedVerifyListing(listing string, cases []x86OfficialPackedCas
 			if strings.Split(ins.op, ".")[0] != name || index+1 == len(instructions) {
 				return fmt.Errorf("%s has changed/missing original source instruction", fixture.row)
 			}
-			end := instructions[index+1].pc
-			if ins.pc < 0 || end > len(code) || !bytes.Equal(code[ins.pc:end], fixture.witness.Encoding) {
+			endIndex := index + 1
+			if name == "BYTE" {
+				endIndex = index + len(fixture.witness.Encoding)
+				if endIndex >= len(instructions) || instructions[endIndex].op == "BYTE" {
+					return fmt.Errorf("%s has incomplete raw byte boundaries", fixture.row)
+				}
+				for byteIndex := index; byteIndex < endIndex; byteIndex++ {
+					if instructions[byteIndex].op != "BYTE" || instructions[byteIndex].pc != ins.pc+byteIndex-index ||
+						instructions[byteIndex].line != ins.line+byteIndex-index {
+						return fmt.Errorf("%s has a changed raw byte group", fixture.row)
+					}
+				}
+			}
+			end := instructions[endIndex].pc
+			if ins.pc < 0 || end < ins.pc || end > len(code) || !bytes.Equal(code[ins.pc:end], fixture.witness.Encoding) {
 				return fmt.Errorf("%s %s: original bytes at %d:%d differ from %x", fixture.row,
 					fixture.witness.Instruction, ins.pc, end, fixture.witness.Encoding)
 			}

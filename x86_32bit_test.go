@@ -1305,7 +1305,7 @@ func TestTranslate386X87ArithmeticFamilyRejectsNonGoForms(t *testing.T) {
 }
 
 func TestTranslate386X87CompareFamilyCompleteForms(t *testing.T) {
-	file, err := Parse(ArchAMD64, `
+	const original = `
 TEXT x87compare(SB),NOSPLIT,$0-0
 	FCOMD 0(SI), F0
 	FCOMD F1, F0
@@ -1328,7 +1328,8 @@ TEXT x87compare(SB),NOSPLIT,$0-0
 	FUCOMI F0, F1
 	FUCOMIP F0, F1
 	RET
-`)
+`
+	file, err := Parse(ArchAMD64, original)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1338,10 +1339,35 @@ TEXT x87compare(SB),NOSPLIT,$0-0
 		Sigs:         map[string]FuncSig{"x87compare": {Name: "x87compare", Ret: Void}},
 		X87Mode:      X87Software,
 	})
-	if err != nil {
-		t.Fatalf("Translate(complete x87 compare family) error = %v", err)
+	if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("uninitialized x87 compare family invented inputs: IR=%q, error=%v", ir, err)
 	}
-	compile386IR(t, ir, "x87_compare_family")
+
+	var initialized strings.Builder
+	initialized.WriteString("TEXT x87compare(SB),NOSPLIT,$0-4\nMOVL input+0(FP),SI\n")
+	for _, line := range strings.Split(original, "\n") {
+		instruction := strings.TrimSpace(line)
+		if instruction == "" || strings.HasPrefix(instruction, "TEXT ") || instruction == "RET" {
+			continue
+		}
+		// Each original form gets its own complete stack, including double-pop
+		// forms. The pointer comes only from the actual Go declaration.
+		initialized.WriteString("FINIT\n" + strings.Repeat("FLD1\n", 8))
+		initialized.WriteString(instruction + "\n")
+	}
+	initialized.WriteString("FINIT\nRET\n")
+	source := initialized.String()
+	goAssemblerOracleOutput(t, "386", "#include \"textflag.h\"\n"+source, "", true)
+	for _, api := range []string{"text", "module", "Go"} {
+		t.Run(api, func(t *testing.T) {
+			ir, err := x86X87InitializedWordAPI(t, source, "func x87compare(input *byte)",
+				"386", "i386-unknown-linux-gnu", api, X87Software)
+			if err != nil {
+				t.Fatalf("Translate(complete initialized x87 compare family) error = %v", err)
+			}
+			compile386IR(t, ir, "x87_compare_family_"+api)
+		})
+	}
 }
 
 func TestTranslate386X87CompareFamilyRejectsNonGoForms(t *testing.T) {

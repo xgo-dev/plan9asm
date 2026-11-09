@@ -10,6 +10,19 @@ import (
 )
 
 func TestX86X87CompareNamedHostSoftwareValues(t *testing.T) {
+	x86X87CompareHostSoftwareValues(t, false, false)
+}
+
+func TestX86X87CompareCanonicalMemoryAndRawHostSoftwareValues(t *testing.T) {
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprint("raw", raw), func(t *testing.T) {
+			x86X87CompareHostSoftwareValues(t, true, raw)
+		})
+	}
+}
+
+func x86X87CompareHostSoftwareValues(t *testing.T, nativeMemory, raw bool) {
+	t.Helper()
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
 		t.Fatal("LLVM22 llc and clang are required")
@@ -37,13 +50,19 @@ func TestX86X87CompareNamedHostSoftwareValues(t *testing.T) {
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-typedef double (*compare_fn)(uint64_t, float, double, int16_t, int32_t, double);
 `)
-	for index := range cases {
-		fmt.Fprintf(&main, "extern double X87Compare%d(uint64_t,float,double,int16_t,int32_t,double);\n", index)
-		fmt.Fprintf(&main, "extern double X87Top%d(uint64_t,float,double,int16_t,int32_t,double);\n", index)
+	parameters := "uint64_t,float,double,int16_t,int32_t,double"
+	callMemory := ""
+	if nativeMemory {
+		parameters += ",uint8_t*"
+		callMemory = ",memory"
 	}
-	main.WriteString("struct entry {compare_fn flags, top; int memory, direct, pop;};\nstatic const struct entry entries[]={\n")
+	fmt.Fprintf(&main, "typedef double (*compare_fn)(%s);\n", parameters)
+	for index := range cases {
+		fmt.Fprintf(&main, "extern double X87Compare%d(%s);\n", index, parameters)
+		fmt.Fprintf(&main, "extern double X87Top%d(%s);\n", index, parameters)
+	}
+	main.WriteString("struct entry {compare_fn flags, top; int memory, direct, pop, displacement;};\nstatic const struct entry entries[]={\n")
 	for index, fixture := range cases {
 		op := strings.Fields(fixture.witness.Instruction)[0]
 		memory := 0
@@ -55,6 +74,8 @@ typedef double (*compare_fn)(uint64_t, float, double, int16_t, int32_t, double);
 				memory = 2
 			case "FCOML", "FCOMLP":
 				memory = 3
+			case "FCOMD", "FCOMDP":
+				memory = 4
 			}
 		}
 		direct, pop := 0, 0
@@ -68,9 +89,13 @@ typedef double (*compare_fn)(uint64_t, float, double, int16_t, int32_t, double);
 		case "FCOMDP", "FCOMFP", "FCOMLP", "FCOMWP", "FCOMIP", "FUCOMIP", "FUCOMP":
 			pop = 1
 		}
-		fmt.Fprintf(&main, "{X87Compare%d,X87Top%d,%d,%d,%d},\n", index, index, memory, direct, pop)
+		displacement := 0
+		if strings.Contains(fixture.witness.Instruction, "7(AX)") {
+			displacement = 7
+		}
+		fmt.Fprintf(&main, "{X87Compare%d,X87Top%d,%d,%d,%d,%d},\n", index, index, memory, direct, pop, displacement)
 	}
-	main.WriteString(`};
+	main.WriteString(strings.ReplaceAll(`};
 static const uint64_t values[]={
  UINT64_C(0xc025000000000000), UINT64_C(0x8000000000000000), 0,
  UINT64_C(0x3ff0000000000000), UINT64_C(0x4010000000000000),
@@ -89,6 +114,14 @@ int main(void) {
     float f=(float)right;
     int16_t w=(i&1)?-7:2;
     int32_t l=(j&1)?-17:4;
+    uint8_t memory[32],before[32];
+    memset(memory,0xa7,sizeof(memory));
+    uint8_t *at=memory+entries[k].displacement;
+    if(entries[k].memory==1) memcpy(at,&f,4);
+    if(entries[k].memory==2) memcpy(at,&w,2);
+    if(entries[k].memory==3) memcpy(at,&l,4);
+    if(entries[k].memory==4) memcpy(at,&right,8);
+    memcpy(before,memory,sizeof(memory));
     double rhs=right;
     if(entries[k].memory==1) rhs=(double)f;
     if(entries[k].memory==2) rhs=w;
@@ -102,14 +135,14 @@ int main(void) {
      expected=UINT64_C(0x0000000101010000);
      expected|=(uint64_t)less<<8|(uint64_t)unordered<<10|(uint64_t)equal<<14;
     }
-    double result=entries[k].flags(0,f,right,w,l,left);
+    double result=entries[k].flags(0,f,right,w,l,left CALL_MEMORY);
     uint64_t actual;memcpy(&actual,&result,8);
     if(actual!=expected) {
      fprintf(stderr,"row=%u input=%u,%u flags=%llx expected=%llx\n",k,i,j,(unsigned long long)actual,(unsigned long long)expected);
      return 1;
     }
     checks++;
-    result=entries[k].top(0,f,right,w,l,left);
+    result=entries[k].top(0,f,right,w,l,left CALL_MEMORY);
     memcpy(&actual,&result,8);
     expected=entries[k].pop?b:a;
     if(entries[k].pop==2) expected=UINT64_C(0x3ff0000000000000);
@@ -118,6 +151,7 @@ int main(void) {
      return 2;
     }
     checks++;
+    if(memcmp(before,memory,sizeof(memory))) return 4;
    }
   }
  }
@@ -125,9 +159,9 @@ int main(void) {
  printf("38 named counterparts: %u independent flag/status and remaining-top checks\n",checks);
  return 0;
 }
-`)
-	source, declaration := x86X87CompareNamedAssembly(append([]x86OfficialPackedCase(nil), cases...), "amd64", false)
-	topSource, topDeclaration := x86X87CompareNamedAssembly(append([]x86OfficialPackedCase(nil), cases...), "amd64", true)
+`, "CALL_MEMORY", callMemory))
+	source, declaration := x86X87CompareAssembly(append([]x86OfficialPackedCase(nil), cases...), "amd64", false, nativeMemory, raw)
+	topSource, topDeclaration := x86X87CompareAssembly(append([]x86OfficialPackedCase(nil), cases...), "amd64", true, nativeMemory, raw)
 	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
 	ir, err := x86X87InitializedWordAPI(t, source+topSource, declaration+topDeclaration, "amd64", triple, "Go", X87Software)
 	if err != nil || ir == "" {

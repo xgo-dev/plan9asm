@@ -85,8 +85,14 @@ func TestX86X87CompareNamedInputsAndRawBoundary(t *testing.T) {
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(fmt.Sprintf("%s/raw-%x/%s", arch, code, api), func(t *testing.T) {
 					ir, err := x86X87InitializedWordAPI(t, raw, declaration, arch, triple, api, X87Software)
+					if bytes.Equal(code, []byte{0xd8, 0xd1}) || bytes.Equal(code, []byte{0xdc, 0xd7}) {
+						if err != nil || ir == "" {
+							t.Fatal("complete replay lost its defined register compare", err)
+						}
+						return
+					}
 					if err == nil || ir != "" {
-						t.Fatalf("raw bytes acquired a named numerical contract: output=%t error=%v", ir != "", err)
+						t.Fatalf("illegal or mismatched status/pop source acquired a result: output=%t error=%v", ir != "", err)
 					}
 				})
 			}
@@ -95,9 +101,17 @@ func TestX86X87CompareNamedInputsAndRawBoundary(t *testing.T) {
 }
 
 func x86X87CompareNamedAssembly(cases []x86OfficialPackedCase, arch string, topResult bool) (string, string) {
+	return x86X87CompareAssembly(cases, arch, topResult, false, false)
+}
+
+func x86X87CompareAssembly(cases []x86OfficialPackedCase, arch string, topResult, nativeMemory, raw bool) (string, string) {
 	d, w, l, top, result := 12, 20, 24, 28, 36
 	if arch == "amd64" {
 		d, w, l, top, result = 16, 24, 28, 32, 40
+	}
+	memory := result
+	if nativeMemory {
+		result += goWordSize(arch)
 	}
 	var source, declarations strings.Builder
 	line := 1
@@ -110,7 +124,7 @@ func x86X87CompareNamedAssembly(cases []x86OfficialPackedCase, arch string, topR
 		fixture.symbol = fmt.Sprint(prefix, index)
 		instruction := fixture.witness.Instruction
 		op := strings.Fields(instruction)[0]
-		if strings.Contains(instruction, "(AX)") {
+		if !nativeMemory && strings.Contains(instruction, "(AX)") {
 			operand, offset := fmt.Sprintf("d+%d(FP)", d), d
 			switch op {
 			case "FCOMF", "FCOMFP":
@@ -129,6 +143,13 @@ func x86X87CompareNamedAssembly(cases []x86OfficialPackedCase, arch string, topR
 		}
 		var body strings.Builder
 		fmt.Fprintf(&body, "TEXT ·%s(SB),4,$0-%d\nMOVL gate+4(FP),AX\nFINIT\n", fixture.symbol, result+8)
+		if nativeMemory {
+			move := "MOVQ"
+			if arch == "386" {
+				move = "MOVL"
+			}
+			fmt.Fprintf(&body, "%s memory+%d(FP),AX\n", move, memory)
+		}
 		for i := 0; i < 5; i++ {
 			fmt.Fprintf(&body, "FMOVD d+%d(FP),F0\n", d)
 		}
@@ -137,7 +158,12 @@ func x86X87CompareNamedAssembly(cases []x86OfficialPackedCase, arch string, topR
 		fmt.Fprintf(&body, "FLD1\nFMOVD d+%d(FP),F0\n", d)
 		fmt.Fprintf(&body, "FMOVD top+%d(FP),F0\nMOVL $-1,CX\nADDL $1,CX\n", top)
 		fixture.line = line + strings.Count(body.String(), "\n")
-		body.WriteString(instruction + "\n")
+		if raw {
+			fixture.witness.Instruction = strings.TrimSpace(x86RawDisplacementDirectives(fixture.witness.Encoding))
+			body.WriteString(fixture.witness.Instruction + "\n")
+		} else {
+			body.WriteString(instruction + "\n")
+		}
 		pops := 0
 		switch op {
 		case "FCOMDPP", "FUCOMPP":
@@ -163,7 +189,11 @@ func x86X87CompareNamedAssembly(cases []x86OfficialPackedCase, arch string, topR
 		}
 		body.WriteString(strings.Repeat("FMOVDP F0,F0\n", remaining) + "RET\n")
 		source.WriteString(body.String())
-		fmt.Fprintf(&declarations, "func %s(gate uint64, f float32, d float64, w int16, l int32, top float64) float64\n", fixture.symbol)
+		parameters := "gate uint64, f float32, d float64, w int16, l int32, top float64"
+		if nativeMemory {
+			parameters += ", memory *byte"
+		}
+		fmt.Fprintf(&declarations, "func %s(%s) float64\n", fixture.symbol, parameters)
 		line += strings.Count(body.String(), "\n")
 	}
 	return source.String(), declarations.String()

@@ -2695,6 +2695,16 @@ func decodeX86RawDirectiveGroupWithOpaque(
 				continue
 			}
 
+			if instruction, length, ok := decodedX86X87CompareAlias(code[offset:], mode); ok {
+				if err := markInstruction(offset, length); err != nil {
+					return nil, err
+				}
+				instruction.Raw += fmt.Sprintf(" /* decoded from %s */", rawGroup)
+				decodedByOffset[offset] = x86RawDecodedInstruction{length: length, instrs: []Instr{instruction}}
+				offset += length
+				continue
+			}
+
 			inst, err := x86asm.Decode(code[offset:], mode)
 			if err != nil && mode == 64 {
 				if nop, ok := decodedX86REXWNOP(code[offset:]); ok {
@@ -9608,6 +9618,9 @@ func decodedX86GoSyntax(inst x86asm.Inst, encoding []byte) (string, error) {
 			// numerical GP input or a proved source-group RIP relocation.
 			return "", fmt.Errorf("%w: raw x86 EIP-relative memory requires its native instruction address", ErrProbeNeedsContext)
 		}
+	}
+	if syntax, known, err := decodedX86X87CompareSyntax(inst, encoding); known {
+		return syntax, err
 	}
 	inst = normalizeDecodedX86MemoryDisplacements(inst)
 	inst = normalizeDecodedX86LEASegments(inst)

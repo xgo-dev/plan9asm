@@ -2,16 +2,24 @@ package plan9asm
 
 import "fmt"
 
-func (c *amd64Ctx) x87NativeFloatingMoveResultStep(ins Instr, state *x86ResultState,
+func (c *amd64Ctx) x87NativeMemoryValueResultStep(ins Instr, state *x86ResultState,
 	owned []bool, resultOffset int64, arch string) (bool, bool) {
 	form, known, err := x86X87ValueProperties(ins, arch)
-	if !known || form.spec.kind != x86X87FloatMove {
+	if !known || form.spec.kind != x86X87FloatMove && form.spec.kind != x86X87Compare {
 		return false, false
 	}
 	if err != nil || !x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil {
 		return false, true
 	}
 	return x86ResultX87ValueStepWithMemory(ins, state, owned, resultOffset, arch, false, true)
+}
+
+func x86X87RawCompareInstruction(ins Instr, arch string) bool {
+	if ins.x86SourceRaw == nil {
+		return false
+	}
+	form, known, err := x86X87ValueProperties(ins, arch)
+	return known && err == nil && form.spec.kind == x86X87Compare
 }
 
 // Both native floating widths use exact unaligned volatile accesses. Dead

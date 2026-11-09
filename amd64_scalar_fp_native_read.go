@@ -119,7 +119,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	if err := x86LoweredNumericalProducerReplay(fn, arch); err != nil {
 		return err // One restriction-only source check, never an input/native capability.
 	}
-	boundRawClear := false
+	boundRawX87 := false
 	boundRawUnaligned := false
 	boundRawConversion := false
 	boundRawMinMax := false
@@ -360,11 +360,11 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 				// raw-return, stack or native-entry authority to this continuation.
 				continue
 			}
-			if x86X87RawClearInstruction(ins) {
-				if !boundRawClear && (fn.x86RawReplay == nil || fn.x86RawReplay.validate(fn, arch) != nil) {
+			if x86X87RawClearInstruction(ins) || x86X87RawCompareInstruction(ins, arch) {
+				if !boundRawX87 && (fn.x86RawReplay == nil || fn.x86RawReplay.validate(fn, arch) != nil) {
 					return strictErr
 				}
-				boundRawClear = true
+				boundRawX87 = true
 				continue
 			}
 			// The physical decoder already validated the complete NOP and
@@ -601,13 +601,21 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 			prefix, bound := lockPrefixes[ordinal]
 			return bound && reflect.DeepEqual(prefix, ins)
 		}
-		if boundRawClear && x86X87RawClearInstruction(ins) {
+		if boundRawX87 && x86X87RawClearInstruction(ins) {
 			return x86ResultX87BoundRawClear(ins, state, owned, resultOffset, arch)
+		}
+		if boundRawX87 && x86X87RawCompareInstruction(ins, arch) {
+			// Only this complete-function replay permits the temporary view.
+			// All other raw, address, prefix and input checks remain intact.
+			named := ins
+			named.x86SourceRaw = nil
+			accepted, known := c.x87NativeMemoryValueResultStep(named, state, owned, resultOffset, arch)
+			return accepted && known
 		}
 		if accepted, known := c.x87EnvironmentReadResultStep(ins, state, arch); known {
 			return accepted
 		}
-		if accepted, known := c.x87NativeFloatingMoveResultStep(ins, state, owned, resultOffset, arch); known {
+		if accepted, known := c.x87NativeMemoryValueResultStep(ins, state, owned, resultOffset, arch); known {
 			return accepted
 		}
 		if accepted, known := x86LoweredStackNativeRead(ins, state, owned, resultOffset, arch); known {

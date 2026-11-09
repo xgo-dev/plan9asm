@@ -125,7 +125,7 @@ func x86ResultX87ValueStepWithHardwareRounding(ins Instr, state *x86ResultState,
 	return x86ResultX87ValueStepWithMemory(ins, state, owned, resultOffset, arch, hardwareRounding, false)
 }
 
-// nativeMemory is confined to the paired floating-move emitter. The shared
+// nativeMemory is confined to paired floating-move and compare emitters. The shared
 // grammar, x87 depth and numerical inputs still own every ordinary effect.
 func x86ResultX87ValueStepWithMemory(ins Instr, state *x86ResultState, owned []bool,
 	resultOffset int64, arch string, hardwareRounding, nativeMemory bool) (bool, bool) {
@@ -146,7 +146,7 @@ func x86ResultX87ValueStepWithMemory(ins Instr, state *x86ResultState, owned []b
 		return false, true
 	}
 	x87 := state.x87
-	nativeMemory = nativeMemory && form.spec.kind == x86X87FloatMove
+	nativeMemory = nativeMemory && (form.spec.kind == x86X87FloatMove || form.spec.kind == x86X87Compare)
 	hardwareRounding = hardwareRounding && (form.spec.kind == x86X87Round ||
 		form.spec.kind == x86X87IntegerMove && form.spec.width == 'V' && form.spec.pop == 1)
 	read := func(operand Operand) bool {
