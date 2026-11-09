@@ -32,6 +32,8 @@ func TestX86ScalarCompareRowsCannotSupplyNumericalInputs(t *testing.T) {
 		{"CMPL AX,$128", "MOVQ a+16(FP),AX\n"},
 		{"CMPL CX,BX", "MOVQ c+32(FP),CX\n"},
 		{"TESTL 0(SI),BX", "MOVQ memory+0(FP),SI\n"},
+		{"TESTB 0(SI),BL", "MOVQ memory+0(FP),SI\n"},
+		{"TESTB CL,BL", "MOVQ c+32(FP),CX\n"},
 	} {
 		source, declaration := x86ScalarCompareInitializedFunction("CompareMissing", item.operation, "amd64")
 		if strings.Count(source, item.removed) != 1 {

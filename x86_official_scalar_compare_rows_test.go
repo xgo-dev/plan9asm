@@ -41,11 +41,11 @@ func TestX86OfficialScalarCompareRowsOriginalBytesObjects(t *testing.T) {
 					witness: goasmrules.X86PackedBinaryWitness{Instruction: witness.Instruction, Encoding: witness.Encoding}})
 			}
 		}
-		want := 48
+		want := 54
 		if arch == "386" {
-			want = 34
+			want = 40
 		}
-		if len(rows) != 31 || len(cases) != want {
+		if len(rows) != 35 || len(cases) != want {
 			t.Fatal("original compare/test source-mode union changed", arch, len(rows), len(cases))
 		}
 		x86Legacy127Objects(t, arch, cases, x86ScalarCompareInitializedFunction)
