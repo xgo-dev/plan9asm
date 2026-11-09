@@ -398,6 +398,63 @@ func x86LegacyMediaInitializedCases(t *testing.T, catalog goasmrules.X86LegacyCa
 	return cases
 }
 
+// Both object owners consume the same complete stream, but execute disjoint
+// original-row partitions. Count every witness before either owner compiles it.
+func x86LegacyMediaObjectPartitions(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) (media, crypto []x86OfficialPackedCase) {
+	t.Helper()
+	rows, err := goasmrules.X86LegacyMediaRemainderRows(catalog, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaIDs := map[string]bool{}
+	expected := map[string]int{}
+	for _, row := range rows {
+		mediaIDs[row.ID] = true
+		expected[row.ID] = len(row.Witnesses)
+	}
+	cryptoRows := 0
+	for _, entry := range catalog.Optab {
+		if entry.Ytab != "yaes" {
+			continue
+		}
+		for _, row := range entry.Rows {
+			id := fmt.Sprintf("optab/%d/%s/%s/%d", entry.TableIndex, entry.Opcode, entry.Ytab, row.RowIndex)
+			if _, found := expected[id]; found {
+				t.Fatal("initialized media/crypto row partitions overlap", id)
+			}
+			expected[id] = 2 // Complete register and memory carriers.
+			cryptoRows++
+		}
+	}
+	if len(mediaIDs) != 96 || cryptoRows != 10 {
+		t.Fatal("complete original initialized row partitions changed", len(mediaIDs), cryptoRows)
+	}
+	seen := map[string]bool{}
+	actual := map[string]int{}
+	for _, fixture := range x86LegacyMediaInitializedCases(t, catalog, arch) {
+		if _, found := expected[fixture.row]; !found {
+			t.Fatal("initialized stream has an unowned original row", fixture.row)
+		}
+		key := fixture.row + "/" + fixture.witness.Instruction
+		if seen[key] {
+			t.Fatal("initialized row partition repeats an original witness", key)
+		}
+		seen[key] = true
+		actual[fixture.row]++
+		if mediaIDs[fixture.row] {
+			media = append(media, fixture)
+		} else {
+			crypto = append(crypto, fixture)
+		}
+	}
+	for id, want := range expected {
+		if actual[id] != want {
+			t.Fatal("initialized row partition lost original witnesses", id, actual[id], want)
+		}
+	}
+	return media, crypto
+}
+
 func TestX86OfficialLegacyMediaRemainderRowsObjects(t *testing.T) {
 	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
 	if err != nil {
@@ -410,16 +467,7 @@ func TestX86OfficialLegacyMediaRemainderRowsObjects(t *testing.T) {
 			t.Fatal(err)
 		}
 		modes[arch] = rows
-		original := map[string]bool{}
-		for _, row := range rows {
-			original[row.ID] = true
-		}
-		var cases []x86OfficialPackedCase
-		for _, fixture := range x86LegacyMediaInitializedCases(t, catalog, arch) {
-			if original[fixture.row] {
-				cases = append(cases, fixture)
-			}
-		}
+		cases, _ := x86LegacyMediaObjectPartitions(t, catalog, arch)
 		want := 160
 		if arch == "386" {
 			want = 70
@@ -457,12 +505,15 @@ func TestX86LegacyCryptoOriginalRowsReachInitializedObjects(t *testing.T) {
 			if len(expected) != 10 {
 				t.Fatal("complete original legacy AES/SHA format changed", len(expected))
 			}
-			cases := x86LegacyMediaInitializedCases(t, catalog, arch)
+			_, cases := x86LegacyMediaObjectPartitions(t, catalog, arch)
 			// Audit the actual existing initialized input stream only after
 			// its stock-Go bytes and public API/object pipeline have run.
 			x86Legacy127Objects(t, arch, cases, x86LegacyMediaInitializedFunction)
 			if t.Failed() {
 				return
+			}
+			if len(cases) != 20 {
+				t.Errorf("crypto object owner must execute only its complete 10-row reg/memory partition: got %d witnesses, want 20", len(cases))
 			}
 			for _, fixture := range cases {
 				if _, selected := expected[fixture.row]; selected {
