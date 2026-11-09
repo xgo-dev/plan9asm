@@ -139,10 +139,10 @@ func x86ResultX87ValueStepWithMemory(ins Instr, state *x86ResultState, owned []b
 	if err != nil || form.unprovedEncoding || !x86ResultNamedPredicateInstruction(ins) || state.x87 == nil || state.x87.invalid {
 		return false, true
 	}
-	// A binary64/i64 value model cannot certify arbitrary packed BCD or
-	// extended80 values, faults and conversions. Keep all existing cell/control
-	// facts untouched while refusing the unproved numerical continuation.
-	if form.memoryBytes() == 10 {
+	// Ten-byte values need a complete-value backend. Only the paired native
+	// emitter opts in; ordinary queries and the temporary portable codec keep
+	// their existing refusal, without gaining source or memory facts.
+	if form.memoryBytes() == 10 && !nativeMemory {
 		return false, true
 	}
 	x87 := state.x87

@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -105,6 +106,61 @@ func TestX86X87EncodedTenByteInitializedThreeAPIObjects(t *testing.T) {
 					}
 					for _, level := range []string{"-O0", "-O2"} {
 						x86PackedStringCompileObject(t, llc, target.triple, ir, level)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestX86X87EncodedTenByteKeepsInputObligations(t *testing.T) {
+	for _, target := range x86RawReturnTargets {
+		word, move := goWordSize(target.arch), "MOVQ"
+		if word == 4 {
+			move = "MOVL"
+		}
+		for _, format := range []struct{ load, store string }{
+			{"FMOVB", "FMOVBP"}, {"FMOVX", "FMOVXP"},
+		} {
+			for _, invalid := range []struct{ name, input, body string }{
+				{"unknown-address", "", format.load + " (SI),F0\n" + format.store + " F0,(DI)\n"},
+				{"partial-address", "MOVW input+0(FP),SI\n", format.load + " (SI),F0\n" + format.store + " F0,(DI)\n"},
+				{"unknown-value", "", format.store + " F0,(DI)\n"},
+			} {
+				source := fmt.Sprintf("TEXT ·Value(SB),4,$0-%d\n%s output+%d(FP),DI\nFINIT\n%s%sRET\n", 2*word, move, word, invalid.input, invalid.body)
+				for _, api := range []string{"text", "module", "Go"} {
+					t.Run(target.triple+"/"+format.load+"/"+invalid.name+"/"+api, func(t *testing.T) {
+						ir, err := x86X87InitializedWordAPI(t, source, "func Value(input,output *[10]byte)\n", target.arch, target.triple, api, X87Hardware)
+						if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+							t.Fatal("a ten-byte format supplied missing address or FPU input facts", err, ir)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestX86X87EncodedTenByteKeepsBackendObligations(t *testing.T) {
+	for _, target := range x86RawReturnTargets {
+		source, declaration := x87EncodedTenByteProgram(t, target.arch)
+		for _, api := range []string{"text", "module", "Go"} {
+			t.Run(target.triple+"/software/"+api, func(t *testing.T) {
+				ir, err := x86X87InitializedWordAPI(t, source, declaration, target.arch, target.triple, api, X87Software)
+				if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					t.Fatal("native encoded access became a portable binary64 codec", err, ir)
+				}
+			})
+		}
+	}
+	source, declaration := x87EncodedTenByteProgram(t, "amd64")
+	for _, triple := range []string{"armv7-unknown-linux-gnueabihf", "aarch64-unknown-linux-gnu", "wasm32-unknown-unknown"} {
+		for _, mode := range []X87Mode{X87Auto, X87Hardware} {
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run(fmt.Sprintf("%s/mode%d/%s", triple, mode, api), func(t *testing.T) {
+					ir, err := x86X87InitializedWordAPI(t, source, declaration, "amd64", triple, api, mode)
+					if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+						t.Fatal("encoded x87 access lost its matching backend requirement", err, ir)
 					}
 				})
 			}

@@ -11,6 +11,9 @@ func (c *amd64Ctx) x87NativeMemoryValueResultStep(ins Instr, state *x86ResultSta
 	if err != nil || !x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil {
 		return false, true
 	}
+	if form.memoryBytes() == 10 && !c.useHardwareX87() {
+		return false, true // The temporary portable codec still uses binary64.
+	}
 	return x86ResultX87ValueStepWithMemory(ins, state, owned, resultOffset, arch, false, true)
 }
 

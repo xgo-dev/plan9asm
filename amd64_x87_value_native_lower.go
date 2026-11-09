@@ -9,6 +9,9 @@ func (c *amd64Ctx) loadX87NativeOperand(source Operand, width byte) (x87Value, e
 	if index, register := x87OperandReg(source); register {
 		return c.loadX87Value(index), nil
 	}
+	if width == 'B' || width == 'X' {
+		return c.loadX87NativeEncoded(source, width)
+	}
 	if width == 'F' || width == 'D' {
 		bits := 64
 		if width == 'F' {
@@ -39,6 +42,9 @@ func (c *amd64Ctx) storeX87NativeOperand(destination Operand, value x87Value, wi
 	if index, register := x87OperandReg(destination); register {
 		c.storeX87Value(index, value)
 		return nil
+	}
+	if width == 'B' || width == 'X' {
+		return c.storeX87NativeEncoded(destination, value, width)
 	}
 	bits := 64
 	if width == 'F' {
