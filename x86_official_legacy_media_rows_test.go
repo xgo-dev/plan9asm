@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -371,19 +372,7 @@ func x86LegacyMediaInitializedCases(t *testing.T, catalog goasmrules.X86LegacyCa
 	for _, row := range literal {
 		byID[row.ID] = row
 	}
-	crypto := map[string]bool{}
-	for _, entry := range catalog.Optab {
-		if entry.Ytab != "yaes" {
-			continue
-		}
-		for _, row := range entry.Rows {
-			crypto[fmt.Sprintf("optab/%d/%s/%s/%d", entry.TableIndex, entry.Opcode, entry.Ytab, row.RowIndex)] = true
-		}
-	}
 	for _, original := range x86LegacyLiteralSIMDSourceCases(t, catalog, false) {
-		if !crypto[original.row] {
-			continue
-		}
 		matched := false
 		for _, witness := range byID[original.row].Witnesses {
 			if witness.Instruction == original.witness.Instruction {
@@ -391,16 +380,16 @@ func x86LegacyMediaInitializedCases(t *testing.T, catalog goasmrules.X86LegacyCa
 			}
 		}
 		if !matched {
-			t.Fatal("initialized legacy AES/SHA row differs from independent original bytes", original.row, original.witness.Instruction)
+			t.Fatal("initialized literal SIMD row differs from independent original bytes", original.row, original.witness.Instruction)
 		}
-		cases = append(cases, original)
+		cases = append(cases, x86LegacyLiteralSIMDInitializedCarrier(t, original, arch))
 	}
 	return cases
 }
 
-// Both object owners consume the same complete stream, but execute disjoint
+// All object owners consume the same complete stream, but execute disjoint
 // original-row partitions. Count every witness before either owner compiles it.
-func x86LegacyMediaObjectPartitions(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) (media, crypto []x86OfficialPackedCase) {
+func x86LegacyMediaObjectPartitions(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) (media, crypto, immediate []x86OfficialPackedCase) {
 	t.Helper()
 	rows, err := goasmrules.X86LegacyMediaRemainderRows(catalog, arch)
 	if err != nil {
@@ -412,22 +401,27 @@ func x86LegacyMediaObjectPartitions(t *testing.T, catalog goasmrules.X86LegacyCa
 		mediaIDs[row.ID] = true
 		expected[row.ID] = len(row.Witnesses)
 	}
-	cryptoRows := 0
+	cryptoIDs := map[string]bool{}
+	immediateRows := 0
 	for _, entry := range catalog.Optab {
-		if entry.Ytab != "yaes" {
+		if entry.Ytab != "yaes" && entry.Ytab != "yxshuf" {
 			continue
 		}
 		for _, row := range entry.Rows {
 			id := fmt.Sprintf("optab/%d/%s/%s/%d", entry.TableIndex, entry.Opcode, entry.Ytab, row.RowIndex)
 			if _, found := expected[id]; found {
-				t.Fatal("initialized media/crypto row partitions overlap", id)
+				t.Fatal("initialized original-row partitions overlap", id)
 			}
 			expected[id] = 2 // Complete register and memory carriers.
-			cryptoRows++
+			if entry.Ytab == "yaes" {
+				cryptoIDs[id] = true
+			} else {
+				immediateRows++
+			}
 		}
 	}
-	if len(mediaIDs) != 96 || cryptoRows != 10 {
-		t.Fatal("complete original initialized row partitions changed", len(mediaIDs), cryptoRows)
+	if len(mediaIDs) != 96 || len(cryptoIDs) != 10 || immediateRows != 23 {
+		t.Fatal("complete original initialized row partitions changed", len(mediaIDs), len(cryptoIDs), immediateRows)
 	}
 	seen := map[string]bool{}
 	actual := map[string]int{}
@@ -443,8 +437,10 @@ func x86LegacyMediaObjectPartitions(t *testing.T, catalog goasmrules.X86LegacyCa
 		actual[fixture.row]++
 		if mediaIDs[fixture.row] {
 			media = append(media, fixture)
-		} else {
+		} else if cryptoIDs[fixture.row] {
 			crypto = append(crypto, fixture)
+		} else {
+			immediate = append(immediate, fixture)
 		}
 	}
 	for id, want := range expected {
@@ -452,7 +448,69 @@ func x86LegacyMediaObjectPartitions(t *testing.T, catalog goasmrules.X86LegacyCa
 			t.Fatal("initialized row partition lost original witnesses", id, actual[id], want)
 		}
 	}
-	return media, crypto
+	return media, crypto, immediate
+}
+
+func x86LegacyLiteralSIMDInitializedCarrier(t *testing.T, original x86OfficialPackedCase, arch string) x86OfficialPackedCase {
+	t.Helper()
+	ins := x86ScalarLaneInstruction(t, original.witness.Instruction)
+	spec, known, err := amd64PackedStringCompareProperties(ins.Op, ins, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !known || !spec.explicitLength || ins.Args[1].Kind != OpMem {
+		return original
+	}
+	// EAX is an independent numerical length. Keep the canonical AX byte
+	// witness above; use SI for this initialized pointer, with its own exact
+	// stock-Go byte check in x86Legacy127Objects. No pointer bits become NUM.
+	code := original.witness.Encoding
+	if strings.Count(original.witness.Instruction, "(AX)") != 1 || len(code) < 2 || code[len(code)-2] != 0x08 {
+		t.Fatal("explicit-length canonical source carrier changed", original)
+	}
+	original.witness.Instruction = strings.Replace(original.witness.Instruction, "(AX)", "(SI)", 1)
+	original.witness.First = "(SI)"
+	original.witness.Encoding = append([]byte(nil), code...)
+	original.witness.Encoding[len(code)-2] = 0x0e // ModRM: X1, (SI).
+	return original
+}
+
+func x86LegacyImmediateSIMDInitializedFunction(t *testing.T, name, operation, arch string) (string, string) {
+	t.Helper()
+	ins := x86ScalarLaneInstruction(t, operation)
+	spec, packedString, err := amd64PackedStringCompareProperties(ins.Op, ins, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	word, move := goWordSize(arch), "Q"
+	if word == 4 {
+		move = "L"
+	}
+	source := fmt.Sprintf("TEXT ·%s(SB),4,$0-%d\nMOV%s out+0(FP),DI\nMOV%s a+%d(FP),SI\nMOV%s b+%d(FP),BX\nMOV%s mask+%d(FP),CX\n",
+		name, 3*word+24, move, move, word, move, 2*word, move, 3*word)
+	if !packedString || !spec.explicitLength {
+		source += fmt.Sprintf("MOV%s SI,AX\n", move)
+	}
+	for _, operand := range ins.Args {
+		if operand.Kind == OpReg && operand.Reg == "X0" {
+			source += "MOVOU (SI),X0\n"
+			break
+		}
+	}
+	source += "MOVOU (BX),X1\n"
+	if packedString && spec.explicitLength {
+		source += fmt.Sprintf("MOVL lengthA+%d(FP),AX\nMOVL lengthB+%d(FP),DX\n", 3*word+8, 3*word+16)
+	}
+	source += "CMPL CX,CX\n" + operation + "\nMOVOU X1,0(DI)\n"
+	if packedString {
+		if spec.maskResult {
+			source += "MOVOU X0,32(DI)\n"
+		} else {
+			source += "MOVL CX,32(DI)\n"
+		}
+	}
+	source += "SETCS CL\nMOVB CL,48(DI)\nSETEQ CL\nMOVB CL,49(DI)\nSETPS CL\nMOVB CL,50(DI)\nRET\n"
+	return source, fmt.Sprintf("func %s(out *[64]byte,a,b *[16]byte,mask uint64,lengthA,lengthB int64)\n", name)
 }
 
 func TestX86OfficialLegacyMediaRemainderRowsObjects(t *testing.T) {
@@ -467,7 +525,7 @@ func TestX86OfficialLegacyMediaRemainderRowsObjects(t *testing.T) {
 			t.Fatal(err)
 		}
 		modes[arch] = rows
-		cases, _ := x86LegacyMediaObjectPartitions(t, catalog, arch)
+		cases, _, _ := x86LegacyMediaObjectPartitions(t, catalog, arch)
 		want := 160
 		if arch == "386" {
 			want = 70
@@ -505,7 +563,7 @@ func TestX86LegacyCryptoOriginalRowsReachInitializedObjects(t *testing.T) {
 			if len(expected) != 10 {
 				t.Fatal("complete original legacy AES/SHA format changed", len(expected))
 			}
-			_, cases := x86LegacyMediaObjectPartitions(t, catalog, arch)
+			_, cases, _ := x86LegacyMediaObjectPartitions(t, catalog, arch)
 			// Audit the actual existing initialized input stream only after
 			// its stock-Go bytes and public API/object pipeline have run.
 			x86Legacy127Objects(t, arch, cases, x86LegacyMediaInitializedFunction)
@@ -526,6 +584,214 @@ func TestX86LegacyCryptoOriginalRowsReachInitializedObjects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestX86LegacyImmediateSIMDOriginalRowsReachInitializedObjects(t *testing.T) {
+	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type witnessPair struct {
+		RowID                              string
+		Canonical, Initialized             goasmrules.X86PackedBinaryWitness
+		CanonicalSource, InitializedSource Operand
+	}
+	identity := map[string][]witnessPair{}
+	for _, arch := range []string{"amd64", "386"} {
+		t.Run(arch, func(t *testing.T) {
+			expected := map[string]int{}
+			for _, entry := range catalog.Optab {
+				if entry.Ytab != "yxshuf" {
+					continue
+				}
+				for _, row := range entry.Rows {
+					id := fmt.Sprintf("optab/%d/%s/%s/%d", entry.TableIndex, entry.Opcode, entry.Ytab, row.RowIndex)
+					expected[id] = 0
+				}
+			}
+			if len(expected) != 23 {
+				t.Fatal("complete original immediate SIMD format changed", len(expected))
+			}
+			_, _, cases := x86LegacyMediaObjectPartitions(t, catalog, arch)
+			x86Legacy127Objects(t, arch, cases, func(name, operation, arch string) (string, string) {
+				return x86LegacyImmediateSIMDInitializedFunction(t, name, operation, arch)
+			})
+			if t.Failed() {
+				return
+			}
+			if len(cases) != 46 {
+				t.Errorf("complete immediate SIMD object partition: got %d witnesses, want 46", len(cases))
+			}
+			for _, fixture := range cases {
+				if _, selected := expected[fixture.row]; selected {
+					expected[fixture.row]++
+				}
+			}
+			for id, count := range expected {
+				if count != 2 {
+					t.Errorf("original immediate SIMD row lost its initialized reg/memory pair: %s: got %d, want 2", id, count)
+				}
+			}
+			byCarrier := map[string]goasmrules.X86PackedBinaryWitness{}
+			key := func(row, operation string) string {
+				return row + "/memory=" + strconv.FormatBool(strings.Contains(operation, "("))
+			}
+			for _, fixture := range cases {
+				byCarrier[key(fixture.row, fixture.witness.Instruction)] = fixture.witness
+			}
+			adapted := 0
+			for _, original := range x86LegacyLiteralSIMDSourceCases(t, catalog, false) {
+				if _, selected := expected[original.row]; !selected {
+					continue
+				}
+				initialized, found := byCarrier[key(original.row, original.witness.Instruction)]
+				if !found {
+					t.Fatal("canonical literal source lost its initialized carrier", original)
+				}
+				before := append([]byte(nil), original.witness.Encoding...)
+				projected := x86LegacyLiteralSIMDInitializedCarrier(t, original, arch)
+				if !bytes.Equal(before, original.witness.Encoding) || !reflect.DeepEqual(projected.witness, initialized) {
+					t.Fatal("carrier projection mutated its canonical bytes or differs from the actual public input", original.row)
+				}
+				canonicalSource := x86ScalarLaneInstruction(t, original.witness.Instruction).Args[1]
+				initializedSource := x86ScalarLaneInstruction(t, initialized.Instruction).Args[1]
+				if original.witness.Instruction != initialized.Instruction {
+					adapted++
+					want := append([]byte(nil), before...)
+					want[len(want)-2] = 0x0e
+					unchanged := initialized
+					unchanged.First, unchanged.Instruction, unchanged.Encoding = original.witness.First, original.witness.Instruction, original.witness.Encoding
+					if canonicalSource.Kind != OpMem || canonicalSource.Mem.Base != AX ||
+						initializedSource.Kind != OpMem || initializedSource.Mem.Base != SI || initialized.First != "(SI)" ||
+						initialized.Instruction != strings.Replace(original.witness.Instruction, "(AX)", "(SI)", 1) ||
+						!bytes.Equal(initialized.Encoding, want) || !reflect.DeepEqual(unchanged, original.witness) {
+						t.Fatal("carrier projection changed more than its exact source role, spelling and ModRM", original.row)
+					}
+					t.Logf("INITIALIZED_CARRIER row=%s canonical=%q bytes=%x initialized=%q bytes=%x", original.row,
+						original.witness.Instruction, original.witness.Encoding, initialized.Instruction, initialized.Encoding)
+				}
+				identity[arch] = append(identity[arch], witnessPair{original.row, original.witness, initialized, canonicalSource, initializedSource})
+			}
+			if adapted != 2 || len(identity[arch]) != 46 {
+				t.Fatal("exact canonical/initialized carrier projection changed", arch, adapted, len(identity[arch]))
+			}
+		})
+	}
+	if !t.Failed() {
+		x86Legacy127SaveIdentity(t, "PLAN9ASM_LEGACY_IMMEDIATE_SIMD_IDENTITY_OUTPUT", identity)
+	}
+}
+
+func TestX86LegacyImmediateSIMDUnaryInputs(t *testing.T) {
+	for _, arch := range []string{"amd64", "386"} {
+		for _, operation := range []string{"PSHUFL $7,X0,X1", "PSHUFD $7,X0,X1", "PSHUFHW $7,X0,X1", "PSHUFLW $7,X0,X1", "AESKEYGENASSIST $7,X0,X1"} {
+			t.Run(arch+"/"+operation, func(t *testing.T) {
+				ins := x86ScalarLaneInstruction(t, operation)
+				effect, known, err := x86TypedInstructionByteEffect(ins.Op, ins, arch)
+				if !known || err != nil {
+					t.Fatal("complete unary immediate typed contract missing", err)
+				}
+				for _, operand := range effect.operands {
+					if operand.operand.Kind == OpReg && operand.operand.Reg == "X1" && operand.read {
+						t.Fatal("unary immediate instruction acquired an old-destination read", operation)
+					}
+				}
+				source, declaration := x86LegacyImmediateSIMDInitializedFunction(t, "Unary", operation, arch)
+				source = strings.Replace(source, "MOVOU (BX),X1\n", "", 1)
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, testTargetTriple("linux", arch), api)
+					if err != nil || ir == "" {
+						t.Fatal("unary immediate instruction borrowed an old destination", api, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestX86LegacyImmediateSIMDPackedStringLengthRoles(t *testing.T) {
+	for _, arch := range []string{"amd64", "386"} {
+		for _, operation := range []string{"PCMPESTRI $7,X0,X1", "PCMPESTRM $7,(SI),X1"} {
+			t.Run(arch+"/"+operation, func(t *testing.T) {
+				source, declaration := x86LegacyImmediateSIMDInitializedFunction(t, "Lengths", operation, arch)
+				word, move := goWordSize(arch), "Q"
+				if word == 4 {
+					move = "L"
+				}
+				for _, item := range []struct {
+					register, parameter string
+					offset              int
+				}{{"AX", "A", 3*word + 8}, {"DX", "B", 3*word + 16}} {
+					load := fmt.Sprintf("MOVL length%s+%d(FP),%s\n", item.parameter, item.offset, item.register)
+					if strings.Count(source, load) != 1 {
+						t.Fatal("missing exact independent length load", load)
+					}
+					for _, api := range []string{"text", "module", "Go"} {
+						if ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, testTargetTriple("linux", arch), api); err != nil || ir == "" {
+							t.Fatal("initialized packed-string control failed", api, err)
+						}
+						for _, replacement := range []string{"", fmt.Sprintf("MOV%s SI,%s\n", move, item.register)} {
+							missing := strings.Replace(source, load, replacement, 1)
+							ir, err := x86ScalarFPBitViewAPI(t, missing, declaration, arch, testTargetTriple("linux", arch), api)
+							if ir != "" || !errors.Is(err, ErrProbeNeedsContext) ||
+								!strings.Contains(err.Error(), "result initialization: unknown effect or undefined input") || !strings.Contains(err.Error(), operation) {
+								t.Fatal("undefined or pointer length became a numerical input", item.register, replacement, api, err)
+							}
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+// Do not seed unrelated source bytes before scalar memory instructions. The
+// existing typed-FP span owner independently checks every required byte; these
+// source/object controls do not replace native runtime or page-fault owners.
+func TestX86LegacyImmediateSIMDTypedMemoryInputWidths(t *testing.T) {
+	for _, arch := range []string{"amd64", "386"} {
+		for _, item := range []struct {
+			operation string
+			width     int
+		}{
+			{"INSERTPS $7,(AX),X1", 4},
+			{"ROUNDSS $7,(AX),X1", 4},
+			{"ROUNDSD $7,(AX),X1", 8},
+			{"ROUNDPS $7,(AX),X1", 16},
+			{"ROUNDPD $7,(AX),X1", 16},
+		} {
+			t.Run(arch+"/"+item.operation, func(t *testing.T) {
+				ins := x86ScalarLaneInstruction(t, item.operation)
+				width := 0
+				if form, known, err := x86RoundProperties(ins, arch); known {
+					if err != nil {
+						t.Fatal(err)
+					}
+					width = form.memoryBytes
+				} else if form, known, err := x86InsertExtractProperties(ins, arch); known {
+					if err != nil {
+						t.Fatal(err)
+					}
+					width = form.spec.chunk
+				}
+				if width != item.width {
+					t.Fatal("actual typed scalar/packed memory width changed", width, item.width)
+				}
+				source, declaration := x86LegacyImmediateSIMDInitializedFunction(t, "MemoryWidth", item.operation, arch)
+				if strings.Contains(source, "MOVOU (SI),X0") {
+					t.Fatal("memory-only initializer added an unrelated full-vector source read")
+				}
+				declaration = strings.Replace(declaration, "a,b *[16]byte", fmt.Sprintf("a *[%d]byte,b *[16]byte", item.width), 1)
+				goAssemblerOracleOutput(t, arch, source, "", true)
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, testTargetTriple("linux", arch), api)
+					if err != nil || ir == "" {
+						t.Fatal("exact-width initialized source rejected", api, err)
+					}
+				}
+			})
+		}
 	}
 }
 
