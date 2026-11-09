@@ -392,6 +392,86 @@ func TestX86GPDataFlagsCPUOriginalGoImmediateClassBoundaries(t *testing.T) {
 	t.Logf("GP_DATA_FLAGS_CPU_IMMEDIATES observations=%d exact_bytes=%d source_refusals=%d", observations, accepted, rejected)
 }
 
+func gpDataFlagsCPUInitializedCases(t *testing.T, catalog goasmrules.X86LegacyCatalog, arch string) []x86OfficialPackedCase {
+	t.Helper()
+	rows, err := goasmrules.X86GPDataFlagsCPURows(catalog, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]goasmrules.X86ScalarRMWRow)
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	var cases []x86OfficialPackedCase
+	for _, original := range gpDataFlagsCPU100OriginalCases(t, catalog) {
+		opcode := strings.Fields(original.witness.Instruction)[0]
+		bitTest := len(opcode) == 3 && strings.HasPrefix(opcode, "BT") && strings.ContainsRune("WLQ", rune(opcode[2]))
+		if opcode != "MOVQL" && !bitTest {
+			continue
+		}
+		row, found := byID[original.row]
+		if !found {
+			t.Fatal("original initialized row has no source grammar", original.row)
+		}
+		if row.ModeFiltered != "" {
+			continue
+		}
+		matched := false
+		for _, witness := range row.Witnesses {
+			if witness.Instruction == original.witness.Instruction {
+				matched = bytes.Equal(witness.Encoding, original.witness.Encoding)
+			}
+		}
+		if !matched {
+			t.Fatal("initialized row differs from independent source bytes", original.row, original.witness.Instruction)
+		}
+		cases = append(cases, original)
+	}
+	return cases
+}
+
+func gpDataFlagsCPUInitializedFunction(t *testing.T, name, operation, arch string) (string, string) {
+	t.Helper()
+	if strings.HasPrefix(operation, "MOVQL ") {
+		return x86ScalarRMRegisterInitializedFunction(name, operation, arch)
+	}
+	instruction := x86ScalarLaneInstruction(t, operation)
+	form, known, err := x86BitTestProperties(instruction.Op, instruction, arch)
+	if !known || err != nil || form.stem != "BT" {
+		t.Fatal("unmodeled initialized read-only bit-test row", operation, err)
+	}
+	fixture, reason := x86BitTestOriginalInitializedFormat(arch, name, operation, form)
+	if reason != "" {
+		t.Fatal("original row has no ordinary initialized producer", operation, reason)
+	}
+	declaration := strings.Replace(fixture.declaration, "func "+name+"(", "func Value(", 1) + " (data, flags uintptr)"
+	_, _, signature, source := x86ResultInitializationFixture(t, arch, declaration, "RET")
+	if len(signature.Frame.Results) != 2 {
+		t.Fatal("actual bit-test result slots changed")
+	}
+	body := strings.SplitN(fixture.source, "\n", 2)[1]
+	body = strings.TrimSuffix(body, "RET\n")
+	// Preserve a defined ZF independently of the BT inputs. AX is not an
+	// input in these original row witnesses; BT supplies CF and preserves ZF.
+	body = strings.Replace(body, operation+"\n", "MOVL $0,AX\nCMPL AX,AX\n"+operation+"\n", 1)
+	data := form.destination.Reg
+	if form.destination.Kind != OpReg {
+		load := map[int]string{16: "MOVWLZX", 32: "MOVL", 64: "MOVQ"}[form.bits]
+		body += fmt.Sprintf("%s %s,AX\n", load, strings.SplitN(operation, ",", 2)[1])
+		data = AX
+	}
+	move, suffix := "MOVQ", "Q"
+	if arch == "386" {
+		move, suffix = "MOVL", "L"
+	}
+	body += fmt.Sprintf("%s %s,data+%d(FP)\nPUSHF%s\nPOP%s DX\nAND%s $65,DX\n%s DX,flags+%d(FP)\nRET\n",
+		move, data, signature.Frame.Results[0].Offset, suffix, suffix, suffix, move, signature.Frame.Results[1].Offset)
+	source = strings.Replace(source, "\nRET\n", "\n"+body, 1)
+	source = strings.Replace(source, "·Value(SB)", "·"+name+"(SB)", 1)
+	declaration = strings.Replace(declaration, "func Value(", "func "+name+"(", 1)
+	return source, declaration + "\n"
+}
+
 // MOVQL is Go's 32-bit 0x89 alias. Its source encoding being representable
 // does not prove that the existing named translator dispatch implements it.
 func TestX86GPDataFlagsCPUMOVQLInitializedThreeAPIObjects(t *testing.T) {
@@ -399,16 +479,67 @@ func TestX86GPDataFlagsCPUMOVQLInitializedThreeAPIObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cases []x86OfficialPackedCase
-	for _, original := range gpDataFlagsCPU100OriginalCases(t, catalog) {
-		if strings.HasPrefix(original.witness.Instruction, "MOVQL ") {
-			cases = append(cases, original)
+	for _, arch := range []string{"amd64", "386"} {
+		var cases []x86OfficialPackedCase
+		for _, fixture := range gpDataFlagsCPUInitializedCases(t, catalog, arch) {
+			if strings.HasPrefix(fixture.witness.Instruction, "MOVQL ") {
+				cases = append(cases, fixture)
+			}
 		}
+		if len(cases) != 2 {
+			t.Fatal("complete MOVQL original source directions changed", len(cases))
+		}
+		x86Legacy127Objects(t, arch, cases, x86ScalarRMRegisterInitializedFunction)
 	}
-	if len(cases) != 2 {
-		t.Fatal("complete MOVQL original source directions changed", len(cases))
+}
+
+func TestX86ReadOnlyBitTestOriginalRowsReachInitializedObjects(t *testing.T) {
+	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, arch := range []string{"amd64", "386"} {
-		x86Legacy127Objects(t, arch, cases, x86ScalarRMRegisterInitializedFunction)
+		t.Run(arch, func(t *testing.T) {
+			// Derive the complete semantic family from the actual SDK, not
+			// from the initialized producer's existing selection predicate.
+			expected, members := map[string]int{}, map[string]bool{}
+			for _, entry := range catalog.Optab {
+				if entry.Opcode != "BTW" && entry.Opcode != "BTL" && entry.Opcode != "BTQ" {
+					continue
+				}
+				members[entry.Opcode] = true
+				for _, row := range entry.Rows {
+					if arch != "386" || entry.Opcode != "BTQ" {
+						expected[fmt.Sprintf("optab/%d/%s/%s/%d", entry.TableIndex, entry.Opcode, entry.Ytab, row.RowIndex)] = 0
+					}
+				}
+			}
+			want := 6
+			if arch == "386" {
+				want = 4
+			}
+			if len(members) != 3 || len(expected) != want {
+				t.Fatal("actual SDK lost the complete read-only bit-test family", members, len(expected))
+			}
+			cases := gpDataFlagsCPUInitializedCases(t, catalog, arch)
+			// Exercise the actual existing public source/Go-byte/object chain
+			// before auditing which original rows that chain initialized.
+			x86Legacy127Objects(t, arch, cases, func(name, operation, mode string) (string, string) {
+				return gpDataFlagsCPUInitializedFunction(t, name, operation, mode)
+			})
+			if t.Failed() {
+				return
+			}
+			for _, fixture := range cases {
+				if _, selected := expected[fixture.row]; selected {
+					expected[fixture.row]++
+				}
+			}
+			for id, observed := range expected {
+				if observed != 2 {
+					t.Errorf("original row lost its initialized register/memory pair: %s: got %d witnesses, want 2", id, observed)
+				}
+			}
+		})
 	}
 }

@@ -13,6 +13,11 @@ func x86GPDataFlagsCPUSourceMember(entry X86LegacyOpcode) bool {
 		return false
 	}
 	width, stem := name[len(name)-1], name[:len(name)-1]
+	// Keep every read-only bit-test member in the source projection. A new
+	// SDK table must reach row validation rather than disappear by name.
+	if stem == "BT" && strings.ContainsRune("WLQ", rune(width)) {
+		return true
+	}
 	switch entry.Ytab {
 	case "yxorb", "ytestl", "ybtl":
 		return true // These complete tables own only the selected data families.
