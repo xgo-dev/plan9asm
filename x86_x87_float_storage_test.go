@@ -29,10 +29,11 @@ func x86X87FloatingStoresUseOnlyCheckedByteRoles(t *testing.T) {
 			_, _, _, source := x86ResultInitializationFixture(t, target.arch, declaration, body)
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(target.triple+"/"+op+"/cross-fields/"+api, func(t *testing.T) {
-					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+					ir, err := x86X87LogicalValueAPI(t, source, declaration, target.arch, target.triple, api)
 					if err != nil || ir == "" {
 						t.Fatal("checked x87 store did not span every independent numerical field", err)
 					}
+					ir = x86X87InlineLogicalValue(t, ir, []string{"i64"}, tuple)
 					probe := fmt.Sprintf("\ndefine %s @Probe() {\n %%r = call %s @Value(i64 0)\n ret %s %%r\n}\n", tuple, tuple, tuple)
 					x86ScalarFPNamedConstantResult(t, ir+probe, "Probe", want)
 				})
@@ -45,10 +46,11 @@ func x86X87FloatingStoresUseOnlyCheckedByteRoles(t *testing.T) {
 					_, _, _, source := x86ResultInitializationFixture(t, target.arch, declaration, body)
 					for _, api := range []string{"text", "module", "Go"} {
 						t.Run(fmt.Sprintf("%s/%s/interior-%d/%s", target.triple, op, interior, api), func(t *testing.T) {
-							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+							ir, err := x86X87LogicalValueAPI(t, source, declaration, target.arch, target.triple, api)
 							if err != nil || ir == "" {
 								t.Fatal("checked x87 store lost the untouched double-result bytes", err)
 							}
+							ir = x86X87InlineLogicalValue(t, ir, []string{"i64"}, "double")
 							probe := "\ndefine i64 @Probe() {\n %r = call double @Value(i64 0)\n %b = bitcast double %r to i64\n ret i64 %b\n}\n"
 							x86ScalarFPNamedConstantResult(t, ir+probe, "Probe", []uint64{uint64(0x3f800000) << uint(8*interior)})
 						})
@@ -82,6 +84,11 @@ func x86X87FloatingStoresUseOnlyCheckedByteRoles(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, source, row.declaration, target.arch, target.triple, api)
 						if width == 8 && row.name == "partial-result" {
 							x86PartialTupleCodegenControl(t, source, row.declaration, target.arch, target.triple, ir, err)
+							logical, logicalErr := x86X87InitializedWordAPI(t, source, row.declaration, target.arch, target.triple, api, X87Software)
+							if logicalErr != nil || logical == "" {
+								t.Fatal("logical partial-tuple counterpart", logicalErr)
+							}
+							ir = x86X87InlineLogicalValue(t, logical, []string{"i64"}, "{ i32, i32, i32 }")
 							probe := "\ndefine { i32, i32 } @Probe() {\n" +
 								" %r = call { i32, i32, i32 } @Value(i64 0)\n" +
 								" %lo = extractvalue { i32, i32, i32 } %r, 0\n" +

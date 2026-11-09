@@ -44,11 +44,12 @@ func TestX86Legacy386SplitInputFloatResultThreeAPIs(t *testing.T) {
 			source, declaration := x86Legacy386SplitInputFloatSource(row)
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(target.triple+"/"+row.name+"/"+api, func(t *testing.T) {
-					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+					ir, err := x86X87LogicalValueAPI(t, source, declaration, target.arch, target.triple, api)
 					if err != nil || ir == "" {
 						t.Fatal("existing typed split-input/floating-result consumer was intercepted", err)
 					}
 					inputType := map[string]string{"uint32": "i32", "uint64": "i64", "float32": "float", "float64": "double"}[row.typ]
+					ir = x86X87InlineLogicalValue(t, ir, []string{inputType, "double"}, "double")
 					zero := "0"
 					if strings.HasPrefix(row.typ, "float") {
 						zero = "0.000000e+00"
@@ -91,10 +92,11 @@ func TestX86Legacy386MappedViewsComposeWithDefinedX87(t *testing.T) {
 		} {
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(target.triple+"/"+row.name+"/"+api, func(t *testing.T) {
-					ir, err := x86ScalarFPBitViewAPI(t, row.source, declaration, target.arch, target.triple, api)
+					ir, err := x86X87LogicalValueAPI(t, row.source, declaration, target.arch, target.triple, api)
 					if err != nil || ir == "" {
 						t.Fatal("mapped NUM view lacks its independent complete x87 proof", err)
 					}
+					ir = x86X87InlineLogicalValue(t, ir, []string{"double", "double"}, "double")
 					for _, input := range []struct {
 						literal string
 						bits    uint64

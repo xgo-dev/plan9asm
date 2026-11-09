@@ -237,7 +237,7 @@ func TestX86X87IntegerRoundingKeepsModeAndWidthBoundaries(t *testing.T) {
 							t.Fatal("standalone observer inferred ambient control or rejected an exact integer range", known, accepted)
 						}
 						for _, mode := range []X87Mode{X87Auto, X87Hardware, X87Software} {
-							consumer := amd64Ctx{x87Mode: mode}
+							consumer := amd64Ctx{x87Mode: mode, goarch: arch, targetTriple: testTargetTriple("linux", arch)}
 							next := state.clone()
 							accepted, known := consumer.x87HardwareRoundingResultStep(ins, &next, owned, 16, arch)
 							wantKnown := row.hardware && mode != X87Software

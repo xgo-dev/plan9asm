@@ -47,13 +47,15 @@ type amd64Ctx struct {
 	usedKRegs           map[int]bool
 	kRegSlot            map[int]string // avx512 mask reg index -> alloca name (i64)
 	usedX87             bool
-	usesX87Convert      bool
-	x87Slot             [8]string // x87 stack registers, represented as f64 values
+	x87Slot             [8]string // Logical binary80 values, independent of target allocation size.
+	x87NativeValues     bool      // Compiler backend selection; never a source permission.
+	x87ValueScratch     [3]string // Fixed entry scratch for balanced native value operations.
+	x87ScalarScratch    string
+	x87NativeStatus     string
 	x87IntegerValueSlot [8]string // Exact signed-integer payload for each logical value.
 	x87ExactSlot        [8]string // Runtime tag; never source availability or entry authority.
 	x87ControlSlot      string
 	x87StatusSlot       string // condition-code status populated by FTST for FSTSW
-	x87IntegerSlot      string // hardware FISTP result for explicit 386 x87 lowering
 	x87Mode             X87Mode
 
 	flagsZSlot        string
@@ -173,7 +175,7 @@ func newX86Ctx(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) st
 }
 
 func (c *amd64Ctx) useHardwareX87() bool {
-	return c.x87Mode != X87Software
+	return c.x87Mode != X87Software && x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple)
 }
 
 func (c *amd64Ctx) emitSourceComment(ins Instr) {
@@ -327,9 +329,6 @@ func (c *amd64Ctx) scanUsedRegs() {
 			}
 			if isX87Op(Op(op)) {
 				c.usedX87 = true
-				if op == "FMOVVP" {
-					c.usesX87Convert = true
-				}
 			}
 			if op == "LAHF" || op == "SAHF" {
 				markReg(AX)
@@ -484,6 +483,10 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		return goAMD64FrameContext("fixed local storage consumer lost its sealed source identity")
 	}
 	c.scanUsedRegs()
+	c.x87NativeValues = c.usedX87 && c.useHardwareX87()
+	if c.usedX87 && c.x87Mode == X87Hardware && !c.x87NativeValues {
+		return fmt.Errorf("%w: hardware x87 values require the matching x86 backend", ErrProbeNeedsContext)
+	}
 	if c.sourceStack != nil || c.fixedLocal != nil {
 		c.usedRegs[SP] = true
 	}
@@ -624,14 +627,16 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		for i := range c.x87Slot {
 			name := fmt.Sprintf("%%x87_f%d", i)
 			c.x87Slot[i] = name
-			fmt.Fprintf(c.b, "  %s = alloca double\n", name)
-			fmt.Fprintf(c.b, "  store double 0.000000e+00, ptr %s\n", name)
-			c.x87IntegerValueSlot[i] = fmt.Sprintf("%%x87_integer%d", i)
-			c.x87ExactSlot[i] = fmt.Sprintf("%%x87_exact%d", i)
-			fmt.Fprintf(c.b, "  %s = alloca i64\n", c.x87IntegerValueSlot[i])
-			fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", c.x87IntegerValueSlot[i])
-			fmt.Fprintf(c.b, "  %s = alloca i1\n", c.x87ExactSlot[i])
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.x87ExactSlot[i])
+			fmt.Fprintf(c.b, "  %s = alloca %s\n", name, x87ValueType)
+			fmt.Fprintf(c.b, "  store %s zeroinitializer, ptr %s\n", x87ValueType, name)
+			if !c.x87NativeValues {
+				c.x87IntegerValueSlot[i] = fmt.Sprintf("%%x87_integer%d", i)
+				c.x87ExactSlot[i] = fmt.Sprintf("%%x87_exact%d", i)
+				fmt.Fprintf(c.b, "  %s = alloca i64\n", c.x87IntegerValueSlot[i])
+				fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", c.x87IntegerValueSlot[i])
+				fmt.Fprintf(c.b, "  %s = alloca i1\n", c.x87ExactSlot[i])
+				fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.x87ExactSlot[i])
+			}
 		}
 		c.x87ControlSlot = "%x87_control"
 		c.x87StatusSlot = "%x87_status"
@@ -639,9 +644,15 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		fmt.Fprintf(c.b, "  store i16 895, ptr %s\n", c.x87ControlSlot) // 0x037f
 		fmt.Fprintf(c.b, "  %s = alloca i16\n", c.x87StatusSlot)
 		fmt.Fprintf(c.b, "  store i16 0, ptr %s\n", c.x87StatusSlot)
-		if c.useHardwareX87() && c.usesX87Convert {
-			c.x87IntegerSlot = "%x87_hw_integer"
-			fmt.Fprintf(c.b, "  %s = alloca i64\n", c.x87IntegerSlot)
+		if c.x87NativeValues {
+			for index := range c.x87ValueScratch {
+				name := fmt.Sprintf("%%x87_value_scratch%d", index)
+				c.x87ValueScratch[index] = name
+				fmt.Fprintf(c.b, "  %s = alloca %s\n", name, x87ValueType)
+			}
+			c.x87ScalarScratch, c.x87NativeStatus = "%x87_scalar_scratch", "%x87_native_status"
+			fmt.Fprintf(c.b, "  %s = alloca i64\n", c.x87ScalarScratch)
+			fmt.Fprintf(c.b, "  %s = alloca i16\n", c.x87NativeStatus)
 		}
 	}
 	c.flagsZSlot = "%flags_z"

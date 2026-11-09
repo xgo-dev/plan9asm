@@ -21,8 +21,9 @@ func TestX86X87ExactIntegerCarrierFiveTargetObjects(t *testing.T) {
 					if err != nil || ir == "" {
 						t.Fatal("complete identity did not reach object compilation", err)
 					}
-					if mode == X87Hardware && !strings.Contains(ir, "fildll $2") {
-						t.Fatal("hardware integer path projected the exact payload through double")
+					if mode == X87Hardware && (!strings.Contains(ir, "fildll $1; fstpt $0") ||
+						!strings.Contains(ir, "fldt $1; fistpll $0") || strings.Contains(ir, "sitofp i64")) {
+						t.Fatal("hardware integer path lost the complete FILD/binary80/FISTP transport")
 					}
 					for _, level := range []string{"0", "2"} {
 						input := ir

@@ -5,6 +5,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/xgo-dev/llvm"
 )
 
 type x86X87ValueFixture struct {
@@ -23,6 +25,46 @@ func x86X87ValueSource(body string) string {
 	return "TEXT ·Value(SB),4,$0-36\nMOVL gate+4(FP),AX\n" + body + "RET\n"
 }
 
+// Keep the original default-Auto source admission and use an explicit portable
+// counterpart only for the separate in-process constant-value observation.
+func x86X87LogicalValueAPI(t *testing.T, source, declaration, arch, triple, api string) (string, error) {
+	t.Helper()
+	original, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+	if err != nil {
+		return "", err
+	}
+	if original == "" {
+		return "", fmt.Errorf("original default-Auto source produced no IR")
+	}
+	return x86X87InitializedWordAPI(t, source, declaration, arch, triple, api, X87Software)
+}
+
+func x86X87InlineLogicalValue(t *testing.T, ir string, parameters []string, result string) string {
+	t.Helper()
+	context := llvm.NewContext()
+	defer context.Dispose()
+	module, err := parseIRModuleInContext(context, ir)
+	if !module.IsNil() {
+		defer module.Dispose()
+	}
+	if err != nil {
+		t.Fatal("actual Software fixture is malformed", err)
+	}
+	function := module.NamedFunction("Value")
+	if function.IsNil() || function.ParamsCount() != len(parameters) || function.GlobalValueType().ReturnType().String() != result {
+		t.Fatal("logical observer lost its complete actual declaration")
+	}
+	for index, typ := range parameters {
+		if function.Param(index).Type().String() != typ {
+			t.Fatal("logical observer parameter type changed", index)
+		}
+	}
+	// Fold the actual complete call irrespective of LLVM's body-size heuristic.
+	// This test-only attribute neither rewrites its source nor supplies a value.
+	function.AddFunctionAttr(context.CreateEnumAttribute(llvm.AttributeKindID("alwaysinline"), 0))
+	return module.String()
+}
+
 func x86X87ValueFixturesThreeAPIs(t *testing.T, fixtures []x86X87ValueFixture) {
 	t.Helper()
 	for _, target := range x86RawReturnTargets {
@@ -32,11 +74,12 @@ func x86X87ValueFixturesThreeAPIs(t *testing.T, fixtures []x86X87ValueFixture) {
 		for _, row := range fixtures {
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(target.triple+"/"+row.name+"/"+api, func(t *testing.T) {
-					ir, err := x86ScalarFPBitViewAPI(t, x86X87ValueSource(row.body), x86X87ValueDeclaration,
+					ir, err := x86X87LogicalValueAPI(t, x86X87ValueSource(row.body), x86X87ValueDeclaration,
 						target.arch, target.triple, api)
 					if err != nil || ir == "" {
 						t.Fatal("complete typed logical x87 value flow did not close", err)
 					}
+					ir = x86X87InlineLogicalValue(t, ir, []string{"i64", "float", "double", "i16", "i32"}, "double")
 					probe := "\ndefine i64 @Probe() {\n" +
 						" %r = call double @Value(i64 0, float 2.000000e+00, double 4.000000e+00, i16 2, i32 2)\n" +
 						" %b = bitcast double %r to i64\n ret i64 %b\n}\n"
@@ -44,8 +87,9 @@ func x86X87ValueFixturesThreeAPIs(t *testing.T, fixtures []x86X87ValueFixture) {
 					if !row.bitResult {
 						want = math.Float64bits(row.want)
 					}
-					// This is optimized logical-double evidence, not execution of
-					// physical x87, its control word, exceptions or 80-bit values.
+					// This owner explicitly tests foldable Software values. Auto
+					// and Hardware now use real x87 operations and have independent
+					// original-Go/native execution owners.
 					x86ScalarFPNamedConstantResult(t, ir+probe, "Probe", []uint64{want})
 				})
 			}
@@ -244,11 +288,12 @@ func TestX86X87RegisterFloatingLoadUsesActualGoPush(t *testing.T) {
 		} {
 			for _, api := range []string{"text", "module", "Go"} {
 				t.Run(target.triple+"/"+row.name+"/"+api, func(t *testing.T) {
-					ir, err := x86ScalarFPBitViewAPI(t, "TEXT ·Value(SB),4,$0-8\n"+row.body+"RET\n",
+					ir, err := x86X87LogicalValueAPI(t, "TEXT ·Value(SB),4,$0-8\n"+row.body+"RET\n",
 						"func Value() float64", target.arch, target.triple, api)
 					if err != nil || ir == "" {
 						t.Fatal("logical register-load fixture did not translate", err)
 					}
+					ir = x86X87InlineLogicalValue(t, ir, nil, "double")
 					probe := "\ndefine i64 @Probe() {\n %r = call double @Value()\n %b = bitcast double %r to i64\n ret i64 %b\n}\n"
 					x86ScalarFPNamedConstantResult(t, ir+probe, "Probe", []uint64{0x3ff0000000000000})
 				})

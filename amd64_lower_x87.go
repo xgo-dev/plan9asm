@@ -56,6 +56,9 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 	if typedValue && formErr != nil {
 		return true, false, formErr
 	}
+	if handled, err := c.lowerX87NativeValue(op, ins, valueForm, typedValue); handled {
+		return true, false, err
+	}
 	if typedValue && valueForm.spec.kind == x86X87IntegerMove {
 		return true, false, c.lowerX87IntegerMove(valueForm)
 	}
@@ -262,7 +265,7 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 		}
 		if op == "FSAVE" {
 			for i := range c.x87Slot {
-				c.storeX87(i, "0.000000e+00")
+				c.storeX87Value(i, x87ZeroValue)
 			}
 			fmt.Fprintf(c.b, "  store i16 895, ptr %s\n", c.x87ControlSlot)
 			fmt.Fprintf(c.b, "  store i16 0, ptr %s\n", c.x87StatusSlot)
@@ -273,12 +276,8 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("386 FRNDINT takes no operands: %q", ins.Raw)
 		}
-		if c.useHardwareX87() {
-			c.roundX87Hardware(c.x87Slot[0])
-			return true, false, nil
-		}
 		value := c.loadX87IntegerValue(0)
-		value.floating = c.roundX87Software(value.floating)
+		value.value = c.x87LegacyF64Value(c.roundX87Software(c.x87LegacyF64(value.value)))
 		c.storeX87IntegerValue(0, value)
 		return true, false, nil
 
@@ -360,7 +359,7 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 			fmt.Fprintln(c.b, `  call void asm sideeffect "fninit", "~{st},~{st(1)},~{st(2)},~{st(3)},~{st(4)},~{st(5)},~{st(6)},~{st(7)},~{fpsr}"()`)
 		}
 		for i := range c.x87Slot {
-			c.storeX87(i, "0.000000e+00")
+			c.storeX87Value(i, x87ZeroValue)
 		}
 		fmt.Fprintf(c.b, "  store i16 895, ptr %s\n", c.x87ControlSlot)
 		fmt.Fprintf(c.b, "  store i16 0, ptr %s\n", c.x87StatusSlot)
@@ -756,6 +755,9 @@ func (c *amd64Ctx) storeX87TypedMemory(dst Operand, typ LLVMType, value string) 
 		if typ == LLVMType("float") {
 			return c.storeScalarFPFloat(dst.FPOffset, 32, value)
 		}
+		if typ == LLVMType("double") {
+			return c.storeScalarFPFloat(dst.FPOffset, 64, value)
+		}
 		return c.storeFPResult(dst.FPOffset, typ, value)
 	}
 	ptr, ptrType, err := c.x87MemoryPointer(dst)
@@ -938,27 +940,25 @@ func (c *amd64Ctx) storeX87PackedBCD(dst Operand, value string) error {
 }
 
 func (c *amd64Ctx) loadX87(index int) string {
-	t := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = load double, ptr %s\n", t, c.x87Slot[index])
-	return "%" + t
+	return c.x87LegacyF64(c.loadX87Value(index))
 }
 
 func (c *amd64Ctx) storeX87(index int, value string) {
-	fmt.Fprintf(c.b, "  store double %s, ptr %s\n", value, c.x87Slot[index])
+	c.storeX87Value(index, c.x87LegacyF64Value(value))
 	if c.x87ExactSlot[index] != "" {
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.x87ExactSlot[index])
 	}
 }
 
 func (c *amd64Ctx) pushX87(value string) error {
-	return c.pushX87IntegerValue(x87IntegerValue{value, "0", "false"})
+	return c.pushX87IntegerValue(x87IntegerValue{c.x87LegacyF64Value(value), "0", "false"})
 }
 
 func (c *amd64Ctx) popX87() {
 	for i := 0; i < len(c.x87Slot)-1; i++ {
 		c.storeX87IntegerValue(i, c.loadX87IntegerValue(i+1))
 	}
-	c.storeX87(len(c.x87Slot)-1, "0.000000e+00")
+	c.storeX87Value(len(c.x87Slot)-1, x87ZeroValue)
 }
 
 func (c *amd64Ctx) rotateX87Stack(increment bool) {
@@ -1119,22 +1119,6 @@ func (c *amd64Ctx) storeHardwareX87ControlWord() {
 
 func (c *amd64Ctx) loadHardwareX87ControlWord() {
 	fmt.Fprintf(c.b, "  call void asm sideeffect \"fldcw $0\", \"*m,~{dirflag},~{fpsr},~{flags}\"(ptr elementtype(i16) %s)\n", c.x87ControlSlot)
-}
-
-func (c *amd64Ctx) roundX87Hardware(slot string) {
-	fmt.Fprintf(c.b, "  call void asm sideeffect \"fldl $1; frndint; fstpl $0\", \"=*m,*m,~{dirflag},~{fpsr},~{flags}\"(ptr elementtype(double) %s, ptr elementtype(double) %s)\n", slot, slot)
-}
-
-func (c *amd64Ctx) convertX87ToI64Hardware() string {
-	if c.x87ExactSlot[0] == "" {
-		fmt.Fprintf(c.b, "  call void asm sideeffect \"fldl $1; fistpll $0\", \"=*m,*m,~{dirflag},~{fpsr},~{flags}\"(ptr elementtype(i64) %s, ptr elementtype(double) %s)\n", c.x87IntegerSlot, c.x87Slot[0])
-	} else {
-		fmt.Fprintf(c.b, "  call void asm sideeffect \"cmpb $$0, $3; je 1f; fildll $2; jmp 2f; 1: fldl $1; 2: fistpll $0\", \"=*m,*m,*m,*m,~{dirflag},~{fpsr},~{flags}\"(ptr elementtype(i64) %s, ptr elementtype(double) %s, ptr elementtype(i64) %s, ptr elementtype(i1) %s)\n",
-			c.x87IntegerSlot, c.x87Slot[0], c.x87IntegerValueSlot[0], c.x87ExactSlot[0])
-	}
-	value := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", value, c.x87IntegerSlot)
-	return "%" + value
 }
 
 func (c *amd64Ctx) roundX87Software(value string) string {

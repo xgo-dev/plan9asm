@@ -1010,10 +1010,10 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 		"@__plan9asm_movsl",
 		`asm sideeffect "fnstcw $0"`,
 		`asm sideeffect "fldcw $0"`,
-		`asm sideeffect "fldl $1; frndint; fstpl $0"`,
-		`asm sideeffect "cmpb $$0, $3; je 1f; fildll $2;`,
-		`1: fldl $1; 2: fistpll $0`,
-		"@llvm.sqrt.f64",
+		`asm sideeffect "fldl $1; fstpt $0"`,
+		`asm sideeffect "fldt $3; frndint; fnstsw $2; fstpt $0"`,
+		`asm sideeffect "fldt $1; fistpll $0"`,
+		`asm sideeffect "fldt $3; fsqrt; fnstsw $2; fstpt $0"`,
 		"%x87_control = alloca i16",
 		"%local_stack = alloca",
 		`"target-features"="+sse2"`,
@@ -1512,9 +1512,9 @@ func TestTranslate386X87Modes(t *testing.T) {
 	for _, want := range []string{
 		`asm sideeffect "fnstcw $0"`,
 		`asm sideeffect "fldcw $0"`,
-		`asm sideeffect "fldl $1; frndint; fstpl $0"`,
-		`asm sideeffect "cmpb $$0, $3; je 1f; fildll $2;`,
-		`1: fldl $1; 2: fistpll $0`,
+		`asm sideeffect "fldl $1; fstpt $0"`,
+		`asm sideeffect "fldt $3; frndint; fnstsw $2; fstpt $0"`,
+		`asm sideeffect "fldt $1; fistpll $0"`,
 	} {
 		if !strings.Contains(hardware, want) {
 			t.Fatalf("hardware x87 IR missing %q:\n%s", want, hardware)

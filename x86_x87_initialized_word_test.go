@@ -116,13 +116,19 @@ func TestX86X87InitializedWordsUseExistingNaturalStorageThreeAPIs(t *testing.T) 
 	}
 }
 
+type x86X87ClearStatusCase struct{ name, prefix, mask, suffix string }
+
+func x86X87ClearStatusCases() []x86X87ClearStatusCase {
+	return []x86X87ClearStatusCase{
+		{"entry-cleared-bits", "FCLEX\n", "0x80ff", ""},
+		{"initialized-full-word", "FINIT\nFCLEX\n", "0xffff", ""},
+		{"compare-conditions", "FLD1\nFTST\nFCLEX\n", "0x4500", "FMOVDP F0,F0\n"},
+	}
+}
+
 func TestX86X87ClearOnlyDefinesItsArchitecturalStatusBits(t *testing.T) {
 	for _, target := range x86RawReturnTargets {
-		for _, row := range []struct{ name, prefix, mask, suffix string }{
-			{"entry-cleared-bits", "FCLEX\n", "0x80ff", ""},
-			{"initialized-full-word", "FINIT\nFCLEX\n", "0xffff", ""},
-			{"compare-conditions", "FLD1\nFTST\nFCLEX\n", "0x4500", "FMOVDP F0,F0\n"},
-		} {
+		for _, row := range x86X87ClearStatusCases() {
 			result := 8
 			if target.arch == "386" {
 				result = 4
@@ -137,6 +143,22 @@ func TestX86X87ClearOnlyDefinesItsArchitecturalStatusBits(t *testing.T) {
 						ir, err := x86X87InitializedWordAPI(t, source, declaration, target.arch, target.triple, api, mode)
 						if err != nil || ir == "" {
 							t.Fatal("known cleared bits require an independent status-bit proof", err)
+						}
+						if mode == X87Auto && row.name == "compare-conditions" {
+							llc := findLLVM22Tool("llc")
+							if llc == "" {
+								t.Fatal("LLVM22 llc is required")
+							}
+							for _, level := range []string{"-O0", "-O2"} {
+								x86PackedStringCompileObject(t, llc, target.triple, ir, level)
+							}
+							// Actual native FTST/clear values have a mandatory Linux
+							// original-Go owner. This remains the logical bit observer.
+							ir, err = x86X87InitializedWordAPI(t, source, declaration, target.arch, target.triple, api, X87Software)
+							if err != nil || ir == "" {
+								t.Fatal("logical compare/clear counterpart", err)
+							}
+							ir = x86X87InlineLogicalValue(t, ir, []string{"i16"}, "i16")
 						}
 						x86X87InitializedWordValue(t, ir, 0)
 					})
