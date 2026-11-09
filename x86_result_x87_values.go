@@ -156,9 +156,7 @@ func x86ResultX87ValueStepWithMemory(ins Instr, state *x86ResultState, owned []b
 		if operand.Kind == OpImm {
 			return true // The descriptor already validated the exact Go FLOAT rewrite.
 		}
-		return x86ResultRead(operand, form.memoryBytes(), state, owned, arch) ||
-			nativeMemory && x86RegisterAddressedNativeMemoryOperand(operand, arch) &&
-				x86ResultIncomingPointerReadAddressIdentity(operand, state, arch)
+		return x86ResultReadWithNativeContinuation(ins, operand, form.memoryBytes(), state, owned, arch, nativeMemory)
 	}
 	write := func(operand Operand) bool {
 		if isX87RegisterOperand(operand) {

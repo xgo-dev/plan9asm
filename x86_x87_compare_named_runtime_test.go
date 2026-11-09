@@ -3,6 +3,7 @@ package plan9asm
 import (
 	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -10,18 +11,18 @@ import (
 )
 
 func TestX86X87CompareNamedHostSoftwareValues(t *testing.T) {
-	x86X87CompareHostSoftwareValues(t, false, false)
+	x86X87CompareHostSoftwareValues(t, false, false, false)
 }
 
 func TestX86X87CompareCanonicalMemoryAndRawHostSoftwareValues(t *testing.T) {
 	for _, raw := range []bool{false, true} {
 		t.Run(fmt.Sprint("raw", raw), func(t *testing.T) {
-			x86X87CompareHostSoftwareValues(t, true, raw)
+			x86X87CompareHostSoftwareValues(t, true, raw, false)
 		})
 	}
 }
 
-func x86X87CompareHostSoftwareValues(t *testing.T, nativeMemory, raw bool) {
+func x86X87CompareHostSoftwareValues(t *testing.T, nativeMemory, raw, numericAddress bool) {
 	t.Helper()
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
@@ -54,8 +55,13 @@ func x86X87CompareHostSoftwareValues(t *testing.T, nativeMemory, raw bool) {
 	parameters := "uint64_t,float,double,int16_t,int32_t,double"
 	callMemory := ""
 	if nativeMemory {
-		parameters += ",uint8_t*"
+		addressType := "uint8_t*"
 		callMemory = ",memory"
+		if numericAddress {
+			addressType = "uintptr_t"
+			callMemory = ",(uintptr_t)memory"
+		}
+		parameters += "," + addressType
 	}
 	fmt.Fprintf(&main, "typedef double (*compare_fn)(%s);\n", parameters)
 	for index := range cases {
@@ -160,10 +166,18 @@ int main(void) {
  return 0;
 }
 `, "CALL_MEMORY", callMemory))
-	source, declaration := x86X87CompareAssembly(append([]x86OfficialPackedCase(nil), cases...), "amd64", false, nativeMemory, raw)
-	topSource, topDeclaration := x86X87CompareAssembly(append([]x86OfficialPackedCase(nil), cases...), "amd64", true, nativeMemory, raw)
+	arch := "amd64"
+	if strconv.IntSize == 32 {
+		arch = "386"
+	}
+	source, declaration := x86X87CompareAssembly(append([]x86OfficialPackedCase(nil), cases...), arch, false, nativeMemory, raw)
+	topSource, topDeclaration := x86X87CompareAssembly(append([]x86OfficialPackedCase(nil), cases...), arch, true, nativeMemory, raw)
+	if numericAddress {
+		declaration = strings.ReplaceAll(declaration, "memory *byte", "memory uintptr")
+		topDeclaration = strings.ReplaceAll(topDeclaration, "memory *byte", "memory uintptr")
+	}
 	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
-	ir, err := x86X87InitializedWordAPI(t, source+topSource, declaration+topDeclaration, "amd64", triple, "Go", X87Software)
+	ir, err := x86X87InitializedWordAPI(t, source+topSource, declaration+topDeclaration, arch, triple, "Go", X87Software)
 	if err != nil || ir == "" {
 		t.Fatal("complete named software counterparts did not translate", err)
 	}

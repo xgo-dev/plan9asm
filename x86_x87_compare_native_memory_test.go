@@ -44,7 +44,7 @@ func TestX86X87CompareDeadVoidNeedsValuesAndPointer(t *testing.T) {
 			}{
 				{"complete", "*byte", "FLD1\n", true},
 				{"missing-F0", "*byte", "", false},
-				{"NUM-is-not-pointer", "uintptr", "FLD1\n", false},
+				{"complete-uintptr", "uintptr", "FLD1\n", true},
 			} {
 				source := fmt.Sprintf("TEXT ·Value(SB),4,$0-%d\n%s input+0(FP),AX\nFINIT\n%s%sFINIT\nRET\n", word, move, test.push, compare)
 				for _, api := range []string{"text", "module", "Go"} {
@@ -65,10 +65,19 @@ func TestX86X87CompareDeadVoidNeedsValuesAndPointer(t *testing.T) {
 }
 
 func TestX86X87CompareNativeDeadReadWidthsAndFaults(t *testing.T) {
+	x86X87CompareDeadReadWidthsAndFaults(t, false)
+}
+
+func x86X87CompareDeadReadWidthsAndFaults(t *testing.T, numericAddress bool) {
+	t.Helper()
 	execution := x86ScalarCountHostExecution(t)
 	arch, word, move := "amd64", 8, "MOVQ"
 	if strconv.IntSize == 32 {
 		arch, word, move = "386", 4, "MOVL"
+	}
+	inputType, cInputType := "*byte", "const uint8_t*"
+	if numericAddress {
+		inputType, cInputType = "uintptr", "uintptr_t"
 	}
 	var source, declarations, prototypes, callbacks, rows strings.Builder
 	for _, raw := range []bool{false, true} {
@@ -97,9 +106,13 @@ func TestX86X87CompareNativeDeadReadWidthsAndFaults(t *testing.T) {
 					instruction = x86RawDisplacementDirectives(code)
 				}
 				fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-%d\n%s input+0(FP),AX\nFINIT\nFLD1\n%sFINIT\nMOVL $7,ret+%d(FP)\nRET\n", name, word+4, move, instruction, word)
-				fmt.Fprintf(&declarations, "func %s(input *byte) uint32\n", name)
-				fmt.Fprintf(&prototypes, "extern uint32_t %s(const uint8_t*);\n", name)
-				fmt.Fprintf(&callbacks, "static int run%s(const uint8_t*p){return %s((const uint8_t*)((uintptr_t)p-%d))==7?0:91;}\n", name, name, displacement)
+				fmt.Fprintf(&declarations, "func %s(input %s) uint32\n", name, inputType)
+				fmt.Fprintf(&prototypes, "extern uint32_t %s(%s);\n", name, cInputType)
+				address := fmt.Sprintf("(uintptr_t)p-%d", displacement)
+				if !numericAddress {
+					address = "(const uint8_t*)(" + address + ")"
+				}
+				fmt.Fprintf(&callbacks, "static int run%s(const uint8_t*p){return %s(%s)==7?0:91;}\n", name, name, address)
 				fmt.Fprintf(&rows, "{run%s,%d,%d},\n", name, width, width-1)
 			}
 		}
