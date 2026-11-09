@@ -89,6 +89,10 @@ family-by-format product: each family declares which shared formats are legal.
 Keep the independent official-row inventory exhaustive for tests, including
 overlapping rows; compact implementation is not a reason to sample away rows.
 
+The [x87 value guide](x87-values.md) describes a concrete shared grammar with
+separate native and portable numerical strategies, including their source and
+runtime boundaries.
+
 | Layer | Shared representation | Separate concerns |
 |---|---|---|
 | Source grammar | Semantic operation, legal operand group and original encoding | Named/raw source identity and mode restrictions |

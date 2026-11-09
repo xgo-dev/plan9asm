@@ -326,7 +326,9 @@ declaration observations; default mode means AMD64. Keep all 16 SETcc predicates
 canonical result bytes, independent helper frames and actual 386 helper tests.
 Portable i1-to-i32 value execution is not native entry or C bool ABI evidence.
 
-All four floating x87 moves share their existing F/D, load/store, pop and
+See the [x87 value guide](x87-values.md) for complete-value representation and
+the shared native/portable dispatcher. All four F/D floating x87 moves share
+their existing load/store, pop and
 register grammar. Paired native 4/8-byte accesses remain unaligned and volatile;
 reads consume an incoming pointer and numerical indexes, while stores retain
 the stricter pointer-base role. Reuse x87 value/depth effects and require source
