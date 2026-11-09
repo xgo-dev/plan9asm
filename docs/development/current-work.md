@@ -1,6 +1,6 @@
 # PR40 closeout
 
-Updated 2026-11-04. Finish AMD64 correctness, typed-family convergence and
+Updated 2026-11-10. Finish AMD64 correctness, typed-family convergence and
 translation efficiency while preserving the 386, ARM, ARM64 and WASM gates.
 Read [architecture](architecture.md), [instruction families](instructions.md),
 [convergence](x86-convergence.md) and [validation](validation.md).
@@ -56,12 +56,36 @@ success does not count as execution of this owner. Qualification requires the
 complete affected current/minimum-SDK union and publication policies, then the
 final fork source/CLI owners and actual LLGo program validation.
 
+## Current numerical batch
+
+Finish the [shared x87 value path](x87-values.md) before opening another broad
+instruction inventory. Native and portable consumers share typed forms and the
+complete binary80 carrier; delete the replaced binary64 consumers rather than
+maintaining two opcode dispatchers. Keep source permissions independent.
+
+The public regressions must retain constant precision, signed 64-bit integer
+conversion, control-word rounding and full ten-byte native memory transport.
+Square root must retain an input such as `2^2000` until the operation: its
+`2^1000` result is representable in binary64 even though its input is not.
+Hardware-dependent control capture also needs a matching native backend;
+portable Auto must not turn an initialized implementation slot into ambient
+source control-word evidence.
+
+Re-run the complete affected current/minimum SDK union and publication policies
+after integration. Preserve actual original-Go/runtime comparisons separately
+from object compilation and source bridges. Segment-address-space and remaining
+portable mathematical consumers retain explicit qualification boundaries; do
+not count their Context outcomes as compiled or executed coverage.
+
 ## Separate integration boundaries
 
 [LLGo PR2694](https://github.com/xgo-dev/llgo/pull/2694) owns the compiler-side
-adaptation. Its staged `7a956ca4` completed all three adapter/build/CL jobs:
-4,928 PASS, 60 explicit SKIP, zero FAIL. Reported-library full-program checks
-and the next dependency pin retain separate exact source/compiler identities.
+adaptation. [The fork qualification](https://github.com/cpunion/llgo/pull/354)
+tracks the latest-main integration and complete original workflows. Validate
+every real Go invocation and its merged JSON, timing and coverage records;
+Windows batches must not overwrite one another. Capacity cancellations are
+unexecuted work, not test passes. Reported-library full-program checks and the
+next dependency pin retain separate exact source/compiler identities.
 An official fixed upstream plan9asm tag is still required before LLGo merges;
 a public fork pseudo-version does not close that review condition.
 
