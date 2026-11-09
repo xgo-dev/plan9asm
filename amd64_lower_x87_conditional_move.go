@@ -47,20 +47,9 @@ func (c *amd64Ctx) lowerX87ConditionalMove(op Op, ins Instr) error {
 	default:
 		return fmt.Errorf("unsupported x87 conditional move %s", op)
 	}
-	if c.x87NativeValues {
-		sourceValue, destinationValue := c.loadX87Value(source), c.loadX87Value(0)
-		selected := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %s, %s %s\n", selected, condition, x87ValueType, sourceValue, x87ValueType, destinationValue)
-		c.storeX87Value(0, x87Value("%"+selected))
-		return nil
-	}
-	sourceValue := c.loadX87IntegerValue(source)
-	destinationValue := c.loadX87IntegerValue(0)
+	sourceValue, destinationValue := c.loadX87Value(source), c.loadX87Value(0)
 	selected := c.newTmp()
-	integer, exact := c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %s, %s %s\n", selected, condition, x87ValueType, sourceValue.value, x87ValueType, destinationValue.value)
-	fmt.Fprintf(c.b, "  %%%s = select i1 %s, i64 %s, i64 %s\n", integer, condition, sourceValue.integer, destinationValue.integer)
-	fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %s\n", exact, condition, sourceValue.exact, destinationValue.exact)
-	c.storeX87IntegerValue(0, x87IntegerValue{x87Value("%" + selected), "%" + integer, "%" + exact})
+	fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %s, %s %s\n", selected, condition, x87ValueType, sourceValue, x87ValueType, destinationValue)
+	c.storeX87Value(0, x87Value("%"+selected))
 	return nil
 }

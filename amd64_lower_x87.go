@@ -56,11 +56,8 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 	if typedValue && formErr != nil {
 		return true, false, formErr
 	}
-	if handled, err := c.lowerX87NativeValue(op, ins, valueForm, typedValue); handled {
+	if handled, err := c.lowerX87Value(op, ins, valueForm, typedValue); handled {
 		return true, false, err
-	}
-	if typedValue && valueForm.spec.kind == x86X87IntegerMove {
-		return true, false, c.lowerX87IntegerMove(valueForm)
 	}
 	switch op {
 	case "FBLD":
@@ -128,12 +125,12 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 			return true, false, fmt.Errorf("386 FMOVD expects memory,F0, Freg,F0, F0,memory, or F0,Freg: %q", ins.Raw)
 		}
 		if srcIsReg {
-			value := c.loadX87IntegerValue(srcReg)
+			value := c.loadX87Value(srcReg)
 			if valueForm.push {
-				return true, false, c.pushX87IntegerValue(value)
+				return true, false, c.pushX87Value(value)
 			}
 			if dstIsReg {
-				c.storeX87IntegerValue(dstReg, value)
+				c.storeX87Value(dstReg, value)
 				return true, false, nil
 			}
 		}
@@ -151,8 +148,8 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 			return true, false, fmt.Errorf("386 FMOVDP expects F0 source and memory or x87-register destination: %q", ins.Raw)
 		}
 		if index, register := x87OperandReg(ins.Args[1]); register {
-			value := c.loadX87IntegerValue(0)
-			c.storeX87IntegerValue(index, value)
+			value := c.loadX87Value(0)
+			c.storeX87Value(index, value)
 			c.popX87()
 			return true, false, nil
 		}
@@ -202,10 +199,10 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 		if !okA || !okB {
 			return true, false, fmt.Errorf("386 FXCHD expects x87 registers: %q", ins.Raw)
 		}
-		av := c.loadX87IntegerValue(a)
-		b := c.loadX87IntegerValue(bv)
-		c.storeX87IntegerValue(a, b)
-		c.storeX87IntegerValue(bv, av)
+		av := c.loadX87Value(a)
+		b := c.loadX87Value(bv)
+		c.storeX87Value(a, b)
+		c.storeX87Value(bv, av)
 		return true, false, nil
 
 	case "FADDW", "FADDL", "FADDF", "FADDD", "FADDDP",
@@ -276,9 +273,11 @@ func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err err
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("386 FRNDINT takes no operands: %q", ins.Raw)
 		}
-		value := c.loadX87IntegerValue(0)
-		value.value = c.x87LegacyF64Value(c.roundX87Software(c.x87LegacyF64(value.value)))
-		c.storeX87IntegerValue(0, value)
+		value, err := c.x87PortableRound(c.loadX87Value(0), c.x87LogicalControlWord())
+		if err != nil {
+			return true, false, err
+		}
+		c.storeX87Value(0, value)
 		return true, false, nil
 
 	case "F2XM1":
@@ -945,36 +944,18 @@ func (c *amd64Ctx) loadX87(index int) string {
 
 func (c *amd64Ctx) storeX87(index int, value string) {
 	c.storeX87Value(index, c.x87LegacyF64Value(value))
-	if c.x87ExactSlot[index] != "" {
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.x87ExactSlot[index])
-	}
 }
 
 func (c *amd64Ctx) pushX87(value string) error {
-	return c.pushX87IntegerValue(x87IntegerValue{c.x87LegacyF64Value(value), "0", "false"})
+	return c.pushX87Value(c.x87LegacyF64Value(value))
 }
 
 func (c *amd64Ctx) popX87() {
-	for i := 0; i < len(c.x87Slot)-1; i++ {
-		c.storeX87IntegerValue(i, c.loadX87IntegerValue(i+1))
-	}
-	c.storeX87Value(len(c.x87Slot)-1, x87ZeroValue)
+	c.popX87Value()
 }
 
 func (c *amd64Ctx) rotateX87Stack(increment bool) {
-	values := make([]x87IntegerValue, len(c.x87Slot))
-	for i := range values {
-		values[i] = c.loadX87IntegerValue(i)
-	}
-	if increment {
-		for i := range values {
-			c.storeX87IntegerValue(i, values[(i+1)%len(values)])
-		}
-		return
-	}
-	for i := range values {
-		c.storeX87IntegerValue(i, values[(i+len(values)-1)%len(values)])
-	}
+	c.rotateX87Values(increment)
 }
 
 func (c *amd64Ctx) clearX87C2() {

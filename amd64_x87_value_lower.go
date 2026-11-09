@@ -5,11 +5,14 @@ import (
 	"strings"
 )
 
-func (c *amd64Ctx) loadX87NativeOperand(source Operand, width byte) (x87Value, error) {
+func (c *amd64Ctx) loadX87Operand(source Operand, width byte) (x87Value, error) {
 	if index, register := x87OperandReg(source); register {
 		return c.loadX87Value(index), nil
 	}
 	if width == 'B' || width == 'X' {
+		if !c.x87NativeValues {
+			return "", fmt.Errorf("%w: x87 encoded portable memory needs its exact codec", ErrProbeNeedsContext)
+		}
 		return c.loadX87NativeEncoded(source, width)
 	}
 	if width == 'F' || width == 'D' {
@@ -21,7 +24,10 @@ func (c *amd64Ctx) loadX87NativeOperand(source Operand, width byte) (x87Value, e
 		if err != nil {
 			return "", err
 		}
-		return c.x87NativeFromFloat(value, bits), nil
+		if c.x87NativeValues {
+			return c.x87NativeFromFloat(value, bits), nil
+		}
+		return c.x87PortableFromFloat(value, bits)
 	}
 	bits := 16
 	if width == 'L' {
@@ -35,15 +41,27 @@ func (c *amd64Ctx) loadX87NativeOperand(source Operand, width byte) (x87Value, e
 	if err != nil {
 		return "", err
 	}
-	return c.x87NativeFromSigned(value, bits), nil
+	if c.x87NativeValues {
+		return c.x87NativeFromSigned(value, bits), nil
+	}
+	return c.x87PortableFromSigned(value, bits)
 }
 
-func (c *amd64Ctx) storeX87NativeOperand(destination Operand, value x87Value, width byte) error {
+func (c *amd64Ctx) x87LogicalControlWord() string {
+	value := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load i16, ptr %s\n", value, c.x87ControlSlot)
+	return "%" + value
+}
+
+func (c *amd64Ctx) storeX87Operand(destination Operand, value x87Value, width byte) error {
 	if index, register := x87OperandReg(destination); register {
 		c.storeX87Value(index, value)
 		return nil
 	}
 	if width == 'B' || width == 'X' {
+		if !c.x87NativeValues {
+			return fmt.Errorf("%w: x87 encoded portable memory needs its exact codec", ErrProbeNeedsContext)
+		}
 		return c.storeX87NativeEncoded(destination, value, width)
 	}
 	bits := 64
@@ -55,7 +73,17 @@ func (c *amd64Ctx) storeX87NativeOperand(destination Operand, value x87Value, wi
 		if bits == 32 {
 			typ = LLVMType("float")
 		}
-		return c.storeX87TypedMemory(destination, typ, c.x87NativeToFloat(value, bits))
+		var floating string
+		if c.x87NativeValues {
+			floating = c.x87NativeToFloat(value, bits)
+		} else {
+			var err error
+			floating, err = c.x87PortableToFloat(value, bits, c.x87LogicalControlWord())
+			if err != nil {
+				return err
+			}
+		}
+		return c.storeX87TypedMemory(destination, typ, floating)
 	}
 	if width == 'W' {
 		bits = 16
@@ -64,16 +92,23 @@ func (c *amd64Ctx) storeX87NativeOperand(destination Operand, value x87Value, wi
 	} else if width != 'V' {
 		return fmt.Errorf("unsupported x87 native scalar store width %c", width)
 	}
-	return c.storeX87TypedMemory(destination, amd64IntegerTypeForBits(bits), c.x87NativeToSigned(value, bits))
+	var integer string
+	if c.x87NativeValues {
+		integer = c.x87NativeToSigned(value, bits)
+	} else {
+		var err error
+		integer, err = c.x87PortableToSigned(value, bits, c.x87LogicalControlWord())
+		if err != nil {
+			return err
+		}
+	}
+	return c.storeX87TypedMemory(destination, amd64IntegerTypeForBits(bits), integer)
 }
 
 // This is a backend for the existing typed forms, not a second source grammar.
 // Source availability, exact raw replay and conditional memory roles are still
 // checked before lowering. No native C long-double ABI is involved.
-func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, typed bool) (bool, error) {
-	if !c.x87NativeValues {
-		return false, nil
-	}
+func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed bool) (bool, error) {
 	if !typed && len(ins.Args) != 0 {
 		return false, nil // The existing non-value grammar reports the error.
 	}
@@ -81,7 +116,7 @@ func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, t
 		switch form.spec.kind {
 		case x86X87FloatMove, x86X87IntegerMove:
 			if form.push {
-				value, err := c.loadX87NativeOperand(form.source, form.spec.width)
+				value, err := c.loadX87Operand(form.source, form.spec.width)
 				if err != nil {
 					return true, err
 				}
@@ -91,7 +126,7 @@ func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, t
 			if !register {
 				return true, fmt.Errorf("%s lacks a typed x87 value source", op)
 			}
-			if err := c.storeX87NativeOperand(form.destination, c.loadX87Value(index), form.spec.width); err != nil {
+			if err := c.storeX87Operand(form.destination, c.loadX87Value(index), form.spec.width); err != nil {
 				return true, err
 			}
 			for count := uint8(0); count < form.spec.pop; count++ {
@@ -99,7 +134,7 @@ func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, t
 			}
 			return true, nil
 		case x86X87Arithmetic:
-			source, err := c.loadX87NativeOperand(ins.Args[0], form.spec.width)
+			source, err := c.loadX87Operand(ins.Args[0], form.spec.width)
 			if err != nil {
 				return true, err
 			}
@@ -112,26 +147,40 @@ func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, t
 				left, right = right, left
 			}
 			instruction := strings.ToLower(strings.TrimSuffix(string(form.spec.stem), "R"))
-			result, _, _ := c.evaluateX87Native(instruction+" %st(1), %st(0)", []x87Value{left, right}, 1, 2)
+			var result x87Value
+			if c.x87NativeValues {
+				result, _, _ = c.evaluateX87Native(instruction+" %st(1), %st(0)", []x87Value{left, right}, 1, 2)
+			} else {
+				var err error
+				result, err = c.x87PortableBinary(instruction, left, right, c.x87LogicalControlWord())
+				if err != nil {
+					return true, err
+				}
+			}
 			c.storeX87Value(destination, result)
 			if form.spec.pop != 0 {
 				c.popX87Value()
 			}
 			return true, nil
 		case x86X87Compare:
-			left, err := c.loadX87NativeOperand(form.left, 'D')
+			left, err := c.loadX87Operand(form.left, 'D')
 			if err != nil {
 				return true, err
 			}
-			right, err := c.loadX87NativeOperand(form.right, form.spec.width)
+			right, err := c.loadX87Operand(form.right, form.spec.width)
 			if err != nil {
 				return true, err
 			}
-			instruction := "fcom"
-			if strings.HasPrefix(string(op), "FUCOM") {
-				instruction = "fucom"
+			var status string
+			if c.x87NativeValues {
+				instruction := "fcom"
+				if strings.HasPrefix(string(op), "FUCOM") {
+					instruction = "fucom"
+				}
+				_, _, status = c.evaluateX87Native(instruction+" %st(1)", []x87Value{left, right}, 0, 2)
+			} else {
+				status = c.x87PortableCompareStatus(left, right)
 			}
-			_, _, status := c.evaluateX87Native(instruction+" %st(1)", []x87Value{left, right}, 0, 2)
 			if form.spec.directFlags {
 				c.setX87NativeCompareFlags(status)
 			} else {
@@ -154,15 +203,37 @@ func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, t
 		c.storeX87Value(left, b)
 		c.storeX87Value(right, a)
 	case "FLDZ", "FLD1", "FLDPI", "FLDL2E", "FLDL2T", "FLDLG2", "FLDLN2":
-		value, _, _ := c.evaluateX87Native(strings.ToLower(string(op)), nil, 1, 1)
+		var value x87Value
+		if c.x87NativeValues {
+			value, _, _ = c.evaluateX87Native(strings.ToLower(string(op)), nil, 1, 1)
+		} else {
+			var err error
+			value, err = c.x87PortableConstant(op, c.x87LogicalControlWord())
+			if err != nil {
+				return true, err
+			}
+		}
 		return true, c.pushX87Value(value)
 	case "FABS", "FCHS", "FSQRT", "FRNDINT", "F2XM1", "FSIN", "FCOS":
+		if !c.x87NativeValues {
+			if op != "FABS" && op != "FCHS" && op != "FRNDINT" {
+				return false, nil // The remaining mathematical provider is separate.
+			}
+			value, err := c.x87PortableUnary(op, c.loadX87Value(0), c.x87LogicalControlWord())
+			if err == nil {
+				c.storeX87Value(0, value)
+			}
+			return true, err
+		}
 		value, _, status := c.evaluateX87Native(strings.ToLower(string(op)), []x87Value{c.loadX87Value(0)}, 1, 1)
 		c.storeX87Value(0, value)
 		if op == "FSIN" || op == "FCOS" {
 			c.projectX87NativeStatus(status, 0x0400)
 		}
 	case "FPTAN", "FSINCOS", "FXTRACT":
+		if !c.x87NativeValues {
+			return false, nil
+		}
 		var before [8]x87Value
 		if op != "FXTRACT" {
 			for index := range before {
@@ -186,6 +257,9 @@ func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, t
 			c.projectX87NativeStatus(status, 0x0400)
 		}
 	case "FPATAN", "FYL2X", "FYL2XP1", "FSCALE", "FPREM", "FPREM1":
+		if !c.x87NativeValues {
+			return false, nil
+		}
 		remaining := 2
 		pop := op == "FPATAN" || op == "FYL2X" || op == "FYL2XP1"
 		if pop {
@@ -202,7 +276,14 @@ func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, t
 			c.projectX87NativeStatus(status, 0x4700)
 		}
 	case "FTST", "FXAM":
-		_, _, status := c.evaluateX87Native(strings.ToLower(string(op)), []x87Value{c.loadX87Value(0)}, 0, 1)
+		var status string
+		if c.x87NativeValues {
+			_, _, status = c.evaluateX87Native(strings.ToLower(string(op)), []x87Value{c.loadX87Value(0)}, 0, 1)
+		} else if op == "FTST" {
+			status = c.x87PortableCompareStatus(c.loadX87Value(0), x87ZeroValue)
+		} else {
+			status = c.x87PortableClassify(c.loadX87Value(0))
+		}
 		c.projectX87NativeStatus(status, 0x4700)
 	case "FDECSTP", "FINCSTP":
 		c.rotateX87Values(op == "FINCSTP")
@@ -210,6 +291,17 @@ func (c *amd64Ctx) lowerX87NativeValue(op Op, ins Instr, form x86X87ValueForm, t
 		return false, nil
 	}
 	return true, nil
+}
+
+func (c *amd64Ctx) x87PortableCompareStatus(left, right x87Value) string {
+	equal, less, unordered := c.x87PortableCompare(left, right)
+	c3 := c.x87PortableIR("or i1 %s, %s", equal, unordered)
+	c0 := c.x87PortableIR("or i1 %s, %s", less, unordered)
+	c3 = c.x87PortableIR("select i1 %s, i16 16384, i16 0", c3)
+	c0 = c.x87PortableIR("select i1 %s, i16 256, i16 0", c0)
+	c2 := c.x87PortableIR("select i1 %s, i16 1024, i16 0", unordered)
+	status := c.x87PortableIR("or i16 %s, %s", c3, c0)
+	return c.x87PortableIR("or i16 %s, %s", status, c2)
 }
 
 func (c *amd64Ctx) setX87NativeCompareFlags(status string) {

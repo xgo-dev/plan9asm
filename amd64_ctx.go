@@ -44,19 +44,17 @@ type amd64Ctx struct {
 	usedZRegs map[int]bool
 	zRegSlot  map[int]string // zmm reg index -> alloca name (<64 x i8>)
 
-	usedKRegs           map[int]bool
-	kRegSlot            map[int]string // avx512 mask reg index -> alloca name (i64)
-	usedX87             bool
-	x87Slot             [8]string // Logical binary80 values, independent of target allocation size.
-	x87NativeValues     bool      // Compiler backend selection; never a source permission.
-	x87ValueScratch     [3]string // Fixed entry scratch for balanced native value operations.
-	x87ScalarScratch    string
-	x87NativeStatus     string
-	x87IntegerValueSlot [8]string // Exact signed-integer payload for each logical value.
-	x87ExactSlot        [8]string // Runtime tag; never source availability or entry authority.
-	x87ControlSlot      string
-	x87StatusSlot       string // condition-code status populated by FTST for FSTSW
-	x87Mode             X87Mode
+	usedKRegs        map[int]bool
+	kRegSlot         map[int]string // avx512 mask reg index -> alloca name (i64)
+	usedX87          bool
+	x87Slot          [8]string // Logical binary80 values, independent of target allocation size.
+	x87NativeValues  bool      // Compiler backend selection; never a source permission.
+	x87ValueScratch  [3]string // Fixed entry scratch for balanced native value operations.
+	x87ScalarScratch string
+	x87NativeStatus  string
+	x87ControlSlot   string
+	x87StatusSlot    string // condition-code status populated by FTST for FSTSW
+	x87Mode          X87Mode
 
 	flagsZSlot        string
 	flagsSltSlot      string // architectural SF; signed conditions combine it with OF
@@ -629,14 +627,6 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 			c.x87Slot[i] = name
 			fmt.Fprintf(c.b, "  %s = alloca %s\n", name, x87ValueType)
 			fmt.Fprintf(c.b, "  store %s zeroinitializer, ptr %s\n", x87ValueType, name)
-			if !c.x87NativeValues {
-				c.x87IntegerValueSlot[i] = fmt.Sprintf("%%x87_integer%d", i)
-				c.x87ExactSlot[i] = fmt.Sprintf("%%x87_exact%d", i)
-				fmt.Fprintf(c.b, "  %s = alloca i64\n", c.x87IntegerValueSlot[i])
-				fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", c.x87IntegerValueSlot[i])
-				fmt.Fprintf(c.b, "  %s = alloca i1\n", c.x87ExactSlot[i])
-				fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.x87ExactSlot[i])
-			}
 		}
 		c.x87ControlSlot = "%x87_control"
 		c.x87StatusSlot = "%x87_status"
