@@ -102,19 +102,35 @@ func TestX86DirectSymbolMemorySinkObjectsRemainSupported(t *testing.T) {
 						}
 						if api == "text" {
 							x86LEAActualTargetGoObject(t, arch, target, source)
-							unit := x86ZeroArgumentLowererObjectUnit(t, mustParseX86RawReturn(t, source), arch, target, "ExternalSinkEmitterOnly",
-								func(consumer *amd64Ctx, instruction Instr) (bool, bool, error) {
-									if known, terminated, err := consumer.lowerMov(instruction.Op, instruction); known {
-										return known, terminated, err
-									}
-									if known, terminated, err := consumer.lowerVec(instruction.Op, instruction); known {
-										return known, terminated, err
-									}
-									if known, terminated, err := consumer.lowerFP(instruction.Op, instruction); known {
-										return known, terminated, err
-									}
-									return consumer.lowerX87(instruction.Op, instruction)
-								})
+							lower := func(consumer *amd64Ctx, instruction Instr) (bool, bool, error) {
+								if known, terminated, err := consumer.lowerMov(instruction.Op, instruction); known {
+									return known, terminated, err
+								}
+								if known, terminated, err := consumer.lowerVec(instruction.Op, instruction); known {
+									return known, terminated, err
+								}
+								if known, terminated, err := consumer.lowerFP(instruction.Op, instruction); known {
+									return known, terminated, err
+								}
+								return consumer.lowerX87(instruction.Op, instruction)
+							}
+							original := mustParseX86RawReturn(t, source)
+							mode := X87Software
+							switch strings.Fields(row)[0] {
+							case "FMOVB", "FMOVBP", "FMOVX", "FMOVXP":
+								// Only the matching native backend has an exact ten-byte
+								// codec. This emitter witness supplies no source authority.
+								mode = X87Hardware
+								software, err := x86ZeroArgumentLowererObjectUnitWithMode(t, original, arch, target, "ExternalSinkEmitterOnly", X87Software, lower)
+								if software != "" || !errors.Is(err, ErrProbeNeedsContext) ||
+									!strings.Contains(err.Error(), "encoded portable memory needs its exact codec") {
+									t.Fatal("ten-byte emitter acquired a portable codec", err, software)
+								}
+							}
+							unit, err := x86ZeroArgumentLowererObjectUnitWithMode(t, original, arch, target, "ExternalSinkEmitterOnly", mode, lower)
+							if err != nil {
+								t.Fatal(err)
+							}
 							x86ResultInitializationObject(t, llc, target, unit, "original-external-sink-emitter-only")
 						}
 						if counterpart, integer := x86AddressIntegerSinkCounterpart(row); integer {
