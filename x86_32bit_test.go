@@ -283,13 +283,28 @@ func TestTranslate386FUCOMIClearsSignedCondition(t *testing.T) {
 		t.Fatalf("lowerX87(FUCOMI) = (%v, %v, %v)", ok, terminated, err)
 	}
 	got := b.String()[start:]
-	for _, want := range []string{"fcmp ueq double", "fcmp ult double", "store i1 false, ptr %flags_slt"} {
+	// The comparison keeps binary80 values and projects the hardware or
+	// software status. Its integer FLAGS contract is independent of that path.
+	for _, want := range []string{
+		"load { i64, i16 }",
+		"store i1 false, ptr %flags_slt",
+		"store i1 false, ptr %flags_of",
+		"store i1 false, ptr %flags_af",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("FUCOMI lowering missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "fcmp olt double") {
-		t.Fatalf("FUCOMI incorrectly synthesized a signed-less flag:\n%s", got)
+	for _, flag := range []string{"z", "cf", "pf", "slt", "of", "af"} {
+		stores := 0
+		for _, line := range strings.Split(got, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "store i1 ") && strings.HasSuffix(line, ", ptr %flags_"+flag) {
+				stores++
+			}
+		}
+		if stores != 1 {
+			t.Fatalf("FUCOMI must define %s exactly once, got %d stores:\n%s", flag, stores, got)
+		}
 	}
 }
 
