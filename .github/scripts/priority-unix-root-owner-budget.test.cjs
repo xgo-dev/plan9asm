@@ -38,8 +38,8 @@ function requireOwners(source, name) {
 
 function requireDownloads(source) {
   const body = jobBody(source, 'module-completion');
-  requireJobNeeds(source, 'module-completion', ['test', 'nested-cli', 'race', 'coverage', 'nested-cli-coverage']);
-  assert.match(body, /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  requireJobNeeds(source, 'module-completion', ['ci_policy', 'test', 'nested-cli', 'race', 'coverage', 'nested-cli-coverage']);
+  assert.match(body, /^    if: \$\{\{ !cancelled\(\) && needs\.ci_policy\.result == 'success' \}\}$/m);
   for (let index = 0; index < 32; index++) {
     const download = step(body, 'Download root part ' + index);
     assert.ok(download.includes('name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-' + index + '\n'));

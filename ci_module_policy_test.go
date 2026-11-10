@@ -45,7 +45,8 @@ func TestCIModuleSuitesKeepExhaustiveUnixAndWindowsRoles(t *testing.T) {
 		}
 	}
 	aggregate, found := ciWorkflowJob(string(data), "module-completion")
-	if !found || !strings.Contains(aggregate, "needs: [test, nested-cli, race, coverage, nested-cli-coverage]") || !strings.Contains(aggregate, "!cancelled()") ||
+	if !found || !strings.Contains(aggregate, "needs: [ci_policy, test, nested-cli, race, coverage, nested-cli-coverage]") ||
+		!strings.Contains(aggregate, "if: ${{ !cancelled() && needs.ci_policy.result == 'success' }}") ||
 		!strings.Contains(aggregate, "owner-0000") || !strings.Contains(aggregate, "owner-0001") || !strings.Contains(aggregate, "owner-0002") {
 		t.Error("missing mandatory complete cross-owner readback")
 	}

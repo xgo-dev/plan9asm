@@ -30,8 +30,8 @@ test('required cross-runtime inventory has sixteen exhaustive owners, not a conc
 
 test('strict completion runs even after a failed owner and keeps original tool requirements', () => {
   const body = job('cross-runtime-verify');
-  assert.match(body, /needs: cross-runtime/);
-  assert.match(body, /if: \$\{\{ !cancelled\(\) \}\}/);
+  assert.match(body, /^    needs: \[ci_policy, cross-runtime\]$/m);
+  assert.match(body, /^    if: \$\{\{ !cancelled\(\) && needs\.ci_policy\.result == 'success' \}\}$/m);
   assert.match(body, /-verify-ci-partitions _out\/cross-runtime-partitions/);
   assert.match(body, /-shards 16 -timeout 20m/);
   assert.match(body, /-ci-isolate-root TestCrossLinuxRuntimeMatrix/);

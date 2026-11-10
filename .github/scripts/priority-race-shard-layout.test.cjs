@@ -38,8 +38,8 @@ function requireRaceOwners(source) {
 
 function requireCompleteRaceDownloads(source) {
   const body = jobBody(source, 'module-completion');
-  requireJobNeeds(source, 'module-completion', ['test', 'nested-cli', 'race', 'coverage', 'nested-cli-coverage']);
-  assert.match(body, /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  requireJobNeeds(source, 'module-completion', ['ci_policy', 'test', 'nested-cli', 'race', 'coverage', 'nested-cli-coverage']);
+  assert.match(body, /^    if: \$\{\{ !cancelled\(\) && needs\.ci_policy\.result == 'success' \}\}$/m);
   assert.deepEqual([...body.matchAll(/^      - name: Download root part (\d+)$/gm)].map(match => Number(match[1])),
     Array.from({length: 32}, (_, index) => index));
   for (let index = 0; index < 32; index++) {

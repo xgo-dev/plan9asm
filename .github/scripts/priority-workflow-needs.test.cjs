@@ -33,7 +33,7 @@ test('concrete dependencies reject duplicates, expressions, self references and 
 
 test('main and reusable CLI completion retain every actual owner gate', () => {
   for (const [file, name, required] of [
-    ['go-ci.yml', 'module-completion', ['test', 'nested-cli', 'race', 'coverage', 'nested-cli-coverage']],
+    ['go-ci.yml', 'module-completion', ['ci_policy', 'test', 'nested-cli', 'race', 'coverage', 'nested-cli-coverage']],
     ['windows-module.yml', 'complete', ['root-parts', 'other-owners']],
     ['linux-cli-module.yml', 'complete', ['root-parts']],
   ]) {

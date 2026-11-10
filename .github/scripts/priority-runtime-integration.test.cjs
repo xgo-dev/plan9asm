@@ -117,9 +117,9 @@ function requireInstructionOwners(source) {
     assert.deepEqual(jobNeeds(source, name), ['ci_policy'], name);
     assert.doesNotMatch(jobBody(source, name), /^    if:|continue-on-error:/m, name);
   }
-  assert.deepEqual(jobNeeds(source, 'cross-runtime-verify'), ['cross-runtime']);
+  assert.deepEqual(jobNeeds(source, 'cross-runtime-verify'), ['ci_policy', 'cross-runtime']);
   assert.deepEqual(jobNeeds(source, 'module-completion'),
-    ['test', 'nested-cli', 'race', 'coverage', 'nested-cli-coverage']);
+    ['ci_policy', 'test', 'nested-cli', 'race', 'coverage', 'nested-cli-coverage']);
   assert.match(jobBody(source, 'build'), /run: scripts\/check-arm64-plan9-corpus\.sh/);
   const corpus = jobBody(source, 'stdlib-corpus');
   assert.match(corpus, /^    name: stdlib instruction corpus \(/m);
@@ -247,10 +247,10 @@ test('responsibility split cannot delete or replace a required instruction owner
     ['linux/arm64,', ''],
     ['scripts/install-ci-qemu.sh', 'echo native'],
     ['files: ./coverage-root.out', 'files: ./partial-coverage.out'],
-    ['    needs: [test, nested-cli, race, coverage, nested-cli-coverage]',
-      '    needs: [test, nested-cli, race, nested-cli-coverage]'],
-    ['    needs: [test, nested-cli, race, coverage, nested-cli-coverage]',
-      '    needs: [test, nested-cli, race, coverage]'],
+    ['    needs: [ci_policy, test, nested-cli, race, coverage, nested-cli-coverage]',
+      '    needs: [ci_policy, test, nested-cli, race, nested-cli-coverage]'],
+    ['    needs: [ci_policy, test, nested-cli, race, coverage, nested-cli-coverage]',
+      '    needs: [ci_policy, test, nested-cli, race, coverage]'],
     ['uses: ./.github/workflows/windows-module.yml', 'uses: ./.github/workflows/runtime-integration.yml'],
   ]) {
     await t.test('replace ' + before, () => {

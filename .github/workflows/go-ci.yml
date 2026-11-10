@@ -263,8 +263,8 @@ jobs:
 
   cross-runtime-verify:
     name: cross-runtime exhaustive completion
-    needs: cross-runtime
-    if: ${{ !cancelled() }}
+    needs: [ci_policy, cross-runtime]
+    if: ${{ !cancelled() && needs.ci_policy.result == 'success' }}
     runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
     env:
       GOFLAGS: ''
@@ -676,8 +676,8 @@ jobs:
       flavor: coverage
 
   module-completion:
-    needs: [test, nested-cli, race, coverage, nested-cli-coverage]
-    if: ${{ !cancelled() }}
+    needs: [ci_policy, test, nested-cli, race, coverage, nested-cli-coverage]
+    if: ${{ !cancelled() && needs.ci_policy.result == 'success' }}
     runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:

@@ -2,14 +2,27 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 const {spawnSync} = require('node:child_process');
 const { test } = require('node:test');
-const {jobBody} = require('./workflow-needs.cjs');
+const {jobBody, jobNeeds} = require('./workflow-needs.cjs');
 
 const workflow = fs.readFileSync(path.join(__dirname, '../workflows/go-ci.yml'), 'utf8');
 
 function jobSection(name, source = workflow) {
   return jobBody(source, name);
+}
+
+// Execute the actual job condition with the direct needs exposed by its YAML.
+// Lower-case result strings and !cancelled() share these expression semantics.
+function collectorWouldRun(source, name, preflightResult, ownerResult) {
+  const body = jobSection(name, source);
+  const conditions = [...body.matchAll(/^    if: \$\{\{ (.+) \}\}$/gm)];
+  assert.equal(conditions.length, 1, 'one actual collector job condition required');
+  const needs = Object.fromEntries(jobNeeds(source, name).map(dependency => [dependency, {
+    result: dependency === 'ci_policy' ? preflightResult : ownerResult,
+  }]));
+  return vm.runInNewContext(conditions[0][1], {needs, cancelled: () => false}, {timeout: 1000});
 }
 
 function policySelector(source) {
@@ -66,6 +79,16 @@ test('translator jobs require policy preflight, not external compatibility', () 
     // Native needs success gating must not be bypassed by always()/!cancelled().
     assert.doesNotMatch(section, /^    if:/m, name);
   }
+  for (const name of ['cross-runtime-verify', 'module-completion']) {
+    const body = jobSection(name);
+    assert.ok(jobNeeds(workflow, name).includes('ci_policy'));
+    assert.match(body, /^    if: \$\{\{ !cancelled\(\) && needs\.ci_policy\.result == 'success' \}\}$/m);
+    assert.equal(collectorWouldRun(workflow, name, 'failure', 'skipped'), false);
+    const ungated = body.replace(/^    if:.*$/m, '    if: ${{ !cancelled() }}');
+    assert.notEqual(ungated, body);
+    assert.equal(collectorWouldRun(workflow.replace(body, () => ungated), name, 'failure', 'skipped'), true,
+      'the previous condition scheduled collectors without any executed owner');
+  }
   assert.doesNotMatch(workflow, /discovered_library|reported_library|testdata\/discovery/);
 });
 
@@ -74,6 +97,17 @@ test('all translator matrix failures remain failures', () => {
     const job = jobSection(name);
     assert.match(job, /^      fail-fast: false$/m);
     assert.doesNotMatch(job, /continue-on-error:/);
+  }
+  for (const [name, owner] of [['cross-runtime-verify', 'cross-runtime'], ['module-completion', 'test']]) {
+    assert.equal(collectorWouldRun(workflow, name, 'success', 'failure'), true,
+      'an owner failure must still collect partial evidence and fail validation');
+    const body = jobSection(name);
+    const skipped = body.replace(/^    if:.*$/m,
+      "    if: ${{ !cancelled() && needs.ci_policy.result == 'success' && " +
+      "needs['" + owner + "'].result == 'success' }}");
+    assert.notEqual(skipped, body);
+    assert.equal(collectorWouldRun(workflow.replace(body, () => skipped), name, 'success', 'failure'), false,
+      'requiring the owner to succeed would silently skip its failed completion');
   }
 });
 

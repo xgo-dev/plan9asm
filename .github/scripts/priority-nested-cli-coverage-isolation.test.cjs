@@ -11,7 +11,7 @@ const workflow = fs.readFileSync(path.join(__dirname, '../workflows/go-ci.yml'),
 const nested = fs.readFileSync(path.join(__dirname, '../workflows/linux-cli-module.yml'), 'utf8');
 const driver = fs.readFileSync(path.join(__dirname, '../../scripts/test-linux-cli-module-ci.sh'), 'utf8');
 const producer = 'nested-cli-coverage';
-const required = ['test', 'nested-cli', 'race', 'coverage', producer];
+const required = ['ci_policy', 'test', 'nested-cli', 'race', 'coverage', producer];
 const compilerInstall = 'bash scripts/install-ci-llvm22-ubuntu.sh ' +
   'gcc-i686-linux-gnu libc6-dev-i386-cross gcc-aarch64-linux-gnu';
 const completeCondition = "        if: ${{ !cancelled() && matrix.flavor == 'coverage' }}";
@@ -110,7 +110,7 @@ function requireOriginalOwners(source) {
 function requireCompletion(source) {
   requireJobNeeds(source, 'module-completion', required);
   const body = jobBody(source, 'module-completion');
-  assert.match(body, /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  assert.match(body, /^    if: \$\{\{ !cancelled\(\) && needs\.ci_policy\.result == 'success' \}\}$/m);
   for (const title of ['Check complete actual module inventory and coverage',
     'Retain independent aggregate evidence']) {
     assert.match(step(body, title), /^        if: \$\{\{ !cancelled\(\) \}\}$/m);
@@ -206,7 +206,7 @@ test('CLI coverage completion rejects missing needs, skipped collection and borr
     assert.throws(() => requireCompletion(workflow.replace(body, () => changed)), undefined, gate);
   }
   for (const [before, after] of [
-    ['    if: ${{ !cancelled() }}', '    if: success()'],
+    ["    if: ${{ !cancelled() && needs.ci_policy.result == 'success' }}", '    if: success()'],
     [completeCondition, "        if: matrix.flavor == 'coverage'"],
     [completeCondition, "        if: ${{ !cancelled() && matrix.flavor == 'test' }}"],
     [completeCommand, "        run: test '${{ needs['nested-cli'].result }}' = success"],
