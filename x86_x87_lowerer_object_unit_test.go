@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -40,7 +41,16 @@ func x86X87UnboundOriginalAPI(t *testing.T, file *File, options Options, api str
 // Public APIs must independently reject these original fixtures below.
 func x86X87LowererObjectUnit(t *testing.T, original *File, arch, triple string) string {
 	t.Helper()
-	return x86ZeroArgumentLowererObjectUnit(t, original, arch, triple, "X87LowererObjectUnit",
+	ir, err := x86X87LowererObjectUnitResult(t, original, arch, triple)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ir
+}
+
+func x86X87LowererObjectUnitResult(t *testing.T, original *File, arch, triple string) (string, error) {
+	t.Helper()
+	return x86ZeroArgumentLowererObjectUnitWithMode(t, original, arch, triple, "X87LowererObjectUnit", X87Hardware,
 		func(consumer *amd64Ctx, instruction Instr) (bool, bool, error) {
 			return consumer.lowerX87(instruction.Op, instruction)
 		})
@@ -48,6 +58,16 @@ func x86X87LowererObjectUnit(t *testing.T, original *File, arch, triple string) 
 
 func x86ZeroArgumentLowererObjectUnit(t *testing.T, original *File, arch, triple, name string,
 	lower func(*amd64Ctx, Instr) (bool, bool, error)) string {
+	t.Helper()
+	ir, err := x86ZeroArgumentLowererObjectUnitWithMode(t, original, arch, triple, name, X87Software, lower)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ir
+}
+
+func x86ZeroArgumentLowererObjectUnitWithMode(t *testing.T, original *File, arch, triple, name string,
+	mode X87Mode, lower func(*amd64Ctx, Instr) (bool, bool, error)) (string, error) {
 	t.Helper()
 	if original == nil || len(original.Funcs) != 1 || len(original.Data) != 0 || len(original.Globl) != 0 {
 		t.Fatal("instruction emitter unit requires one complete original TEXT without DATA")
@@ -69,7 +89,7 @@ func x86ZeroArgumentLowererObjectUnit(t *testing.T, original *File, arch, triple
 	fmt.Fprintf(&ir, "define void %s() %s {\n", llvmGlobal(name), features)
 	consumer := newX86Ctx(&ir, function, FuncSig{Name: name, Ret: Void},
 		func(name string) string { return name }, nil, arch, triple, false)
-	consumer.x87Mode = X87Software
+	consumer.x87Mode = mode
 	if err := consumer.emitEntryAllocas(); err != nil {
 		t.Fatal(err)
 	}
@@ -89,8 +109,11 @@ func x86ZeroArgumentLowererObjectUnit(t *testing.T, original *File, arch, triple
 			ir.WriteString("  ret void\n")
 		default:
 			known, terminated, err := lower(consumer, instruction)
-			if !known || err != nil {
-				t.Fatalf("complete original instruction %d was not emitted: %s: %v", ordinal, instruction.Raw, err)
+			if err != nil {
+				return "", fmt.Errorf("complete original instruction %d was not emitted: %s: %w", ordinal, instruction.Raw, err)
+			}
+			if !known {
+				return "", fmt.Errorf("complete original instruction %d was not recognized: %s", ordinal, instruction.Raw)
 			}
 			if terminated {
 				// The complete format-only source can contain an invalid
@@ -108,5 +131,33 @@ func x86ZeroArgumentLowererObjectUnit(t *testing.T, original *File, arch, triple
 	ir.WriteString("}\n")
 	attributes.emit(&ir)
 	t.Logf("emitter-only object source: all %d normalized instructions; no public translation or execution claim", emitted)
-	return ir.String()
+	return ir.String(), nil
+}
+
+// Original bytes and typed grammar still cover these eight forms. The exact
+// native codec currently accepts only the default address space, so this is a
+// Context observation and never an LLVM-object completion for FS/GS B/X.
+func x86X87EncodedAddressSpaceNeedsContext(t *testing.T, original *File, arch, triple string) {
+	t.Helper()
+	file, err := normalizeX86RawFile(original, arch)
+	if err != nil || len(file.Funcs) != 1 {
+		t.Fatal("complete original segment source did not normalize", err)
+	}
+	count := 0
+	for _, instruction := range file.Funcs[0].Instrs {
+		form, known, err := x86X87ValueProperties(instruction, arch)
+		if known && err != nil {
+			t.Fatal("original segment form lost its typed grammar", instruction.Raw, err)
+		}
+		if known && form.memoryBytes() == 10 {
+			count++
+		}
+	}
+	if count != 8 {
+		t.Fatal("incomplete original B/X FS/GS grammar inventory", count)
+	}
+	ir, err := x86X87LowererObjectUnitResult(t, original, arch, triple)
+	if ir != "" || !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "encoded native memory needs its bound default-address-space pointer") {
+		t.Fatal("unproved native ten-byte address space acquired an object", err)
+	}
 }

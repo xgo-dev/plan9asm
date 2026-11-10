@@ -15,6 +15,15 @@ func (err *x86IncompleteResultError) Unwrap() error {
 	return err.error
 }
 
+// Retain the first rejected source instruction for a paired backend's
+// diagnostic. This error carries no value, memory or continuation permission.
+type x86UnclosedSourceEffectError struct {
+	error
+	instruction Instr
+}
+
+func (err *x86UnclosedSourceEffectError) Unwrap() error { return err.error }
+
 // CheckX86ABI0ResultInitialization checks only byte initialization of one or
 // more scalar ABI0 result fields. It supplies no source authentication, native
 // frame, caller-memory, return-continuation or translation permission. The
@@ -551,7 +560,10 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		}
 		shape := top.clone()
 		if !control && !transfer(ordinals[pc], ins, &shape, owned, resultOffset, goarch) {
-			return fail(fmt.Sprintf("unclosed source effect at instruction %d: %s", pc, ins.Raw))
+			return &x86UnclosedSourceEffectError{
+				error:       fail(fmt.Sprintf("unclosed source effect at instruction %d: %s", pc, ins.Raw)),
+				instruction: ins,
+			}
 		}
 		next := []int{pc + 1}
 		if fn.x86DirectTailRoot != nil {

@@ -139,7 +139,7 @@ func (c *amd64Ctx) x87NativeToSigned(value x87Value, bits int) string {
 	return c.x87NativeToScalar(value, string(amd64IntegerTypeForBits(bits)), instruction)
 }
 
-func (c *amd64Ctx) projectX87NativeStatus(status string, mask int) {
+func (c *amd64Ctx) projectX87Status(status string, mask int) {
 	previous, kept, changed, merged := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = load i16, ptr %s\n", previous, c.x87StatusSlot)
 	fmt.Fprintf(c.b, "  %%%s = and i16 %%%s, %d\n", kept, previous, ^uint16(mask))

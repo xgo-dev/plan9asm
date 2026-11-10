@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 )
@@ -70,6 +71,12 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		return calls.checkTailTerminal(fn, sig, arch)
 	}
 	strictErr := checkX86ScalarFPResultInitialization(fn, sig, arch)
+	if effect, unclosed := strictErr.(*x86UnclosedSourceEffectError); unclosed && !c.useHardwareX87() {
+		form, known, err := x86X87ValueProperties(effect.instruction, arch)
+		if known && err == nil && form.spec.kind == x86X87NativeMath {
+			return fmt.Errorf("%w: portable binary80 provider is not implemented", strictErr)
+		}
+	}
 	customRegisterBool := arch == "386" && sig.Ret == I1 && len(sig.ArgRegs) != 0
 	logicalScalar := x86LogicalScalarResultNeedsProof(sig, arch)
 	if customRegisterBool || logicalScalar {

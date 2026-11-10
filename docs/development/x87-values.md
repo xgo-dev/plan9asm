@@ -21,15 +21,21 @@ The allocation's padding never grants extra external access.
 The shared path handles scalar float/integer conversions, constants,
 comparison, classification, basic arithmetic and integer rounding. Conversion
 to binary32/64 belongs at the corresponding source store, rather than before
-every arithmetic operation. The explicitly named legacy adapter isolates
-mathematical consumers that have not yet acquired an exact portable provider.
-Do not treat those consumers as qualified binary80 arithmetic.
+every arithmetic operation. Software math without an exact binary80 provider
+returns explicit Context, including dead Void results. This deliberately
+tightens the former admission of such Void functions; it does not turn an
+unimplemented numerical effect into a successful translation.
 
 ## Hardware and portable values
 
 On a matching x86 source/target, Auto and Hardware use native instructions with
 balanced temporary x87 stack operations and complete-value private storage.
 Original source control-word operations retain their existing contracts.
+Native mathematical forms check their implicit inputs and stack effects in
+the same source-value transfer. Conditional tangent/sine-cosine pushes need
+a proven input range to expose both results; uncertain pushes do not establish
+a second initialized value or a balanced return. Remainder instructions do not
+grant quotient-status bits merely because their inputs are initialized.
 These numerical helpers do not establish a complete runtime entry, saved
 environment, TLS or arbitrary physical-stack contract.
 

@@ -28,8 +28,9 @@ func TestX86X87ValueCompleteGrammarAndMode(t *testing.T) {
 		FCOMI FCOMIP FUCOM FUCOMP FUCOMPP FUCOMI FUCOMIP
 		FCMOVCC FCMOVCS FCMOVEQ FCMOVHI FCMOVLS FCMOVB FCMOVBE
 		FCMOVNB FCMOVNBE FCMOVE FCMOVNE FCMOVNU FCMOVU FCMOVUN
+		F2XM1 FCOS FSIN FPATAN FPREM FPREM1 FPTAN FSCALE FSINCOS FXTRACT FYL2X FYL2XP1
 	`)
-	if len(names) != 88 || len(x86X87ValueSpecs) != len(names) {
+	if len(names) != 100 || len(x86X87ValueSpecs) != len(names) {
 		t.Fatal("complete independent x87 value-family denominator changed", len(names), len(x86X87ValueSpecs))
 	}
 	for _, name := range names {

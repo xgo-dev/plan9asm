@@ -145,6 +145,9 @@ func x86ResultX87ValueStepWithMemory(ins Instr, state *x86ResultState, owned []b
 	if form.memoryBytes() == 10 && !nativeMemory {
 		return false, true
 	}
+	if form.spec.kind == x86X87NativeMath && !hardwareRounding {
+		return false, true // Only the paired matching-x86 emitter implements these values.
+	}
 	x87 := state.x87
 	nativeMemory = nativeMemory && (form.spec.kind == x86X87FloatMove || form.spec.kind == x86X87Compare)
 	hardwareRounding = hardwareRounding && (form.spec.kind == x86X87Round ||
@@ -232,6 +235,45 @@ func x86ResultX87ValueStepWithMemory(ins Instr, state *x86ResultState, owned []b
 	case x86X87Constant:
 		if !state.shapeOnly && !x87.push() {
 			return false, true
+		}
+		if !state.shapeOnly && (ins.Op == "FLD1" || ins.Op == "FLDZ") {
+			x87.integer[0] = 2 // Exact finite constants within the existing signed range.
+		}
+	case x86X87NativeMath:
+		for input := uint8(0); input < form.spec.inputs; input++ {
+			if !read(Operand{Kind: OpReg, Reg: Reg("F" + string(rune('0'+input)))}) {
+				return false, true
+			}
+		}
+		if !state.shapeOnly {
+			bounded := x87.integerBytes(f0) != 0 && x87.integerBytes(f0) < 8
+			before := *x87
+			// Every mathematical result loses its input's signed-integral bound.
+			x87.integer[0] = 0
+			if form.spec.pop != 0 {
+				x87.integer[1] = 0 // The popped result replaces the old F1.
+			}
+			if form.spec.push {
+				if !x87.push() {
+					return false, true
+				}
+				if form.spec.conditionalPush && !bounded {
+					// C2 may leave the original stack unchanged. Keep only slots
+					// defined in both outcomes; the extra depth prevents a false
+					// balanced return or a read of an optional pushed value.
+					x87.slots &= before.slots
+					for index := range x87.integer {
+						if index < 2 || x87.slots&(1<<uint(index)) == 0 || before.integer[index] == 0 || x87.integer[index] == 0 {
+							x87.integer[index] = 0
+						} else if before.integer[index] > x87.integer[index] {
+							x87.integer[index] = before.integer[index]
+						}
+					}
+				}
+			}
+			if bounded {
+				status = form.spec.status
+			}
 		}
 	case x86X87Unary:
 		if !read(f0) {

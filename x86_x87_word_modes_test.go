@@ -73,6 +73,36 @@ func TestX86X87HardwareControlCaptureNeedsNoSyntheticDefaultThreeAPIs(t *testing
 			}
 		}
 	}
+	for _, arch := range []string{"386", "amd64"} {
+		result := 8
+		if arch == "386" {
+			result = 4
+		}
+		for _, target := range []string{"armv7-unknown-linux-gnueabihf", "aarch64-unknown-linux-gnu", "wasm32-unknown-unknown"} {
+			for _, kind := range []string{"entry-result", "entry-param", "load-result", "load-param"} {
+				const declaration = "func Value(input uint16) uint16"
+				_, _, _, source := x86ResultInitializationFixture(t, arch, declaration, x86X87HardwareCaptureBody(kind, result))
+				for _, mode := range []X87Mode{X87Auto, X87Hardware, X87Software} {
+					for _, api := range []string{"text", "module", "Go"} {
+						t.Run(fmt.Sprintf("cross/%s/%s/%s/mode%d/%s", arch, target, kind, mode, api), func(t *testing.T) {
+							ir, err := x86X87InitializedWordAPI(t, source, declaration, arch, target, api, mode)
+							logicalInput := strings.HasPrefix(kind, "load-") && mode != X87Hardware
+							if !logicalInput {
+								if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+									t.Fatal("nonmatching x87 backend invented an ambient control capture", mode, len(ir), err)
+								}
+								return
+							}
+							if err != nil || ir == "" {
+								t.Fatal("complete source-defined logical CW was lost on a portable backend", err)
+							}
+							x86X87SoftwareControlRoundTrip(t, ir)
+						})
+					}
+				}
+			}
+		}
+	}
 }
 
 func TestX86X87TypedCallInitRestoresWordsNotValuesThreeAPIs(t *testing.T) {

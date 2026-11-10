@@ -435,9 +435,9 @@ func Test386LoweringErrorPaths(t *testing.T) {
 		name  string
 		store func(Operand) error
 	}{
-		{name: "x87 double memory", store: func(dst Operand) error { return c.storeX87F64(dst, "0.0") }},
+		{name: "x87 double memory", store: func(dst Operand) error { return c.storeX87TypedMemory(dst, LLVMType("double"), "0.0") }},
 		{name: "x87 word memory", store: func(dst Operand) error { return c.storeX87I16(dst, "0") }},
-		{name: "x87 integer memory", store: func(dst Operand) error { return c.storeX87I64(dst, "0") }},
+		{name: "x87 integer memory", store: func(dst Operand) error { return c.storeX87TypedMemory(dst, I64, "0") }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := test.store(badMem); err == nil {
@@ -1532,18 +1532,16 @@ func TestTranslate386X87Modes(t *testing.T) {
 	}
 
 	software := translate386RoundingIR(t, X87Software)
-	for _, want := range []string{
-		"call double @llvm.floor.f64",
-		"call double @llvm.ceil.f64",
-		"call double @llvm.trunc.f64",
-		"fcmp uge double",
-	} {
-		if !strings.Contains(software, want) {
-			t.Fatalf("software x87 IR missing %q:\n%s", want, software)
-		}
+	if !strings.Contains(software, "alloca "+x87ValueType) {
+		t.Fatal("software mode lost its complete value transport")
 	}
-	if strings.Contains(software, "frndint") || strings.Contains(software, "fistpll") {
-		t.Fatalf("software x87 IR unexpectedly contains hardware rounding:\n%s", software)
+	for _, unwanted := range []string{
+		"asm sideeffect", "call double @llvm.floor.f64", "call double @llvm.ceil.f64",
+		"call double @llvm.trunc.f64", "fcmp uge double",
+	} {
+		if strings.Contains(software, unwanted) {
+			t.Fatalf("software complete-value mode entered native/binary64 rounding %q:\n%s", unwanted, software)
+		}
 	}
 	compile386IR(t, software, "software_x87")
 

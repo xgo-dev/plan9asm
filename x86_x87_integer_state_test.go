@@ -53,7 +53,7 @@ func TestX86X87IntegerSourceFactsFollowExactCells(t *testing.T) {
 				if state.x87.depth != 2 || state.x87.integer != [8]uint8{row.width, row.width} {
 					t.Fatal("register FLD lost its read-before-push source identity", *state.x87)
 				}
-				step("FLD1")
+				step("FLDPI") // A non-integral constant retains no signed-integer bound.
 				step("FMOVD F1,F0")
 				if state.x87.integer != [8]uint8{row.width, 0, row.width, row.width} {
 					t.Fatal("register FLD read the shifted rather than original source cell", *state.x87)
@@ -72,6 +72,15 @@ func TestX86X87IntegerSourceFactsFollowExactCells(t *testing.T) {
 				}
 				if state.flags != x86ByteFlagsAll || state.direction != x86ResultDirectionForward {
 					t.Fatal("value-availability transfers changed integer FLAGS or DF")
+				}
+			})
+		}
+		for _, constant := range []string{"FLD1", "FLDZ"} {
+			t.Run(arch+"/exact-bound/"+constant, func(t *testing.T) {
+				state, owned := x86X87IntegerStateFixture()
+				x86X87IntegerStateStep(t, &state, owned, arch, constant)
+				if state.x87.depth != 1 || state.x87.integer != [8]uint8{2} {
+					t.Fatal("exact zero/one constant lost its finite signed bound", *state.x87)
 				}
 			})
 		}

@@ -422,7 +422,8 @@ func Round(x float64) int64
 	defer tr.Module.Dispose()
 
 	ir := tr.Module.String()
-	if !strings.Contains(ir, "@llvm.floor.f64") || strings.Contains(ir, "frndint") {
+	if !strings.Contains(ir, "alloca "+x87ValueType) || strings.Contains(ir, "asm sideeffect") ||
+		strings.Contains(ir, "call double @llvm.floor.f64") {
 		t.Fatalf("software x87 mode was not propagated:\n%s", ir)
 	}
 }

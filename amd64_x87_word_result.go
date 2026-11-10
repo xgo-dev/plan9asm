@@ -6,7 +6,7 @@ package plan9asm
 // infer ambient control from the implementation alloca's initial 0x037f.
 func (c *amd64Ctx) x87HardwareControlResultStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
 	form, known, err := x86X87WordProperties(ins, arch)
-	if !known || form.kind != x86X87StoreControl || c.x87Mode == X87Software {
+	if !known || form.kind != x86X87StoreControl || !c.useHardwareX87() {
 		return false, false
 	}
 	if err != nil || !x86ResultNamedPredicateInstruction(ins) || state.x87 == nil || state.x87.word == nil {

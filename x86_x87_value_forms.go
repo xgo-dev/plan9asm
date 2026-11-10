@@ -19,22 +19,27 @@ const (
 	x86X87IntegerMove
 	x86X87Round
 	x86X87ConditionalMove
+	x86X87NativeMath
 )
 
 type x86X87ValueSpec struct {
-	kind        x86X87ValueKind
-	width       byte // W/L/V signed integer memory, F/D floating memory, B/X ten-byte format.
-	stem        string
-	pop         uint8
-	reverse     bool
-	directFlags bool
-	flags       uint8 // Required integer predicates; FCMOV preserves those flags.
+	kind            x86X87ValueKind
+	width           byte // W/L/V signed integer memory, F/D floating memory, B/X ten-byte format.
+	stem            string
+	pop             uint8
+	reverse         bool
+	directFlags     bool
+	flags           uint8 // Required integer predicates; FCMOV preserves those flags.
+	inputs          uint8 // Implicit F0/F1 dependencies of native mathematical forms.
+	push            bool
+	conditionalPush bool // FPTAN/FSINCOS push only when their range check clears C2.
+	status          uint16
 }
 
 // These are value-availability forms, not a physical x87 entry/control-word,
 // native-memory or caller-state contract. The Go rows are shared by both x86
-// modes. BCD/extended forms retain input obligations but no numerical value
-// permission. Environment and transcendental state remain independent.
+// modes. Complete-value memory and native mathematical effects still need
+// their paired backend; the grammar supplies no entry or environment facts.
 var x86X87ValueSpecs = func() map[Op]x86X87ValueSpec {
 	forms := map[Op]x86X87ValueSpec{
 		"FMOVD":   {kind: x86X87FloatMove, width: 'D'},
@@ -55,6 +60,18 @@ var x86X87ValueSpecs = func() map[Op]x86X87ValueSpec {
 		"FMOVV":   {kind: x86X87IntegerMove, width: 'V'},
 		"FMOVVP":  {kind: x86X87IntegerMove, width: 'V', pop: 1},
 		"FRNDINT": {kind: x86X87Round},
+		"F2XM1":   {kind: x86X87NativeMath, inputs: 1},
+		"FCOS":    {kind: x86X87NativeMath, inputs: 1, status: 0x0400},
+		"FSIN":    {kind: x86X87NativeMath, inputs: 1, status: 0x0400},
+		"FPATAN":  {kind: x86X87NativeMath, inputs: 2, pop: 1},
+		"FPREM":   {kind: x86X87NativeMath, inputs: 2},
+		"FPREM1":  {kind: x86X87NativeMath, inputs: 2},
+		"FPTAN":   {kind: x86X87NativeMath, inputs: 1, push: true, conditionalPush: true, status: 0x0400},
+		"FSCALE":  {kind: x86X87NativeMath, inputs: 2},
+		"FSINCOS": {kind: x86X87NativeMath, inputs: 1, push: true, conditionalPush: true, status: 0x0400},
+		"FXTRACT": {kind: x86X87NativeMath, inputs: 1, push: true},
+		"FYL2X":   {kind: x86X87NativeMath, inputs: 2, pop: 1},
+		"FYL2XP1": {kind: x86X87NativeMath, inputs: 2, pop: 1},
 	}
 	for _, op := range []Op{"FLD1", "FLDL2E", "FLDL2T", "FLDLG2", "FLDLN2", "FLDPI", "FLDZ"} {
 		forms[op] = x86X87ValueSpec{kind: x86X87Constant}
@@ -181,7 +198,7 @@ func x86X87ValueProperties(ins Instr, arch string) (x86X87ValueForm, bool, error
 		_, valid := x87OperandReg(operand)
 		return valid
 	}
-	if spec.kind == x86X87Constant || spec.kind == x86X87Unary || spec.kind == x86X87Test || spec.kind == x86X87Round {
+	if spec.kind == x86X87Constant || spec.kind == x86X87Unary || spec.kind == x86X87Test || spec.kind == x86X87Round || spec.kind == x86X87NativeMath {
 		if len(ins.Args) != 0 {
 			return fail("takes no operands")
 		}

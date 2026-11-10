@@ -35,7 +35,7 @@ func (c *amd64Ctx) loadX87Operand(source Operand, width byte) (x87Value, error) 
 	} else if width == 'V' {
 		bits = 64
 	} else if width != 'W' {
-		return "", fmt.Errorf("unsupported x87 native scalar width %c", width)
+		return "", fmt.Errorf("unsupported typed x87 scalar width %c", width)
 	}
 	value, err := c.loadStackValue(source, bits)
 	if err != nil {
@@ -90,7 +90,7 @@ func (c *amd64Ctx) storeX87Operand(destination Operand, value x87Value, width by
 	} else if width == 'L' {
 		bits = 32
 	} else if width != 'V' {
-		return fmt.Errorf("unsupported x87 native scalar store width %c", width)
+		return fmt.Errorf("unsupported typed x87 scalar store width %c", width)
 	}
 	var integer string
 	if c.x87NativeValues {
@@ -182,9 +182,9 @@ func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed b
 				status = c.x87PortableCompareStatus(left, right)
 			}
 			if form.spec.directFlags {
-				c.setX87NativeCompareFlags(status)
+				c.setX87CompareFlags(status)
 			} else {
-				c.projectX87NativeStatus(status, 0x4700)
+				c.projectX87Status(status, 0x4700)
 			}
 			for count := uint8(0); count < form.spec.pop; count++ {
 				c.popX87Value()
@@ -216,7 +216,7 @@ func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed b
 		return true, c.pushX87Value(value)
 	case "FABS", "FCHS", "FSQRT", "FRNDINT", "F2XM1", "FSIN", "FCOS":
 		if !c.x87NativeValues {
-			if op != "FABS" && op != "FCHS" && op != "FRNDINT" {
+			if op != "FABS" && op != "FCHS" && op != "FRNDINT" && op != "FSQRT" {
 				return false, nil // The remaining mathematical provider is separate.
 			}
 			value, err := c.x87PortableUnary(op, c.loadX87Value(0), c.x87LogicalControlWord())
@@ -228,7 +228,7 @@ func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed b
 		value, _, status := c.evaluateX87Native(strings.ToLower(string(op)), []x87Value{c.loadX87Value(0)}, 1, 1)
 		c.storeX87Value(0, value)
 		if op == "FSIN" || op == "FCOS" {
-			c.projectX87NativeStatus(status, 0x0400)
+			c.projectX87Status(status, 0x0400)
 		}
 	case "FPTAN", "FSINCOS", "FXTRACT":
 		if !c.x87NativeValues {
@@ -254,7 +254,7 @@ func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed b
 				fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %s, %s %s\n", selected, outOfRange, x87ValueType, original, x87ValueType, c.loadX87Value(index))
 				c.storeX87Value(index, x87Value("%"+selected))
 			}
-			c.projectX87NativeStatus(status, 0x0400)
+			c.projectX87Status(status, 0x0400)
 		}
 	case "FPATAN", "FYL2X", "FYL2XP1", "FSCALE", "FPREM", "FPREM1":
 		if !c.x87NativeValues {
@@ -273,7 +273,7 @@ func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed b
 			c.storeX87Value(0, result)
 		}
 		if op == "FPREM" || op == "FPREM1" {
-			c.projectX87NativeStatus(status, 0x4700)
+			c.projectX87Status(status, 0x4700)
 		}
 	case "FTST", "FXAM":
 		var status string
@@ -284,7 +284,7 @@ func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed b
 		} else {
 			status = c.x87PortableClassify(c.loadX87Value(0))
 		}
-		c.projectX87NativeStatus(status, 0x4700)
+		c.projectX87Status(status, 0x4700)
 	case "FDECSTP", "FINCSTP":
 		c.rotateX87Values(op == "FINCSTP")
 	default:
@@ -304,7 +304,7 @@ func (c *amd64Ctx) x87PortableCompareStatus(left, right x87Value) string {
 	return c.x87PortableIR("or i16 %s, %s", status, c2)
 }
 
-func (c *amd64Ctx) setX87NativeCompareFlags(status string) {
+func (c *amd64Ctx) setX87CompareFlags(status string) {
 	for _, bit := range []struct {
 		mask int
 		slot string

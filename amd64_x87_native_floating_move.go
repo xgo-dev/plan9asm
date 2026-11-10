@@ -12,7 +12,7 @@ func (c *amd64Ctx) x87NativeMemoryValueResultStep(ins Instr, state *x86ResultSta
 		return false, true
 	}
 	if form.memoryBytes() == 10 && !c.useHardwareX87() {
-		return false, true // The temporary portable codec still uses binary64.
+		return false, true // An exact portable ten-byte codec is not implemented.
 	}
 	return x86ResultX87ValueStepWithMemory(ins, state, owned, resultOffset, arch, false, true)
 }
@@ -33,7 +33,7 @@ func (c *amd64Ctx) loadX87FloatingMove(source Operand, bits int) (string, error)
 		if bits == 32 {
 			return c.evalF32(source)
 		}
-		return c.evalX87F64(source)
+		return c.evalF64(source)
 	}
 	pointer, pointerType, err := c.x87MemoryPointer(source)
 	if err != nil {

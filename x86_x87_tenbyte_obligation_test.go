@@ -115,8 +115,8 @@ func TestX86X87TenByteCompleteGoFormats(t *testing.T) {
 	}
 }
 
-// A known pointer and logical F0 do not certify arbitrary packed BCD or
-// extended numerical conversion. Reject without revoking the unrelated cells,
+// A known pointer and logical F0 do not certify the unfinished portable BCD or
+// extended codec. Reject without revoking the unrelated cells,
 // prior control/status knownness, captured bits or the exact old state.
 func TestX86X87TenByteUnprovedPrecisionKeepsPriorState(t *testing.T) {
 	for _, arch := range []string{"amd64", "386"} {
@@ -127,8 +127,9 @@ func TestX86X87TenByteUnprovedPrecisionKeepsPriorState(t *testing.T) {
 				state.pointerGP[0] = true
 				state.x87.integer[1], state.x87.gp[3] = 4, 0x4000
 				before := state.clone()
-				accepted, known := x86ResultX87ValueStepWithMemory(x86X87ValueInstruction(t, format.instruction("(AX)")),
-					&state, nil, 0, arch, false, true)
+				consumer := amd64Ctx{goarch: arch, targetTriple: testTargetTriple("linux", arch), x87Mode: X87Software}
+				accepted, known := consumer.x87NativeMemoryValueResultStep(x86X87ValueInstruction(t, format.instruction("(AX)")),
+					&state, nil, 0, arch)
 				if accepted || !known || !reflect.DeepEqual(before, state) {
 					t.Fatal("X87_TEN_BYTE_UNPROVED_VALUE_OR_STATE_WIDENED", accepted, known)
 				}
@@ -156,9 +157,15 @@ func TestX86X87TenByteDefinedInputsDoNotGrantNumericalPrecision(t *testing.T) {
 				source := fmt.Sprintf("TEXT ·Value(SB),4,$0-%d\n%s", word, body)
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(fmt.Sprintf("%s/%s/pointer=%t/%s", arch, format.op, pointer, api), func(t *testing.T) {
-						ir, err := x86ScalarFPBitViewAPI(t, source, "func Value(p *[10]byte)", arch, testTargetTriple("linux", arch), api)
+						ir, err := x86X87InitializedWordAPI(t, source, "func Value(p *[10]byte)", arch, testTargetTriple("linux", arch), api, X87Software)
 						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 							t.Fatal("X87_TEN_BYTE_DEFINED_INPUT_IS_NOT_PRECISION", err, source)
+						}
+						if !pointer {
+							ir, err = x86ScalarFPBitViewAPI(t, source, "func Value(p *[10]byte)", arch, testTargetTriple("linux", arch), api)
+							if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+								t.Fatal("native complete-value backend borrowed an unknown address", err)
+							}
 						}
 					})
 				}

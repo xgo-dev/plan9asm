@@ -43,6 +43,9 @@ func (c *amd64Ctx) x87PortableRound(value x87Value, cw string) (x87Value, error)
 }
 
 func (c *amd64Ctx) x87PortableUnary(op Op, value x87Value, cw string) (x87Value, error) {
+	if op == "FSQRT" {
+		return c.x87PortableSquareRoot(value, cw)
+	}
 	if op == "FRNDINT" {
 		return c.x87PortableRound(value, cw)
 	}

@@ -305,13 +305,8 @@ func TestX86PrivateDecoderX87FiveTargetObjects(t *testing.T) {
 					}
 				})
 			}
-			t.Run("lowerer-unit-object", func(t *testing.T) {
-				ir := x86X87LowererObjectUnit(t, file, target.arch, target.triple)
-				llc := findLLVM22Tool("llc")
-				if llc == "" {
-					t.Fatal("LLVM 22 llc required")
-				}
-				compileLLVMToObject(t, llc, target.triple, "physical-x87-unit.ll", "physical-x87-unit.o", ir)
+			t.Run("native-ten-byte-address-space-context", func(t *testing.T) {
+				x86X87EncodedAddressSpaceNeedsContext(t, file, target.arch, target.triple)
 			})
 		})
 	}
@@ -418,18 +413,8 @@ func TestX86PrivateDecoderNamedX87MemoryConsumers(t *testing.T) {
 					}
 				})
 			}
-			t.Run("lowerer-unit-object", func(t *testing.T) {
-				ir := x86X87LowererObjectUnit(t, file, target.arch, target.triple)
-				for _, addressSpace := range []string{"ptr addrspace(256)", "ptr addrspace(257)"} {
-					if !strings.Contains(ir, "getelementptr i8, "+addressSpace) || !strings.Contains(ir, "load i8, "+addressSpace) {
-						t.Fatalf("environment/BCD emitter unit lost %s", addressSpace)
-					}
-				}
-				llc := findLLVM22Tool("llc")
-				if llc == "" {
-					t.Fatal("LLVM 22 llc required")
-				}
-				compileLLVMToObject(t, llc, target.triple, "named-x87-unit.ll", "named-x87-unit.o", ir)
+			t.Run("native-ten-byte-address-space-context", func(t *testing.T) {
+				x86X87EncodedAddressSpaceNeedsContext(t, file, target.arch, target.triple)
 			})
 		})
 	}
