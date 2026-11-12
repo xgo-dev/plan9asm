@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -15,7 +12,7 @@ import (
 func TestStdlibInternalCPU_X86_CompileX86Triples(t *testing.T) {
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 
 	goroot := runtime.GOROOT()
@@ -110,11 +107,11 @@ func TestStdlibInternalCPU_X86_CompileX86Triples(t *testing.T) {
 				if strings.HasPrefix(triple, "x86_64-") {
 					t.Fatalf("translate failed: %v", err)
 				}
-				t.Skipf("translate skipped for non-x86 triple %q: %v", triple, err)
+				t.Fatalf("translate skipped for non-x86 triple %q: %v", triple, err)
 			}
 
 			if !strings.HasPrefix(triple, "x86_64-") {
-				t.Skip("llc compilation only meaningful for x86_64 triples")
+				t.Fatal("llc compilation only meaningful for x86_64 triples")
 			}
 
 			tmp := t.TempDir()
@@ -132,7 +129,7 @@ func TestStdlibInternalCPU_X86_CompileX86Triples(t *testing.T) {
 					strings.Contains(s, "unknown target triple") ||
 					strings.Contains(s, "unknown target") ||
 					strings.Contains(s, "is not a registered target") {
-					t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+					t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 				}
 				t.Fatalf("llc failed for triple %q: %v\n%s", triple, err, s)
 			}

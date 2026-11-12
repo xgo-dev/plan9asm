@@ -5,10 +5,42 @@ runs:
   using: composite
   steps:
     - name: Set up MSYS2 for LLVM 22
+      id: msys2_attempt_1
+      continue-on-error: true
       uses: msys2/setup-msys2@v2
       with:
         msystem: CLANG64
         path-type: inherit
+        release: true
+        location: ${{ runner.temp }}/plan9asm-msys2-attempt-1
+        update: true
+
+    # These are bounded installer retries, not test retries or LLVM fallbacks.
+    # Only the first two bootstrap failures may proceed to another attempt.
+    # setup-msys2 refuses an existing installation, including a failed update's
+    # directory. Keep each fresh attempt separate; the action rewrites its
+    # msys2 shell wrapper to the successful installation without deleting any.
+    - name: Retry MSYS2 bootstrap (2 of 3)
+      id: msys2_attempt_2
+      if: ${{ steps.msys2_attempt_1.outcome == 'failure' }}
+      continue-on-error: true
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: CLANG64
+        path-type: inherit
+        release: true
+        location: ${{ runner.temp }}/plan9asm-msys2-attempt-2
+        update: true
+
+    - name: Retry MSYS2 bootstrap (3 of 3, failure is fatal)
+      id: msys2_attempt_3
+      if: ${{ steps.msys2_attempt_1.outcome == 'failure' && steps.msys2_attempt_2.outcome == 'failure' }}
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: CLANG64
+        path-type: inherit
+        release: true
+        location: ${{ runner.temp }}/plan9asm-msys2-attempt-3
         update: true
 
     - name: Install LLVM 22
@@ -39,27 +71,31 @@ runs:
 
         # libc++ supplies the compiler runtime. Keep the exact LLVM component
         # set mutually consistent while acknowledging the cc-libs virtual.
-        pacman --noconfirm -U \
-          --assume-installed "$prefix-cc-libs=$LLVM_VERSION" \
-          "${urls[@]}"
+        install_status=1
+        for attempt in 1 2 3; do
+          if pacman --noconfirm -U \
+            --assume-installed "$prefix-cc-libs=$LLVM_VERSION" \
+            "${urls[@]}"; then
+            install_status=0
+            break
+          else
+            install_status=$?
+          fi
+          if (( attempt < 3 )); then
+            echo "Pinned LLVM install attempt $attempt failed ($install_status); retrying in 5 seconds" >&2
+            sleep 5
+          fi
+        done
+        if (( install_status != 0 )); then
+          exit "$install_status"
+        fi
 
         if [[ "$(llvm-config --version)" != "$LLVM_VERSION" ]]; then
           echo "expected LLVM $LLVM_VERSION, got $(llvm-config --version)" >&2
           exit 1
         fi
 
-        flatten() {
-          local value=$1
-          value="${value//$'\r'/}"
-          value="${value//$'\n'/ }"
-          printf '%s' "$value"
-        }
-        echo "CGO_CFLAGS=$(flatten "$(llvm-config --cflags)")" >> "$GITHUB_ENV"
-        echo "CGO_CXXFLAGS=$(flatten "$(llvm-config --cxxflags)")" >> "$GITHUB_ENV"
-        echo "CGO_LDFLAGS=$(flatten "$(llvm-config --ldflags --libs all --system-libs)")" >> "$GITHUB_ENV"
-        clang_bin="$(cygpath -w /clang64/bin)"
-        echo "CC=$clang_bin\\clang.exe" >> "$GITHUB_ENV"
-        echo "CXX=$clang_bin\\clang++.exe" >> "$GITHUB_ENV"
-        echo 'CGO_ENABLED=1' >> "$GITHUB_ENV"
-        echo 'GOFLAGS=-tags=byollvm' >> "$GITHUB_ENV"
-        echo "$clang_bin" >> "$GITHUB_PATH"
+    - name: Publish stable LLVM 22 prefix
+      uses: ./.github/actions/publish-windows-llvm22
+      with:
+        attempt: ${{ steps.msys2_attempt_1.outcome == 'success' && '1' || steps.msys2_attempt_2.outcome == 'success' && '2' || steps.msys2_attempt_3.outcome == 'success' && '3' || '' }}

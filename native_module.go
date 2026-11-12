@@ -43,8 +43,12 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts NativeOptions) (mo
 	globals := map[string]llvm.Value{}
 	imports := map[string]llvm.Value{}
 	for i, fn := range f.Funcs {
-		v := llvm.AddFunction(mod, fmt.Sprintf("__plan9_native_%d", i), carrierTy)
-		v.SetLinkage(llvm.InternalLinkage)
+		name, linkage := fmt.Sprintf("__plan9_native_%d", i), llvm.InternalLinkage
+		if object, bound := opts.CodeEntries[fn.Sym]; bound {
+			name, linkage = object, llvm.ExternalLinkage
+		}
+		v := llvm.AddFunction(mod, name, carrierTy)
+		v.SetLinkage(linkage)
 		for _, attr := range []string{"naked", "noinline"} {
 			v.AddFunctionAttr(ctx.CreateEnumAttribute(llvm.AttributeKindID(attr), 0))
 		}
@@ -90,6 +94,9 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts NativeOptions) (mo
 			}
 		}
 		if alias, ok := opts.Imports[name]; ok {
+			if strings.HasPrefix(name, "·") && !data {
+				return llvm.Value{}, fmt.Errorf("native data binding is not a callable entry: %s", s)
+			}
 			if v, ok := imports[alias]; ok {
 				return v, nil
 			}
@@ -153,8 +160,7 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts NativeOptions) (mo
 		if err = e.functionBody(&body, fn); err != nil {
 			return mod, err
 		}
-		last := string(fn.Instrs[len(fn.Instrs)-1].Op)
-		if last != "RET" && last != "JMP" && last != "B" {
+		if _, complete := nativeFunctionEnd(fn.Instrs[len(fn.Instrs)-1].Op, opts.GOARCH); !complete {
 			return mod, fmt.Errorf("native naked TEXT must end with RET or an unconditional branch: %s", fn.Sym)
 		}
 		// Escape literal x86 '$' immediates before adding LLVM template operands.

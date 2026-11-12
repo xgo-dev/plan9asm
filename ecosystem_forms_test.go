@@ -1,8 +1,7 @@
-//go:build !llgo
-
 package plan9asm
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -96,6 +95,10 @@ TEXT lz4(SB),NOSPLIT,$0-0
 func TestTranslateGoBitsScalarForms(t *testing.T) {
 	ir := translateEcosystemScalarForms(t, ArchAMD64, "x86_64-unknown-linux-gnu", "amd64", `
 TEXT bits(SB),NOSPLIT,$0-16
+	MOVQ $0, AX
+	MOVQ $0, BX
+	MOVQ $0, CX
+	MOVQ $0, DX
 	BSFQ x+0(FP), AX
 	BSRQ x+0(FP), BX
 	BSFL x+0(FP), CX
@@ -103,10 +106,31 @@ TEXT bits(SB),NOSPLIT,$0-16
 	MOVQ AX, ret+8(FP)
 	RET
 `)
-	for want, count := range map[string]int{"call i64 @llvm.cttz.i64": 1, "call i64 @llvm.ctlz.i64": 1, "call i32 @llvm.cttz.i32": 1, "call i32 @llvm.ctlz.i32": 1} {
-		if got := strings.Count(ir, want); got != count {
-			t.Fatalf("go-bits %q count = %d, want %d:\n%s", want, got, count, ir)
+	// Zero input observes the original prior destination and native flags.
+	// A poison-producing cttz/ctlz substitution does not establish that contract.
+	for _, instruction := range []string{"bsfq ${3:q}, ${0:q}", "bsrq ${3:q}, ${0:q}", "bsfl ${3:k}, ${0:k}", "bsrl ${3:k}, ${0:k}"} {
+		if got := strings.Count(ir, instruction); got != 1 {
+			t.Fatalf("go-bits native %q count = %d, want 1:\n%s", instruction, got, ir)
 		}
+	}
+}
+
+func TestTranslateGoBitsUnknownPriorResultNeedsContext(t *testing.T) {
+	file, err := Parse(ArchAMD64, `
+TEXT bits(SB),NOSPLIT,$0-16
+	BSFQ x+0(FP), AX
+	BSRQ x+0(FP), BX
+	BSFL x+0(FP), CX
+	BSRL x+0(FP), DX
+	MOVQ AX, ret+8(FP)
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Translate(file, ecosystemScalarOptions("x86_64-unknown-linux-gnu", "amd64"))
+	if !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("zero input acquired an initialized bit-scan destination", err)
 	}
 }
 
@@ -114,7 +138,7 @@ TEXT bits(SB),NOSPLIT,$0-16
 // and klauspost/reedsolomon respectively. Keep the related unpack spellings
 // together so the source-level aliases cannot drift apart.
 func TestTranslateDiscoveredX86VectorForms(t *testing.T) {
-	ir := translateEcosystemScalarForms(t, ArchAMD64, "x86_64-unknown-linux-gnu", "amd64", `
+	ir := x86UnboundVoidScalarFormatObject(t, `
 TEXT vectors(SB),NOSPLIT,$0-0
 	PMULULQ X2, X8
 	PUNPCKLLQ X1, X2
@@ -125,12 +149,78 @@ TEXT vectors(SB),NOSPLIT,$0-0
 	POPCNTQ -8(SI)(BX*1), R11
 	POPCNTL 4(AX), R10
 	RET
-`)
-	for _, want := range []string{"mul <2 x i64>", "shufflevector <4 x i32>", "shufflevector <8 x i8>", "@llvm.ctpop.i64", "@llvm.ctpop.i32"} {
+`, "vectors", "amd64", "x86_64-unknown-linux-gnu")
+	for _, want := range []string{"mul <2 x i64>", "shufflevector <4 x i32>", "shufflevector <2 x i64>", "@llvm.ctpop.i64", "@llvm.ctpop.i32"} {
 		if !strings.Contains(ir, want) {
 			t.Fatalf("discovered x86 vector forms are missing %q:\n%s", want, ir)
 		}
 	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
+	}
+	compileLLVMToObject(t, llc, "x86_64-unknown-linux-gnu", "discovered-vector-formats.ll", "discovered-vector-formats.o", ir)
+}
+
+// These forms come from github.com/aead/siphash@v1.0.1,
+// github.com/klauspost/crc32@v1.3.0, and github.com/phuslu/log@v1.0.132.
+// The packed min/max forms are tested as a family because the Go assembler
+// accepts the same register-or-memory source shape for every lane width and
+// signedness combination.
+func TestTranslateExpandedEcosystemX86VectorForms(t *testing.T) {
+	ir := x86UnboundVoidScalarFormatObject(t, `
+TEXT vectors(SB),NOSPLIT,$0-0
+	MOVQ $13, AX
+	VMOVQ AX, X0
+	PSLLQ $13, X0
+	PSRLQ $64, X0
+	PMINUB X1, X0
+	PMINSB X1, X0
+	PMINUW X1, X0
+	PMINSW X1, X0
+	PMINUD X1, X0
+	PMINSD X1, X0
+	PMAXUB X1, X0
+	PMAXSB X1, X0
+	PMAXUW X1, X0
+	PMAXSW X1, X0
+	PMAXUD X1, X0
+	PMAXSD 16(BX), X0
+	VMOVQ X0, CX
+	VZEROUPPER
+	RET
+`, "vectors", "amd64", "x86_64-unknown-linux-gnu")
+	for want, count := range map[string]int{
+		"shl <2 x i64>":            1,
+		"icmp ult <16 x i8>":       1,
+		"icmp slt <16 x i8>":       1,
+		"icmp ult <8 x i16>":       1,
+		"icmp slt <8 x i16>":       1,
+		"icmp ult <4 x i32>":       1,
+		"icmp slt <4 x i32>":       1,
+		"icmp ugt <16 x i8>":       1,
+		"icmp sgt <16 x i8>":       1,
+		"icmp ugt <8 x i16>":       1,
+		"icmp sgt <8 x i16>":       1,
+		"icmp ugt <4 x i32>":       1,
+		"icmp sgt <4 x i32>":       0,
+		"extractelement <2 x i64>": 1,
+	} {
+		if got := strings.Count(ir, want); got != count {
+			t.Fatalf("expanded ecosystem form %q count = %d, want %d:\n%s", want, got, count, ir)
+		}
+	}
+	if got := strings.Count(ir, `call <4 x float> asm sideeffect "pmaxsd ($2), $0", "=x,0,r,~{memory}"`); got != 1 {
+		t.Fatalf("original PMAXSD m128 must retain its exact native opcode and memory effect, got %d:\n%s", got, ir)
+	}
+	if !strings.Contains(ir, "store <16 x i8> zeroinitializer") {
+		t.Fatalf("PSRLQ with an oversized count must clear the vector:\n%s", ir)
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
+	}
+	compileLLVMToObject(t, llc, "x86_64-unknown-linux-gnu", "ecosystem-vector-formats.ll", "ecosystem-vector-formats.o", ir)
 }
 
 func translateEcosystemScalarForms(t *testing.T, arch Arch, triple, goarch, src string) string {
@@ -139,7 +229,15 @@ func translateEcosystemScalarForms(t *testing.T, arch Arch, triple, goarch, src 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ir, err := Translate(file, Options{
+	ir, err := Translate(file, ecosystemScalarOptions(triple, goarch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ir
+}
+
+func ecosystemScalarOptions(triple, goarch string) Options {
+	return Options{
 		TargetTriple: triple,
 		Sigs: map[string]FuncSig{
 			"snappy": {Name: "snappy", Ret: Void},
@@ -157,9 +255,5 @@ func translateEcosystemScalarForms(t *testing.T, arch Arch, triple, goarch, src 
 			"emitLiteral": {Name: "emitLiteral", Args: []LLVMType{"{ ptr, i64, i64 }", "{ ptr, i64, i64 }"}, Ret: I64},
 		},
 		Goarch: goarch,
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	return ir
 }

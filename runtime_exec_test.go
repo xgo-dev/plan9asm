@@ -1,15 +1,14 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRuntimeExecAMD64Add(t *testing.T) {
@@ -19,7 +18,7 @@ func TestRuntimeExecAMD64Add(t *testing.T) {
 
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc/clang not found")
+		t.Fatal("llc/clang not found")
 	}
 
 	src := `
@@ -76,7 +75,7 @@ func TestRuntimeExecARM64Add(t *testing.T) {
 
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc/clang not found")
+		t.Fatal("llc/clang not found")
 	}
 
 	src := `
@@ -134,7 +133,7 @@ func TestRuntimeExecAMD64AddlJLE(t *testing.T) {
 
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc/clang not found")
+		t.Fatal("llc/clang not found")
 	}
 
 	src := `
@@ -199,7 +198,7 @@ func TestRuntimeExecAMD64AddlJB(t *testing.T) {
 
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc/clang not found")
+		t.Fatal("llc/clang not found")
 	}
 
 	src := `
@@ -263,7 +262,7 @@ func TestRuntimeExecARM64CmpBLE(t *testing.T) {
 
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc/clang not found")
+		t.Fatal("llc/clang not found")
 	}
 
 	src := `
@@ -335,7 +334,7 @@ func compileAndRunRuntimeTestForTarget(t *testing.T, llc, clang, name, triple, l
 	compileAndRunRuntimeTestWithCompiler(t, llc, compiler, name, triple, ll, mainC, runPrefix)
 }
 
-func compileAndRunRuntimeTestWithCompiler(t *testing.T, llc string, compiler []string, name, triple, ll, mainC string, runPrefix []string) {
+func compileAndRunRuntimeTestWithCompiler(t *testing.T, llc string, compiler []string, name, triple, ll, mainC string, runPrefix []string, optimization ...int) {
 	t.Helper()
 	if len(compiler) == 0 {
 		t.Fatal("empty compiler command")
@@ -349,29 +348,65 @@ func compileAndRunRuntimeTestWithCompiler(t *testing.T, llc string, compiler []s
 	if err := os.WriteFile(llPath, []byte(ll), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(triple, "windows") {
+		// LLVM-generated Windows objects reference the conventional floating
+		// point marker normally supplied by the MSVC CRT. The MinGW clang used
+		// by CI does not provide it when linking these freestanding test objects.
+		mainC = "int _fltused = 0;\n" + mainC
+	}
 	if err := os.WriteFile(mainPath, []byte(mainC), 0644); err != nil {
 		t.Fatal(err)
 	}
+	processPath := runtimeOracleProcessSource(t, tmp)
 
-	llcCmd := exec.Command(llc, "-mtriple="+triple, "-filetype=obj", llPath, "-o", objPath)
-	if out, err := llcCmd.CombinedOutput(); err != nil {
+	llcArgs := []string{"-mtriple=" + triple, "-relocation-model=pic", "-filetype=obj"}
+	if len(optimization) > 1 || len(optimization) == 1 && optimization[0] != 0 && optimization[0] != 2 {
+		t.Fatal("runtime LLVM optimization must be exactly O0 or O2")
+	}
+	if len(optimization) == 1 {
+		llcArgs = append(llcArgs, fmt.Sprintf("-O=%d", optimization[0]))
+	}
+	llcArgs = append(llcArgs, llPath, "-o", objPath)
+	ctx, cancel := runtimeOracleStageContext(t)
+	llcCmd := exec.CommandContext(ctx, llc, llcArgs...)
+	started := time.Now()
+	out, err := runtimeOracleCombinedOutput(ctx, llcCmd)
+	t.Logf("phase=LLVM-backend elapsed=%s", time.Since(started))
+	cancel()
+	if err != nil {
 		s := string(out)
 		if llcUnsupportedTarget(s) {
-			t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+			t.Fatalf("llc does not support triple %q: %v\n%s", triple, err, strings.TrimSpace(s))
 		}
 		t.Fatalf("llc failed: %v\n%s", err, s)
 	}
 
 	compilerArgs := append([]string(nil), compiler[1:]...)
-	compilerArgs = append(compilerArgs, objPath, mainPath, "-O2", "-o", exePath)
-	compilerCmd := exec.Command(compiler[0], compilerArgs...)
-	if out, err := compilerCmd.CombinedOutput(); err != nil {
+	compilerArgs = append(compilerArgs, objPath, mainPath, processPath, "-O2", "-o", exePath)
+	if !strings.Contains(triple, "windows") {
+		// LLVM may lower floating intrinsics such as roundeven and fma to the C
+		// math library. Darwin provides those symbols through libSystem, while
+		// ELF linkers require an explicit libm dependency.
+		compilerArgs = append(compilerArgs, "-lm")
+	}
+	ctx, cancel = runtimeOracleStageContext(t)
+	compilerCmd := exec.CommandContext(ctx, compiler[0], compilerArgs...)
+	started = time.Now()
+	out, err = runtimeOracleCombinedOutput(ctx, compilerCmd)
+	t.Logf("phase=compile-link elapsed=%s", time.Since(started))
+	cancel()
+	if err != nil {
 		t.Fatalf("compile/link with %s failed: %v\n%s", compiler[0], err, string(out))
 	}
 
-	runArgs := append(append([]string(nil), runPrefix...), exePath)
-	runCmd := exec.Command(runArgs[0], runArgs[1:]...)
-	if out, err := runCmd.CombinedOutput(); err != nil {
+	runArgs := runtimeOracleGuestArguments(t, runPrefix, exePath)
+	ctx, cancel = runtimeOracleStageContext(t)
+	runCmd := exec.CommandContext(ctx, runArgs[0], runArgs[1:]...)
+	started = time.Now()
+	out, err = runtimeOracleCombinedOutput(ctx, runCmd)
+	t.Logf("phase=guest-execution elapsed=%s", time.Since(started))
+	cancel()
+	if err != nil {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 }

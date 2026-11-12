@@ -1,0 +1,9 @@
+name: Publish Windows LLVM 22
+description: Validate and publish one installed LLVM prefix without retry-dependent paths.
+inputs:
+  attempt:
+    description: The successful setup-msys2 attempt (1, 2, or 3).
+    required: true
+runs:
+  using: node24
+  main: index.cjs

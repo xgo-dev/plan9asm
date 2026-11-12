@@ -40,8 +40,9 @@ Plan 9 assembly parser and LLVM IR translator, extracted as an independent modul
   releases are intentionally rejected instead of used as fallbacks.
 - `TranslateModule` builds an in-memory `llvm.Module` (`github.com/xgo-dev/llvm`).
 - `Translate` keeps compatibility and returns textual IR from that module.
-- Root module dependency stays small (`goplus/llvm`).
-- `golang.org/x/tools/go/packages` is used only in `cmd/plan9asmll` submodule.
+- The root module uses `github.com/xgo-dev/llvm` for LLVM bindings.
+- Both `cmd/plan9asm` and `cmd/plan9asmll` use `golang.org/x/tools/go/packages`
+  in their separate modules.
 - `cmd/plan9asm` does not depend on `llgo/internal/build` or `llgo/internal/packages`.
 
 ## Quick test
@@ -119,6 +120,18 @@ go run -C cmd/plan9asmll . \
   -out _out/plan9asmll/x86 \
   -report /tmp/plan9asmll-x86.json
 ```
+
+For an ordinary external module, `-feature-profile` explicitly consumes a
+private `actual_go_cpu_profile_consumer_v1` invocation artifact. It re-observes
+the actual Go marker/environment/tool identity, loads that same environment,
+checks selected source hashes and package-role macros, and records CPP/LLVM
+output hashes. Source directories and module replacements must match the
+artifact's exact source root. Special and test-only package roles remain
+outside this mode. Without the flag, existing CLI behavior is unchanged.
+The external runner in [llgo-compat/plan9asm](https://github.com/llgo-compat/plan9asm)
+owns module discovery, ledger records and third-party compatibility CI. It pins
+this translator and the shared `gotoolprofile` package; translation/object
+checks remain distinct from operand-form and runtime coverage.
 
 ## Output behavior
 

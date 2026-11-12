@@ -7,6 +7,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"os/exec"
@@ -14,9 +17,11 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/xgo-dev/plan9asm"
+	"github.com/xgo-dev/plan9asm/internal/gotoolchain"
 )
 
 type pkgJSON struct {
@@ -41,6 +46,8 @@ type formStat struct {
 	UnsupportedCount int
 	Errors           map[string]int
 	ProbeKeys        map[string]struct{}
+	contextResults   map[string]error
+	contextSources   []initializedContextCase
 }
 
 type parseErr struct {
@@ -49,38 +56,72 @@ type parseErr struct {
 }
 
 type report struct {
-	Corpus               string `json:"corpus"`
-	GoVersion            string `json:"go_version"`
-	Goos                 string `json:"goos"`
-	Goarch               string `json:"goarch"`
-	StdPkgs              int    `json:"std_pkgs"`
-	StdPkgsWithSFile     int    `json:"std_pkgs_with_sfile"`
-	AsmFiles             int    `json:"asm_files"`
-	UniqueOps            int    `json:"unique_ops"`
-	ParseErrCount        int    `json:"parse_err_count"`
-	UniqueForms          int    `json:"unique_forms"`
-	SupportedForms       int    `json:"supported_forms"`
-	ContextForms         int    `json:"context_forms"`
-	UnsupportedForms     int    `json:"unsupported_forms"`
-	OfficialOpcodes      int    `json:"official_opcodes"`
-	RuntimeVerifiedForms int    `json:"runtime_verified_forms"`
-	CompileOnlyForms     int    `json:"compile_only_forms,omitempty"`
-	EncoderOpcodes       int    `json:"encoder_opcodes"`
-	EncoderForms         int    `json:"encoder_forms"`
-	EncoderOpsObserved   int    `json:"encoder_opcodes_observed_in_corpus"`
-	CoverageFingerprint  string `json:"coverage_fingerprint"`
-	EncoderFingerprint   string `json:"encoder_fingerprint"`
+	Corpus               string       `json:"corpus"`
+	GoVersion            string       `json:"go_version"`
+	Goos                 string       `json:"goos"`
+	Goarch               string       `json:"goarch"`
+	StdPkgs              int          `json:"std_pkgs"`
+	StdPkgsWithSFile     int          `json:"std_pkgs_with_sfile"`
+	AsmFiles             int          `json:"asm_files"`
+	UniqueOps            int          `json:"unique_ops"`
+	ParseErrCount        int          `json:"parse_err_count"`
+	UniqueForms          int          `json:"unique_forms"`
+	SupportedForms       int          `json:"supported_forms"`
+	ContextForms         int          `json:"context_forms"`
+	UnsupportedForms     int          `json:"unsupported_forms"`
+	OfficialOpcodes      int          `json:"official_opcodes"`
+	RuntimeVerifiedForms int          `json:"runtime_verified_forms"`
+	CompileOnlyForms     int          `json:"compile_only_forms,omitempty"`
+	EncoderOpcodes       int          `json:"encoder_opcodes"`
+	EncoderForms         int          `json:"encoder_forms"`
+	EncoderOpsObserved   int          `json:"encoder_opcodes_observed_in_corpus"`
+	CoverageFingerprint  string       `json:"coverage_fingerprint"`
+	EncoderFingerprint   string       `json:"encoder_fingerprint"`
+	EvidenceLevels       scanEvidence `json:"evidence_levels"`
+	// These fields count/fingerprint only retained encoding rules, currently
+	// x86 AVX. They do not certify all encoder tables or executed coverage.
+	EncoderRules           int    `json:"encoder_rules,omitempty"`
+	EncoderRuleFingerprint string `json:"encoder_rule_fingerprint,omitempty"`
 
-	OpsByFreq         []opReport            `json:"ops_by_freq"`
-	ClusterStats      []clusterReport       `json:"cluster_stats"`
-	FamilyStats       []familyReport        `json:"unsupported_family_stats"`
-	FormFamilies      []formFamilyReport    `json:"form_family_stats"`
-	Forms             []formReport          `json:"forms"`
-	Unsupported       []opReport            `json:"unsupported"`
-	UnsupportedByForm []formReport          `json:"unsupported_by_form"`
-	OpcodeCatalog     []opcodeCatalogReport `json:"opcode_catalog,omitempty"`
-	EncoderCatalog    []encoderFormReport   `json:"encoder_form_catalog,omitempty"`
-	ParseErrs         []parseErr            `json:"parse_errs,omitempty"`
+	LegacyEncoder *legacyEncoderReport `json:"legacy_encoder,omitempty"`
+
+	OpsByFreq                 []opReport                `json:"ops_by_freq"`
+	ClusterStats              []clusterReport           `json:"cluster_stats"`
+	FamilyStats               []familyReport            `json:"unsupported_family_stats"`
+	FormFamilies              []formFamilyReport        `json:"form_family_stats"`
+	Forms                     []formReport              `json:"forms"`
+	Unsupported               []opReport                `json:"unsupported"`
+	UnsupportedByForm         []formReport              `json:"unsupported_by_form"`
+	OpcodeCatalog             []opcodeCatalogReport     `json:"opcode_catalog,omitempty"`
+	EncoderCatalog            []encoderFormReport       `json:"encoder_form_catalog,omitempty"`
+	FrontendInventory         *frontendInventory        `json:"frontend_inventory,omitempty"`
+	ParseErrs                 []parseErr                `json:"parse_errs,omitempty"`
+	InitializedContextReprobe *initializedContextReport `json:"initialized_context_reprobe,omitempty"`
+}
+
+// Default scanning runs text-lowering probes, not object or execution tests.
+// An explicitly requested initialized-context profile records separate object
+// evidence; it never changes these original uninitialized-probe evidence levels.
+// The legacy runtime_verified/compile_only fields above are manifest matches,
+// not receipts for this invocation. Keep them for report compatibility.
+type scanEvidence struct {
+	IRTextGeneration      scanEvidenceStage `json:"ir_text_generation"`
+	LLVMObjectCompilation scanEvidenceStage `json:"llvm_object_compilation"`
+	RuntimeExecution      scanEvidenceStage `json:"runtime_execution"`
+}
+
+type scanEvidenceStage struct {
+	Status string `json:"status"`
+	Forms  *int   `json:"forms"` // null means not measured, rather than zero passes.
+}
+
+func probeEvidence(goarch string, accepted int) scanEvidence {
+	notRun := scanEvidenceStage{Status: "not_run"}
+	ir := scanEvidenceStage{Status: "probe", Forms: &accepted}
+	if goarch == "wasm" {
+		ir = notRun // WASM's isolated probe deliberately requires whole functions.
+	}
+	return scanEvidence{ir, notRun, notRun}
 }
 
 type opReport struct {
@@ -143,7 +184,6 @@ type conformanceManifest struct {
 }
 
 var (
-	reCaseClause = regexp.MustCompile(`case\s+([^:]+):`)
 	reOpcodeName = regexp.MustCompile("(?m)^\\s*(?:obj\\.A_ARCHSPECIFIC:\\s*)?\"([A-Z][A-Za-z0-9.]*)\",\\s*$")
 )
 
@@ -155,10 +195,28 @@ func main() {
 		format   = flag.String("format", "md", "output format: md|json")
 		repoRoot = flag.String("repo-root", ".", "plan9asm repository root for lowerers and conformance data")
 		corpus   = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9")
-		goroot   = flag.String("goroot", runtime.GOROOT(), "Go root containing official assembler testdata")
+		goroot   = flag.String("goroot", "", "Go root containing official assembler testdata (default: active Go toolchain)")
 		input    = flag.String("input", "", "input file for corpora that require one")
+		reprobe  = flag.String("initialized-context-reprobe", "", "optional counterfactual input profile: mask-logical (not original-source or runtime evidence)")
+		llc      = flag.String("llc", "", "LLVM22 llc executable for an explicitly enabled initialized-context reprobe")
 	)
 	flag.Parse()
+	if *reprobe != "" && (*reprobe != "mask-logical" || (*goarch != "386" && *goarch != "amd64")) {
+		fatalf("initialized-context-reprobe requires profile mask-logical and target 386/amd64")
+	}
+	if *reprobe != "" && *corpus != "std" && *corpus != "go-asm" {
+		fatalf("initialized-context-reprobe requires a std or go-asm corpus with exact x86 sources")
+	}
+	if *llc != "" && *reprobe == "" {
+		fatalf("-llc requires an explicit -initialized-context-reprobe profile")
+	}
+	if *goroot == "" {
+		root, err := gotoolchain.Root()
+		if err != nil {
+			fatalf("resolve active Go toolchain: %v", err)
+		}
+		*goroot = root
+	}
 
 	if *goarch != "386" && *goarch != "amd64" && *goarch != "arm64" && *goarch != "arm" && *goarch != "wasm" {
 		fatalf("unsupported -goarch %q (expect 386/amd64/arm64/arm/wasm)", *goarch)
@@ -181,11 +239,11 @@ func main() {
 	)
 	switch *corpus {
 	case "std":
-		pkgs, err = listStdPackages(*goos, *goarch)
+		pkgs, err = listStdPackagesAtGOROOT(*goos, *goarch, *goroot)
 		if err != nil {
 			fatalf("list std packages: %v", err)
 		}
-		ops, forms, parseErrs, pkgWithSFiles, asmFiles, err = scanPackages(pkgs, arch, *goarch)
+		ops, forms, parseErrs, pkgWithSFiles, asmFiles, err = scanPackagesWithContexts(pkgs, arch, *goarch, *goroot, *reprobe != "", plan9asm.GoAssemblerDefines(*goos, *goarch)...)
 	case "go-asm":
 		if *goarch == "wasm" {
 			// Go has no cmd/asm end-to-end testdata or operand-class encoder
@@ -194,10 +252,10 @@ func main() {
 			// comes from cmd/internal/obj/wasm below.
 			pkgs, err = listStdPackagesAtGOROOT(*goos, *goarch, *goroot)
 			if err == nil {
-				ops, forms, parseErrs, pkgWithSFiles, asmFiles, err = scanPackages(pkgs, arch, *goarch)
+				ops, forms, parseErrs, pkgWithSFiles, asmFiles, err = scanPackages(pkgs, arch, *goarch, *goroot, plan9asm.GoAssemblerDefines(*goos, *goarch)...)
 			}
 		} else {
-			ops, forms, parseErrs, asmFiles, err = scanGoAssemblerTestdata(*goroot, arch, *goarch)
+			ops, forms, parseErrs, asmFiles, err = scanGoAssemblerTestdataWithContexts(*goroot, arch, *goarch, *reprobe != "")
 		}
 	case "arm64-plan9":
 		if strings.TrimSpace(*input) == "" {
@@ -218,7 +276,12 @@ func main() {
 
 	var catalog []opcodeCatalogReport
 	var encoderCatalog []encoderFormReport
+	var frontend *frontendInventory
 	if *corpus == "go-asm" {
+		frontend, err = loadFrontendInventory(*goroot, *goarch)
+		if err != nil {
+			fatalf("load Go assembler frontend inventory: %v", err)
+		}
 		encoderCatalog, err = loadEncoderForms(*goroot, *goarch)
 		if err != nil {
 			fatalf("load official encoder forms: %v", err)
@@ -234,6 +297,14 @@ func main() {
 	}
 	rep := buildReport(*corpus, goVersion(*goroot), *goos, *goarch, len(pkgs), pkgWithSFiles, asmFiles, ops, forms, supported, catalog, verified, compileOnly, parseErrs)
 	attachEncoderCatalog(&rep, ops, encoderCatalog)
+	if err := attachLegacyEncoderCatalog(&rep, *goroot); err != nil {
+		fatalf("load Go legacy encoder inventory: %v", err)
+	}
+	rep.FrontendInventory = frontend
+	var reprobeErr error
+	if *reprobe != "" {
+		rep.InitializedContextReprobe, reprobeErr = runInitializedContextReprobe(forms, *goarch, *llc)
+	}
 
 	var content []byte
 	switch strings.ToLower(strings.TrimSpace(*format)) {
@@ -251,10 +322,16 @@ func main() {
 
 	if *out == "" {
 		_, _ = os.Stdout.Write(content)
+		if reprobeErr != nil {
+			fatalf("initialized context LLVM reprobe: %v", reprobeErr)
+		}
 		return
 	}
 	if err := os.WriteFile(*out, content, 0644); err != nil {
 		fatalf("write %s: %v", *out, err)
+	}
+	if reprobeErr != nil {
+		fatalf("initialized context LLVM reprobe: %v", reprobeErr)
 	}
 }
 
@@ -332,7 +409,11 @@ func listStdPackagesWithCommand(goCommand, goos, goarch string, extraEnv []strin
 	return outPkgs, nil
 }
 
-func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch, goarch string) (map[string]*opStat, map[string]*formStat, []parseErr, int, int, error) {
+func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch, goarch, goRoot string, defines ...string) (map[string]*opStat, map[string]*formStat, []parseErr, int, int, error) {
+	return scanPackagesWithContexts(pkgs, arch, goarch, goRoot, false, defines...)
+}
+
+func scanPackagesWithContexts(pkgs []pkgJSON, arch plan9asm.Arch, goarch, goRoot string, contexts bool, defines ...string) (map[string]*opStat, map[string]*formStat, []parseErr, int, int, error) {
 	ops := map[string]*opStat{}
 	forms := map[string]*formStat{}
 	var parseErrs []parseErr
@@ -349,14 +430,14 @@ func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch, goarch string) (map[string
 		}
 		pkgWithSFiles++
 		for _, path := range sfiles {
-			src, err := os.ReadFile(path)
+			src, err := plan9asm.ReadGoAssemblySourceAtGOROOT(path, p.Dir, goRoot)
 			if err != nil {
 				return nil, nil, nil, 0, 0, fmt.Errorf("read %s: %w", path, err)
 			}
 			asmFiles++
-			rel := shortStdPath(path)
+			rel := shortStdPath(path, goRoot)
 
-			file, err := plan9asm.Parse(arch, string(src))
+			file, err := plan9asm.ParseWithDefines(arch, string(src), defines)
 			if err != nil {
 				if strings.Contains(err.Error(), "no TEXT directive found") {
 					continue
@@ -365,26 +446,42 @@ func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch, goarch string) (map[string
 				continue
 			}
 			for _, fn := range file.Funcs {
-				for _, ins := range fn.Instrs {
+				for i := 0; i < len(fn.Instrs); {
+					ins := fn.Instrs[i]
 					if ins.Op == plan9asm.OpLABEL {
+						i++
+						continue
+					}
+					if isX86RawDirective(arch, ins) {
+						end := i + 1
+						for end < len(fn.Instrs) && isX86RawDirective(arch, fn.Instrs[end]) {
+							end++
+						}
+						sequence := fn.Instrs[i:end]
+						probeErr := plan9asm.ProbeInstructionSequence(arch, goarch, sequence)
+						probeKey := instructionSequenceProbeKey(sequence)
+						for offset, raw := range sequence {
+							addFormStatWithProbeResult(forms, arch, goarch, raw, rel, probeKey, probeErr)
+							if contexts {
+								captureContextSource(forms, arch, goarch, raw, initializedContextSource{File: rel, Function: fn.Sym, InstructionIndex: i + offset}, probeErr)
+							}
+							addOpStat(ops, string(raw.Op), rel, p.ImportPath, 1)
+						}
+						i = end
 						continue
 					}
 					nop := normalizeOp(string(ins.Op))
 					if nop == "" {
+						i++
 						continue
 					}
-					addFormStat(forms, arch, goarch, ins, rel)
-					s := ops[nop]
-					if s == nil {
-						s = &opStat{
-							Files: map[string]int{},
-							Pkgs:  map[string]int{},
-						}
-						ops[nop] = s
+					var source *initializedContextSource
+					if contexts {
+						source = &initializedContextSource{File: rel, Function: fn.Sym, InstructionIndex: i}
 					}
-					s.Count++
-					s.Files[rel]++
-					s.Pkgs[p.ImportPath]++
+					addFormStatWithSource(forms, arch, goarch, ins, rel, source)
+					addOpStat(ops, nop, rel, p.ImportPath, 1)
+					i++
 				}
 			}
 			if len(file.Data) > 0 {
@@ -392,6 +489,17 @@ func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch, goarch string) (map[string
 			}
 			if len(file.Globl) > 0 {
 				addOpStat(ops, "GLOBL", rel, p.ImportPath, len(file.Globl))
+				for _, global := range file.Globl {
+					if global.SizeRaw != "" {
+						addFormStat(forms, arch, goarch, plan9asm.Instr{
+							Op: "GLOBL", Raw: "GLOBL " + global.Sym + "(SB)," + global.SizeRaw,
+							Args: []plan9asm.Operand{
+								{Kind: plan9asm.OpSym, Sym: global.Sym + "(SB)"},
+								{Kind: plan9asm.OpImm, ImmRaw: global.SizeRaw},
+							},
+						}, rel)
+					}
+				}
 			}
 		}
 	}
@@ -399,9 +507,44 @@ func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch, goarch string) (map[string
 }
 
 func addFormStat(forms map[string]*formStat, arch plan9asm.Arch, goarch string, ins plan9asm.Instr, file string) {
+	addFormStatWithSource(forms, arch, goarch, ins, file, nil)
+}
+
+func addFormStatWithSource(forms map[string]*formStat, arch plan9asm.Arch, goarch string, ins plan9asm.Instr, file string, source *initializedContextSource) {
+	probeKey := fmt.Sprintf("%s %#v", ins.Op, ins.Args)
+	st, fresh := prepareFormStat(forms, arch, goarch, ins, file, probeKey)
+	if st == nil {
+		return
+	}
+	if fresh {
+		probeErr := plan9asm.ProbeInstruction(arch, goarch, ins)
+		classifyFormProbe(st, probeErr)
+		if source != nil {
+			if st.contextResults == nil {
+				st.contextResults = make(map[string]error)
+			}
+			st.contextResults[probeKey] = probeErr
+		}
+	}
+	if source != nil {
+		if probeErr, ok := st.contextResults[probeKey]; ok {
+			captureContextSource(forms, arch, goarch, ins, *source, probeErr)
+		}
+	}
+}
+
+func addFormStatWithProbeResult(forms map[string]*formStat, arch plan9asm.Arch, goarch string, ins plan9asm.Instr, file, probeKey string, probeErr error) {
+	st, fresh := prepareFormStat(forms, arch, goarch, ins, file, probeKey)
+	if st == nil || !fresh {
+		return
+	}
+	classifyFormProbe(st, probeErr)
+}
+
+func prepareFormStat(forms map[string]*formStat, arch plan9asm.Arch, goarch string, ins plan9asm.Instr, file, probeKey string) (*formStat, bool) {
 	desc := plan9asm.DescribeInstruction(arch, goarch, ins)
 	if desc.Opcode == "" || desc.Opcode == string(plan9asm.OpLABEL) {
-		return
+		return nil, false
 	}
 	st := forms[desc.Form]
 	if st == nil {
@@ -421,12 +564,14 @@ func addFormStat(forms map[string]*formStat, arch plan9asm.Arch, goarch string, 
 	// Descriptor forms intentionally collapse concrete register numbers and
 	// immediate values. Those values can still select different lowerer paths,
 	// so cache exact instructions and aggregate their outcomes into the form.
-	probeKey := fmt.Sprintf("%s %#v", ins.Op, ins.Args)
 	if _, ok := st.ProbeKeys[probeKey]; ok {
-		return
+		return st, false
 	}
 	st.ProbeKeys[probeKey] = struct{}{}
-	err := plan9asm.ProbeInstruction(arch, goarch, ins)
+	return st, true
+}
+
+func classifyFormProbe(st *formStat, err error) {
 	switch {
 	case err == nil:
 		st.SupportedCount++
@@ -440,7 +585,32 @@ func addFormStat(forms map[string]*formStat, arch plan9asm.Arch, goarch string, 
 	}
 }
 
+func isX86RawDirective(arch plan9asm.Arch, ins plan9asm.Instr) bool {
+	if arch != plan9asm.ArchAMD64 {
+		return false
+	}
+	switch normalizeOp(string(ins.Op)) {
+	case "BYTE", "WORD", "LONG", "QUAD":
+		return true
+	default:
+		return false
+	}
+}
+
+func instructionSequenceProbeKey(instrs []plan9asm.Instr) string {
+	var b strings.Builder
+	b.WriteString("sequence")
+	for _, ins := range instrs {
+		fmt.Fprintf(&b, " %s %#v;", ins.Op, ins.Args)
+	}
+	return b.String()
+}
+
 func scanGoAssemblerTestdata(goroot string, arch plan9asm.Arch, goarch string) (map[string]*opStat, map[string]*formStat, []parseErr, int, error) {
+	return scanGoAssemblerTestdataWithContexts(goroot, arch, goarch, false)
+}
+
+func scanGoAssemblerTestdataWithContexts(goroot string, arch plan9asm.Arch, goarch string, contexts bool) (map[string]*opStat, map[string]*formStat, []parseErr, int, error) {
 	files, err := goAssemblerTestdataFiles(goroot, goarch)
 	if err != nil {
 		return nil, nil, nil, 0, err
@@ -478,7 +648,11 @@ func scanGoAssemblerTestdata(goroot string, arch plan9asm.Arch, goarch string) (
 						continue
 					}
 					addOpStat(ops, string(ins.Op), rel, "go-asm-testdata", 1)
-					addFormStat(forms, arch, goarch, ins, rel)
+					var source *initializedContextSource
+					if contexts {
+						source = &initializedContextSource{File: rel, Function: fn.Sym, InstructionIndex: i, Line: lineno + 1}
+					}
+					addFormStatWithSource(forms, arch, goarch, ins, rel, source)
 				}
 			}
 		}
@@ -598,42 +772,16 @@ func buildOpcodeCatalog(
 	forms map[string]*formStat,
 	claimed map[string]struct{},
 ) ([]opcodeCatalogReport, error) {
-	dir := goarch
-	if goarch == "386" || goarch == "amd64" {
-		dir = "x86"
-	}
-	pattern := filepath.Join(goroot, "src", "cmd", "internal", "obj", dir, "anames*.go")
-	files, err := filepath.Glob(pattern)
+	names, err := loadOfficialOpcodeNames(goroot, goarch)
 	if err != nil {
 		return nil, err
 	}
-	if len(files) == 0 {
-		return nil, fmt.Errorf("no official opcode tables match %s", pattern)
-	}
-	sort.Strings(files)
-	var names [][][]byte
-	for _, path := range files {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
-		}
-		names = append(names, reOpcodeName.FindAllSubmatch(src, -1)...)
-	}
 	out := make([]opcodeCatalogReport, 0, len(names))
-	seen := map[string]struct{}{}
 	formsByOpcode := make(map[string][]*formStat, len(forms))
 	for _, st := range forms {
 		formsByOpcode[st.Descriptor.Opcode] = append(formsByOpcode[st.Descriptor.Opcode], st)
 	}
-	for _, match := range names {
-		op := normalizeOp(string(match[1]))
-		if op == "" || op == "LAST" || strings.HasPrefix(op, "RESERVED") {
-			continue
-		}
-		if _, ok := seen[op]; ok {
-			continue
-		}
-		seen[op] = struct{}{}
+	for _, op := range names {
 		item := opcodeCatalogReport{
 			Opcode:   op,
 			Family:   plan9asm.InstructionFamily(arch, op),
@@ -757,74 +905,189 @@ func normalizeOp(op string) string {
 
 func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 	supported := map[string]struct{}{
-		"RET":      {},
-		"TEXT":     {},
-		"GLOBL":    {},
-		"DATA":     {},
-		"BYTE":     {},
-		"WORD":     {},
-		"LONG":     {},
-		"QUAD":     {},
-		"PCALIGN":  {},
-		"FUNCDATA": {},
-		"PCDATA":   {},
+		"RET":        {},
+		"TEXT":       {},
+		"GLOBL":      {},
+		"DATA":       {},
+		"BYTE":       {},
+		"WORD":       {},
+		"LONG":       {},
+		"QUAD":       {},
+		"PCALIGN":    {},
+		"PCALIGNMAX": {},
+		"FUNCDATA":   {},
+		"PCDATA":     {},
 	}
 
-	seen := map[string]struct{}{}
-	var files []string
 	loweringArch := goarch
 	if loweringArch == "386" {
 		loweringArch = "amd64"
 	}
-	patterns := []string{
-		filepath.Join(repoRoot, loweringArch+"_*.go"),
-		filepath.Join(repoRoot, "parser.go"),
+	files, err := filepath.Glob(filepath.Join(repoRoot, loweringArch+"_*.go"))
+	if err != nil {
+		return nil, err
 	}
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			return nil, err
-		}
-		sort.Strings(matches)
-		for _, match := range matches {
-			if strings.HasSuffix(match, "_test.go") {
-				continue
-			}
-			if _, ok := seen[match]; ok {
-				continue
-			}
-			seen[match] = struct{}{}
-			files = append(files, match)
-		}
+	parserPath := filepath.Join(repoRoot, "parser.go")
+	if _, err := os.Stat(parserPath); err == nil {
+		files = append(files, parserPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("stat %s: %w", parserPath, err)
 	}
+	sort.Strings(files)
 	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
 		src, err := os.ReadFile(f)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", f, err)
 		}
-		for _, m := range reCaseClause.FindAllSubmatch(src, -1) {
-			items := strings.Split(string(m[1]), ",")
-			for _, item := range items {
-				item = strings.TrimSpace(item)
-				switch {
-				case strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"") && len(item) >= 2:
-					if op := normalizeOp(strings.Trim(item, "\"")); op != "" {
-						supported[op] = struct{}{}
-					}
-				case strings.HasPrefix(item, "Op"):
-					if op := normalizeOp(strings.TrimPrefix(item, "Op")); op != "" {
-						supported[op] = struct{}{}
+		parsed, err := parser.ParseFile(token.NewFileSet(), f, src, 0)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s for supported instructions: %w", f, err)
+		}
+		for _, decl := range parsed.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.VAR {
+				continue
+			}
+			for _, declared := range gen.Specs {
+				spec, ok := declared.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, value := range spec.Values {
+					literal, ok := value.(*ast.CompositeLit)
+					if ok {
+						collectSupportedOpcodeMap(supported, literal)
 					}
 				}
 			}
 		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			// A single-family lowerer often starts with `if op != "VEXT"` rather
+			// than a switch. This is an implementation-backed support claim just
+			// like an opcode switch case. Only accept a literal compared directly
+			// with an identifier named op so unrelated strings cannot leak into
+			// the supported-instruction inventory.
+			if comparison, ok := node.(*ast.BinaryExpr); ok &&
+				(comparison.Op == token.EQL || comparison.Op == token.NEQ) {
+				if candidate, ok := opcodeComparedWithOp(comparison.X, comparison.Y); ok {
+					if op := normalizeOp(candidate); op != "" {
+						supported[op] = struct{}{}
+					}
+				}
+			}
+			if spec, ok := node.(*ast.ValueSpec); ok {
+				for i, name := range spec.Names {
+					if !strings.Contains(strings.ToLower(name.Name), "op") || len(spec.Values) == 0 {
+						continue
+					}
+					valueIndex := i
+					if len(spec.Values) == 1 {
+						valueIndex = 0
+					}
+					if valueIndex >= len(spec.Values) {
+						continue
+					}
+					literal, ok := spec.Values[valueIndex].(*ast.CompositeLit)
+					if !ok {
+						continue
+					}
+					mapType, isMap := literal.Type.(*ast.MapType)
+					keyType, stringKeyed := mapTypeKeyIdent(mapType)
+					if !isMap || !stringKeyed || keyType != "string" {
+						continue
+					}
+					collectSupportedOpcodeMap(supported, literal)
+				}
+			}
+			if literal, ok := node.(*ast.CompositeLit); ok {
+				mapType, isMap := literal.Type.(*ast.MapType)
+				keyType, opKeyed := mapTypeKeyIdent(mapType)
+				if isMap && opKeyed && keyType == "Op" {
+					collectSupportedOpcodeMap(supported, literal)
+				}
+			}
+			clause, ok := node.(*ast.CaseClause)
+			if !ok {
+				return true
+			}
+			for _, expr := range clause.List {
+				candidate := ""
+				switch value := expr.(type) {
+				case *ast.BasicLit:
+					if value.Kind == token.STRING {
+						candidate, _ = strconv.Unquote(value.Value)
+					}
+				case *ast.Ident:
+					if strings.HasPrefix(value.Name, "Op") {
+						candidate = strings.TrimPrefix(value.Name, "Op")
+					}
+				}
+				if op := normalizeOp(candidate); op != "" {
+					supported[op] = struct{}{}
+				}
+			}
+			return true
+		})
 	}
 	return supported, nil
+}
+
+func opcodeComparedWithOp(left, right ast.Expr) (string, bool) {
+	if ident, ok := left.(*ast.Ident); ok && ident.Name == "op" {
+		if literal, ok := right.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+			candidate, err := strconv.Unquote(literal.Value)
+			return candidate, err == nil
+		}
+	}
+	if ident, ok := right.(*ast.Ident); ok && ident.Name == "op" {
+		if literal, ok := left.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+			candidate, err := strconv.Unquote(literal.Value)
+			return candidate, err == nil
+		}
+	}
+	return "", false
+}
+
+func collectSupportedOpcodeMap(supported map[string]struct{}, literal *ast.CompositeLit) {
+	mapType, isMap := literal.Type.(*ast.MapType)
+	keyType, supportedKey := mapTypeKeyIdent(mapType)
+	if !isMap || !supportedKey || keyType != "string" && keyType != "Op" {
+		return
+	}
+	for _, elt := range literal.Elts {
+		pair, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := pair.Key.(*ast.BasicLit)
+		if !ok || key.Kind != token.STRING {
+			continue
+		}
+		candidate, _ := strconv.Unquote(key.Value)
+		if op := normalizeOp(candidate); op != "" {
+			supported[op] = struct{}{}
+		}
+	}
+}
+
+func mapTypeKeyIdent(mapType *ast.MapType) (string, bool) {
+	if mapType == nil {
+		return "", false
+	}
+	ident, ok := mapType.Key.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return ident.Name, true
 }
 
 func attachEncoderCatalog(rep *report, ops map[string]*opStat, catalog []encoderFormReport) {
 	rep.EncoderCatalog = catalog
 	rep.EncoderForms = len(catalog)
+	rep.EncoderRules, rep.EncoderRuleFingerprint = fingerprintEncoderRules(catalog)
 	opcodes := map[string]struct{}{}
 	observed := map[string]struct{}{}
 	byOpcode := map[string]int{}
@@ -885,7 +1148,13 @@ func buildReport(
 
 	all := []opReport{}
 	unsupported := []opReport{}
-	for op, st := range ops {
+	opNames := make([]string, 0, len(ops))
+	for op := range ops {
+		opNames = append(opNames, op)
+	}
+	sort.Strings(opNames)
+	for _, op := range opNames {
+		st := ops[op]
 		cl := clusterOf(goarch, op)
 		files := topFiles(st.Files, 4)
 		item := opReport{
@@ -1043,6 +1312,7 @@ func buildReport(
 	}
 	sort.Strings(fingerprintEntries)
 	rep.CoverageFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(fingerprintEntries, "\n"))))
+	rep.EvidenceLevels = probeEvidence(goarch, rep.SupportedForms)
 	return rep
 }
 
@@ -1056,11 +1326,11 @@ func renderMarkdown(rep report) []byte {
 	fmt.Fprintf(&b, "- asm files scanned: `%d`\n", rep.AsmFiles)
 	fmt.Fprintf(&b, "- unique ops: `%d`\n", rep.UniqueOps)
 	fmt.Fprintf(&b, "- unique operand forms: `%d`\n", rep.UniqueForms)
-	fmt.Fprintf(&b, "- form lowering: `%d` supported, `%d` context-required, `%d` unsupported\n",
+	fmt.Fprintf(&b, "- form probe classification: `%d` accepted, `%d` context-required, `%d` unsupported\n",
 		rep.SupportedForms, rep.ContextForms, rep.UnsupportedForms)
-	fmt.Fprintf(&b, "- executable conformance forms observed in this corpus: `%d`\n", rep.RuntimeVerifiedForms)
+	fmt.Fprintf(&b, "- manifest-registered runtime forms observed in this corpus: `%d` (not executed by this scan)\n", rep.RuntimeVerifiedForms)
 	if rep.CompileOnlyForms > 0 {
-		fmt.Fprintf(&b, "- explicit compile-only forms observed in this corpus: `%d`\n", rep.CompileOnlyForms)
+		fmt.Fprintf(&b, "- manifest-registered compile-only forms observed in this corpus: `%d` (not compiled by this scan)\n", rep.CompileOnlyForms)
 	}
 	if rep.EncoderForms > 0 {
 		if rep.Goarch == "wasm" {
@@ -1071,10 +1341,32 @@ func renderMarkdown(rep report) []byte {
 				rep.EncoderForms, rep.EncoderOpcodes, rep.EncoderOpsObserved)
 		}
 	}
+	if legacy := rep.LegacyEncoder; legacy != nil {
+		fmt.Fprintf(&b, "- legacy encoding inventory: `%d` operand rows, `%d` move rows, `%d` special entries (not translation or execution evidence; mode applicability is not yet resolved)\n",
+			legacy.OperandRows, legacy.MoveRows, legacy.SpecialEntries)
+	}
 	if rep.OfficialOpcodes > 0 {
 		fmt.Fprintf(&b, "- official opcode names: `%d`\n", rep.OfficialOpcodes)
 	}
 	fmt.Fprintf(&b, "- parser failures: `%d`\n\n", rep.ParseErrCount)
+	b.WriteString("## Evidence Levels\n\n")
+	if rep.InitializedContextReprobe != nil {
+		b.WriteString("This table retains the original isolated probes; the counterfactual profile below is separate.\n\n")
+	}
+	b.WriteString("| level | result in this scan |\n|---|---|\n")
+	if rep.Goarch == "wasm" {
+		b.WriteString("| IR text generation | not run by this scanner: isolated WASM probes require whole functions |\n")
+	} else {
+		fmt.Fprintf(&b, "| IR text generation | %d accepted form probes; not LLVM module verification |\n", rep.SupportedForms)
+	}
+	b.WriteString("| LLVM 22 object compilation | not run by this scanner |\n")
+	b.WriteString("| Runtime execution | not run by this scanner |\n\n")
+	b.WriteString("Context is not successful translation. Zero observed unsupported forms does not prove complete instruction, object or runtime coverage. Manifest associations require separate current-head test receipts.\n\n")
+	if reprobe := rep.InitializedContextReprobe; reprobe != nil {
+		fmt.Fprintf(&b, "## Counterfactual initialized-context reprobe\n\nProfile `%s`: `%s`, %d eligible source occurrences, %d object batches; %d other context occurrences retained without reprobe.\n\n",
+			reprobe.Profile, reprobe.Status, reprobe.EligibleCases, len(reprobe.ObjectBatches), len(reprobe.UnregisteredCases))
+		b.WriteString("Explicit synthetic inputs are not evidence about original input availability. Runtime execution: not run. Exact instructions, source locators and separate stage receipts are retained by JSON output.\n\n")
+	}
 
 	if len(rep.OpcodeCatalog) > 0 {
 		type catalogSummary struct {
@@ -1282,7 +1574,7 @@ func familyOf(goarch, op string) string {
 
 func isDirective(op string) bool {
 	switch op {
-	case "TEXT", "DATA", "GLOBL", "BYTE", "WORD", "LONG", "QUAD", "PCALIGN", "FUNCDATA", "PCDATA":
+	case "TEXT", "DATA", "GLOBL", "BYTE", "WORD", "LONG", "QUAD", "PCALIGN", "PCALIGNMAX", "FUNCDATA", "PCDATA":
 		return true
 	default:
 		return false
@@ -1314,12 +1606,11 @@ func topFiles(m map[string]int, n int) []string {
 	return out
 }
 
-func shortStdPath(path string) string {
-	goroot := runtime.GOROOT()
-	if goroot == "" {
+func shortStdPath(path, goRoot string) string {
+	if goRoot == "" {
 		return filepath.ToSlash(path)
 	}
-	root := filepath.ToSlash(filepath.Join(goroot, "src")) + "/"
+	root := filepath.ToSlash(filepath.Join(goRoot, "src")) + "/"
 	p := filepath.ToSlash(path)
 	if strings.HasPrefix(p, root) {
 		return strings.TrimPrefix(p, root)

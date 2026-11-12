@@ -70,10 +70,13 @@ int main(void){return call_entry("native ABI")!=10 || call_mixedEntry(5,0x400000
 
 func nativeModuleAssembly(t *testing.T, ir, pipeline string) string {
 	t.Helper()
-	for _, name := range []string{"opt", "llc"} {
-		if _, err := exec.LookPath(name); err != nil {
-			t.Skip(name + " unavailable")
-		}
+	opt := findLLVM22Tool("opt")
+	if opt == "" {
+		t.Fatal("LLVM 22 opt not found")
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "native.ll")
@@ -82,10 +85,10 @@ func nativeModuleAssembly(t *testing.T, ir, pipeline string) string {
 	if err := os.WriteFile(src, []byte(ir), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := exec.Command("opt", "-passes="+pipeline, "-verify-each", "-S", src, "-o", optimized).CombinedOutput(); err != nil {
+	if b, err := exec.Command(opt, "-passes="+pipeline, "-verify-each", "-S", src, "-o", optimized).CombinedOutput(); err != nil {
 		t.Fatalf("opt: %v\n%s\n%s", err, b, ir)
 	}
-	if b, err := exec.Command("llc", "-relocation-model=pic", optimized, "-o", out).CombinedOutput(); err != nil {
+	if b, err := exec.Command(llc, "-relocation-model=pic", optimized, "-o", out).CombinedOutput(); err != nil {
 		t.Fatalf("llc: %v\n%s\n%s", err, b, ir)
 	}
 	asm, err := os.ReadFile(out)
@@ -93,6 +96,41 @@ func nativeModuleAssembly(t *testing.T, ir, pipeline string) string {
 		t.Fatal(err)
 	}
 	return string(asm)
+}
+
+func TestNativeModuleToolPreflight(t *testing.T) {
+	const ir = `target triple = "x86_64-unknown-linux-gnu"
+define void @noop() {
+  ret void
+}
+`
+	assembly := nativeModuleAssembly(t, ir, "default<O2>")
+	if !strings.Contains(assembly, "noop") {
+		t.Fatalf("missing compiled function:\n%s", assembly)
+	}
+}
+
+func TestNativeNakedModuleRequiresLLVM22(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(executable, "-test.run=^TestNativeModuleToolPreflight$", "-test.v")
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(strings.ToUpper(variable), "LLVM_CONFIG=") {
+			cmd.Env = append(cmd.Env, variable)
+		}
+	}
+	cmd.Env = append(cmd.Env, "LLVM_CONFIG="+filepath.Join(t.TempDir(), "missing-llvm-config"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("native module test passed without required LLVM 22 tools:\n%s", output)
+	}
+	if !strings.Contains(string(output), "LLVM 22 opt not found") {
+		t.Fatalf("native module test did not fail for missing LLVM 22: %v\n%s", err, output)
+	}
 }
 
 func TestNativeNakedLinkAndReachability(t *testing.T) {
@@ -134,16 +172,60 @@ func TestNativeNakedLinkAndReachability(t *testing.T) {
 func TestNativeNakedModuleReject(t *testing.T) {
 	ctx := llvm.NewContext()
 	defer ctx.Dispose()
-	for _, src := range []string{"TEXT f<>(SB), NOSPLIT, $0\nBAD\n", "TEXT f<>(SB), NOSPLIT, $0\nMOVQ $1, AX\n", "TEXT f<>(SB), NOSPLIT, $0\nRET\nend:\n", "TEXT f<>(SB), NOSPLIT, $0\nJMP missing(SB)\n", "TEXT f<>(SB), NOSPLIT, $0\nRET\nGLOBL ·entry(SB), RODATA, $4\nDATA ·entry(SB)/8, $f<>(SB)\n"} {
+	for _, src := range []string{"TEXT f<>(SB), NOSPLIT, $0\nBAD\n", "TEXT f<>(SB), NOSPLIT, $0\nMOVQ $1, AX\n", "TEXT f<>(SB), NOSPLIT, $0\nRET\nend:\nMOVQ $1,AX\n", "TEXT f<>(SB), NOSPLIT, $0\nJMP missing(SB)\n", "TEXT f<>(SB), NOSPLIT, $0\nRET\nGLOBL ·entry(SB), RODATA, $4\nDATA ·entry(SB)/8, $f<>(SB)\n"} {
 		mod, err := TranslateNativeModule(ctx, []byte(src), NativeOptions{GOOS: "linux", GOARCH: "amd64", PackagePath: "probe"})
 		if err == nil {
 			mod.Dispose()
-			t.Fatal("accepted invalid source")
+			t.Fatalf("accepted invalid source: %q", src)
 		}
 		if mod != (llvm.Module{}) {
 			t.Fatal("returned partial module")
 		}
 	}
+}
+
+// An unreferenced empty final label emits no instruction and cannot create a
+// machine fallthrough. Keep its real acceptance separate from the incomplete
+// final instruction rejected above, and retain the function via a DATA address.
+func TestCrossLinuxRuntimeMatrixX86NativeNakedEmptyFinalLabel(t *testing.T) {
+	llc, clang, triple, prefix := x86FloatAddSubRuntimeTools(t)
+	const source = `TEXT f<>(SB),NOSPLIT,$0
+RET
+end:
+GLOBL ·entry(SB),RODATA,$8
+DATA ·entry(SB)/8,$f<>(SB)
+`
+	goAssemblerOracleOutput(t, "amd64", strings.NewReplacer("NOSPLIT", "4", "RODATA", "8").Replace(source), "", true)
+	goos := "linux"
+	if strings.Contains(triple, "apple") {
+		goos = "darwin"
+	}
+	ctx := llvm.NewContext()
+	defer ctx.Dispose()
+	module, err := TranslateNativeModule(ctx, []byte(source), NativeOptions{GOOS: goos, GOARCH: "amd64", PackagePath: "probe"})
+	if !module.IsNil() {
+		defer module.Dispose()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if module.NamedGlobal("probe.entry").IsNil() {
+		t.Fatal("missing real function-address consumer")
+	}
+	const main = `#include <string.h>
+#if defined(__APPLE__)
+extern unsigned char entry[] __asm("_probe.entry");
+#else
+extern unsigned char entry[] __asm("probe.entry");
+#endif
+int main(void) {
+    void (*function)(void);
+    memcpy(&function, entry, sizeof(function));
+    function();
+    return 0;
+}
+`
+	compileAndRunRuntimeTestForTarget(t, llc, clang, "native-empty-final-label", triple, module.String(), main, prefix)
 }
 
 func TestNativeNakedDataAndIRReferences(t *testing.T) {

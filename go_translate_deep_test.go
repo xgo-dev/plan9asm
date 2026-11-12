@@ -1,11 +1,13 @@
 package plan9asm
 
 import (
+	"errors"
 	"go/ast"
 	"go/constant"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -133,9 +135,9 @@ func TestGoTranslateTypeCoverage(t *testing.T) {
 		{types.NewInterfaceType(nil, nil), "amd64", LLVMType("{ ptr, ptr }"), true},
 		{named, "amd64", I32, true},
 		{alias, "arm64", I64, true},
-		{types.Typ[types.Complex64], "amd64", "", false},
+		{types.Typ[types.Complex64], "amd64", "{ float, float }", true},
 		{types.NewStruct(nil, nil), "amd64", LLVMType("[0 x i8]"), true},
-		{types.NewStruct([]*types.Var{types.NewVar(token.NoPos, nil, "x", types.Typ[types.Int])}, nil), "amd64", "", false},
+		{types.NewStruct([]*types.Var{types.NewVar(token.NoPos, nil, "x", types.Typ[types.Int])}, nil), "amd64", "{ i64 }", true},
 	} {
 		got, err := goLLVMTypeForType(tc.typ, tc.goarch)
 		if (err == nil) != tc.ok || got != tc.want {
@@ -179,6 +181,56 @@ func TestGoTranslateTypeCoverage(t *testing.T) {
 	}
 }
 
+func TestModerncUint128ABI0Signature(t *testing.T) {
+	pkg := mustGoPackageWithImports(t, "modernc.org/libc", map[string]string{
+		"abi0_linux_amd64.go": `package libc
+			type TLS struct{}
+			type Uint128 struct { Lo, Hi uint64 }
+			func Y__builtin_mul_overflowUint128(t *TLS, a, b Uint128, res uintptr) (result int32)`,
+	})
+	fn, ok := pkg.Types.Scope().Lookup("Y__builtin_mul_overflowUint128").(*types.Func)
+	if !ok {
+		t.Fatal("missing assembly declaration")
+	}
+	sizes := types.SizesFor("gc", "amd64")
+	sig, err := goFuncSigForDeclaredFunc("modernc.org/libc.Y__builtin_mul_overflowUint128", fn, "amd64", sizes, sizes, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sig.Args, []LLVMType{Ptr, "{ i64, i64 }", "{ i64, i64 }", I64}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Args = %v, want %v", got, want)
+	}
+	if sig.Ret != I32 {
+		t.Fatalf("Ret = %s, want %s", sig.Ret, I32)
+	}
+	for _, slot := range []struct {
+		index  int
+		offset int64
+		field  int
+	}{
+		{0, 0, -1},
+		{1, 8, 0},
+		{1, 16, 1},
+		{2, 24, 0},
+		{2, 32, 1},
+		{3, 40, -1},
+	} {
+		found := false
+		for _, got := range sig.Frame.Params {
+			if got.Index == slot.index && got.Offset == slot.offset && got.Field == slot.field {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing ABI0 parameter slot %+v in %+v", slot, sig.Frame.Params)
+		}
+	}
+	if len(sig.Frame.Results) != 1 || sig.Frame.Results[0].Offset != 48 {
+		t.Fatalf("Results = %+v, want one slot at offset 48", sig.Frame.Results)
+	}
+}
+
 func TestGoTranslateSignatureCoverage(t *testing.T) {
 	pkg := mustGoPackage(t, "test/pkg", `package testpkg
 type S struct{}
@@ -209,27 +261,56 @@ func cmp(a, b int) int { return a }
 	file := &File{
 		Arch: ArchARM64,
 		Funcs: []Func{
-			{Sym: "·Plain", Instrs: []Instr{{Op: OpTEXT}, {Op: "CALL", Args: []Operand{{Kind: OpSym, Sym: "runtime·cmp(SB)"}}}, {Op: "CALL", Args: []Operand{{Kind: OpSym, Sym: "undeclared_call(SB)"}}}, {Op: "B", Args: []Operand{{Kind: OpSym, Sym: "localtarget<>(SB)"}}}, {Op: OpRET}}},
-			{Sym: "localhelper<>", Instrs: []Instr{{Op: OpTEXT}, {Op: "B", Args: []Operand{{Kind: OpSym, Sym: "helper<>(SB)"}}}, {Op: OpRET}}},
+			{
+				Sym: "·Plain",
+				Instrs: []Instr{
+					{Op: OpTEXT},
+					{Op: "CALL", Args: []Operand{{Kind: OpSym, Sym: "runtime·cmp(SB)"}}},
+					{Op: "CALL", Args: []Operand{{Kind: OpSym, Sym: "undeclared_call(SB)"}}},
+					{Op: "B", Args: []Operand{{Kind: OpSym, Sym: "localtarget<>(SB)"}}},
+					{Op: OpRET},
+				},
+			},
+			{
+				Sym: "localhelper<>",
+				Instrs: []Instr{
+					{Op: OpTEXT},
+					{Op: "B", Args: []Operand{{Kind: OpSym, Sym: "helper<>(SB)"}}},
+					{Op: OpRET},
+				},
+			},
 			{Sym: "localtarget<>"},
 		},
 	}
-	sigs, err := goSigsForAsmFile(pkg, file, testResolveSym("test/pkg"), "arm64", nil, nil, func(resolved string) (FuncSig, bool) {
+	manual := func(resolved string) (FuncSig, bool) {
 		if resolved == "test/pkg.localhelper" {
 			return FuncSig{Name: resolved, Args: []LLVMType{I64}, Ret: I64}, true
 		}
 		return FuncSig{}, false
-	})
+	}
+	if _, err := goSigsForAsmFile(pkg, file, testResolveSym("test/pkg"), "arm64", nil, nil, manual); !errors.Is(err, ErrProbeNeedsContext) ||
+		!strings.Contains(err.Error(), "no declaration or explicit register transport") {
+		t.Fatalf("unbound private tail inherited its caller's signature: %v", err)
+	}
+
+	// Ordinary unresolved calls remain untyped. Changing the query fixture's
+	// edge does not supply a declaration, register ABI or executable contract.
+	file.Funcs[0].Instrs[3].Op = "CALL"
+	file.Funcs = file.Funcs[:2]
+	sigs, err := goSigsForAsmFile(pkg, file, testResolveSym("test/pkg"), "arm64", nil, nil, manual)
 	if err != nil {
 		t.Fatalf("goSigsForAsmFile() error = %v", err)
 	}
-	for _, want := range []string{"test/pkg.Plain", "runtime.cmp", "test/pkg.localhelper", "test/pkg.localtarget"} {
+	for _, want := range []string{"test/pkg.Plain", "runtime.cmp", "test/pkg.localhelper"} {
 		if _, ok := sigs[want]; !ok {
 			t.Fatalf("missing signature %q", want)
 		}
 	}
 	if _, ok := sigs["test/pkg.undeclared_call"]; ok {
 		t.Fatalf("ordinary unresolved CALL unexpectedly received a synthesized signature")
+	}
+	if _, ok := sigs["test/pkg.localtarget"]; ok {
+		t.Fatal("unresolved local helper CALL unexpectedly received a synthesized signature")
 	}
 
 	builder := goSigBuilder{

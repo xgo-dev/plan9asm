@@ -1,0 +1,154 @@
+name: SDK/runtime integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci_policy:
+    name: CI policy preflight
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install LLVM 22
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
+
+      - name: Setup Go
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.2'
+
+      - name: Setup verified policy runtime
+        uses: ./.github/actions/setup-node22
+        timeout-minutes: 10
+
+      - name: Workflow scheduling regression tests
+        run: node --test .github/scripts/priority-*.test.cjs
+
+      - name: CI policy tests
+        run: go test . -run '^TestCI' -count=1
+
+  benchmark:
+    needs: ci_policy
+    name: complete standard-library SDK/runtime compile (Go 1.27, LLVM 22)
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-latest' }}
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install LLVM 22
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
+
+      - name: Setup Go
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.2'
+
+      - name: Translate and compile standard-library assembly
+        env:
+          PLAN9ASM_BENCHMARK_MAX_TARGET_SECONDS: '300'
+          PLAN9ASM_BENCHMARK_MAX_TOTAL_SECONDS: '900'
+        run: scripts/benchmark-compile.sh
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: compile-benchmark
+          path: _out/compile-benchmark
+          if-no-files-found: error
+
+  stdlib-corpus:
+    needs: ci_policy
+    name: complete stdlib source/object corpus (${{ matrix.os }}, Go ${{ matrix.go-version }})
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && matrix.runner || matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is the authoritative cross-target corpus gate. Each
+          # unversioned Linux architecture and wasm target expands to every
+          # setting supported by that Go toolchain in check-stdlib-corpus.sh.
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.20.x', prebuild_tool: true, targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm'}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.21.x', prebuild_tool: true, targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.22.x', prebuild_tool: true, targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.23.x', prebuild_tool: true, targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.24.x', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.25.x', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.26.x', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
+          - {os: ubuntu-latest, runner: [qiniu, ubuntu-24.04-large], go-version: '1.27.2', targets: 'linux/386,linux/amd64,linux/arm,linux/arm64,darwin/amd64,darwin/arm64,windows/386,windows/amd64,windows/arm64,js/wasm,wasip1/wasm'}
+          # Native hosts are auxiliary integration checks on the latest Go.
+          - {os: macos-latest, go-version: '1.27.2', targets: 'darwin/amd64,darwin/arm64'}
+          - {os: windows-latest, go-version: '1.27.2', targets: 'windows/386,windows/amd64,windows/arm64'}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install LLVM 22 (Ubuntu)
+        if: runner.os == 'Linux'
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
+
+      - name: Install LLVM 22 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@22
+          echo "PATH=$(brew --prefix llvm@22)/bin:$PATH" >> "$GITHUB_ENV"
+
+      - name: Setup Python (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      - name: Install LLVM 22 (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-windows-llvm22
+
+      - name: Setup Go for corpus tool build
+        if: matrix.prebuild_tool
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.2'
+
+      - name: Build corpus tool for older Go lane
+        if: matrix.prebuild_tool
+        shell: bash
+        run: |
+          tool="$RUNNER_TEMP/plan9asm"
+          go build -C cmd/plan9asm -o "$tool" .
+          echo "PLAN9ASM_CMD=$tool" >> "$GITHUB_ENV"
+
+      - name: Setup Go
+        timeout-minutes: 10
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Stdlib asm corpus gate
+        shell: bash
+        env:
+          PLAN9ASM_CORPUS_TARGETS: ${{ matrix.targets }}
+        run: |
+          chmod +x scripts/check-stdlib-corpus.sh
+          scripts/check-stdlib-corpus.sh

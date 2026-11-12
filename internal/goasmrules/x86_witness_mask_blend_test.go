@@ -1,0 +1,25 @@
+package goasmrules
+
+import "testing"
+
+func TestX86PackedMaskBlendRowsShareBinaryWitnesses(t *testing.T) {
+	inventory := x86CheckPackedRowInventory(t, X86PackedMaskBlendRows,
+		`^(VBLENDM(PS|PD)|VPBLENDM[BWDQ])$`, `^(VBLENDM(PS|PD)|VPBLENDM[DQ])$`, x86PackedRowCounts{
+			names: 6, broadcast: 36,
+			rows: [3]int{0, 0, 36}, formats: [3]int{0, 0, 144}, widths: [3]int{48, 48, 48},
+		})
+	x86CheckPackedEncodingAnchors(t, inventory.rows, []x86PackedEncodingAnchor{
+		{"VBLENDMPS X16,X17,X18", []byte{0x62, 0xa2, 0x75, 0x00, 0x65, 0xd0}},
+		{"VBLENDMPS.BCST.Z (AX),Z17,K1,Z18", []byte{0x62, 0xe2, 0x75, 0xd1, 0x65, 0x10}},
+		{"VBLENDMPD (AX),Y17,Y18", []byte{0x62, 0xe2, 0xf5, 0x20, 0x65, 0x10}},
+		{"VBLENDMPD.BCST (AX),X17,K1,X18", []byte{0x62, 0xe2, 0xf5, 0x11, 0x65, 0x10}},
+		{"VPBLENDMB X16,X17,K1,X18", []byte{0x62, 0xa2, 0x75, 0x01, 0x66, 0xd0}},
+		{"VPBLENDMB.Z (AX),Z17,K1,Z18", []byte{0x62, 0xe2, 0x75, 0xc1, 0x66, 0x10}},
+		{"VPBLENDMW Y16,Y17,Y18", []byte{0x62, 0xa2, 0xf5, 0x20, 0x66, 0xd0}},
+		{"VPBLENDMW.Z Z16,Z17,K1,Z18", []byte{0x62, 0xa2, 0xf5, 0xc1, 0x66, 0xd0}},
+		{"VPBLENDMD.BCST (AX),Y17,Y18", []byte{0x62, 0xe2, 0x75, 0x30, 0x64, 0x10}},
+		{"VPBLENDMD.Z X16,X17,K1,X18", []byte{0x62, 0xa2, 0x75, 0x81, 0x64, 0xd0}},
+		{"VPBLENDMQ Z16,Z17,Z18", []byte{0x62, 0xa2, 0xf5, 0x40, 0x64, 0xd0}},
+		{"VPBLENDMQ.BCST.Z (AX),X17,K1,X18", []byte{0x62, 0xe2, 0xf5, 0x91, 0x64, 0x10}},
+	})
+}

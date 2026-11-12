@@ -22,7 +22,9 @@ func nativeReg(o Operand, bits int, sp bool) (string, error) {
 	if o.Kind != OpReg {
 		return "", fmt.Errorf("expected native register")
 	}
-	if o.Reg == SP && sp && bits == 64 {
+	// The parser preserves the physical stack pointer as RSP. Plain SP is
+	// Go's pseudo stack pointer and must not reach this native backend.
+	if o.Reg == Reg("RSP") && sp && bits == 64 {
 		return "sp", nil
 	}
 	if o.Reg == ZR {

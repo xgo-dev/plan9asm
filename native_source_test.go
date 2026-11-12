@@ -85,9 +85,9 @@ int main(void) {
 
 func nativeTargetCompileRun(t *testing.T, opts NativeOptions, asm, harness string) {
 	t.Helper()
-	clang, err := exec.LookPath("clang")
-	if err != nil {
-		t.Skip("clang unavailable")
+	clang := findLLVM22Tool("clang")
+	if clang == "" {
+		t.Fatal("LLVM 22 clang not found")
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "native.s")
@@ -182,7 +182,20 @@ func TestNativeAMD64Reject(t *testing.T) {
 	opts := NativeOptions{GOOS: "linux", GOARCH: "amd64"}
 	for _, body := range []string{"MOVQ foo+8(SP), AX", "MOVQ x+0(FP), AX", "MOVQ $symbol, AX", "MOVQ $1.5, AX", "MOVQ (AX)(CX*4), DX", "MOVQ 2147483648(AX), DX", "MOVQ FS:0(AX), DX", "MOVQ AX, R16", "MOVQ AX, X16", "MOVQ X0, X1", "MOVQ $4, X0", "ADDQ $0xffffffff, AX", "MOVQ $0x100000000, (AX)", "MOVL $0x100000000, AX", "SHLQ $64, AX", "SHLQ CX, AX", "LEAQ AX, BX", "MOVQ (AX), (BX)", "MOVQ AX, $1", "CALL AX", "CALL missing(SB)", "JEQ missing", "RET AX", "MOVB AL, BL", "MOVQ $1, AX, BX", "PUSHQ AX"} {
 		t.Run(body, func(t *testing.T) {
-			_, _, err := TranslateNativeSource([]byte("TEXT f<>(SB), NOSPLIT|NOFRAME, $0\n"+body+"\n"), opts)
+			source := "TEXT f<>(SB), NOSPLIT|NOFRAME, $0\n" + body + "\n"
+			assembly, _, err := TranslateNativeSource([]byte(source), opts)
+			switch body {
+			case "MOVQ (AX)(CX*4), DX", "MOVQ X0, X1", "ADDQ $0xffffffff, AX",
+				"SHLQ $64, AX", "SHLQ CX, AX", "CALL AX", "MOVB AL, BL", "PUSHQ AX":
+				// Preserve the original fragment. Its physical format is now
+				// modeled; this does not assert a returning function or ABI.
+				if err != nil {
+					t.Fatal("legal physical fragment rejected", err)
+				}
+				nativeAMD64OriginalObject(t, "linux", "#include \"textflag.h\"\n"+source)
+				nativePhysicalAssemblyObject(t, assembly, "amd64")
+				return
+			}
 			if err == nil {
 				t.Fatal("accepted unsupported form")
 			}
