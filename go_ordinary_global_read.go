@@ -122,9 +122,12 @@ func goReadOnlyContext(format string, args ...any) error {
 }
 
 func goReadOnlyName(pkgPath, symbol string) string {
-	if strings.HasPrefix(symbol, "·") {
-		symbol = strings.TrimPrefix(symbol, "·")
-	} else if strings.HasPrefix(symbol, pkgPath+".") {
+	if qualifier, name, qualified := strings.Cut(symbol, "·"); qualified {
+		if qualifier != "" && strings.ReplaceAll(qualifier, "∕", "/") != pkgPath {
+			return ""
+		}
+		symbol = name
+	} else {
 		symbol = strings.TrimPrefix(symbol, pkgPath+".")
 	}
 	if !token.IsIdentifier(symbol) || symbol == "_" {

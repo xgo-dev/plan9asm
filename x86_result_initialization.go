@@ -311,6 +311,8 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		}
 		popped := state.gpBits
 		state.gpBits = x86ResultGPBits{}
+		addressObservation := state.addressObservation
+		state.addressObservation = x86AddressObservation{}
 		var poppedOrigins [32]uint8
 		if state.valueStack != nil {
 			if correlation := state.valueStack.correlation; correlation != nil {
@@ -359,6 +361,11 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			ordinaryStep = true
 			if repeatEmptyBranch != nil && repeatEmptyBranch(ordinal, ins, state) {
 				return true // Same empty result on both edges, never invented FLAGS.
+			}
+			if x86ResultObserveAddress(ins, state, addressObservation, owned, arch) {
+				state.nativeLEAAddressBits = x86NativeLEAAddressBits{}
+				state.shiftBits = x86ResultShiftBits{}
+				return true
 			}
 			return originalTransfer(ordinal, ins, state, owned, resultOffset, arch)
 		}
@@ -461,6 +468,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		8*len(initial.xmm) + len(initial.nativeMMX) + len(initial.masks) + 1 + len(initial.pointerGP) + len(initial.callerAddressGP) +
 		2*len(initial.callerAddressOrigin) + 1 + 2 + 3 + 1 + 1 // Native string counter must-fact.
 	byteState += 2 // One adjacent LEA register/byte-mask observation, never pointer/NUM bytes.
+	byteState += 2 // One adjacent address-derived GP view for FLAGS.
 	if trackCPUIDLeaf {
 		byteState++ // CPUID's EAX-only maximum-leaf must-fact.
 	}
@@ -789,6 +797,7 @@ type x86ResultState struct {
 	continuation         *x86ContinuationResultState // Separate opaque control/table identities, never NUM/native storage.
 	bitScanPending       x86ResultBitScanPending
 	gpBits               x86ResultGPBits
+	addressObservation   x86AddressObservation
 	predicate            x86ResultPredicate
 	nativeLEAAddressBits x86NativeLEAAddressBits
 	shiftBits            x86ResultShiftBits
@@ -1023,6 +1032,9 @@ func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 	}
 	if merged.nativeLEAAddressBits != other.nativeLEAAddressBits {
 		merged.nativeLEAAddressBits = x86NativeLEAAddressBits{}
+	}
+	if merged.addressObservation != other.addressObservation {
+		merged.addressObservation = x86AddressObservation{}
 	}
 	merged.resultAddressWritten = state.resultAddressWritten || other.resultAddressWritten
 	return merged

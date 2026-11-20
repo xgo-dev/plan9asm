@@ -88,6 +88,11 @@ func x86TypedLegacyPackedMoveByteEffect(op Op, ins Instr, arch string) (x86Typed
 }
 
 func x86TypedInstructionByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	if known, err := x86PrefetchProperties(op, ins, arch); known && x86ResultNamedPredicateInstruction(ins) {
+		// The existing lowering discards the hint. The operand is a
+		// syntactic address and supplies no access or reaching value.
+		return x86TypedByteEffect{}, true, err
+	}
 	if effect, known, err := x86TypedAlternatingFloatByteEffect(op, ins, arch); known {
 		return effect, known, err
 	}

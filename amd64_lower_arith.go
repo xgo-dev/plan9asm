@@ -216,6 +216,9 @@ func amd64YmbEffectiveRegister(r Reg, bits int) Reg {
 }
 
 func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	if known, err := x86PrefetchProperties(op, ins, c.goarch); known {
+		return true, false, err
+	}
 	if known, terminated, err := c.lowerByteSwap(op, ins); known {
 		return true, terminated, err
 	}
@@ -330,16 +333,6 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			if err := c.storeRegSized(r, I32, v); err != nil {
 				return true, false, err
 			}
-		}
-		return true, false, nil
-	case "PREFETCHNTA", "PREFETCHT0", "PREFETCHT1", "PREFETCHT2",
-		"PREFETCHRST2", "PREFETCHIT0", "PREFETCHIT1":
-		// Go 1.27's shared yprefetch table has exactly one memory operand for
-		// each named locality hint. The raw-only 0F 18 /4, /6 and /7 forms
-		// share that one-memory-operand grammar. Cache hints have no
-		// SSA-visible result.
-		if len(ins.Args) != 1 || !isAMD64MemoryOperand(ins.Args[0]) {
-			return true, false, fmt.Errorf("%s %s expects one memory operand: %q", c.goarch, op, ins.Raw)
 		}
 		return true, false, nil
 	case "EMMS":

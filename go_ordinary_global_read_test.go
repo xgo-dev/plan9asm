@@ -2,6 +2,7 @@ package plan9asm
 
 import (
 	"errors"
+	"fmt"
 	"go/types"
 	"strings"
 	"testing"
@@ -85,6 +86,41 @@ func view() uint32
 					}
 				}
 			})
+		}
+	}
+}
+
+func TestGoModuleOrdinaryGlobalReadExplicitPackage(t *testing.T) {
+	pkg := mustGoPackage(t, ordinaryGlobalReadPackage, `package ordinaryglobals
+var features [16]byte
+func setFeature(x byte) { features[1] = x }
+func view() uint32
+`)
+	qualifier := strings.ReplaceAll(pkg.Path, "/", "∕")
+	for _, target := range x86RawReturnTargets {
+		for _, row := range []struct {
+			suffix string
+			bits   int
+		}{{"B", 8}, {"W", 16}, {"L", 32}, {"Q", 64}} {
+			if target.arch == "386" && row.suffix == "Q" {
+				continue
+			}
+			for _, api := range []string{"public", "owned-context"} {
+				t.Run(target.triple+"/"+row.suffix+"/"+api, func(t *testing.T) {
+					prefix := fmt.Sprintf("MOV%s %s·features+1(SB),AX\n", row.suffix, qualifier)
+					compare := fmt.Sprintf("CMP%s AX,$0\n", row.suffix)
+					assembly := ordinaryGlobalReadAssembly(prefix, compare)
+					ir, err := ordinaryGlobalReadRequest(t, pkg, assembly, target.arch, target.triple, api)
+					if err != nil || !strings.Contains(ir, fmt.Sprintf("load volatile i%d,", row.bits)) ||
+						!strings.Contains(ir, fmt.Sprintf("@%q = external global", pkg.Path+".features")) {
+						t.Fatal("explicit same-package operand lost its declared mutable read", err)
+					}
+					foreign := strings.Replace(string(assembly), qualifier+"·", qualifier+"Suffix·", 1)
+					if ir, err := ordinaryGlobalReadRequest(t, pkg, []byte(foreign), target.arch, target.triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatal("a different package's symbol borrowed the local type", err)
+					}
+				})
+			}
 		}
 	}
 }
