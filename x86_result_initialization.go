@@ -50,15 +50,19 @@ func checkX86ABI0ResultInitializationAtSource(fn Func, sig FuncSig, goarch strin
 
 func checkX86ABI0ResultInitializationWithTrapOnly(fn Func, sig FuncSig, goarch string,
 	transfer x86ResultSourceTransfer, scalarViews, trapOnly, privateStack bool) error {
-	return checkX86ABI0ResultInitializationWithVectorEntry(fn, sig, goarch, transfer,
-		scalarViews, trapOnly, privateStack, nil)
+	return checkX86ABI0ResultInitializationWithEntry(fn, sig, goarch, transfer,
+		scalarViews, trapOnly, privateStack, x86ABI0ResultEntry{})
 }
 
-// Only the paired lowering path supplies its exact planned allocation widths.
-// The public/source-only callers retain the empty entry map. Numerical vector
-// initialization changes no GP, pointer, canonical, stack or logical FP state.
-func checkX86ABI0ResultInitializationWithVectorEntry(fn Func, sig FuncSig, goarch string,
-	transfer x86ResultSourceTransfer, scalarViews, trapOnly, privateStack bool, vectors map[int]int) error {
+// The paired lowerer can supply ABI direction and its planned vector slots.
+// Source-only result queries start without those entry facts.
+type x86ABI0ResultEntry struct {
+	direction x86ResultDirection
+	vectors   map[int]int
+}
+
+func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch string,
+	transfer x86ResultSourceTransfer, scalarViews, trapOnly, privateStack bool, entry x86ABI0ResultEntry) error {
 	fail := func(reason string) error {
 		return fmt.Errorf("%w: result initialization: %s", ErrProbeNeedsContext, reason)
 	}
@@ -117,7 +121,10 @@ func checkX86ABI0ResultInitializationWithVectorEntry(fn Func, sig FuncSig, goarc
 		resultOffset = int64(frame)
 	}
 	initial := x86ResultState{fp: make([]bool, frame), pointerFP: make(map[int64]bool)}
-	for index, width := range vectors {
+	if !strings.HasSuffix(fn.Sym, "<>") {
+		initial.direction = entry.direction
+	}
+	for index, width := range entry.vectors {
 		if index < 0 || index >= len(initial.xmm) || width != 16 && width != 32 && width != 64 {
 			return fail("invalid lowering vector allocation width")
 		}
@@ -337,6 +344,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		stringCount := state.stringCount
 		cpuidRootLeaf := state.cpuidRootLeaf
 		ordinaryStep := false
+		keptPointer := -1
 		defer func() {
 			if !ordinaryStep {
 				state.shiftBits = x86ResultShiftBits{} // A private-stack/control transfer cannot preserve adjacency.
@@ -363,6 +371,12 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 				return true // Same empty result on both edges, never invented FLAGS.
 			}
 			if x86ResultObserveAddress(ins, state, addressObservation, owned, arch) {
+				state.nativeLEAAddressBits = x86NativeLEAAddressBits{}
+				state.shiftBits = x86ResultShiftBits{}
+				return true
+			}
+			if destination, accepted := x86ResultMaskedPointerXOR(ins, state, owned, arch); accepted {
+				keptPointer = destination
 				state.nativeLEAAddressBits = x86NativeLEAAddressBits{}
 				state.shiftBits = x86ResultShiftBits{}
 				return true
@@ -395,6 +409,10 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			state.valueStack.id = false
 		}
 		state.callerAddressGP = x86ResultCallerAddressesAfterTransfer(ins, before, state.callerAddressGP, state.callerAddressFP, arch)
+		if keptPointer >= 0 {
+			state.callerAddressGP[keptPointer] = true
+		}
+		state.updateLowMasks(ins, arch)
 		if trackCallerOrigins {
 			state.callerAddressOrigin = x86ResultCallerOriginsAfter(ins, origins, state.callerAddressGP, state.callerAddressFP, arch)
 		}
@@ -469,6 +487,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		2*len(initial.callerAddressOrigin) + 1 + 2 + 3 + 1 + 1 // Native string counter must-fact.
 	byteState += 2 // One adjacent LEA register/byte-mask observation, never pointer/NUM bytes.
 	byteState += 2 // One adjacent address-derived GP view for FLAGS.
+	byteState += 2 // Bounded numerical low masks for the sixteen GP roots.
 	if trackCPUIDLeaf {
 		byteState++ // CPUID's EAX-only maximum-leaf must-fact.
 	}
@@ -801,6 +820,7 @@ type x86ResultState struct {
 	predicate            x86ResultPredicate
 	nativeLEAAddressBits x86NativeLEAAddressBits
 	shiftBits            x86ResultShiftBits
+	lowMasks             uint16 // Must-defined numerical low-bit residues per GP root.
 
 	// Incoming pointer identities are not numerical register bytes. This is
 	// only an initialization observation, never a pointee/backing permission.
@@ -869,6 +889,7 @@ func (state x86ResultState) clone() x86ResultState {
 
 func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 	merged := state.clone()
+	merged.lowMasks &= other.lowMasks
 	if !merged.gpBits.valid || !other.gpBits.valid || merged.gpBits.register != other.gpBits.register ||
 		merged.gpBits.fromStack != other.gpBits.fromStack {
 		merged.gpBits = x86ResultGPBits{}

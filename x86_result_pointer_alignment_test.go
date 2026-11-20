@@ -71,3 +71,44 @@ func TestX86AlignedPointerDifferenceThreeAPIs(t *testing.T) {
 		}
 	}
 }
+
+func TestX86MaskedPointerXORThreeAPIs(t *testing.T) {
+	const declaration = "func view(p *byte) uintptr\n"
+	for _, target := range []struct{ arch, triple, suffix string }{
+		{"amd64", "x86_64-unknown-linux-gnu", "Q"},
+		{"386", "i386-unknown-linux-gnu", "L"},
+	} {
+		for _, row := range []struct {
+			name, mask, gap, operand string
+			pass                     bool
+		}{
+			{"vector load", "31", "MOVOU (DI),X0\n", "CX", true},
+			{"full-width zero mask", "0", "", "CX", true},
+			{"immediate", "31", "", "$31", true},
+			{"bounded on both paths", "31", "JE join\nANDL $15,CX\njoin:\n", "CX", true},
+			{"unknown on one path", "31", "JE join\nMOVL $-1,CX\njoin:\n", "CX", false},
+			{"replaced mask register", "31", "MOV" + target.suffix + " $-1,CX\n", "CX", false},
+			{"partial overwrite", "31", "MOVB $1,CH\n", "CX", false},
+			{"unbounded immediate", "31", "", "$-1", false},
+		} {
+			t.Run(target.arch+"/"+row.name, func(t *testing.T) {
+				s := target.suffix
+				body := fmt.Sprintf("MOV%s p+0(FP),DI\nMOV%s DI,CX\nAND%s $%s,CX\n%sXOR%s %s,DI\nSUB%s p+0(FP),DI\nMOV%s DI,ret+RESULT(FP)",
+					s, s, s, row.mask, row.gap, s, row.operand, s, s)
+				source := x86ResultGPSIMDAdmissionSource(t, target.arch, declaration, body)
+				x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+					if row.pass {
+						if err != nil || ir == "" {
+							t.Fatalf("%s: bounded XOR lost the caller address: %v", api, err)
+						}
+						x86NumericNativeAddressObject(t, ir, target.triple)
+					} else if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatalf("%s: unproven mask acquired an address bound: %v", api, err)
+					}
+				}
+			})
+		}
+	}
+}

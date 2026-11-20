@@ -224,10 +224,11 @@ type Options struct {
 
 	// Actual complete Go source before KeepFunc. Private logical CALL lookup;
 	// no source/native permission can be reconstructed through public Options.
-	x86OriginalFile   *File
-	x86BoolCallSource *x86ABI0BoolCallSource
-	x86Plan9Source    bool
-	goReadOnlyStorage *goReadOnlyStorage
+	x86OriginalFile       *File
+	x86BoolCallSource     *x86ABI0BoolCallSource
+	x86Plan9Source        bool
+	x86ABI0EntryDirection x86ResultDirection
+	goReadOnlyStorage     *goReadOnlyStorage
 	// Same-request declarations for ordinary external-tail roots. Public
 	// signature maps cannot recreate the original Go declaration source.
 	goPackage *GoPackage
@@ -558,16 +559,17 @@ func translateIRTextWithFixedLocalResult(file *File, opt Options, fixedLocalResu
 		if file.Arch == ArchAMD64 {
 			if err := translateFuncX86(&b, function, sig, resolve, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.X87Mode, opt.AnnotateSource,
 				x86FunctionSource{
-					plan9Source:       opt.x86Plan9Source,
-					goReadOnlyStorage: opt.goReadOnlyStorage,
-					inferredAttrs:     inferredAttrs,
-					fixedLocalResult:  fixedLocalResult,
-					scalarData:        scalarData,
-					shiftLiterals:     shiftLiterals,
-					lockNamespace:     lockScalarNamespace,
-					bitScanNamespace:  bitScanNamespace,
-					boolCalls:         boolCalls,
-					declaration:       sourceSig,
+					plan9Source:        opt.x86Plan9Source,
+					abi0EntryDirection: opt.x86ABI0EntryDirection,
+					goReadOnlyStorage:  opt.goReadOnlyStorage,
+					inferredAttrs:      inferredAttrs,
+					fixedLocalResult:   fixedLocalResult,
+					scalarData:         scalarData,
+					shiftLiterals:      shiftLiterals,
+					lockNamespace:      lockScalarNamespace,
+					bitScanNamespace:   bitScanNamespace,
+					boolCalls:          boolCalls,
+					declaration:        sourceSig,
 
 					staticAddressValues: staticAddressValues,
 				}); err != nil {

@@ -12,6 +12,20 @@ const (
 	x86ResultDirectionEither   x86ResultDirection = 3
 )
 
+// The 386 Go ABI clears DF at a call, as documented by runtime/sys_windows_386.s.
+// A raw Options call or a custom signature lacks that source entry contract.
+func go386ABI0EntryDirection(opt GoModuleOptions) x86ResultDirection {
+	if opt.GOARCH != "386" || opt.ManualSig != nil {
+		return x86ResultDirectionUnknown
+	}
+	switch opt.GOOS {
+	case "android", "freebsd", "linux", "netbsd", "openbsd", "plan9", "windows":
+		return x86ResultDirectionForward
+	default:
+		return x86ResultDirectionUnknown
+	}
+}
+
 func (direction x86ResultDirection) intersect(other x86ResultDirection) x86ResultDirection {
 	if direction == x86ResultDirectionUnknown || other == x86ResultDirectionUnknown {
 		return x86ResultDirectionUnknown

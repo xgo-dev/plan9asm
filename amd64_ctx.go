@@ -13,9 +13,10 @@ type amd64Ctx struct {
 	sig FuncSig
 	// goarch distinguishes the 32-bit x86 rules from amd64 while sharing the
 	// common x86 lowering implementation.
-	goarch         string
-	targetTriple   string
-	x86Plan9Source bool
+	goarch             string
+	targetTriple       string
+	x86Plan9Source     bool
+	abi0EntryDirection x86ResultDirection
 
 	resolve        func(string) string
 	sigs           map[string]FuncSig

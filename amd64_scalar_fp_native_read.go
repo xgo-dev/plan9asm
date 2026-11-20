@@ -913,7 +913,8 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		// accumulated envelope, including callers without an existing owner.
 		fn.x86ResultFlowBudget = new(x86ResultFlowBudget)
 	}
-	if err := checkX86ABI0ResultInitializationWithTrapOnly(fn, sig, arch, transfer, true, false, true); err != nil {
+	entry := x86ABI0ResultEntry{direction: c.abi0EntryDirection}
+	if err := checkX86ABI0ResultInitializationWithEntry(fn, sig, arch, transfer, true, false, true, entry); err != nil {
 		if !vectorEntry || !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
 			return err
 		}
@@ -936,7 +937,8 @@ func (c *amd64Ctx) checkLoweredVectorEntry(fn Func, sig FuncSig, arch string,
 	// The same bounded solver and transfer recheck every effect and RET. The
 	// source-graph budget accumulates this fallback; it is never reset. Initial
 	// values come only from actual zeroed vector slots, not the complete bank.
-	err := checkX86ABI0ResultInitializationWithVectorEntry(fn, sig, arch, transfer, true, false, true, vectors)
+	entry := x86ABI0ResultEntry{direction: c.abi0EntryDirection, vectors: vectors}
+	err := checkX86ABI0ResultInitializationWithEntry(fn, sig, arch, transfer, true, false, true, entry)
 	if err != nil {
 		if _, partial := err.(*x86IncompleteResultError); !partial || !x86OrdinaryScalarTupleResultRole(fn, sig, arch) {
 			return err

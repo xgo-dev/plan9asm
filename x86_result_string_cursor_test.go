@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -70,5 +71,29 @@ func TestX86CountedStringCursorThreeAPIs(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestGoModule386StringCursorEntryDirection(t *testing.T) {
+	const triple = "i386-unknown-linux-gnu"
+	source, declarations := x86CountedStringCursorSource("386")
+	source = strings.ReplaceAll(source, "CLD\n", "")
+	x86LEAActualTargetGoObject(t, "386", triple, source)
+	pkg := mustGoPackage(t, "cursorentry", "package cursorentry\n"+declarations)
+
+	ir, err := ordinaryGlobalReadRequest(t, pkg, []byte(source), "386", triple, "owned-context")
+	if err != nil || ir == "" {
+		t.Fatal("typed Go 386 call did not supply forward entry direction", err)
+	}
+	x86NumericNativeAddressObject(t, ir, triple)
+
+	for _, api := range []string{"text", "module", "Go"} {
+		if ir, err := x86ScalarFPBitViewPackageAPI(t, source, pkg, "386", triple, api); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+			t.Fatalf("%s: unspecified Go target acquired an entry direction: %v", api, err)
+		}
+	}
+	withoutCounter := strings.ReplaceAll(source, "MOVL count+8(FP),CX\n", "")
+	if ir, err := ordinaryGlobalReadRequest(t, pkg, []byte(withoutCounter), "386", triple, "owned-context"); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("known direction supplied an uninitialized count", err)
 	}
 }

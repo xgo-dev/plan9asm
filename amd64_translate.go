@@ -506,16 +506,17 @@ func emitX86RelocationAnchor(b *strings.Builder, fn Func, sig FuncSig, resolve f
 }
 
 type x86FunctionSource struct {
-	plan9Source       bool
-	goReadOnlyStorage *goReadOnlyStorage
-	scalarData        map[x86StaticSBAddress]int64
-	shiftLiterals     map[x86StaticSBAddress]x86ShiftLiteral
-	lockNamespace     string
-	bitScanNamespace  string
-	boolCalls         *x86ABI0BoolCallSource
-	declaration       FuncSig
-	inferredAttrs     string
-	fixedLocalResult  *x86FixedLocalResultSnapshot
+	plan9Source        bool
+	abi0EntryDirection x86ResultDirection
+	goReadOnlyStorage  *goReadOnlyStorage
+	scalarData         map[x86StaticSBAddress]int64
+	shiftLiterals      map[x86StaticSBAddress]x86ShiftLiteral
+	lockNamespace      string
+	bitScanNamespace   string
+	boolCalls          *x86ABI0BoolCallSource
+	declaration        FuncSig
+	inferredAttrs      string
+	fixedLocalResult   *x86FixedLocalResultSnapshot
 
 	staticAddressValues *x86StaticAddressValues
 }
@@ -537,6 +538,7 @@ func translateFuncX86(b *strings.Builder, fn Func, sig FuncSig, resolve func(str
 	c := newX86Ctx(b, fn, sig, resolve, sigs, goarch, targetTriple, annotateSource)
 	if len(sources) == 1 {
 		c.x86Plan9Source = sources[0].plan9Source
+		c.abi0EntryDirection = sources[0].abi0EntryDirection
 		c.goReadOnlyStorage = sources[0].goReadOnlyStorage
 		c.fpSourceSig = sources[0].declaration
 		c.fpFeatureAttrs = sources[0].inferredAttrs
