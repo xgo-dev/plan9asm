@@ -365,8 +365,8 @@ func x86InstructionMemoryShape(ins Instr, index int, arch string) (width int64, 
 	if form, known, err := x86SqrtProperties(ins, arch); known {
 		return int64(form.memoryBytes), false, err == nil && form.memory >= 0 && form.memory == index
 	}
-	if known, _ := x86SizedNOPProperties(ins, arch); known {
-		return 0, false, false // An encoding-only ModRM operand grants no access or caller envelope.
+	if known, _ := x86NOPProperties(ins, arch); known {
+		return 0, false, false // An ignored hint or ModRM operand grants no access.
 	}
 	if form, known, err := x86NonTemporalVectorProperties(ins.Op, ins, arch); known {
 		return int64(form.move.byteWidth), !form.spec.load,

@@ -340,6 +340,14 @@ func normalizeX86SourceIntegerAddresses(file *File, options Options) (*File, err
 			}
 		}
 		for index, ins := range source.Instrs {
+			if ins.Op == "NOP" {
+				// Go does not encode the pseudo operand as an address.
+				// Its own grammar checks possible prefix effects first.
+				if _, err := x86NOPProperties(ins, options.Goarch); err != nil {
+					return nil, fmt.Errorf("%s: %w", source.Sym, err)
+				}
+				continue
+			}
 			if err := validateX86SourceMemoryScale(ins); err != nil {
 				return nil, fmt.Errorf("%s: %w", source.Sym, err)
 			}

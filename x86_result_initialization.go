@@ -1409,7 +1409,8 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 		return required != 0 && state.flags&required == required
 	}
 	if ins.Op == "NOP" {
-		return len(ins.Args) == 0
+		_, err := x86NOPProperties(ins, arch)
+		return err == nil
 	}
 	if form, recognized, err := x86ConditionalSetProperties(ins.Op, ins, arch); recognized {
 		required := x86ByteConditionFlags(form.condition)

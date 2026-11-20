@@ -159,7 +159,7 @@ func x86RegisterCanonicalBytesAfter(original Instr, before [16]uint8, arch strin
 		}
 		return next // A decrement supplies NUM, never a newly canonical count.
 	}
-	if ins.Op == "NOP" || ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) {
+	if ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) {
 		return next
 	}
 	if _, known, err := x86DirectiveProperties(ins); known && err == nil {

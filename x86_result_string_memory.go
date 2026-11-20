@@ -281,7 +281,7 @@ func x86ResultStringCountAfter(ins Instr, before, current x86ResultStringCount, 
 	if _, known, err := x86DirectiveProperties(ins); known && err == nil {
 		return before
 	}
-	if ins.Op == OpTEXT || ins.Op == OpLABEL || ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) || ins.Op == "NOP" {
+	if ins.Op == OpTEXT || ins.Op == OpLABEL || ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) {
 		return before
 	}
 	return x86StringCountUnknown

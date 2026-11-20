@@ -762,10 +762,10 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 			return true, fmt.Errorf("%s RET accepts only no operand, a GP register or a symbol tail target: %q", c.goarch, ins.Raw)
 		}
 		return true, c.lowerRET()
-	case "NOPW", "NOPL":
-		_, err := x86SizedNOPProperties(ins, c.goarch)
+	case "NOP", "NOPW", "NOPL":
+		_, err := x86NOPProperties(ins, c.goarch)
 		return false, err
-	case "NO_LOCAL_POINTERS", "NOP",
+	case "NO_LOCAL_POINTERS",
 		"PUSH_REGS_HOST_TO_ABI0()", "POP_REGS_HOST_TO_ABI0()":
 		// Existing macro handling is separate from the directive grammar.
 		return false, nil

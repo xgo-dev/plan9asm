@@ -33,7 +33,7 @@ func x86ResultPredicateAfter(ins Instr, before x86ResultPredicate, arch string) 
 	if !x86ResultNamedPredicateInstruction(ins) {
 		return x86ResultPredicate{}
 	}
-	if known, err := x86SizedNOPProperties(ins, arch); known && err == nil {
+	if x86InertNOP(ins, arch) {
 		return before // No input, write or FLAGS change revokes the existing relation.
 	}
 	if isAMD64ConditionalBranch(ins.Op) {

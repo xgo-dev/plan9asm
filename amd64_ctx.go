@@ -309,6 +309,9 @@ func (c *amd64Ctx) scanUsedRegs() {
 
 	for _, blk := range c.blocks {
 		for _, ins := range blk.instrs {
+			if x86InertNOP(ins, c.goarch) {
+				continue
+			}
 			if form, known, err := x86ScalarNativeLoadProperties(ins.Op, ins, c.goarch); known && err == nil {
 				markReg(form.destination)
 			}
@@ -848,6 +851,9 @@ func (c *amd64Ctx) classicFrameRange() (minOff, maxOff int64, used bool) {
 	}
 	for _, block := range c.blocks {
 		for _, ins := range block.instrs {
+			if x86InertNOP(ins, c.goarch) {
+				continue
+			}
 			for _, arg := range ins.Args {
 				if arg.Kind == OpFP || arg.Kind == OpFPAddr {
 					add(arg.FPOffset, 16)
@@ -899,6 +905,9 @@ func (c *amd64Ctx) stackOffsetRange() (minOff, maxOff int64) {
 	maxOff = c.frameSize
 	for _, block := range c.blocks {
 		for _, ins := range block.instrs {
+			if x86InertNOP(ins, c.goarch) {
+				continue
+			}
 			for _, arg := range ins.Args {
 				if arg.Kind != OpMem || arg.Mem.Base != SP {
 					continue

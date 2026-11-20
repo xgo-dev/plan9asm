@@ -49,5 +49,5 @@ func x86ResultCPUIDRootLeafAfter(ins Instr, before bool, arch string) bool {
 	if _, known, err := x86ScalarCompareProperties(ins.Op, ins, arch); known && err == nil {
 		return true
 	}
-	return ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) || ins.Op == "NOP"
+	return ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op)
 }

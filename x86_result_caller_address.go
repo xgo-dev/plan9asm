@@ -372,7 +372,7 @@ func x86ResultCallerAddressesAfter(ins Instr, before [16]bool, entryFP map[int64
 		}
 		return before // Complete shared typed vector-only form, no GP output.
 	}
-	if ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) || ins.Op == OpTEXT || ins.Op == OpLABEL || ins.Op == "NOP" {
+	if ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) || ins.Op == OpTEXT || ins.Op == OpLABEL {
 		return before
 	}
 	if _, known, err := x86DirectiveProperties(ins); known && err == nil {

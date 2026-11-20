@@ -126,12 +126,12 @@ func x86TypedGPByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bo
 	if effect, known, err := x86TypedScalarMoveAliasEffect(op, ins, arch); known {
 		return effect, known, err
 	}
-	if op == ins.Op && x86PreservesNumericalSourceState(ins) {
+	if op == ins.Op && x86EndBranchPreservesSourceState(ins) {
 		return x86TypedByteEffect{}, true, nil
 	}
-	if known, err := x86SizedNOPProperties(ins, arch); known {
+	if known, err := x86NOPProperties(ins, arch); known {
 		if op != ins.Op {
-			return x86TypedByteEffect{}, true, fmt.Errorf("sized NOP dispatch/source identity mismatch")
+			return x86TypedByteEffect{}, true, fmt.Errorf("NOP dispatch/source identity mismatch")
 		}
 		return x86TypedByteEffect{}, true, err
 	}

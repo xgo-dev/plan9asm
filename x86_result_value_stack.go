@@ -98,6 +98,9 @@ func x86ResultValueStackContinuation(ins Instr, state *x86ResultState, arch stri
 	// On 386 the private byte stack moves the simulated SP. An AUTO access
 	// cannot borrow the independent unchanged-SP local-byte proof while live.
 	if arch == "386" {
+		if x86InertNOP(ins, arch) {
+			return true
+		}
 		if _, _, private := x86ResultPrivateStackXORForm(ins, arch); private && state.valueStack.correlation != nil {
 			return true // The transfer still checks every byte against reaching private depth.
 		}

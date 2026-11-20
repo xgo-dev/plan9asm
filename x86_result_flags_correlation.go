@@ -245,7 +245,7 @@ func x86ResultFlagsCorrelationAfter(ins Instr, state *x86ResultState, arch strin
 	writes := uint8(x86ByteFlagsAll)
 	if effect, known, err := x86TypedInstructionByteEffect(ins.Op, ins, arch); known && err == nil {
 		writes = effect.flagsDefined | effect.flagsKilled
-	} else if ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) || ins.Op == "NOP" || x86RawReturnScalarMoveBytes(ins.Op) != 0 {
+	} else if ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) || x86RawReturnScalarMoveBytes(ins.Op) != 0 {
 		writes = 0
 	}
 	for index, bit := range []int{0, 2, 4, 6, 7, 11} {
