@@ -86,8 +86,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 			}, customRegisterBool, false)
 	}
 	registerEntry := arch == "amd64" && strings.HasSuffix(fn.Sym, "<ABIInternal>")
+	zeroX15 := registerEntry && !c.x86Plan9Source && amd64GoInternalHasZeroX15(c.targetTriple)
 	if registerEntry {
-		strictErr = checkAMD64RegisterResultInitialization(fn, sig,
+		strictErr = checkAMD64RegisterResultInitialization(fn, sig, zeroX15,
 			func(_ int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 				return x86ScalarFPResultTransfer(ins, state, owned, resultOffset, arch)
 			})
@@ -900,7 +901,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		return x86LoweredPureGPUnknownTransfer(ins, state, arch)
 	}
 	if registerEntry {
-		return checkAMD64RegisterResultInitialization(fn, sig, transfer)
+		return checkAMD64RegisterResultInitialization(fn, sig, zeroX15, transfer)
 	}
 	if customRegisterBool || logicalScalar {
 		return checkX86LogicalRegisterResultInitialization(fn, sig, arch, transfer, customRegisterBool, true)

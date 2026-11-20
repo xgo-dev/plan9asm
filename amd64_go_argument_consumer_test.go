@@ -88,7 +88,7 @@ func TestAMD64GoArgumentEntryDeclaredBytesAndConsumerRevocation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fn, sig, _ := amd64ArgumentBoundModel(t, test.parameters, test.body)
-			err := checkAMD64RegisterResultInitialization(fn, sig,
+			err := checkAMD64RegisterResultInitialization(fn, sig, false,
 				func(_ int, ins Instr, state *x86ResultState, owned []bool, offset int64, arch string) bool {
 					return x86ScalarFPResultTransfer(ins, state, owned, offset, arch)
 				})

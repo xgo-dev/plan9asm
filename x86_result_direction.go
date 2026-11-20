@@ -1,8 +1,8 @@
 package plan9asm
 
 // Must-defined DF with an independent value domain. A mixed forward/backward
-// join is defined but not a chosen direction. Unknown entry DF stays unknown;
-// no ABI, declaration or initialized six-status mask seeds it.
+// join is defined but not a chosen direction. A status-bit mask does not
+// define DF; only a bound entry convention or explicit source effect does.
 type x86ResultDirection uint8
 
 const (

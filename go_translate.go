@@ -485,6 +485,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 		}
 	}
 	mod, err := TranslateModuleInContext(ctx, file, Options{
+		x86Plan9Source:         opt.GOOS == "plan9",
 		goReadOnlyStorage:      readOnlyStorage,
 		goPackage:              tailPackage,
 		x86OriginalFile:        callOriginal,

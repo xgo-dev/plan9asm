@@ -226,6 +226,7 @@ type Options struct {
 	// no source/native permission can be reconstructed through public Options.
 	x86OriginalFile   *File
 	x86BoolCallSource *x86ABI0BoolCallSource
+	x86Plan9Source    bool
 	goReadOnlyStorage *goReadOnlyStorage
 	// Same-request declarations for ordinary external-tail roots. Public
 	// signature maps cannot recreate the original Go declaration source.
@@ -557,6 +558,7 @@ func translateIRTextWithFixedLocalResult(file *File, opt Options, fixedLocalResu
 		if file.Arch == ArchAMD64 {
 			if err := translateFuncX86(&b, function, sig, resolve, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.X87Mode, opt.AnnotateSource,
 				x86FunctionSource{
+					plan9Source:       opt.x86Plan9Source,
 					goReadOnlyStorage: opt.goReadOnlyStorage,
 					inferredAttrs:     inferredAttrs,
 					fixedLocalResult:  fixedLocalResult,

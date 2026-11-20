@@ -84,11 +84,26 @@ func goAMD64NumericalRegisterResults(fn *types.Func) bool {
 	return true
 }
 
+func amd64GoInternalHasZeroX15(triple string) bool {
+	parts := strings.SplitN(llvmNormalizedTargetTriple(triple), "-", 4)
+	if len(parts) < 3 || parts[0] != "x86_64" {
+		return false
+	}
+	// Only a recognized Go target OS supplies the ABI guarantee. Plan 9
+	// treats X15 as scratch (cmd/compile/abi-internal.md).
+	switch strings.TrimRight(parts[2], "0123456789.") {
+	case "linux", "android", "darwin", "macosx", "ios", "windows",
+		"dragonfly", "freebsd", "netbsd", "openbsd", "solaris", "illumos":
+		return true
+	}
+	return false
+}
+
 // This lowering-only query observes the already modeled scalar register entry,
 // not ABI0 FP fields. The source must explicitly select ABIInternal. It grants
 // neither physical Go entry/closure/TLS state nor incoming spill-frame backing.
 // See Go's cmd/compile/abi-internal.md, amd64 integer register assignment.
-func checkAMD64RegisterResultInitialization(fn Func, sig FuncSig, transfer x86ResultSourceTransfer) error {
+func checkAMD64RegisterResultInitialization(fn Func, sig FuncSig, zeroX15 bool, transfer x86ResultSourceTransfer) error {
 	fail := func(reason string) error {
 		return fmt.Errorf("%w: amd64 register result initialization: %s", ErrProbeNeedsContext, reason)
 	}
@@ -168,6 +183,14 @@ func checkAMD64RegisterResultInitialization(fn Func, sig FuncSig, transfer x86Re
 			}
 		}
 	}
+	if zeroX15 {
+		// Entry slots already start at zero in LLVM. The Go ABI defines only
+		// X15's 128 bits, leaving the upper Y15/Z15 bytes unspecified.
+		initial.xmm[15] = 0xffff
+	}
+	// Go's amd64 ABIInternal enters with DF clear. String instructions consume
+	// this separately from the undefined arithmetic flags.
+	initial.direction = x86ResultDirectionForward
 	// No FP/AUTO ownership is imported from a classic signature or TEXT size.
 	// The register role must close separately before gaining any stack storage.
 	if sig.Ret == I1 {
