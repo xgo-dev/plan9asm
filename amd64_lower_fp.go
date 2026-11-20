@@ -20,11 +20,6 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 	if ok, term, err := c.lowerFloatArithmetic(op, ins, ""); ok {
 		return ok, term, err
 	}
-	if spec, recognized := amd64ScalarVectorMoveSpecs[op]; recognized && spec.legacy {
-		if _, _, err := amd64ScalarVectorMoveProperties(ins, c.goarch); err != nil {
-			return true, false, err
-		}
-	}
 	if ok, term, err := c.lowerApproximateMath(op, ins); ok {
 		return ok, term, err
 	}
@@ -80,7 +75,7 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 		}
 	}
 	switch op {
-	case "MOVSS", "MOVSD", "MOVAPD", "MOVUPD",
+	case "MOVAPD", "MOVUPD",
 		"SHUFPD", "UNPCKLPS", "UNPCKHPD",
 		"COMISS", "UCOMISS", "COMISD", "UCOMISD", "CMPSD",
 		"CVTSL2SD", "CVTSQ2SD":
@@ -90,40 +85,6 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 	}
 
 	switch op {
-	case "MOVSS":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("amd64 MOVSS expects src, dst: %q", ins.Raw)
-		}
-		v, err := c.loadLegacyScalarMoveSource(ins, 32)
-		if err != nil {
-			return true, false, err
-		}
-		switch ins.Args[1].Kind {
-		case OpReg:
-			if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
-				return true, false, fmt.Errorf("amd64 MOVSS expects X-reg destination: %q", ins.Raw)
-			}
-			return true, false, c.storeLegacyScalarMoveRegister(ins.Args[1].Reg, v, 32, ins.Args[0].Kind == OpReg)
-		case OpFP:
-			return true, false, c.storeScalarFPFloat(ins.Args[1].FPOffset, 32, v)
-		case OpMem:
-			addr, err := c.addrFromMem(ins.Args[1].Mem)
-			if err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  store volatile float %s, ptr %s, align 1\n", v, c.ptrFromAddrI64(addr))
-			return true, false, nil
-		case OpSym:
-			p, err := c.ptrFromSB(ins.Args[1].Sym)
-			if err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  store float %s, ptr %s, align 1\n", v, p)
-			return true, false, nil
-		default:
-			return true, false, fmt.Errorf("amd64 MOVSS unsupported destination: %q", ins.Raw)
-		}
-
 	case "SHUFPD":
 		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 SHUFPD expects $imm, Xsrc, Xdst: %q", ins.Raw)
@@ -170,41 +131,6 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 		bytesValue := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bytesValue, vectorType, shuffled)
 		return true, false, c.storeX(ins.Args[1].Reg, "%"+bytesValue)
-
-	case "MOVSD":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("amd64 MOVSD expects src, dst: %q", ins.Raw)
-		}
-		v, err := c.loadLegacyScalarMoveSource(ins, 64)
-		if err != nil {
-			return true, false, err
-		}
-		switch ins.Args[1].Kind {
-		case OpReg:
-			if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
-				return true, false, fmt.Errorf("amd64 MOVSD expects X-reg destination: %q", ins.Raw)
-			}
-			return true, false, c.storeLegacyScalarMoveRegister(ins.Args[1].Reg, v, 64, ins.Args[0].Kind == OpReg)
-		case OpFP:
-			return true, false, c.storeScalarFPFloat(ins.Args[1].FPOffset, 64, v)
-		case OpMem:
-			addr, err := c.addrFromMem(ins.Args[1].Mem)
-			if err != nil {
-				return true, false, err
-			}
-			p := c.ptrFromAddrI64(addr)
-			fmt.Fprintf(c.b, "  store volatile double %s, ptr %s, align 1\n", v, p)
-			return true, false, nil
-		case OpSym:
-			p, err := c.ptrFromSB(ins.Args[1].Sym)
-			if err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  store double %s, ptr %s, align 1\n", v, p)
-			return true, false, nil
-		default:
-			return true, false, fmt.Errorf("amd64 MOVSD unsupported destination: %q", ins.Raw)
-		}
 
 	case "COMISS", "UCOMISS", "COMISD", "UCOMISD":
 		return c.lowerVectorScalarFlagCompare(op, ins)

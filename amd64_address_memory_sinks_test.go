@@ -109,6 +109,9 @@ func TestX86DirectSymbolMemorySinkObjectsRemainSupported(t *testing.T) {
 								if known, terminated, err := consumer.lowerVec(instruction.Op, instruction); known {
 									return known, terminated, err
 								}
+								if known, terminated, err := consumer.lowerScalarVectorMove(instruction); known {
+									return known, terminated, err
+								}
 								if known, terminated, err := consumer.lowerFP(instruction.Op, instruction); known {
 									return known, terminated, err
 								}

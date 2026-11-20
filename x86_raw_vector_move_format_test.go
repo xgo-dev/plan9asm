@@ -43,7 +43,7 @@ func x86UnboundVoidVectorMoveFormatObject(t *testing.T, source, arch, triple str
 			if known, terminated, err := c.lowerPackedVectorMove(instruction.Op, instruction); known {
 				return known, terminated, err
 			}
-			return c.lowerVectorScalarMove(instruction.Op, instruction)
+			return c.lowerScalarVectorMove(instruction)
 		})
 	if rows == 0 || strings.Count(ir, "define void @InstructionFormat") != rows {
 		t.Fatal("a complete original move row lost its visible backend function", rows)

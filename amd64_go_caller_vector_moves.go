@@ -294,7 +294,7 @@ func x86CallerVectorMoveStep(ins *Instr, state *x86SourceStackState, proof *x86G
 	destination := x86CallerVectorRoot(ins.Args[form.destination].Reg)
 	old := state.vectors[destination]
 	if form.spec.legacy || form.legacyZero {
-		if form.memory >= 0 || form.literal {
+		if !form.preservesLegacyUpperX() {
 			// A legacy memory load zeroes the rest of XMM but preserves the
 			// upper Y/Z aliases. Register copies preserve the old upper XMM.
 			state.vectors[destination] = old | x86CallerVectorByteMask(16)

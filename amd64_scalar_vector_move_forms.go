@@ -32,6 +32,12 @@ type amd64ScalarVectorMoveForm struct {
 	legacyZero  bool // obj6.progedit rewrites positive zero in X0-X15 to XORPS
 }
 
+// A legacy register copy merges with the old upper XMM bytes. A memory
+// load, a constant-pool load, and the XORPS zero rewrite define all of XMM.
+func (form amd64ScalarVectorMoveForm) preservesLegacyUpperX() bool {
+	return form.spec.legacy && form.memory < 0 && !form.literal
+}
+
 // This is operand grammar only. It grants no memory bounds, initialized data,
 // K-register value, or source continuation. Both lowerer and source proof use
 // the exact same direction/width/merge axes.

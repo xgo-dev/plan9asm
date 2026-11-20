@@ -1319,7 +1319,10 @@ func TestAMD64FPMovCoverage(t *testing.T) {
 		{Op: "VFNMADD231SD", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpReg, Reg: "X1"}, {Kind: OpReg, Reg: "X2"}}, Raw: "VFNMADD231SD X0, X1, X2"},
 	} {
 		before := b.Len()
-		ok, _, err := c.lowerFP(ins.Op, ins)
+		ok, _, err := c.lowerScalarVectorMove(ins)
+		if !ok {
+			ok, _, err = c.lowerFP(ins.Op, ins)
+		}
 		check("lowerFP", ins, ok, err)
 		if ins.Op == "VFMADD213SD" || ins.Op == "VFNMADD231SD" {
 			// This fragment has an explicit native target. Preserve its
@@ -1920,7 +1923,8 @@ func TestAMD64FPExtraCoverage(t *testing.T) {
 	if ok, term, err := c.lowerFP("MOVAPD", Instr{Raw: "MOVAPD X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}); ok || term || err != nil {
 		t.Fatalf("MOVAPD non-X dst = (%v, %v, %v)", ok, term, err)
 	}
-	if _, _, err := c.lowerFP("MOVSD", Instr{Raw: "MOVSD X0, label", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpIdent, Ident: "label"}}}); err == nil {
+	if _, _, err := c.lowerScalarVectorMove(Instr{Op: "MOVSD", Raw: "MOVSD X0, label",
+		Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpIdent, Ident: "label"}}}); err == nil {
 		t.Fatalf("MOVSD bad dst unexpectedly succeeded")
 	}
 	if ok, term, err := c.lowerFP("ADDSD", Instr{Raw: "ADDSD X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}); !ok || term || err == nil {

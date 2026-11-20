@@ -52,7 +52,7 @@ func TestX86LegacyScalarMoveRegisterAndMemoryByteRules(t *testing.T) {
 			op    string
 			width int
 		}{{"MOVSS", 4}, {"MOVSD", 8}} {
-			for _, source := range []string{"X0", "value+0(FP)"} {
+			for _, source := range []string{"X0", "value+0(FP)", "$0.0", "$-0.0", "$1.25"} {
 				t.Run(arch+"/"+row.op+"/"+source, func(t *testing.T) {
 					ins := x86ScalarLaneInstruction(t, row.op+" "+source+",X2")
 					initial := x86ResultState{fp: make([]bool, 16), flags: x86ByteFlagsAll,
@@ -74,11 +74,43 @@ func TestX86LegacyScalarMoveRegisterAndMemoryByteRules(t *testing.T) {
 					if !x86ResultTransfer(ins, &state, owned, 0, arch) || !reflect.DeepEqual(state, expected) {
 						t.Fatal("legacy scalar copy lost low width, memory upper-zero or old Y/Z preservation", state, expected)
 					}
-					if source != "X0" {
+					if source == "value+0(FP)" {
 						state = initial.clone()
 						if x86ResultTransfer(ins, &state, nil, 0, arch) || !reflect.DeepEqual(state, initial) {
 							t.Fatal("FP scalar source acquired its missing independent owned layout", state)
 						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestX86LegacyScalarLiteralDefinesFullXRegister(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc is required")
+	}
+	for _, arch := range []string{"amd64", "386"} {
+		triple := "x86_64-unknown-linux-gnu"
+		if arch == "386" {
+			triple = "i386-unknown-linux-gnu"
+		}
+		for _, op := range []string{"MOVSS", "MOVSD"} {
+			for _, literal := range []string{"0.0", "-0.0", "1.25"} {
+				t.Run(arch+"/"+op+"/"+literal, func(t *testing.T) {
+					source := fmt.Sprintf("TEXT ·ScalarLiteral(SB),4,$0-4\n%s $%s,X2\nPSRLDQ $8,X2\nMOVL X2,AX\nMOVL AX,ret+0(FP)\nRET\n",
+						op, literal)
+					goAssemblerOracleOutput(t, arch, source, "", true)
+					for _, api := range []string{"text", "module", "Go"} {
+						t.Run(api, func(t *testing.T) {
+							const declaration = "func ScalarLiteral() uint32\n"
+							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api)
+							if err != nil {
+								t.Fatal("scalar literal must define all 16 bytes of X2", err)
+							}
+							compileLLVMToObject(t, llc, triple, "scalar-literal.ll", "scalar-literal.o", ir)
+						})
 					}
 				})
 			}

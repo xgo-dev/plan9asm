@@ -7,111 +7,60 @@ import (
 	"strings"
 )
 
-// lowerVectorScalarMove implements all Go 1.27 _yvmovsd forms shared by
-// VMOVSD and VMOVSS: scalar loads/stores, three-register upper merges, and
-// their EVEX masked variants.
-func (c *amd64Ctx) lowerVectorScalarMove(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	rawOp := strings.ToUpper(string(op))
-	baseOp := rawOp
-	if dot := strings.IndexByte(rawOp, '.'); dot >= 0 {
-		baseOp = rawOp[:dot]
+// The legacy and vector forms select their writeback from the parsed encoding
+// and operand roles. The positive-zero progedit uses legacy semantics even
+// when the source spelling is VMOVSS or VMOVSD.
+func (c *amd64Ctx) lowerScalarVectorMove(ins Instr) (bool, bool, error) {
+	form, known, err := amd64ScalarVectorMoveProperties(ins, c.goarch)
+	if !known || err != nil {
+		return known, false, err
 	}
-	spec, recognized := amd64ScalarVectorMoveSpecs[Op(baseOp)]
-	if !recognized || spec.legacy {
-		return false, false, nil
+	if form.spec.legacy || form.legacyZero {
+		return true, false, c.emitLegacyScalarMove(ins, form)
 	}
-	form, _, err := amd64ScalarVectorMoveProperties(ins, c.goarch)
-	if err != nil {
-		return true, false, err
-	}
-	if form.literal {
-		if form.legacyZero {
-			// The actual Go encoder emits legacy XORPS, even for a VMOV
-			// spelling. Do not zero the wider Y/Z views as VEX would.
-			var value string
-			if spec.bits == 32 {
-				value, err = c.evalF32(ins.Args[0])
-			} else {
-				value, err = c.evalF64(ins.Args[0])
-			}
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeLegacyScalarMoveRegister(ins.Args[form.destination].Reg, value, spec.bits, false)
-		}
-		bits := uint64(ins.Args[0].Imm)
-		if spec.bits == 32 {
-			bits = uint64(math.Float32bits(float32(math.Float64frombits(bits))))
-		}
-		mask := ""
-		if form.mask >= 0 {
-			mask, err = c.loadK(ins.Args[form.mask].Reg)
-			if err != nil {
-				return true, false, err
-			}
-		}
-		return true, false, c.storeScalarMoveRegister(ins.Args[form.destination].Reg, spec.bits,
-			strconv.FormatUint(bits, 10), "zeroinitializer", mask, form.zeroing)
-	}
-	if form.upper >= 0 {
-		mask := Operand{}
-		if form.mask >= 0 {
-			mask = ins.Args[form.mask]
-		}
-		return c.lowerVectorScalarMoveRegisterMerge(spec.bits, ins.Args[form.low], ins.Args[form.upper], mask,
-			ins.Args[form.destination], form.zeroing)
-	}
+	return true, false, c.emitVectorScalarMove(ins, form)
+}
+
+func (c *amd64Ctx) emitVectorScalarMove(ins Instr, form amd64ScalarVectorMoveForm) error {
+	src, dst := ins.Args[form.low], ins.Args[form.destination]
+	bits := form.spec.bits
+	var low, mask string
+	var err error
 	if form.mask >= 0 {
-		return c.lowerVectorScalarMoveMaskedMemory(baseOp, spec.bits, form.zeroing, ins)
-	}
-	return c.lowerVectorScalarMoveTwoOperand(baseOp, spec.bits, ins)
-}
-
-func (c *amd64Ctx) lowerVectorScalarMoveTwoOperand(baseOp string, elemBits int, ins Instr) (bool, bool, error) {
-	src, dst := ins.Args[0], ins.Args[1]
-	if amd64ScalarXOperand(src) && isAMD64MemoryOperand(dst) {
-		value, err := c.loadXLowInteger(src.Reg, elemBits)
+		mask, err = c.loadK(ins.Args[form.mask].Reg)
 		if err != nil {
-			return true, false, err
+			return err
 		}
-		return true, false, c.storeVectorScalarMoveMemory(dst, elemBits, value, "")
 	}
-	if isAMD64MemoryOperand(src) && amd64ScalarXOperand(dst) {
-		value, err := c.loadScalarMoveMemory(src, elemBits)
-		if err != nil {
-			return true, false, err
+	switch {
+	case form.literal:
+		value := uint64(src.Imm)
+		if bits == 32 {
+			value = uint64(math.Float32bits(float32(math.Float64frombits(value))))
 		}
-		return true, false, c.storeScalarMoveRegister(dst.Reg, elemBits, value, "zeroinitializer", "", false)
+		low = strconv.FormatUint(value, 10)
+	case form.memory == form.low && form.mask >= 0:
+		low, err = c.loadVectorScalarMemory(src, bits, mask)
+	case form.memory == form.low:
+		low, err = c.loadScalarMoveMemory(src, bits)
+	default:
+		low, err = c.loadXLowInteger(src.Reg, bits)
 	}
-	return true, false, fmt.Errorf("amd64 %s two-operand form requires X-to-memory or memory-to-X: %q", baseOp, ins.Raw)
-}
-
-func (c *amd64Ctx) lowerVectorScalarMoveMaskedMemory(baseOp string, elemBits int, zeroing bool, ins Instr) (bool, bool, error) {
-	if !amd64NonzeroKOperand(ins.Args[1]) {
-		return true, false, fmt.Errorf("amd64 %s three-operand masked memory form expects K1-K7 in the middle: %q", baseOp, ins.Raw)
-	}
-	mask, err := c.loadK(ins.Args[1].Reg)
 	if err != nil {
-		return true, false, err
+		return err
 	}
-	if amd64ScalarXOperand(ins.Args[0]) && isAMD64MemoryOperand(ins.Args[2]) {
-		if zeroing {
-			return true, false, fmt.Errorf("amd64 %s cannot use .Z with a memory destination: %q", baseOp, ins.Raw)
-		}
-		value, err := c.loadXLowInteger(ins.Args[0].Reg, elemBits)
+	if form.memoryWrite {
+		return c.storeVectorScalarMoveMemory(dst, bits, low, mask)
+	}
+	upper := "zeroinitializer"
+	if form.upper >= 0 {
+		bytes, err := c.loadX(ins.Args[form.upper].Reg)
 		if err != nil {
-			return true, false, err
+			return err
 		}
-		return true, false, c.storeVectorScalarMoveMemory(ins.Args[2], elemBits, value, mask)
+		upper = c.bitcastVectorBytesToIntegerLanes(16, 128/bits, bits, bytes)
 	}
-	if isAMD64MemoryOperand(ins.Args[0]) && amd64ScalarXOperand(ins.Args[2]) {
-		value, err := c.loadVectorScalarMemory(ins.Args[0], elemBits, mask)
-		if err != nil {
-			return true, false, err
-		}
-		return true, false, c.storeScalarMoveRegister(ins.Args[2].Reg, elemBits, value, "zeroinitializer", mask, zeroing)
-	}
-	return true, false, fmt.Errorf("amd64 %s masked memory form requires X, K, memory or memory, K, X: %q", baseOp, ins.Raw)
+	return c.storeScalarMoveRegister(dst.Reg, bits, low, upper, mask, form.zeroing)
 }
 
 // A masked-off scalar move must not access memory at all. Selecting a loaded
@@ -161,27 +110,6 @@ func (c *amd64Ctx) loadX86ScalarIf(elemBits int, condition string, load func() (
 	selected := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = phi i%d [ %s, %%%s ], [ 0, %%%s ]\n", selected, elemBits, value, loadLabel, skipLabel)
 	return "%" + selected, nil
-}
-
-func (c *amd64Ctx) lowerVectorScalarMoveRegisterMerge(elemBits int, lowSource, upperSource, maskArg, dst Operand, zeroing bool) (bool, bool, error) {
-	low, err := c.loadXLowInteger(lowSource.Reg, elemBits)
-	if err != nil {
-		return true, false, err
-	}
-	upperBytes, err := c.loadX(upperSource.Reg)
-	if err != nil {
-		return true, false, err
-	}
-	lanes := 128 / elemBits
-	upper := c.bitcastVectorBytesToIntegerLanes(16, lanes, elemBits, upperBytes)
-	mask := ""
-	if maskArg.Kind == OpReg {
-		mask, err = c.loadK(maskArg.Reg)
-		if err != nil {
-			return true, false, err
-		}
-	}
-	return true, false, c.storeScalarMoveRegister(dst.Reg, elemBits, low, upper, mask, zeroing)
 }
 
 func amd64ScalarXOperand(op Operand) bool {

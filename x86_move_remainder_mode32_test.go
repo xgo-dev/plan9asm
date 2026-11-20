@@ -28,7 +28,7 @@ func x86OfficialMoveRemainderMode32InstructionBoundary(t *testing.T, row string,
 			if err == nil {
 				t.Fatal("named Go386 four-operand grammar unexpectedly accepted", row)
 			}
-			if known, _, err := context.lowerVectorScalarMove(ins.Op, ins); !known || err == nil || output.Len() != 0 {
+			if known, _, err := context.lowerScalarVectorMove(ins); !known || err == nil || output.Len() != 0 {
 				t.Fatal("rejected scalar arity emitted IR", row, known, err, output.String())
 			}
 			return "grammar"

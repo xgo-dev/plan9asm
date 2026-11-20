@@ -2,19 +2,43 @@ package plan9asm
 
 import "fmt"
 
-// Only the complete legacy MOVSS/MOVSD source grammar selects this loader.
-// FP fields, constants and register copies retain their existing bit-view
-// contracts. Native memory is an exact unaligned, mandatory m32/m64 read.
-func (c *amd64Ctx) loadLegacyScalarMoveSource(ins Instr, bits int) (string, error) {
-	form, known, err := amd64ScalarVectorMoveProperties(ins, c.goarch)
+func (c *amd64Ctx) emitLegacyScalarMove(ins Instr, form amd64ScalarVectorMoveForm) error {
+	value, err := c.loadLegacyScalarMoveSource(ins, form)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if !known || !form.spec.legacy || form.spec.bits != bits {
-		return "", fmt.Errorf("%s does not have the required legacy scalar move source", ins.Op)
+	destination := ins.Args[form.destination]
+	bits := form.spec.bits
+	switch destination.Kind {
+	case OpReg:
+		return c.storeLegacyScalarMoveRegister(destination.Reg, value, bits, form.preservesLegacyUpperX())
+	case OpFP:
+		return c.storeScalarFPFloat(destination.FPOffset, bits, value)
+	case OpMem:
+		addr, err := c.addrFromMem(destination.Mem)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(c.b, "  store volatile %s %s, ptr %s, align 1\n",
+			amd64FloatingScalarType(bits), value, c.ptrFromAddrI64(addr))
+	case OpSym:
+		ptr, err := c.ptrFromSB(destination.Sym)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", amd64FloatingScalarType(bits), value, ptr)
+	default:
+		return fmt.Errorf("invalid legacy scalar move destination %s", destination.String())
 	}
+	return nil
+}
+
+// FP fields, constants and register copies retain their bit-view contracts.
+// Native memory is an exact unaligned, mandatory m32/m64 read.
+func (c *amd64Ctx) loadLegacyScalarMoveSource(ins Instr, form amd64ScalarVectorMoveForm) (string, error) {
+	bits := form.spec.bits
 	source := ins.Args[form.low]
-	if form.memory != 0 || source.Kind != OpMem && source.Kind != OpSym {
+	if form.memory != form.low || source.Kind == OpFP {
 		if bits == 32 {
 			return c.evalF32(source)
 		}
@@ -42,27 +66,29 @@ func x86ResultLegacyScalarMoveStep(ins Instr, state *x86ResultState, owned []boo
 	if !recognized || !form.spec.legacy {
 		return false, false
 	}
-	if err != nil || form.mask >= 0 || len(ins.Args) != 2 {
+	if err != nil {
 		return false, true
 	}
 	width := int64(form.spec.bits / 8)
 	mask := uint16(1)<<uint(width) - 1
-	xreg := func(operand Operand) (int, bool) {
-		index, valid := amd64ParseXReg(operand.Reg)
-		return index, operand.Kind == OpReg && valid && index < 16 && (arch != "386" || index < 8)
-	}
-	first, last := ins.Args[0], ins.Args[1]
-	if source, valid := xreg(first); valid {
-		if state.xmm[source]&mask != mask {
-			return false, true
+	first, last := ins.Args[form.low], ins.Args[form.destination]
+	if !form.literal {
+		if form.memory == form.low {
+			if !x86ResultReadWithNativeContinuation(ins, first, width, state, owned, arch, native) {
+				return false, true
+			}
+		} else {
+			source, _ := amd64ParseXReg(first.Reg)
+			if state.xmm[source]&mask != mask {
+				return false, true
+			}
 		}
-	} else if !form.literal && !x86ResultReadWithNativeContinuation(ins, first, width, state, owned, arch, native) {
-		return false, true
 	}
-	if destination, valid := xreg(last); valid {
-		known := state.xmm[destination] | mask
-		if form.memory == 0 || form.legacyZero {
-			known = 0xffff
+	if !form.memoryWrite {
+		destination, _ := amd64ParseXReg(last.Reg)
+		known := uint16(0xffff)
+		if form.preservesLegacyUpperX() {
+			known = state.xmm[destination] | mask
 		}
 		state.writeVector(destination, 16, uint64(known), true)
 		return true, true
