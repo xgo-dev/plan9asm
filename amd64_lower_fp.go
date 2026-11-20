@@ -14,9 +14,6 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 	if known, term, err := c.lowerLegacyPackedMove(op, ins); known {
 		return known, term, err
 	}
-	if known, term, err := c.lowerMOVHalf(op, ins); known {
-		return known, term, err
-	}
 	if ok, term, err := c.lowerSignedIntegerScalarFloat(op, ins); ok {
 		return ok, term, err
 	}

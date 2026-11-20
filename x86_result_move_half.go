@@ -8,7 +8,7 @@ func x86ResultMoveHalfStep(ins Instr, state *x86ResultState, owned []bool, resul
 		return false, known
 	}
 	if !x86ResultNamedPredicateInstruction(ins) {
-		if !native || !x86RawMoveHalfSource(ins, arch) {
+		if !native || !form.matchesRawSource(ins, arch) {
 			return false, true
 		}
 		// Only this exact sealed source may share the paired projection.
@@ -45,5 +45,9 @@ func x86ResultMoveHalfStep(ins Instr, state *x86ResultState, owned []bool, resul
 
 func x86RawMoveHalfSource(ins Instr, arch string) bool {
 	form, known, err := x86MoveHalfProperties(ins.Op, ins, arch)
-	return known && err == nil && (form.spec.vector || form.spec.registerOnly) && x86RawOrdinaryVectorSource(ins, arch)
+	return known && err == nil && form.matchesRawSource(ins, arch)
+}
+
+func (form x86MoveHalfForm) matchesRawSource(ins Instr, arch string) bool {
+	return (form.spec.vector || form.spec.registerOnly) && x86RawOrdinaryVectorSource(ins, arch)
 }

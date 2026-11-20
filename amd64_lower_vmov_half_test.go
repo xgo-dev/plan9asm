@@ -34,7 +34,7 @@ func TestAMD64MoveHalfGrammarCoversCompleteGoFamily(t *testing.T) {
 	}
 }
 
-func TestX86FloatingDispatcherRecognizesMalformedHalfMoves(t *testing.T) {
+func TestX86InstructionDispatcherRecognizesMalformedHalfMoves(t *testing.T) {
 	for _, arch := range []string{"amd64", "386"} {
 		for _, name := range []Op{
 			"MOVHLPS", "MOVLHPS", "VMOVHLPS", "VMOVLHPS",
@@ -45,10 +45,10 @@ func TestX86FloatingDispatcherRecognizesMalformedHalfMoves(t *testing.T) {
 				var ir strings.Builder
 				context := newX86Ctx(&ir, Func{}, FuncSig{}, nil, nil, arch, "", false)
 				ins := Instr{Op: name + ".Z", Raw: string(name) + ".Z"}
-				known, terminated, err := context.lowerFP(ins.Op, ins)
-				if !known || terminated || err == nil || ir.Len() != 0 {
-					t.Fatalf("half-move suffix must fail before emission: known=%t terminated=%t err=%v IR=%q",
-						known, terminated, err, ir.String())
+				terminated, err := context.lowerInstr(0, 0, ins, nil, nil)
+				if terminated || err == nil || !strings.Contains(err.Error(), "outside complete Go half-move grammar") || ir.Len() != 0 {
+					t.Fatalf("half-move grammar must reject the suffix before emission: terminated=%t err=%v IR=%q",
+						terminated, err, ir.String())
 				}
 			})
 		}
