@@ -303,6 +303,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	transfer x86ResultSourceTransfer, checkReturn func(x86ResultState, int) error, trapOnly bool) error {
 	originalTransfer := transfer
 	trackCPUIDLeaf := false
+	trackCallerOrigins := len(initial.callerAddressFP) != 0 || initial.callerAddressOrigin != [16]uint16{}
 	var repeatEmptyBranch func(int, Instr, *x86ResultState) bool
 	transfer = func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 		if !x86ResultValueStackContinuation(ins, state, arch) {
@@ -387,7 +388,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			state.valueStack.id = false
 		}
 		state.callerAddressGP = x86ResultCallerAddressesAfterTransfer(ins, before, state.callerAddressGP, state.callerAddressFP, arch)
-		state.callerAddressOrigin = x86ResultCallerOriginsAfter(ins, origins, state.callerAddressGP, state.callerAddressFP, arch)
+		if trackCallerOrigins {
+			state.callerAddressOrigin = x86ResultCallerOriginsAfter(ins, origins, state.callerAddressGP, state.callerAddressFP, arch)
+		}
 		state.predicate = x86ResultPredicateAfter(ins, predicate, arch)
 		state.stringCount = x86ResultStringCountAfter(ins, stringCount, state.stringCount, arch)
 		if trackCPUIDLeaf {
@@ -1389,7 +1392,7 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 	if accepted, known := x86ResultCallerAddressDifferenceStep(ins, state, arch); known {
 		return accepted
 	}
-	if accepted, known := x86ResultPointerResidueStep(ins, state, owned, resultOffset, arch); known {
+	if accepted, known := x86ResultPointerMaskStep(ins, state, owned, resultOffset, arch); known {
 		return accepted
 	}
 	if accepted, known := x86ResultCallerPointerAdvanceStep(ins, state, arch); known {

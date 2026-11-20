@@ -1,14 +1,10 @@
 package plan9asm
 
-// A nonzero ID names one actual immutable typed-entry pointer slot. It carries
-// no numerical bytes, extent, alignment, alias or pointee permission. Derived
-// addresses retain that ID only after the existing complete transfer accepts
-// their full-word operation and every numerical affine input.
+// A nonzero ID names a typed pointer parameter in the active entry convention.
+// Derived addresses retain that ID only after the complete transfer accepts
+// the address transform. The ID itself carries no extent or backing.
 func x86ResultCallerOriginsAfter(original Instr, before [16]uint16, after [16]bool,
 	entryFP map[int64]bool, arch string) [16]uint16 {
-	if len(entryFP) == 0 {
-		return [16]uint16{} // A numerical-only entry cannot produce this domain.
-	}
 	next := before
 	for index, address := range after {
 		if !address {
@@ -65,10 +61,8 @@ func x86ResultCallerOriginsAfter(original Instr, before [16]uint16, after [16]bo
 	return next
 }
 
-// Subtracting two full-word affine addresses from the same actual entry
-// cancels their common opaque base. No unrelated address or transformed pointer
-// bits become numerical. The normal lowerer retains the original subtraction,
-// including all of its status flags; source instructions are never rewritten.
+// Subtracting two full-word addresses derived from the same typed entry
+// produces a numerical delta with the original subtraction's FLAGS.
 func x86ResultCallerAddressDifferenceStep(ins Instr, state *x86ResultState, arch string) (bool, bool) {
 	op := Op("SUBQ")
 	if arch == "386" {

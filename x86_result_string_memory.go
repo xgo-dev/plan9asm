@@ -147,19 +147,19 @@ func (plan *x86ResultStringMemoryPlan) transfer(ordinal int, ins Instr, state *x
 			return false, true
 		}
 	}
+	comparison := form.kind == "scas" || form.kind == "cmps"
 	for _, register := range indexes {
 		index, _, _ := x86ResultGP(register, word, arch)
 		state.gp[index], state.canonicalGP[index] = 0, 0
-		// The cursor is no longer the original native-read base. Its full
-		// address bits remain initialized and derived from the same actual
-		// entry, without acquiring NUM bytes or reusable memory permission.
-		state.pointerGP[index] = false
+		// The unconditional forms advance by the defined count and direction,
+		// so an actual caller address keeps its role just as after ADD/SUB.
+		// Comparison-controlled exits still revoke the affected pointer role.
+		state.pointerGP[index] = !comparison && state.callerAddressGP[index]
 		state.resultAddressGP[index] = x86ResultSlotAddress{}
 		if state.boolFrameGP != nil {
 			state.boolFrameGP[index] = x86ResultSlotAddress{}
 		}
 	}
-	comparison := form.kind == "scas" || form.kind == "cmps"
 	if comparison && (!repeat || state.stringCount == x86StringCountNonzero) {
 		state.flags = x86ByteFlagsAll
 	} // Otherwise the possible zero path retains only the old six must-bits.

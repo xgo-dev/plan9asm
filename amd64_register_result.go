@@ -183,6 +183,11 @@ func checkAMD64RegisterResultInitialization(fn Func, sig FuncSig, zeroX15 bool, 
 			}
 		}
 	}
+	for register, pointer := range initial.callerAddressGP {
+		if pointer {
+			initial.callerAddressOrigin[register] = uint16(register + 1)
+		}
+	}
 	if zeroX15 {
 		// Entry slots already start at zero in LLVM. The Go ABI defines only
 		// X15's 128 bits, leaving the upper Y15/Z15 bytes unspecified.

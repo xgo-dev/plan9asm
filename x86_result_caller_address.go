@@ -258,6 +258,10 @@ func x86ResultCallerAddressesAfter(ins Instr, before [16]bool, entryFP map[int64
 		if valid {
 			first := ins.Args[0]
 			switch ins.Op {
+			case "ANDL", "ANDQ":
+				if _, _, kind := x86PointerMaskProperties(ins, arch); kind == x86PointerMaskRoundDown {
+					return before
+				}
 			case move:
 				before[destination] = x86ResultPointerOperand(first, before, entryFP, arch)
 				return before
