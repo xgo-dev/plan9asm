@@ -14,6 +14,9 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 	if known, term, err := c.lowerLegacyPackedMove(op, ins); known {
 		return known, term, err
 	}
+	if known, term, err := c.lowerMOVHalf(op, ins); known {
+		return known, term, err
+	}
 	if ok, term, err := c.lowerSignedIntegerScalarFloat(op, ins); ok {
 		return ok, term, err
 	}
@@ -81,8 +84,7 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 	}
 	switch op {
 	case "MOVSS", "MOVSD", "MOVAPD", "MOVUPD",
-		"MOVLHPS", "MOVHLPS", "MOVLPS", "MOVHPS", "MOVLPD", "MOVHPD",
-		"VMOVLPS", "VMOVHPS", "VMOVLPD", "VMOVHPD", "SHUFPD", "UNPCKLPS", "UNPCKHPD",
+		"SHUFPD", "UNPCKLPS", "UNPCKHPD",
 		"COMISS", "UCOMISS", "COMISD", "UCOMISD", "CMPSD",
 		"CVTSL2SD", "CVTSQ2SD":
 		// handled below
@@ -124,29 +126,6 @@ func (c *amd64Ctx) lowerFP(op Op, ins Instr) (ok bool, terminated bool, err erro
 		default:
 			return true, false, fmt.Errorf("amd64 MOVSS unsupported destination: %q", ins.Raw)
 		}
-
-	case "MOVLHPS", "MOVHLPS":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects Xsrc, Xdst: %q", op, ins.Raw)
-		}
-		src, err := c.loadXAsI64x2(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		dst, err := c.loadXAsI64x2(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		mask := "<i32 0, i32 2>"
-		if op == "MOVHLPS" {
-			mask = "<i32 3, i32 1>"
-		}
-		shuffled := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <2 x i64> %s, <2 x i64> %s, <2 x i32> %s\n", shuffled, dst, src, mask)
-		return true, false, c.storeXFromI64x2(ins.Args[1].Reg, "%"+shuffled)
-
-	case "MOVLPS", "MOVHPS", "MOVLPD", "MOVHPD", "VMOVLPS", "VMOVHPS", "VMOVLPD", "VMOVHPD":
-		return c.lowerMOVHalf(op, ins)
 
 	case "SHUFPD":
 		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
@@ -607,33 +586,36 @@ func (c *amd64Ctx) emitMoveHalf(form x86MoveHalfForm, ins Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %s, i32 %d\n", bits, source, form.sourceLane)
 		return c.storePackedScalarExtractMemory(ins.Args[form.destination], I64, "%"+bits)
 	}
-	var bits string
+	source := ins.Args[form.source]
+	var input string
+	var err error
 	if form.memory >= 0 {
-		var err error
-		if source := ins.Args[form.source]; source.Kind == OpFP {
-			bits, err = c.loadScalarLaneFPBits(source.FPOffset, 64)
+		if source.Kind == OpFP {
+			input, err = c.loadScalarLaneFPBits(source.FPOffset, 64)
 		} else {
-			bits, err = c.evalSizedNativeGPSource(source, I64, ins.x86AddressBits)
-		}
-		if err != nil {
-			return err
+			input, err = c.evalSizedNativeGPSource(source, I64, ins.x86AddressBits)
 		}
 	} else {
-		source, err := c.loadXAsI64x2(ins.Args[form.source].Reg)
-		if err != nil {
-			return err
-		}
-		extracted := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %s, i32 %d\n", extracted, source, form.sourceLane)
-		bits = "%" + extracted
+		input, err = c.loadXAsI64x2(source.Reg)
+	}
+	if err != nil {
+		return err
 	}
 	base, err := c.loadXAsI64x2(ins.Args[form.base].Reg)
 	if err != nil {
 		return err
 	}
-	inserted, bytes := c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %s, i64 %s, i32 %d\n", inserted, base, bits, form.outputLane)
-	fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bytes, inserted)
+	result, bytes := c.newTmp(), c.newTmp()
+	if form.memory >= 0 {
+		fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %s, i64 %s, i32 %d\n", result, base, input, form.outputLane)
+	} else {
+		// The two lanes of base follow the two lanes of input.
+		mask := [2]int{2, 3}
+		mask[form.outputLane] = form.sourceLane
+		fmt.Fprintf(c.b, "  %%%s = shufflevector <2 x i64> %s, <2 x i64> %s, <2 x i32> <i32 %d, i32 %d>\n",
+			result, input, base, mask[0], mask[1])
+	}
+	fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bytes, result)
 	if form.spec.vector {
 		return c.storePackedMoveOperand(ins.Args[form.destination], 16, "%"+bytes)
 	}

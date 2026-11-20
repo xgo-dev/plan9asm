@@ -1020,9 +1020,6 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 	if ok, term, err := c.lowerPackedMoveMask(Op(op), ins); ok {
 		return term, err
 	}
-	if ok, term, err := c.lowerMoveHighLowPackedSingle(Op(op), ins); ok {
-		return term, err
-	}
 	if ok, term, err := c.lowerVectorLaneExtract(Op(op), ins); ok {
 		return term, err
 	}
