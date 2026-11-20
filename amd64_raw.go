@@ -10399,37 +10399,37 @@ func decodedX86RegisterBits(reg x86asm.Reg) int {
 }
 
 func isX86RawDirective(ins Instr) bool {
-	switch Op(strings.ToUpper(string(ins.Op))) {
-	case OpBYTE, OpWORD, "LONG", "QUAD":
-		return true
+	return x86RawDirectiveWidth(ins.Op) != 0
+}
+
+func x86RawDirectiveWidth(op Op) int {
+	switch Op(strings.ToUpper(string(op))) {
+	case OpBYTE:
+		return 1
+	case OpWORD:
+		return 2
+	case "LONG":
+		return 4
+	case "QUAD":
+		return 8
 	default:
-		return false
+		return 0
 	}
 }
 
 func x86RawDirectiveBytes(ins Instr) ([]byte, error) {
-	if len(ins.Args) != 1 || ins.Args[0].Kind != OpImm || ins.Args[0].ImmRaw != "" {
-		return nil, fmt.Errorf("%s expects exactly one resolved integer constant: %q", ins.Op, ins.Raw)
-	}
-	value := uint64(ins.Args[0].Imm)
-	switch Op(strings.ToUpper(string(ins.Op))) {
-	case OpBYTE:
-		return []byte{byte(value)}, nil
-	case OpWORD:
-		var buf [2]byte
-		binary.LittleEndian.PutUint16(buf[:], uint16(value))
-		return buf[:], nil
-	case "LONG":
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], uint32(value))
-		return buf[:], nil
-	case "QUAD":
-		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], value)
-		return buf[:], nil
-	default:
+	width := x86RawDirectiveWidth(ins.Op)
+	if width == 0 {
 		return nil, fmt.Errorf("not an x86 raw directive: %q", ins.Raw)
 	}
+	if len(ins.Args) != 1 || ins.Args[0].Kind != OpImm || ins.Args[0].ImmIsFloat || ins.Args[0].ImmRaw != "" {
+		return nil, fmt.Errorf("%s expects exactly one resolved integer constant: %q", ins.Op, ins.Raw)
+	}
+	// Go's Zbyte emitter keeps the low bytes, even for out-of-range
+	// integer literals. The directive's width is not an immediate range.
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], uint64(ins.Args[0].Imm))
+	return buf[:width:width], nil
 }
 
 func parseDecodedX86Instruction(syntax string) ([]Instr, error) {
