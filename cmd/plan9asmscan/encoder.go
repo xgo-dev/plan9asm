@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -11,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
 
 // encoderFormReport is an architecture encoder-table row, expressed with the
@@ -18,11 +21,12 @@ import (
 // rows enumerate the accepted operand-class surface even when no concrete
 // positive test happens to exercise it.
 type encoderFormReport struct {
-	Opcode         string   `json:"opcode"`
-	OperandClasses []string `json:"operand_classes"`
-	Form           string   `json:"form"`
-	Tables         []string `json:"tables"`
-	AliasedFrom    string   `json:"aliased_from,omitempty"`
+	Opcode         string                  `json:"opcode"`
+	OperandClasses []string                `json:"operand_classes"`
+	Form           string                  `json:"form"`
+	Tables         []string                `json:"tables"`
+	AliasedFrom    string                  `json:"aliased_from,omitempty"`
+	EncodingRules  []goasmrules.X86AVXRule `json:"encoding_rules,omitempty"`
 }
 
 type encoderFormSet struct {
@@ -80,6 +84,38 @@ func (s *encoderFormSet) list() []encoderFormReport {
 	return out
 }
 
+// fingerprintEncoderRules complements, rather than changes, the historical
+// operand-class fingerprint. Canonical rows preserve opcode-specific encoding
+// attributes and source row positions even after class-bucket grouping. Keep
+// duplicates: a repeated matching rule is still part of the original table.
+func fingerprintEncoderRules(catalog []encoderFormReport) (int, string) {
+	var rows []string
+	for _, form := range catalog {
+		for _, rule := range form.EncodingRules {
+			var row strings.Builder
+			fmt.Fprintf(&row, "x86-avx %q %q %q %q %d %d %d",
+				rule.Opcode, rule.Ytab, rule.Prefix, rule.ZCase,
+				rule.RowIndex, rule.ZOffset, rule.EncodingOffset)
+			fmt.Fprintf(&row, " classes:%d", len(rule.Classes))
+			for _, class := range rule.Classes {
+				fmt.Fprintf(&row, " %q", class)
+			}
+			fmt.Fprintf(&row, " bytes:%d", len(rule.OpBytes))
+			for _, value := range rule.OpBytes {
+				fmt.Fprintf(&row, " %q", value)
+			}
+			rows = append(rows, row.String())
+		}
+	}
+	if len(rows) == 0 {
+		// No retained rule metadata means unknown, not an empty-table proof.
+		return 0, ""
+	}
+	sort.Strings(rows)
+	data := "go-encoding-rules-v1\n" + strings.Join(rows, "\n")
+	return len(rows), fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
+}
+
 type parsedEncoderFile struct {
 	name string
 	file *ast.File
@@ -126,6 +162,26 @@ func loadEncoderForms(goroot, goarch string) ([]encoderFormReport, error) {
 	switch goarch {
 	case "386", "amd64":
 		scanX86EncoderTables(files, forms)
+		for _, source := range files {
+			if compositeVars(source.file)["avxOptab"] == nil {
+				continue
+			}
+			rules, err := goasmrules.X86AVXRules(source.file)
+			if err != nil {
+				return nil, fmt.Errorf("read complete AVX rules in %s: %w", source.name, err)
+			}
+			for _, rule := range rules {
+				key := rule.Opcode
+				if len(rule.Classes) > 0 {
+					key += " " + strings.Join(rule.Classes, ",")
+				}
+				item := forms.forms[key]
+				if item == nil {
+					return nil, fmt.Errorf("complete AVX rule %s has no operand-class inventory", key)
+				}
+				item.EncodingRules = append(item.EncodingRules, rule)
+			}
+		}
 	case "arm":
 		scanFixedEncoderTable(files, forms, "optab", []string{"from", "reg", "to"})
 		expandEncoderAliases(files, forms, "opset")

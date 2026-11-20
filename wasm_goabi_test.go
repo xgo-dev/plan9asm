@@ -59,6 +59,38 @@ TEXT unwind(SB), NOSPLIT, $0-0
 	}
 }
 
+func TestWasmGoABIResumeDispatchOmitsCallsAfterTerminatingTailReturn(t *testing.T) {
+	file, err := Parse(ArchWASM, `TEXT caller(SB), NOSPLIT, $0-0
+	CALL first(SB)
+	RET tail(SB)
+	CALL unreachable(SB)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigs := map[string]FuncSig{
+		"caller":      {Name: "caller", Ret: Void},
+		"first":       {Name: "first", Ret: Void},
+		"tail":        {Name: "tail", Ret: Void},
+		"unreachable": {Name: "unreachable", Ret: Void},
+	}
+	ir, err := Translate(file, Options{
+		TargetTriple: "wasm32-unknown-unknown",
+		Sigs:         sigs,
+		Goarch:       "wasm",
+		WASMABI:      WASMABIGo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ir, "i32 1, label %wasm_resume_1") {
+		t.Fatalf("reachable CALL is absent from resume dispatch:\n%s", ir)
+	}
+	if strings.Contains(ir, "wasm_resume_2") {
+		t.Fatalf("unreachable CALL leaked into resume dispatch:\n%s", ir)
+	}
+}
+
 func TestWasmRETUNWINDRequiresGoABI(t *testing.T) {
 	file, err := Parse(ArchWASM, "TEXT unwind(SB), NOSPLIT, $0-0\nRETUNWIND\n")
 	if err != nil {

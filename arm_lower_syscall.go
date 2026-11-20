@@ -16,9 +16,9 @@ func (c *armCtx) truncI64ToI32(v64 string) string {
 
 func (c *armCtx) lowerSyscall(op string, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
-	case "SWI":
+	case "SWI", "SVC":
 		if len(ins.Args) > 1 || (len(ins.Args) == 1 && ins.Args[0].Kind != OpImm) {
-			return true, false, fmt.Errorf("arm SWI expects optional immediate operand: %q", ins.Raw)
+			return true, false, fmt.Errorf("arm %s expects optional immediate operand: %q", op, ins.Raw)
 		}
 		num32 := ""
 		if len(ins.Args) == 1 && ins.Args[0].Imm != 0 {

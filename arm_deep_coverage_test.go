@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -57,10 +58,13 @@ func TestARMEvalCoverage(t *testing.T) {
 		{Kind: OpFPAddr, FPName: "ret", FPOffset: 32},
 		{Kind: OpMem, Mem: MemRef{Base: "R7", Off: 4}},
 		{Kind: OpSym, Sym: "$runtime·main+4(SB)"},
-		{Kind: OpIdent, Ident: "CS"},
 	}
-	if got, err := c.evalFPAddr32(Operand{Kind: OpFPAddr, FPName: "argframe", FPOffset: 99}); err != nil || got != "0" {
-		t.Fatalf("evalFPAddr32(dynamic) = (%q, %v), want (0, nil)", got, err)
+	// ARM has no x86 CS value operand: an unknown identifier is not zero.
+	if got, err := c.eval32(Operand{Kind: OpIdent, Ident: "CS"}, false); err == nil || got != "" {
+		t.Fatalf("eval32(unknown CS) fabricated a value: (%q, %v)", got, err)
+	}
+	if got, err := c.evalFPAddr32(Operand{Kind: OpFPAddr, FPName: "argframe", FPOffset: 99}); !errors.Is(err, ErrProbeNeedsContext) || got != "" {
+		t.Fatalf("evalFPAddr32(dynamic) = (%q, %v), want unbound frame context", got, err)
 	}
 	if got, err := c.evalFPValue32(Operand{Kind: OpFP, FPName: "f_hi", FPOffset: 24}); err != nil || got == "" {
 		t.Fatalf("evalFPValue32(split i64 high) = (%q, %v)", got, err)
@@ -360,7 +364,7 @@ func TestARMArithCoverageDeep(t *testing.T) {
 	if err := c.lowerARMMULAWT("", Instr{Raw: "MULAWT R0, R1, R2", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpReg, Reg: "R1"}, {Kind: OpReg, Reg: "R2"}}}); err == nil {
 		t.Fatalf("lowerARMMULAWT(invalid) unexpectedly succeeded")
 	}
-	if err := c.lowerARMDIVUHW("", Instr{Raw: "DIVUHW R0, R1", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpReg, Reg: "R1"}}}); err == nil {
+	if err := c.lowerARMDIVUHW("", Instr{Raw: "DIVUHW R0", Args: []Operand{{Kind: OpReg, Reg: "R0"}}}); err == nil {
 		t.Fatalf("lowerARMDIVUHW(invalid) unexpectedly succeeded")
 	}
 	if err := c.lowerARMCLZ("", Instr{Raw: "CLZ R0, $1", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpImm, Imm: 1}}}); err == nil {
@@ -380,7 +384,7 @@ func TestARMArithCoverageDeep(t *testing.T) {
 		"mul i64",
 		"udiv i32",
 		"call i32 @llvm.ctlz.i32",
-		`asm sideeffect "mrc p15, 0, $0, 1, 0, 0"`,
+		`asm sideeffect "mrc p15, #0, $0, c1, c0, #0"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
@@ -443,10 +447,10 @@ func TestARMBranchMovmAndSyscallCoverage(t *testing.T) {
 	}
 
 	c2, _ := newARMCtxForTest(t, FuncSig{Name: "example.callers", Ret: I32}, map[string]FuncSig{
-		"example.ret32":   {Name: "example.ret32", Ret: I32},
-		"example.retVoid": {Name: "example.retVoid", Ret: Void},
-		"example.retBad":  {Name: "example.retBad", Ret: LLVMType("vector")},
-		"example.tail64":  {Name: "example.tail64", Ret: I64},
+		"example.ret32":     {Name: "example.ret32", Ret: I32},
+		"example.retVoid":   {Name: "example.retVoid", Ret: Void},
+		"example.retBad":    {Name: "example.retBad", Ret: LLVMType("vector")},
+		"example.tailFloat": {Name: "example.tailFloat", Ret: LLVMType("double")},
 	})
 	if err := c2.callSym(Operand{Kind: OpSym, Sym: "ret32(SB)"}); err != nil {
 		t.Fatalf("callSym(ret32) error = %v", err)
@@ -472,7 +476,7 @@ func TestARMBranchMovmAndSyscallCoverage(t *testing.T) {
 	if err := c2.tailCallAndRet(Operand{Kind: OpSym, Sym: "missing(SB)"}); err != nil {
 		t.Fatalf("tailCallAndRet(missing sig) error = %v", err)
 	}
-	if err := c2.tailCallAndRet(Operand{Kind: OpSym, Sym: "tail64(SB)"}); err == nil {
+	if err := c2.tailCallAndRet(Operand{Kind: OpSym, Sym: "tailFloat(SB)"}); err == nil {
 		t.Fatalf("tailCallAndRet(mismatch) unexpectedly succeeded")
 	}
 
@@ -496,6 +500,17 @@ func TestARMBranchMovmAndSyscallCoverage(t *testing.T) {
 		t.Fatalf("tailCallAndRet(ptr -> i32) output:\n%s", got)
 	}
 
+	floatSig := FuncSig{Name: "example.floatcaller", Args: []LLVMType{LLVMType("float")}, Ret: LLVMType("float")}
+	cTailFloat, bTailFloat := newARMCtxForTest(t, floatSig, map[string]FuncSig{
+		"example.floatcallee": {Name: "example.floatcallee", Args: []LLVMType{LLVMType("float")}, Ret: LLVMType("float")},
+	})
+	if err := cTailFloat.tailCallAndRet(Operand{Kind: OpSym, Sym: "floatcallee(SB)"}); err != nil {
+		t.Fatalf("tailCallAndRet(identical float signature) error = %v", err)
+	}
+	if got := bTailFloat.String(); !strings.Contains(got, `call float @"example.floatcallee"(float %arg0)`) || !strings.Contains(got, "ret float") {
+		t.Fatalf("tailCallAndRet(identical float signature) output:\n%s", got)
+	}
+
 	out := b.String()
 	for _, want := range []string{
 		`call void @"example.tail"()`,
@@ -510,7 +525,7 @@ func TestARMBranchMovmAndSyscallCoverage(t *testing.T) {
 	}
 }
 
-func TestTranslateARMLinearCoverageDeep(t *testing.T) {
+func TestTranslateARMStraightLineCoverageDeep(t *testing.T) {
 	ll := translateARMForTest(t, `TEXT ·linear(SB),NOSPLIT,$0-0
 	MOVB $1, R1
 	MOVBU $2, R2
@@ -531,9 +546,9 @@ func TestTranslateARMLinearCoverageDeep(t *testing.T) {
 		},
 	})
 	for _, want := range []string{
-		"trunc i64 1 to i8",
-		"zext i8",
-		"add i32 %arg0, %arg1",
+		"store i32 1",
+		"store i32 2",
+		"add i32",
 		"sub i32",
 		"and i32",
 		"or i32",

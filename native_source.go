@@ -39,7 +39,14 @@ func ForeignNativeFunctions(src []byte, goarch string) map[string]bool {
 type NativeOptions struct {
 	GOOS, GOARCH string
 	PackagePath  string
-	Imports      map[string]string
+	// Bare imports name external machine entries. A ·name key binds an
+	// external package-global address for memory operands, never CALL/JMP.
+	Imports map[string]string
+	// CodeEntries binds source-native, bare TEXT address tokens to distinct
+	// object symbols. It is not a Go/C signature. Complete physical forms and
+	// explicit NOSPLIT fixed frames are validated by the native backend;
+	// unbound bare TEXT stays declaration-driven. No entry is bound by default.
+	CodeEntries map[string]string
 }
 
 // SupportsNativeTarget reports implemented instruction/object-format pairs.
@@ -48,7 +55,8 @@ func SupportsNativeTarget(goos, goarch string) bool {
 }
 
 // TranslateNativeSource translates checked Plan 9 source directly to native
-// assembly, without Go object files, implicit frames, or signature inference.
+// assembly, without Go object files or signature inference. Explicit fixed
+// TEXT frames retain their target entry/return transformation.
 func TranslateNativeSource(src []byte, opts NativeOptions) (string, []NativeData, error) {
 	f, ep, data, err := prepareNativeSource(src, opts)
 	if err != nil {
@@ -60,7 +68,11 @@ func TranslateNativeSource(src []byte, opts NativeOptions) (string, []NativeData
 		if err := e.functionLabels(fn, i); err != nil {
 			return "", nil, err
 		}
-		fmt.Fprintf(&out, ".text\n.p2align 2\n%s:\n", e.funcs[fn.Sym])
+		out.WriteString(".text\n.p2align 2\n")
+		if _, bound := opts.CodeEntries[fn.Sym]; bound {
+			fmt.Fprintf(&out, ".globl %s\n", e.funcs[fn.Sym])
+		}
+		fmt.Fprintf(&out, "%s:\n", e.funcs[fn.Sym])
 		if opts.GOOS == "linux" {
 			fmt.Fprintf(&out, ".type %s, @function\n", e.funcs[fn.Sym])
 		}
@@ -131,39 +143,40 @@ func prepareNativeSource(src []byte, opts NativeOptions) (*File, *nativeEmitter,
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if len(f.Funcs) == 0 {
-		return nil, nil, nil, fmt.Errorf("native assembly requires TEXT")
+	if len(f.Funcs) == 0 && len(f.Globl) == 0 {
+		return nil, nil, nil, fmt.Errorf("native assembly requires TEXT or GLOBL")
+	}
+	if err := validateNativeCodeBindings(f, opts); err != nil {
+		return nil, nil, nil, err
 	}
 	e := nativeEmitter{target: opts, funcs: map[string]string{}, globals: map[string]string{}, imports: imports}
 	for name, alias := range imports {
-		if !nativeName.MatchString(name) || !nativeName.MatchString(alias) {
+		function := nativeName.MatchString(name) && nativeName.MatchString(alias)
+		data := strings.HasPrefix(name, "·") && nativeName.MatchString(strings.TrimPrefix(name, "·")) && nativeDataObjectName.MatchString(alias)
+		if !function && !data {
 			return nil, nil, nil, fmt.Errorf("unsupported native import %q -> %q", name, alias)
 		}
 	}
 	for i, fn := range f.Funcs {
 		name := strings.TrimSuffix(fn.Sym, "<>")
-		if name == fn.Sym || !nativeName.MatchString(name) {
+		object, bound := opts.CodeEntries[fn.Sym]
+		if !bound && (name == fn.Sym || !nativeName.MatchString(name)) {
 			return nil, nil, nil, fmt.Errorf("native TEXT must be file-local: %s", fn.Sym)
+		}
+		if bound {
+			if err := validateNativeCodeEntry(fn, opts); err != nil {
+				return nil, nil, nil, err
+			}
 		}
 		if _, ok := e.funcs[fn.Sym]; ok {
 			return nil, nil, nil, fmt.Errorf("duplicate native TEXT %s", fn.Sym)
 		}
 		e.funcs[fn.Sym] = fmt.Sprintf("Lnative_func_%d", i)
-		parts := strings.Split(fn.Instrs[0].Raw, ",")
-		if len(parts) != 3 || (strings.TrimSpace(parts[2]) != "$0" && strings.TrimSpace(parts[2]) != "$0-0") {
-			return nil, nil, nil, fmt.Errorf("native TEXT requires zero Go frame and arguments: %s", fn.Sym)
+		if bound {
+			e.funcs[fn.Sym] = strconv.Quote(e.prefix() + object)
 		}
-		flags, err := nativeFlags(parts[1], "NOSPLIT", "NOFRAME")
-		if err != nil {
+		if _, err := nativeTextFrame(fn, opts); err != nil {
 			return nil, nil, nil, err
-		}
-		if !flags["NOSPLIT"] {
-			return nil, nil, nil, fmt.Errorf("native TEXT requires NOSPLIT: %s", fn.Sym)
-		}
-		for _, ins := range fn.Instrs {
-			if (ins.Op == "BL" || ins.Op == "CALL") && !flags["NOFRAME"] {
-				return nil, nil, nil, fmt.Errorf("native non-leaf TEXT requires NOFRAME: %s", fn.Sym)
-			}
 		}
 	}
 	var data []NativeData
@@ -198,6 +211,7 @@ func prepareNativeSource(src []byte, opts NativeOptions) (*File, *nativeEmitter,
 }
 
 var nativeName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
+var nativeDataObjectName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9./-]*$`)
 var nativePseudoRegister = regexp.MustCompile(`\b(?:SP|FP|g|G|R18_PLATFORM|R18|R31|W[0-9]+)\b`)
 
 // The general parser deliberately tolerates ignored includes and symbolic
@@ -232,7 +246,18 @@ func nativeSource(src []byte, goarch string) (string, error) {
 				for _, raw := range splitTopLevelCSV(rest) {
 					raw = strings.TrimSpace(raw)
 					if !strings.HasPrefix(raw, "$") && strings.HasSuffix(raw, ")") && !strings.HasSuffix(raw, "(SB)") {
-						if i := strings.LastIndex(raw, "("); i >= 0 {
+						i := strings.LastIndex(raw, "(")
+						if goarch == "amd64" && i >= 0 && strings.HasSuffix(raw[:i], ")") {
+							// Strip a real base before an index suffix, keeping
+							// parenthesized constant displacements intact.
+							base := strings.LastIndex(raw[:i], "(")
+							if base >= 0 {
+								if _, register := parseReg(strings.TrimSpace(raw[base+1 : i-1])); register {
+									i = base
+								}
+							}
+						}
+						if i >= 0 {
 							offset := strings.TrimSpace(raw[:i])
 							if offset != "" {
 								if _, ok := parseImmExpr(offset); !ok {
@@ -277,20 +302,36 @@ func nativeInteger(s string) (uint64, bool) {
 	return parseImmExpr(strings.TrimPrefix(s, "$"))
 }
 func nativeFlags(s string, allowed ...string) (map[string]bool, error) {
-	flags := map[string]bool{}
-	for _, flag := range strings.Split(strings.TrimSpace(s), "|") {
-		flag = strings.TrimSpace(flag)
-		if flag == "0" {
-			continue
+	// cmd/asm consumes a complete integer expression after CPP expands
+	// textflag.h. Decode that same value without truncating foreign flag bits;
+	// native TEXT and DATA retain their separate, deliberately closed roles.
+	if len(s) > goIntegerExpressionMaxBytes {
+		return nil, fmt.Errorf("native flags exceed the integer expression bound")
+	}
+	bits := make(map[string]uint64, len(allowed))
+	var mask uint64
+	for _, name := range allowed {
+		bit, ok := parseImmExpr(goTextFlagValues[name])
+		if !ok {
+			return nil, fmt.Errorf("unregistered native flag %q", name)
 		}
-		ok := false
-		for _, a := range allowed {
-			ok = ok || flag == a
+		bits[name], mask = bit, mask|bit
+	}
+	expression := globlFlagName.ReplaceAllStringFunc(s, func(name string) string {
+		if value, ok := goTextFlagValues[name]; ok {
+			return value
 		}
-		if !ok || flags[flag] {
-			return nil, fmt.Errorf("unsupported native flag %q", flag)
+		return name
+	})
+	value, ok := parseImmExpr(expression)
+	if !ok || value&^mask != 0 {
+		return nil, fmt.Errorf("unsupported native flags %q", s)
+	}
+	flags := make(map[string]bool, len(allowed))
+	for name, bit := range bits {
+		if value&bit != 0 {
+			flags[name] = true
 		}
-		flags[flag] = true
 	}
 	return flags, nil
 }
@@ -327,6 +368,9 @@ func (e *nativeEmitter) symbol(s string, data bool) (string, error) {
 		}
 	}
 	if alias, ok := e.imports[name]; ok {
+		if strings.HasPrefix(name, "·") && !data {
+			return "", fmt.Errorf("native data binding is not a callable entry: %s", s)
+		}
 		return strconv.Quote(e.prefix() + alias), nil
 	}
 	return "", fmt.Errorf("undeclared foreign symbol or unsupported native reference %s", s)
@@ -362,18 +406,42 @@ func (e *nativeEmitter) functionLabels(fn Func, i int) error {
 	}
 	return nil
 }
+
+// A trailing call keeps its address-sensitive slots and explicitly bounds
+// the final continuation. It never invents a returning machine instruction.
+func nativeFunctionEnd(op Op, arch string) (trap string, valid bool) {
+	switch op {
+	case OpRET, "JMP", "B":
+		return "", true
+	case "CALL", "BL":
+		if arch == "amd64" {
+			return "\tud2\n", true
+		}
+		if arch == "arm64" {
+			return "\tbrk #0\n", true
+		}
+	}
+	return "", false
+}
+
 func (e *nativeEmitter) functionBody(out *strings.Builder, fn Func) error {
+	plan, frameErr := nativeTextFrame(fn, e.target)
+	if frameErr != nil {
+		return frameErr
+	}
 	for _, ins := range fn.Instrs {
 		var err error
 		if e.target.GOARCH == "arm64" {
 			err = (&nativeARM64{e}).instruction(out, ins)
 		} else {
-			err = (&nativeAMD64{e}).instruction(out, ins)
+			err = (&nativeAMD64{nativeEmitter: e, frame: plan}).instruction(out, ins)
 		}
 		if err != nil {
 			return fmt.Errorf("native %s: %s: %w", fn.Sym, ins.Raw, err)
 		}
 	}
+	trap, _ := nativeFunctionEnd(fn.Instrs[len(fn.Instrs)-1].Op, e.target.GOARCH)
+	out.WriteString(trap)
 	return nil
 }
 

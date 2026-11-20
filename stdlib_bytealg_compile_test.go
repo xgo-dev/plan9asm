@@ -1,9 +1,7 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,20 +10,23 @@ import (
 	"testing"
 )
 
-func TestStdlibInternalBytealg_ARM64_Compile(t *testing.T) {
+// This is partial function object coverage, not a complete-file or standard
+// library pass. An ordinary declaration omits memequal_varlen's closure R26
+// input; that genuine missing entry contract remains an explicit negative.
+func TestStdlibInternalBytealg_ARM64_PartialFunctionObjectsAndClosureContext(t *testing.T) {
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 
 	goroot := runtime.GOROOT()
 	if goroot == "" {
-		t.Skip("GOROOT not available")
+		t.Fatal("GOROOT not available")
 	}
 
 	sfiles := stdlibBytealgARM64Sigs(goroot)
 	if len(sfiles) == 0 {
-		t.Skip("internal/bytealg arm64 asm files not present in this GOROOT")
+		t.Fatal("internal/bytealg arm64 asm files not present in this GOROOT")
 	}
 
 	resolve := func(sym string) string {
@@ -55,36 +56,63 @@ func TestStdlibInternalBytealg_ARM64_Compile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
-		ll, err := Translate(file, Options{
-			TargetTriple: triple,
-			ResolveSym:   resolve,
-			Sigs:         sigs,
-			Goarch:       "arm64",
-		})
-		if err != nil {
-			t.Fatalf("translate %s: %v", path, err)
-		}
-
-		tmp := t.TempDir()
-		llPath := filepath.Join(tmp, filepath.Base(path)+".ll")
-		objPath := filepath.Join(tmp, filepath.Base(path)+".o")
-		if err := os.WriteFile(llPath, []byte(ll), 0644); err != nil {
-			t.Fatal(err)
-		}
-		cmd := exec.Command(llc, "-mtriple="+triple, "-filetype=obj", llPath, "-o", objPath)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			s := string(out)
-			if strings.Contains(s, "No available targets") ||
-				strings.Contains(s, "no targets are registered") ||
-				strings.Contains(s, "unknown target triple") ||
-				strings.Contains(s, "unknown target") ||
-				strings.Contains(s, "is not a registered target") {
-				t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+		// These manually reviewed Go transport types are an explicit fixture
+		// contract only for source ABIInternal entries. A classic Frame alone
+		// remains insufficient. This gate compiles objects, not all bytealg
+		// runtime semantics; Count has a separate actual Go/LLVM oracle.
+		for _, fn := range file.Funcs {
+			if !strings.HasSuffix(fn.Sym, "<ABIInternal>") {
+				continue
 			}
-			t.Fatalf("llc failed for %s: %v\n%s", path, err, s)
+			name := resolve(fn.Sym)
+			sig := sigs[name]
+			sig.ARM64GoRegisterABI, err = arm64GoRegisterABIForSig(sig)
+			if err != nil {
+				t.Fatalf("explicit bytealg fixture contract %s: %v", name, err)
+			}
+			sigs[name] = sig
 		}
-		compiled++
+		for _, fn := range file.Funcs {
+			selected := *file
+			selected.Funcs = []Func{fn}
+			ll, err := Translate(&selected, Options{
+				TargetTriple: triple,
+				ResolveSym:   resolve,
+				Sigs:         sigs,
+				Goarch:       "arm64",
+			})
+			if resolve(fn.Sym) == "runtime.memequal_varlen" {
+				if !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "R26 read") {
+					t.Fatalf("missing Go closure entry must remain Context, got %v", err)
+				}
+				t.Logf("not an object/file pass: %s requires the missing typed closure R26 entry contract", fn.Sym)
+				continue
+			}
+			if err != nil {
+				t.Fatalf("translate function %s in %s: %v", fn.Sym, path, err)
+			}
+
+			tmp := t.TempDir()
+			llPath := filepath.Join(tmp, filepath.Base(path)+".ll")
+			objPath := filepath.Join(tmp, filepath.Base(path)+".o")
+			if err := os.WriteFile(llPath, []byte(ll), 0644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(llc, "-mtriple="+triple, "-filetype=obj", llPath, "-o", objPath)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				s := string(out)
+				if strings.Contains(s, "No available targets") ||
+					strings.Contains(s, "no targets are registered") ||
+					strings.Contains(s, "unknown target triple") ||
+					strings.Contains(s, "unknown target") ||
+					strings.Contains(s, "is not a registered target") {
+					t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+				}
+				t.Fatalf("llc failed for %s: %v\n%s", path, err, s)
+			}
+			compiled++
+		}
 	}
 	if compiled == 0 {
 		t.Fatalf("expected at least one successful llc compilation")
@@ -96,7 +124,10 @@ func stdlibBytealgARM64Sigs(goroot string) map[string]map[string]FuncSig {
 		filepath.Join(goroot, "src", "internal", "bytealg", "compare_arm64.s"): {
 			"internal/bytealg.Compare": sigWithClassicFrame("internal/bytealg.Compare", []LLVMType{"{ ptr, i64, i64 }", "{ ptr, i64, i64 }"}, I64),
 			"runtime.cmpstring":        sigWithClassicFrame("runtime.cmpstring", []LLVMType{"{ ptr, i64 }", "{ ptr, i64 }"}, I64),
-			"internal/bytealg.cmpbody": sigWithClassicFrame("internal/bytealg.cmpbody", []LLVMType{Ptr, I64, Ptr, I64}, I64),
+			"internal/bytealg.cmpbody": {
+				Name: "internal/bytealg.cmpbody", Args: []LLVMType{Ptr, I64, Ptr, I64},
+				Ret: I64, ArgRegs: []Reg{"R0", "R1", "R2", "R3"},
+			},
 		},
 		filepath.Join(goroot, "src", "internal", "bytealg", "count_arm64.s"): {
 			"internal/bytealg.Count":       sigWithClassicFrame("internal/bytealg.Count", []LLVMType{"{ ptr, i64, i64 }", "i8"}, I64),
@@ -133,25 +164,29 @@ func stdlibBytealgARM64Sigs(goroot string) map[string]map[string]FuncSig {
 		sfiles[path][resolved] = sig
 	}
 
+	// Private source helpers have documented physical register inputs, not
+	// independently allocated ABI0 argument/result frames. In particular,
+	// memeqbody returns in R0 while the search/count helpers write through
+	// their explicit result pointer. These are test-owned partial contracts.
 	addIfPresent(
 		filepath.Join(goroot, "src", "internal", "bytealg", "equal_arm64.s"),
 		"memeqbody<>",
-		sigWithClassicFrame("internal/bytealg.memeqbody", []LLVMType{Ptr, Ptr, I64}, I1),
+		FuncSig{Args: []LLVMType{Ptr, Ptr, I64}, Ret: I1, ArgRegs: []Reg{"R0", "R1", "R2"}},
 	)
 	addIfPresent(
 		filepath.Join(goroot, "src", "internal", "bytealg", "index_arm64.s"),
 		"indexbody<>",
-		withArgRegs(sigWithClassicFrame("internal/bytealg.indexbody", []LLVMType{Ptr, I64, Ptr, I64, Ptr}, Void), []Reg{"R0", "R1", "R2", "R3", "R9"}),
+		FuncSig{Args: []LLVMType{Ptr, I64, Ptr, I64, Ptr}, Ret: Void, ArgRegs: []Reg{"R0", "R1", "R2", "R3", "R9"}},
 	)
 	addIfPresent(
 		filepath.Join(goroot, "src", "internal", "bytealg", "indexbyte_arm64.s"),
 		"indexbytebody<>",
-		withArgRegs(sigWithClassicFrame("internal/bytealg.indexbytebody", []LLVMType{Ptr, "i8", I64, Ptr}, Void), []Reg{"R0", "R1", "R2", "R8"}),
+		FuncSig{Args: []LLVMType{Ptr, "i8", I64, Ptr}, Ret: Void, ArgRegs: []Reg{"R0", "R1", "R2", "R8"}},
 	)
 	addIfPresent(
 		filepath.Join(goroot, "src", "internal", "bytealg", "count_arm64.s"),
 		"countbytebody<>",
-		withArgRegs(sigWithClassicFrame("internal/bytealg.countbytebody", []LLVMType{Ptr, I64, "i8", Ptr}, Void), []Reg{"R0", "R2", "R1", "R8"}),
+		FuncSig{Args: []LLVMType{Ptr, I64, "i8", Ptr}, Ret: Void, ArgRegs: []Reg{"R0", "R2", "R1", "R8"}},
 	)
 
 	for path := range sfiles {

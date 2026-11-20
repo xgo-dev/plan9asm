@@ -3,12 +3,8 @@ description: Set up Go with writable caches on hosted and self-hosted runners
 
 inputs:
   go-version:
-    description: Go version accepted by actions/setup-go
+    description: Exact stable Go version or a registered compatibility label
     required: true
-  cache:
-    description: Whether actions/setup-go should cache dependencies
-    required: false
-    default: "true"
 
 runs:
   using: composite
@@ -21,8 +17,84 @@ runs:
         echo "GOMODCACHE=${RUNNER_TEMP}/go/pkg/mod" >> "$GITHUB_ENV"
         echo "GOCACHE=${RUNNER_TEMP}/go-build-cache" >> "$GITHUB_ENV"
 
+    # Compatibility labels are stable job identities. Freeze their actual SDKs
+    # in source so different runner caches or a mid-run release cannot split
+    # one group across compiler/source versions. Update these pins explicitly
+    # from https://go.dev/dl/?mode=json&include=all.
+    - name: Resolve exact Go version
+      id: resolve_go
+      shell: bash
+      env:
+        REQUESTED_GO_VERSION: ${{ inputs.go-version }}
+      run: |
+        set -euo pipefail
+
+        case "$REQUESTED_GO_VERSION" in
+          1.20.x) resolved_go=1.20.14 ;;
+          1.21.x) resolved_go=1.21.13 ;;
+          1.22.x) resolved_go=1.22.12 ;;
+          1.23.x) resolved_go=1.23.12 ;;
+          1.24.x) resolved_go=1.24.13 ;;
+          1.25.x) resolved_go=1.25.14 ;;
+          1.26.x) resolved_go=1.26.10 ;;
+          1.27.x) resolved_go=1.27.3 ;;
+          *)
+            if [[ ! "$REQUESTED_GO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Go selector has no frozen exact SDK: $REQUESTED_GO_VERSION" >&2
+              exit 1
+            fi
+            resolved_go="$REQUESTED_GO_VERSION"
+            ;;
+        esac
+        printf 'go-version=%s\n' "$resolved_go" >> "$GITHUB_OUTPUT"
+
     - name: Set up Go
+      id: install_go
       uses: actions/setup-go@v7
       with:
-        go-version: ${{ inputs.go-version }}
-        cache: ${{ inputs.cache }}
+        go-version: ${{ steps.resolve_go.outputs.go-version }}
+        # Account cache egress exhaustion must not block compiler installation.
+        # The writable job-local Go caches above remain available.
+        cache: false
+
+    # Some self-hosted runner interruptions report a successful action before
+    # its download completes. Neither that outcome nor an ambient Go is proof
+    # that the requested compiler was installed.
+    - name: Verify Go installation
+      shell: bash
+      env:
+        REQUESTED_GO_VERSION: ${{ inputs.go-version }}
+        RESOLVED_GO_VERSION: ${{ steps.resolve_go.outputs.go-version }}
+        INSTALLED_GO_VERSION: ${{ steps.install_go.outputs.go-version }}
+      run: |
+        set -euo pipefail
+
+        if [[ ! "$INSTALLED_GO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Go installer did not report a complete stable version" >&2
+          exit 1
+        fi
+
+        if [[ ! "$RESOLVED_GO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ||
+              "$INSTALLED_GO_VERSION" != "$RESOLVED_GO_VERSION" ]]; then
+          echo "Resolved Go $RESOLVED_GO_VERSION, installed $INSTALLED_GO_VERSION" >&2
+          exit 1
+        fi
+
+        if [[ "$REQUESTED_GO_VERSION" =~ ^[0-9]+\.[0-9]+\.x$ ]]; then
+          minor="${REQUESTED_GO_VERSION%.x}"
+          if [[ "$INSTALLED_GO_VERSION" != "$minor."* ]]; then
+            echo "Requested Go $REQUESTED_GO_VERSION, installed $INSTALLED_GO_VERSION" >&2
+            exit 1
+          fi
+        elif [[ "$REQUESTED_GO_VERSION" != "$INSTALLED_GO_VERSION" ]]; then
+          echo "Requested Go $REQUESTED_GO_VERSION, installed $INSTALLED_GO_VERSION" >&2
+          exit 1
+        fi
+
+        actual="$(GOTOOLCHAIN=local go env GOVERSION)"
+        if [[ "$actual" != "go$INSTALLED_GO_VERSION" ]]; then
+          echo "Installed Go $INSTALLED_GO_VERSION, but PATH selects $actual" >&2
+          exit 1
+        fi
+        printf 'Verified Go %s: %s\n' "$INSTALLED_GO_VERSION" "$(command -v go)"
+        GOTOOLCHAIN=local go version

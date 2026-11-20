@@ -25,7 +25,7 @@ func (c *armCtx) markFPResultAddrTaken(off int64) {
 
 func (c *armCtx) storeFPResult32(off int64, v32 string) error {
 	for _, meta := range c.fpResults {
-		if meta.Type != I64 || (off != meta.Offset && off != meta.Offset+4) {
+		if meta.Type != I64 && meta.Type != LLVMType("double") || (off != meta.Offset && off != meta.Offset+4) {
 			continue
 		}
 		slot := c.fpResAllocaIdx[meta.Index]
@@ -33,22 +33,34 @@ func (c *armCtx) storeFPResult32(off int64, v32 string) error {
 			return fmt.Errorf("arm: missing FP result alloca for index %d", meta.Index)
 		}
 		old := c.newTmp()
+		oldBits := "%" + old
 		word := c.newTmp()
 		cleared := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", old, slot)
+		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s\n", old, meta.Type, slot)
+		if meta.Type == LLVMType("double") {
+			bits := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast double %s to i64\n", bits, oldBits)
+			oldBits = "%" + bits
+		}
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", word, v32)
 		inserted := "%" + word
 		if off == meta.Offset {
-			fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, -4294967296\n", cleared, old)
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, -4294967296\n", cleared, oldBits)
 		} else {
-			fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 4294967295\n", cleared, old)
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 4294967295\n", cleared, oldBits)
 			shifted := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, 32\n", shifted, word)
 			inserted = "%" + shifted
 		}
 		merged := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %s\n", merged, cleared, inserted)
-		fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", merged, slot)
+		stored := "%" + merged
+		if meta.Type == LLVMType("double") {
+			value := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast i64 %s to double\n", value, stored)
+			stored = "%" + value
+		}
+		fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", meta.Type, stored, slot)
 		c.fpResWritten[meta.Index] = true
 		return nil
 	}

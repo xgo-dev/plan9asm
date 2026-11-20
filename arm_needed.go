@@ -2,8 +2,9 @@ package plan9asm
 
 import "strings"
 
-// funcNeedsARMCFG decides whether ARM lowering needs the CFG-based path.
-// The linear prototype only handles straight-line arithmetic/data movement.
+// funcNeedsARMCFG is retained for focused classifier tests and historical
+// callers. Translate now always selects the CFG path for supported ARM code so
+// straight-line functions cannot bypass architecture-specific form checks.
 func funcNeedsARMCFG(fn Func) bool {
 	for _, ins := range fn.Instrs {
 		if ins.Op == OpLABEL {
@@ -28,7 +29,7 @@ func funcNeedsARMCFG(fn Func) bool {
 				return true
 			}
 			for _, arg := range ins.Args {
-				if arg.Kind == OpIdent {
+				if arg.Kind == OpIdent || arg.Kind == OpFPAddr {
 					return true
 				}
 			}

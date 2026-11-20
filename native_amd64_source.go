@@ -6,54 +6,95 @@ import (
 	"strings"
 )
 
-type nativeAMD64 struct{ *nativeEmitter }
+type nativeAMD64 struct {
+	*nativeEmitter
+	frame nativeFramePlan
+}
 
 func nativeAMD64Reg(o Operand, bits int) (string, error) {
 	if o.Kind != OpReg {
 		return "", fmt.Errorf("expected amd64 register")
 	}
-	names := map[Reg][2]string{AX: {"eax", "rax"}, BX: {"ebx", "rbx"}, CX: {"ecx", "rcx"}, DX: {"edx", "rdx"}, SI: {"esi", "rsi"}, DI: {"edi", "rdi"}, SP: {"esp", "rsp"}, BP: {"ebp", "rbp"}}
-	if n, ok := names[o.Reg]; ok {
-		if bits == 32 {
-			return "%" + n[0], nil
+	if bits == 8 {
+		switch o.Reg {
+		case AH, CH, DH, BH:
+			return "%" + strings.ToLower(string(o.Reg)), nil
 		}
-		return "%" + n[1], nil
+	}
+	if base, _, ok := amd64ByteAlias(o.Reg); ok {
+		o.Reg = base
+	}
+	names := map[Reg][4]string{
+		AX: {"al", "ax", "eax", "rax"}, BX: {"bl", "bx", "ebx", "rbx"},
+		CX: {"cl", "cx", "ecx", "rcx"}, DX: {"dl", "dx", "edx", "rdx"},
+		SI: {"sil", "si", "esi", "rsi"}, DI: {"dil", "di", "edi", "rdi"},
+		SP: {"spl", "sp", "esp", "rsp"}, BP: {"bpl", "bp", "ebp", "rbp"},
+	}
+	width := map[int]int{8: 0, 16: 1, 32: 2, 64: 3}[bits]
+	if n, ok := names[o.Reg]; ok {
+		return "%" + n[width], nil
 	}
 	name := string(o.Reg)
 	if strings.HasPrefix(name, "R") {
 		n, err := strconv.Atoi(name[1:])
 		if err == nil && n >= 8 && n <= 15 {
-			suffix := ""
-			if bits == 32 {
-				suffix = "d"
-			}
+			suffix := []string{"b", "w", "d", ""}[width]
 			return fmt.Sprintf("%%r%d%s", n, suffix), nil
 		}
 	}
 	return "", fmt.Errorf("unsupported amd64 register %s", name)
 }
 
-func nativeAMD64Operand(o Operand, bits int) (string, error) {
+func (e *nativeAMD64) operand(o Operand, bits int) (string, error) {
 	switch o.Kind {
 	case OpReg:
+		if xmm, ok := nativeAMD64XMM(o); ok {
+			return xmm, nil
+		}
 		return nativeAMD64Reg(o, bits)
 	case OpImm:
-		if o.ImmRaw != "" {
-			return "", fmt.Errorf("unresolved native immediate")
+		if o.ImmRaw == "" && !o.ImmIsFloat {
+			return fmt.Sprintf("$%d", o.Imm), nil
 		}
-		return fmt.Sprintf("$%d", o.Imm), nil
-	case OpMem:
-		m := o.Mem
-		if m.Sym != "" || m.OffRaw != "" || m.Index != "" || m.Segment != "" || m.Off < -1<<31 || m.Off > 1<<31-1 {
-			break
-		}
-		base, err := nativeAMD64Reg(Operand{Kind: OpReg, Reg: m.Base}, 64)
+	}
+	if !x86ScalarCompareMemoryValid(o, "amd64") {
+		return "", fmt.Errorf("unsupported native address %s", o.String())
+	}
+	if base, m, ok := x86ScalarCompareSBAddress(o, "amd64"); ok {
+		_, off, _ := parseSBRef(m.Sym)
+		target, err := e.symbol(base+"(SB)", true)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("%d(%s)", m.Off, base), nil
+		if off += m.Off; off != 0 {
+			target += fmt.Sprintf("%+d", off)
+		}
+		return target + "(%rip)", nil
 	}
-	return "", fmt.Errorf("unsupported amd64 operand %s", o.String())
+	if o.Kind == OpSym {
+		if address, err := parseInt(o.Sym); err == nil {
+			return fmt.Sprintf("%d", address), nil
+		}
+	}
+	if o.Kind != OpMem || o.Mem.Segment != "" {
+		return "", fmt.Errorf("native memory needs physical backing: %s", o.String())
+	}
+	base := ""
+	if o.Mem.Base != "" {
+		var err error
+		base, err = nativeAMD64Reg(Operand{Kind: OpReg, Reg: o.Mem.Base}, 64)
+		if err != nil {
+			return "", err
+		}
+	}
+	if o.Mem.Index == "" {
+		if base == "" {
+			return fmt.Sprintf("%d", o.Mem.Off), nil
+		}
+		return fmt.Sprintf("%d(%s)", o.Mem.Off, base), nil
+	}
+	index, err := nativeAMD64Reg(Operand{Kind: OpReg, Reg: o.Mem.Index}, 64)
+	return fmt.Sprintf("%d(%s,%s,%d)", o.Mem.Off, base, index, o.Mem.Scale), err
 }
 
 func nativeAMD64XMM(o Operand) (string, bool) {
@@ -88,6 +129,7 @@ func (e *nativeAMD64) instruction(out *strings.Builder, ins Instr) error {
 	}
 	switch op {
 	case "TEXT":
+		e.frame.prologue(out)
 		return nil
 	case "LABEL":
 		fmt.Fprintf(out, "%s:\n", e.labels[a[0].Sym])
@@ -96,11 +138,23 @@ func (e *nativeAMD64) instruction(out *strings.Builder, ins Instr) error {
 		if len(a) != 0 {
 			return bad()
 		}
+		e.frame.epilogue(out)
 		emit("ret")
 		return nil
 	case "CALL", "JMP":
 		if len(a) != 1 {
 			return bad()
+		}
+		if a[0].Kind == OpReg || a[0].Kind == OpMem {
+			if a[0].Kind == OpReg && !isX86YrlRegisterForArch(a[0].Reg, "amd64") {
+				return bad()
+			}
+			dst, err := e.operand(a[0], 64)
+			if err != nil {
+				return err
+			}
+			emit(strings.ToLower(op), "*"+dst)
+			return nil
 		}
 		dst, err := e.branch(a[0], true)
 		if err != nil {
@@ -127,73 +181,5 @@ func (e *nativeAMD64) instruction(out *strings.Builder, ins Instr) error {
 		emit(inst, dst)
 		return nil
 	}
-	if len(a) != 2 {
-		return bad()
-	}
-	bits := 64
-	if strings.HasSuffix(op, "L") {
-		bits = 32
-	}
-	allowed := map[string]bool{"MOVQ": true, "MOVL": true, "LEAQ": true, "ADDQ": true, "ADDL": true, "SUBQ": true, "SUBL": true, "XORQ": true, "XORL": true, "ANDQ": true, "ANDL": true, "ORQ": true, "ORL": true, "CMPQ": true, "CMPL": true, "TESTQ": true, "TESTL": true, "SHLQ": true, "SHLL": true, "SHRQ": true, "SHRL": true, "SARQ": true, "SARL": true}
-	if !allowed[op] {
-		return bad()
-	}
-	// MOVQ between XMM and integer registers is a bit transfer, not conversion.
-	if op == "MOVQ" {
-		x0, ok0 := nativeAMD64XMM(a[0])
-		x1, ok1 := nativeAMD64XMM(a[1])
-		if ok0 || ok1 {
-			if ok0 && ok1 {
-				return bad()
-			}
-			if ok0 {
-				r, err := nativeAMD64Operand(a[1], 64)
-				if err != nil || a[1].Kind == OpImm {
-					return bad()
-				}
-				emit("movq", x0, r)
-			} else {
-				r, err := nativeAMD64Operand(a[0], 64)
-				if err != nil || a[0].Kind == OpImm {
-					return bad()
-				}
-				emit("movq", r, x1)
-			}
-			return nil
-		}
-	}
-	// Go CMP places the minuend first, unlike AT&T syntax.
-	if op == "CMPQ" || op == "CMPL" {
-		a = []Operand{a[1], a[0]}
-	}
-	if a[1].Kind == OpImm || (a[0].Kind == OpMem && a[1].Kind == OpMem) {
-		return bad()
-	}
-	if op == "LEAQ" && (a[0].Kind != OpMem || a[1].Kind != OpReg) {
-		return bad()
-	}
-	shift := strings.HasPrefix(op, "SHL") || strings.HasPrefix(op, "SHR") || strings.HasPrefix(op, "SAR")
-	if shift && (a[0].Kind != OpImm || a[0].Imm < 0 || a[0].Imm >= int64(bits)) {
-		return bad()
-	}
-	if a[0].Kind == OpImm && !shift {
-		v := a[0].Imm
-		if bits == 32 {
-			if v < -1<<31 || v > 1<<32-1 {
-				return bad()
-			}
-		} else if !(op == "MOVQ" && a[1].Kind == OpReg) && (v < -1<<31 || v > 1<<31-1) {
-			return bad()
-		}
-	}
-	src, err := nativeAMD64Operand(a[0], bits)
-	if err != nil {
-		return err
-	}
-	dst, err := nativeAMD64Operand(a[1], bits)
-	if err != nil {
-		return err
-	}
-	emit(strings.ToLower(op), src, dst)
-	return nil
+	return e.typedInstruction(out, ins)
 }

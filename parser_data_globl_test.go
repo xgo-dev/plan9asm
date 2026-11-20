@@ -61,14 +61,17 @@ GLOBL ·symptr<>(SB), NOPTR, $(machTimebaseInfo__size)
 	if err != nil || string(payload[:5]) != "hello" || len(payload) != 8 || payload[5] != 0 {
 		t.Fatalf("padded string DATA payload = (%v, %v)", payload, err)
 	}
-	if ds := file.Data[2]; ds.Sym != "·symptr<>" || ds.Value != 0 {
-		t.Fatalf("unexpected symbol DATA placeholder: %#v", ds)
+	if ds := file.Data[2]; ds.Sym != "·symptr<>" || ds.Addr != "runtime·main(SB)" || ds.Value != 0 || ds.Payload != nil {
+		t.Fatalf("unexpected symbol DATA relocation descriptor: %#v", ds)
+	}
+	if _, err := dataStmtPayload(file.Data[2]); err == nil {
+		t.Fatal("symbol DATA was converted to a zero byte placeholder")
 	}
 
 	if gs := file.Globl[0]; gs.Sym != "·tab<>" || gs.Flags != "RODATA" || gs.Size != 16 {
 		t.Fatalf("unexpected first GLOBL: %#v", gs)
 	}
-	if gs := file.Globl[1]; gs.Sym != "·symptr<>" || gs.Flags != "NOPTR" || gs.Size != 64 {
+	if gs := file.Globl[1]; gs.Sym != "·symptr<>" || gs.Flags != "NOPTR" || gs.Size != 0 || gs.SizeRaw != "$(machTimebaseInfo__size)" {
 		t.Fatalf("unexpected macro-sized GLOBL: %#v", gs)
 	}
 
@@ -78,6 +81,46 @@ GLOBL ·symptr<>(SB), NOPTR, $(machTimebaseInfo__size)
 	}
 	if _, err := parseDATAStmt(ArchARM64, `·short(SB)/4, $"hello"`); err == nil {
 		t.Fatal("oversized string DATA unexpectedly parsed")
+	}
+}
+
+func TestParseLegacyTwoOperandGloblDirective(t *testing.T) {
+	file, err := Parse(ArchAMD64, `DATA ·REDMASK51(SB)/8, $0x0007FFFFFFFFFFFF
+GLOBL ·REDMASK51(SB), $8
+DATA ·ROUNDING(SB)/2, $0x137f
+GLOBL ·ROUNDING(SB), $2
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(file.Globl), 2; got != want {
+		t.Fatalf("len(Globl) = %d, want %d", got, want)
+	}
+	for i, want := range []GloblStmt{
+		{Sym: "·REDMASK51", Size: 8},
+		{Sym: "·ROUNDING", Size: 2},
+	} {
+		if got := file.Globl[i]; got != want {
+			t.Fatalf("Globl[%d] = %#v, want %#v", i, got, want)
+		}
+	}
+	mod, err := TranslateModule(file, Options{
+		Goarch: "amd64",
+		ResolveSym: func(sym string) string {
+			return "legacy." + strings.TrimPrefix(sym, "·")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mod.Dispose()
+	for _, want := range []string{
+		`@legacy.REDMASK51 = global [8 x i8]`,
+		`@legacy.ROUNDING = global [2 x i8]`,
+	} {
+		if ir := mod.String(); !strings.Contains(ir, want) {
+			t.Fatalf("legacy GLOBL translation missing %q:\n%s", want, ir)
+		}
 	}
 }
 

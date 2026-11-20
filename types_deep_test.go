@@ -99,7 +99,9 @@ func TestTypeHelperCoverage(t *testing.T) {
 		{"7&3", 3, true},
 		{"7|8", 15, true},
 		{"7^3", 4, true},
-		{"7&^3", 4, true},
+		// cmd/asm has unary ~, not Go's &^ operator. The independent
+		// integer-grammar oracle retains 7&^3 as an actual Go rejection.
+		{"7&~3", 4, true},
 		{"~1", ^uint64(1), true},
 		{"1/0", 0, false},
 	} {
@@ -178,9 +180,11 @@ func TestTypeParserEdgeCoverage(t *testing.T) {
 		want bool
 	}{
 		{"arg+8(FP)", true},
+		{"arg(FP)", true},
+		{"arg-8(FP)", true},
 		{"arg+8(SP)", false},
 		{"$ret+16(FP)", true},
-		{"$ret(FP)", false},
+		{"$ret(FP)", true},
 	} {
 		if _, _, ok := parseFP(tc.in); ok != tc.want && tc.in[0] != '$' {
 			t.Fatalf("parseFP(%q) ok = %v, want %v", tc.in, ok, tc.want)
@@ -244,6 +248,14 @@ func TestTypeParserEdgeCoverage(t *testing.T) {
 		if err != nil || op.Kind != tc.want {
 			t.Fatalf("parseOperand(%q) = (%v, %v), want kind %v", tc.in, err, op.Kind, tc.want)
 		}
+	}
+	rangeOperand, err := parseOperand("[Z4.Q-Z5.Q]")
+	if err != nil || !rangeOperand.RegListRange {
+		t.Fatalf("parseOperand(SVE range) = (%+v, %v), want range provenance", rangeOperand, err)
+	}
+	listOperand, err := parseOperand("[Z4.Q, Z5.Q]")
+	if err != nil || listOperand.RegListRange {
+		t.Fatalf("parseOperand(SVE list) = (%+v, %v), want non-range provenance", listOperand, err)
 	}
 	if reg, ext, ok := parseRegExtend("r3.sxtw"); !ok || reg != "R3" || ext != ExtendSXTW {
 		t.Fatalf("parseRegExtend(r3.sxtw) = (%q, %q, %v)", reg, ext, ok)

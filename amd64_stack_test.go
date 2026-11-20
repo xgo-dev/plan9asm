@@ -1,9 +1,7 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -33,12 +31,33 @@ RET
 			Ret:  I64,
 		},
 	}
-	if _, err := Translate(file, Options{
+	if ir, err := Translate(file, Options{
 		TargetTriple: "x86_64-unknown-linux-gnu",
 		ResolveSym:   resolve,
 		Sigs:         sigs,
 		Goarch:       "amd64",
-	}); err != nil {
-		t.Fatal(err)
+	}); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("original entry POP and undeclared result acquired a public ABI", err)
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM22 llc required")
+	}
+	for _, triple := range []string{"x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"} {
+		t.Run(triple, func(t *testing.T) {
+			x86LEAActualTargetGoObject(t, "amd64", triple, "#include \"textflag.h\"\n"+src)
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, src, "func stackOps() uint64", "amd64", triple, api)
+				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("original source invented a typed result or initialized stack", api, err)
+				}
+			}
+			ir := x86OriginalStackFormatObject(t, file.Funcs[0], I64, "amd64", triple)
+			for _, text := range []string{ir, x86DwordProductIROptimize(t, ir)} {
+				for _, level := range []string{"-O0", "-O2"} {
+					x86PackedStringCompileObject(t, llc, triple, text, level)
+				}
+			}
+		})
 	}
 }

@@ -32,17 +32,35 @@ const (
 	SP Reg = "SP"
 	BP Reg = "BP"
 	PC Reg = "PC"
+	ES Reg = "ES"
+	CS Reg = "CS"
+	SS Reg = "SS"
+	DS Reg = "DS"
 	FS Reg = "FS"
 	GS Reg = "GS"
+	// TLS is the x86 thread-local-storage pseudo-register used by the Go
+	// assembler both as a loadable base and as a relocation-only memory index.
+	TLS Reg = "TLS"
 
-	AL Reg = "AL"
-	AH Reg = "AH"
-	BL Reg = "BL"
-	BH Reg = "BH"
-	CL Reg = "CL"
-	CH Reg = "CH"
-	DL Reg = "DL"
-	DH Reg = "DH"
+	AL   Reg = "AL"
+	AH   Reg = "AH"
+	BL   Reg = "BL"
+	BH   Reg = "BH"
+	CL   Reg = "CL"
+	CH   Reg = "CH"
+	DL   Reg = "DL"
+	DH   Reg = "DH"
+	BPB  Reg = "BPB"
+	SIB  Reg = "SIB"
+	DIB  Reg = "DIB"
+	R8B  Reg = "R8B"
+	R9B  Reg = "R9B"
+	R10B Reg = "R10B"
+	R11B Reg = "R11B"
+	R12B Reg = "R12B"
+	R13B Reg = "R13B"
+	R14B Reg = "R14B"
+	R15B Reg = "R15B"
 
 	ZR Reg = "ZR"
 )
@@ -88,6 +106,8 @@ func parseReg(s string) (Reg, bool) {
 		return FS, true
 	case "GS":
 		return GS, true
+	case "TLS":
+		return TLS, true
 	case "AL":
 		return AL, true
 	case "AH":
@@ -104,6 +124,28 @@ func parseReg(s string) (Reg, bool) {
 		return DL, true
 	case "DH":
 		return DH, true
+	case "BPB":
+		return BPB, true
+	case "SIB":
+		return SIB, true
+	case "DIB":
+		return DIB, true
+	case "R8B":
+		return R8B, true
+	case "R9B":
+		return R9B, true
+	case "R10B":
+		return R10B, true
+	case "R11B":
+		return R11B, true
+	case "R12B":
+		return R12B, true
+	case "R13B":
+		return R13B, true
+	case "R14B":
+		return R14B, true
+	case "R15B":
+		return R15B, true
 	case "ZR":
 		return ZR, true
 	case "G":
@@ -141,6 +183,18 @@ func parseReg(s string) (Reg, bool) {
 			return Reg(ss), true
 		}
 	}
+	if strings.HasPrefix(ss, "PN") && len(ss) >= 3 {
+		i := 2
+		for i < len(ss) && ss[i] >= '0' && ss[i] <= '9' {
+			i++
+		}
+		if i > 2 {
+			rest := ss[i:]
+			if rest == "" || strings.HasPrefix(rest, ".") || strings.HasPrefix(rest, "[") {
+				return Reg(ss), true
+			}
+		}
+	}
 	if (strings.HasPrefix(ss, "X") || strings.HasPrefix(ss, "Y") || strings.HasPrefix(ss, "Z") || strings.HasPrefix(ss, "V") || strings.HasPrefix(ss, "F") || strings.HasPrefix(ss, "P")) && len(ss) >= 2 {
 		i := 1
 		for i < len(ss) && ss[i] >= '0' && ss[i] <= '9' {
@@ -152,7 +206,7 @@ func parseReg(s string) (Reg, bool) {
 			if rest == "" {
 				return Reg(ss), true
 			}
-			if strings.HasPrefix(rest, ".") {
+			if strings.HasPrefix(rest, ".") || strings.HasPrefix(ss, "Z") && strings.HasPrefix(rest, "[") {
 				return Reg(ss), true
 			}
 		}
@@ -211,10 +265,11 @@ const (
 type Operand struct {
 	Kind OperandKind
 
-	Imm    int64    // OpImm
-	ImmRaw string   // OpImm unresolved symbolic placeholder, including leading '$'
-	Reg    Reg      // OpReg
-	Ext    ExtendOp // OpRegExtend
+	Imm        int64    // OpImm; floating immediates hold their float64 bit pattern
+	ImmRaw     string   // OpImm unresolved symbolic placeholder, including leading '$'
+	ImmIsFloat bool     // OpImm originated from a floating constant expression
+	Reg        Reg      // OpReg
+	Ext        ExtendOp // OpRegExtend
 	// OpRegShift
 	ShiftOp     ShiftOp
 	ShiftAmount int64
@@ -235,17 +290,18 @@ type Operand struct {
 	//   (R0)(R6)
 	Mem MemRef
 
-	RegList []Reg // OpRegList (e.g. (R4, R8))
+	RegList      []Reg // OpRegList (e.g. (R4, R8))
+	RegListRange bool  // OpRegList originated from one range (e.g. [Z4.Q-Z5.Q])
 }
 
 type MemRef struct {
 	Base     Reg
-	Sym      string // optional symbol-based address, including the (SB) suffix
+	Sym      string // optional named address role, including (SB), (FP), or (SP)
 	Off      int64
 	OffRaw   string   // unresolved symbolic displacement, used by generated wasm go_asm.h offsets
 	Index    Reg      // optional; empty if not present
 	IndexExt ExtendOp // optional ARM64 index extension (UXTW, SXTW, UXTX, or SXTX)
-	Scale    int64    // optional; defaults to 1 when Index is present
+	Scale    int64    // source x86 preserves a missing multiplier as 0; consumers validate their role
 	Segment  Reg      // optional x86 segment override (FS or GS)
 }
 
@@ -254,6 +310,9 @@ func (o Operand) String() string {
 	case OpImm:
 		if o.ImmRaw != "" {
 			return o.ImmRaw
+		}
+		if o.ImmIsFloat {
+			return "$(" + strconv.FormatFloat(math.Float64frombits(uint64(o.Imm)), 'g', -1, 64) + ")"
 		}
 		return fmt.Sprintf("$%d", o.Imm)
 	case OpReg:
@@ -287,10 +346,17 @@ func (o Operand) String() string {
 			segment = fmt.Sprintf("(%s)", o.Mem.Segment)
 		}
 		if o.Mem.Sym != "" {
-			if o.Mem.Scale == 0 {
-				return fmt.Sprintf("%s(%s)%s", o.Mem.Sym, o.Mem.Index, segment)
+			symbol := o.Mem.Sym
+			if o.Mem.Base != "" {
+				symbol += fmt.Sprintf("(%s)", o.Mem.Base)
 			}
-			return fmt.Sprintf("%s(%s*%d)%s", o.Mem.Sym, o.Mem.Index, o.Mem.Scale, segment)
+			if o.Mem.Index == "" {
+				return symbol + segment
+			}
+			if o.Mem.Scale == 0 {
+				return fmt.Sprintf("%s(%s)%s", symbol, o.Mem.Index, segment)
+			}
+			return fmt.Sprintf("%s(%s*%d)%s", symbol, o.Mem.Index, o.Mem.Scale, segment)
 		}
 		offset := fmt.Sprintf("%d", o.Mem.Off)
 		if o.Mem.OffRaw != "" {
@@ -379,24 +445,38 @@ func isSymbolicImmPlaceholder(s string) bool {
 	return strings.ContainsAny(inner, "+-*/%<>&|^ \t")
 }
 
-func parseImmExpr(v string) (uint64, bool) {
-	// Plan9 asm frequently uses C-style unary "~" for bitwise-not in immediates.
-	// Go expressions use "^", so normalize before parsing.
-	exprText := strings.ReplaceAll(strings.TrimSpace(v), "~", "^")
-	if exprText == "" {
+func parseVectorLengthScaleExpr(v string) (int64, bool) {
+	expr := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(v), " ", ""))
+	for strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") {
+		expr = strings.TrimSpace(expr[1 : len(expr)-1])
+	}
+	sign := int64(1)
+	if strings.HasPrefix(expr, "-") {
+		sign = -1
+		expr = strings.TrimPrefix(expr, "-")
+	} else {
+		expr = strings.TrimPrefix(expr, "+")
+	}
+	if !strings.HasPrefix(expr, "VL*") {
 		return 0, false
 	}
-	expr, err := parser.ParseExpr(exprText)
-	if err != nil {
+	multiplier, err := strconv.ParseInt(strings.TrimPrefix(expr, "VL*"), 10, 64)
+	if err != nil || multiplier < 0 {
 		return 0, false
 	}
-	return evalImmExpr(expr)
+	return sign * multiplier, true
 }
 
 func parseImmFloatExpr(v string) (float64, bool) {
 	exprText := strings.TrimSpace(v)
 	if exprText == "" {
 		return 0, false
+	}
+	// cmd/asm treats each unary sign as a separate token. Go source parsing
+	// instead tokenizes adjacent ++/-- as increment/decrement, so preserve
+	// the actual assembly FLOAT-leaf grammar before the legacy evaluator.
+	if value, valid := parseGoFloatLiteral(exprText); valid {
+		return value, true
 	}
 	expr, err := parser.ParseExpr(exprText)
 	if err != nil {
@@ -468,105 +548,20 @@ func evalFloatExpr(e ast.Expr) (float64, bool) {
 	}
 }
 
-func evalImmExpr(e ast.Expr) (uint64, bool) {
-	switch x := e.(type) {
-	case *ast.ParenExpr:
-		return evalImmExpr(x.X)
-	case *ast.BasicLit:
-		if x.Kind != token.INT {
-			return 0, false
-		}
-		if u, err := strconv.ParseUint(x.Value, 0, 64); err == nil {
-			return u, true
-		}
-		n, err := strconv.ParseInt(x.Value, 0, 64)
-		if err != nil {
-			return 0, false
-		}
-		return uint64(n), true
-	case *ast.UnaryExpr:
-		v, ok := evalImmExpr(x.X)
-		if !ok {
-			return 0, false
-		}
-		switch x.Op {
-		case token.ADD:
-			return v, true
-		case token.SUB:
-			return uint64(0) - v, true
-		case token.XOR:
-			return ^v, true
-		default:
-			return 0, false
-		}
-	case *ast.BinaryExpr:
-		lv, ok := evalImmExpr(x.X)
-		if !ok {
-			return 0, false
-		}
-		rv, ok := evalImmExpr(x.Y)
-		if !ok {
-			return 0, false
-		}
-		switch x.Op {
-		case token.ADD:
-			return lv + rv, true
-		case token.SUB:
-			return lv - rv, true
-		case token.MUL:
-			return lv * rv, true
-		case token.QUO:
-			if rv == 0 {
-				return 0, false
-			}
-			return lv / rv, true
-		case token.REM:
-			if rv == 0 {
-				return 0, false
-			}
-			return lv % rv, true
-		case token.SHL:
-			if rv >= 64 {
-				return 0, true
-			}
-			return lv << rv, true
-		case token.SHR:
-			if rv >= 64 {
-				return 0, true
-			}
-			return lv >> rv, true
-		case token.AND:
-			return lv & rv, true
-		case token.OR:
-			return lv | rv, true
-		case token.XOR:
-			return lv ^ rv, true
-		case token.AND_NOT:
-			return lv &^ rv, true
-		default:
-			return 0, false
-		}
-	default:
-		return 0, false
-	}
-}
-
 func parseFP(s string) (name string, off int64, ok bool) {
-	// Minimal: name+off(FP)
-	// Examples: a+0(FP), b+8(FP), ret+16(FP)
+	// Go accepts both name(FP) and name+off(FP) (including a negative
+	// displacement). The omitted displacement is exactly zero; generated
+	// assembly uses that spelling frequently for the first result slot.
 	s = strings.TrimSpace(s)
 	if !strings.HasSuffix(s, "(FP)") {
 		return "", 0, false
 	}
-	base := strings.TrimSuffix(s, "(FP)")
-	plus := strings.LastIndexByte(base, '+')
-	if plus <= 0 || plus == len(base)-1 {
+	base := strings.TrimSpace(strings.TrimSuffix(s, "(FP)"))
+	if base == "" {
 		return "", 0, false
 	}
-	name = strings.TrimSpace(base[:plus])
-	offStr := strings.TrimSpace(base[plus+1:])
-	off, err := strconv.ParseInt(offStr, 0, 64)
-	if err != nil {
+	name, off = splitSymPlusOff(base)
+	if name == "" || strings.IndexAny(name, " \t,()+-") >= 0 {
 		return "", 0, false
 	}
 	return name, off, true
@@ -595,7 +590,10 @@ func parseOperand(s string) (Operand, error) {
 		}
 	}
 	if imm, ok := parseImm(s); ok {
-		op := Operand{Kind: OpImm, Imm: imm}
+		expr := strings.TrimSpace(strings.TrimPrefix(s, "$"))
+		_, integerExpression := parseImmExpr(expr)
+		_, floatingExpression := parseImmFloatExpr(expr)
+		op := Operand{Kind: OpImm, Imm: imm, ImmIsFloat: !integerExpression && floatingExpression}
 		if isSymbolicImmPlaceholder(s) {
 			expr := strings.TrimSpace(strings.TrimPrefix(s, "$"))
 			if _, resolvedInt := parseImmExpr(expr); !resolvedInt {
@@ -642,7 +640,7 @@ func parseOperand(s string) (Operand, error) {
 			}
 			regs = append(regs, rs...)
 		}
-		return Operand{Kind: OpRegList, RegList: regs}, nil
+		return Operand{Kind: OpRegList, RegList: regs, RegListRange: len(parts) == 1 && strings.Contains(parts[0], "-")}, nil
 	}
 	// Register list: (R4, R8)
 	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") && strings.Contains(s, ",") {
@@ -739,6 +737,10 @@ func parseRegShift(s string) (base Reg, sop ShiftOp, amt int64, shiftReg Reg, ok
 		if rr, ok := parseReg(r); ok {
 			return br, candidate, 0, rr, true
 		}
+		// x/arch GoSyntax prints ARM immediate shifts with a dollar sign
+		// (for example R0->$32). Accept that spelling as well as the
+		// existing source form without the prefix.
+		r = strings.TrimPrefix(r, "$")
 		if n, err := strconv.ParseInt(r, 0, 64); err == nil {
 			return br, candidate, n, "", true
 		}
@@ -844,15 +846,129 @@ type Instr struct {
 	Op   Op
 	Args []Operand
 	Raw  string
+	// Set only by an ARM64 machine-code decoder. A physical data instruction
+	// does not acquire Go's named immediate expansion or implicit R27 scratch.
+	arm64Encoded bool
+	// Recomputed from the complete source TEXT's Go frame, never from public
+	// input metadata. FP shadow storage does not thereby become physical SP.
+	arm64ScalarMemoryFrameOffset *int64
+	// Set only after a raw BL's exact same-source PC target is established.
+	// It remains a physical leaf call for Go's pre-WORD prologue selection.
+	arm64RawLocalCall bool
+	// A decoded A64 UDF keeps its encoded imm16 while reusing UNDEF's
+	// terminating semantics. Textual Go UNDEF remains operand-free/#0.
+	arm64RawUndefinedImmediate uint16
+	// Set only after validating a closed, source-local Linux native helper.
+	armKernelCall *armKernelCall
+	// Set only by a validated machine-code decoder. Physical operands need
+	// not obey textual frontend limits (e.g. Go 386's three-operand limit).
+	x86Encoded bool
+	// Physical BYTE/WORD/LONG/QUAD producer origin. Unlike x86Encoded, this
+	// does not relax Go operand grammar. Go's prologue pass cannot see a raw
+	// PUSH/POP when adjusting a later named FP operand.
+	x86SourceRaw *x86SourceRawInstruction
+	// Decoder-only native 63/r scalar copies require actual initialized input
+	// provenance before a raw return. Their MOVL/MOVW spellings do not grant
+	// the older generic scalar frame proof new entry-register permissions.
+	x86RawMOVSXDNeedsCaller bool
+	// Decoder-only CVTPI2PS/PD provenance. Its normalized Go name is shared
+	// with an SSE conversion, but the original instruction reads m64/MMX
+	// and changes physical x87/MMX state. This is a restriction, not an
+	// authorization to use native MMX scratch registers.
+	x86MMXSourceConversion bool
+	// Decoder-only EVEX scalar conversion encoding. Keep its native ISA
+	// requirement even when its low-X operands also have a VEX spelling.
+	x86ScalarFloatIntegerEVEX bool
+	x86PackedNumericEVEX      bool
+	// A physical packed float move can use EVEX with unmasked low X/Y
+	// operands too. Retain that generation for the existing native bridge;
+	// neither this restriction nor its CPU features grant input permission.
+	x86PackedVectorMoveEVEX bool
+	// Preserve physical EVEX generation even without a high bank or SAE suffix.
+	x86ScalarFlagCompareEVEX bool
+	x86SqrtEVEX              bool
+	// MIN/MAX retains low-bank, unmasked physical EVEX independently of its
+	// operand-inferred native encoding and ordinary numerical input facts.
+	x86FloatMinMaxEVEX bool
+	// Scalar precision conversions retain their physical EVEX generation even
+	// when every low-X operand also has an unmasked VEX spelling.
+	x86ScalarPrecisionEVEX bool
+	x86PackedPrecisionEVEX bool
+	// Ordinary F16C/AVX512F half conversions retain an explicit generation;
+	// zero is absent identity, not VEX or raw-only AVX512-FP16 permission.
+	x86NamedHalfEncoding x86RawNamedHalfEncoding
+	// F32/F64 FMA keeps an explicit physical generation. A zero value is not
+	// a VEX observation and does not borrow raw-only FP16's encoded grammar.
+	x86FMA3Encoding x86RawFMA3Encoding
+	// Packed shifts retain actual decoder generation and W, including WIG.
+	// The zero generation is absent identity, not an inferred VEX encoding.
+	x86PackedShiftEncoding x86RawPackedShiftEncoding
+	x86PackedShiftW        bool
+	// Integer dot products retain VEX versus EVEX independently of operand
+	// spelling. This is physical identity, never an incoming data/entry fact.
+	x86PackedDotEncoding x86RawPackedDotEncoding
+	// Set only by the fixed W0/L1 permute128 decoder. False is absent
+	// physical identity, not permission to infer a VEX source from Y names.
+	x86Permute128VEX bool
+	// ABS retains physical EVEX even for unmasked low X/Y operands that
+	// otherwise have a VEX spelling. CPU generation supplies no input facts.
+	x86PackedAbsEVEX bool
+	// Recomputed per-operand source-SP to typed ABI0 slot certificate. Keep
+	// original physical operands intact across repeated normalization.
+	x86SourceStackFP map[int]int64
+	// Recomputed only after the complete source-stack CFG consumes an actual
+	// typed caller-region proof; never a general incoming-pointer permission.
+	x86CallerMemory map[int]x86CallerMemoryAccess
+	// Recomputed only from a live actual-object binding and complete local CFG.
+	// JSON/source spelling and caller-region certificates cannot create it.
+	x86FixedLocalMemory map[int]x86FixedLocalAccess
+	// Factory-only exact scalar numerical read. Its immutable source/native
+	// join is rechecked before and after translation, never inferred from SB.
+	x86NumericalRead *x86NumericalReadCertificate
+	// Literal-only address/read fact from the same live original SDK DATA and
+	// complete source-path proof; never caller or native-frame authority.
+	x86SDKLiteral *x86SDKLiteralCertificate
+	// A decoded near return is a physical C2/C3 instruction, not a Go RET
+	// pseudo-instruction with an automatically generated frame epilogue.
+	x86RawNearReturn *x86RawNearReturnForm
+	// Effective address width for a raw address-size override; zero means
+	// the target's ordinary pointer width.
+	x86AddressBits int
+	// Restriction from the generic decoder: the physical memory address-size
+	// prefix has no width-consuming ordinary lowerer. This is not a positive
+	// certificate. Dedicated typed decoders bind their own address semantics.
+	x86UnboundAddressOverride bool
+	// Segment override on a raw instruction with an implicit register address.
+	x86SegmentPrefix byte
+	// Decoded vector length, separate from register storage width. Narrowing
+	// conversions can write X from either a 128- or 256-bit memory source.
+	x86VectorBytes int
+	// A decoder folded a same-group, unreachable RIP-relative data read. Keep
+	// address-observed raw TEXT bodies on the byte-preserving path instead.
+	x86RIPLiteral bool
+	// A wide source-local constant is materialized as an LLVM data global by
+	// normalizeX86RawFile. Retain its bytes for lowerers that can specialize
+	// the constant without a memory access, after source-layout validation.
+	x86RIPLiteralData []byte
+	// A shared RIP decoder proved this exact read operand and physical width.
+	// The bound source/global must still be rechecked after materialization;
+	// changed exported operands cannot inherit the old decoder proof.
+	x86RIPMemoryRead x86RawStaticRead
+	// A reachable LEA addresses an offset of a source-local raw data suffix.
+	// The suffix is shared by all such LEAs in one raw directive group.
+	x86RIPAddressData  []byte
+	x86RIPAddressOff   int
+	x86RIPAddressGroup int
 }
 
 // DataStmt models a minimal Plan 9 DATA directive:
 //
 //	DATA sym+off(SB)/width, $value
 //
-// Width is in bytes. Integer values are encoded little-endian into the
-// global. String payloads are copied byte-for-byte and zero-padded to Width,
-// matching cmd/asm's DATA string semantics.
+// Width is in bytes. Value holds an integer or an already width-converted
+// IEEE float bit pattern, encoded little-endian into the global. String
+// payloads are copied byte-for-byte and zero-padded to Width, matching
+// cmd/asm's DATA string semantics.
 type DataStmt struct {
 	// Addr retains a symbol-address initializer, including its (SB) suffix.
 	Addr    string
@@ -865,13 +981,15 @@ type DataStmt struct {
 
 // GloblStmt models a minimal Plan 9 GLOBL directive:
 //
-//	GLOBL sym(SB), flags, $size
+// GLOBL sym(SB), $size
+// GLOBL sym(SB), flags, $size
 //
 // Flags are preserved as raw text for now (e.g. "RODATA").
 type GloblStmt struct {
-	Sym   string
-	Flags string
-	Size  int64
+	Sym     string
+	Flags   string
+	Size    int64
+	SizeRaw string // unresolved generated go_asm.h expression; translation rejects it
 }
 
 func parseIdent(s string) (string, bool) {
@@ -947,6 +1065,29 @@ func parseMem(s string) (MemRef, bool) {
 	s = strings.TrimSpace(s)
 	if !strings.Contains(s, "(") || !strings.Contains(s, ")") {
 		return MemRef{}, false
+	}
+	// A displacement is a Go constant expression and may itself contain
+	// parentheses. Split from the final base-register group before the older
+	// left-to-right address parser so forms such as 0+(1*16)(BP) do not mistake
+	// the expression's first parenthesis for the address base.
+	if strings.HasSuffix(s, ")") {
+		if open := strings.LastIndexByte(s, '('); open > 0 {
+			prefix := strings.TrimSpace(s[:open])
+			baseText := strings.TrimSpace(s[open+1 : len(s)-1])
+			if base, ok := parseReg(baseText); ok {
+				if offset, ok := parseImmExpr(prefix); ok {
+					if base == FS || base == GS {
+						return MemRef{Segment: base, Off: int64(offset)}, true
+					}
+					return MemRef{Base: base, Off: int64(offset)}, true
+				}
+				if base == SP && strings.EqualFold(baseText, "SP") {
+					if offset, ok := parseNamedStackConstantOffset(prefix); ok {
+						return MemRef{Base: SP, Off: offset}, true
+					}
+				}
+			}
+		}
 	}
 
 	parseIndexScale := func(inner string) (idx Reg, ext ExtendOp, scale int64, ok bool) {
@@ -1042,8 +1183,21 @@ func parseMem(s string) (MemRef, bool) {
 		}
 		return MemRef{Sym: offPart + "(SB)", Index: idx, IndexExt: ext, Scale: scale}, true
 	}
+	// Go's ARM64 SVE vector-offset syntax prints the vector index before the
+	// scalar base, for example (Z6.S.SXTW<<2)(R14). Normalize that spelling to
+	// the MemRef Base/Index model before parseReg accepts the arranged Z name as
+	// an ordinary base register.
+	if offPart == "" && strings.HasPrefix(strings.ToUpper(baseStr), "Z") && strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")") {
+		base2 := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(rest, "("), ")"))
+		if base, baseOK := parseReg(base2); baseOK {
+			if index, ext, scale, indexOK := parseIndexScale(baseStr); indexOK {
+				return MemRef{Base: base, Index: index, IndexExt: ext, Scale: scale}, true
+			}
+		}
+	}
 
 	var off int64
+	var offRaw string
 	if offPart != "" {
 		if n, err := strconv.ParseInt(offPart, 0, 64); err == nil {
 			off = n
@@ -1051,8 +1205,10 @@ func parseMem(s string) (MemRef, bool) {
 			off = int64(u)
 		} else {
 			// Stack slots commonly use a descriptive name before their numeric
-			// displacement (for example control-4(SP)). Preserve the displacement;
-			// only an unresolved include-derived expression degrades to zero.
+			// displacement (for example control-4(SP)). Preserve both the source
+			// spelling and displacement so architecture validators can distinguish
+			// named stack slots from plain register-relative memory.
+			offRaw = offPart
 			_, off = splitSymPlusOff(offPart)
 		}
 	}
@@ -1070,6 +1226,16 @@ func parseMem(s string) (MemRef, bool) {
 					mem := MemRef{Base: br, Off: 0}
 					if u, ok := parseImmExpr(baseStr); ok {
 						mem.Off = int64(u)
+					} else if idx, ext, scale, ok := parseIndexScale(baseStr); ok {
+						mem.Index = idx
+						mem.IndexExt = ext
+						mem.Scale = scale
+					} else if _, ok := parseVectorLengthScaleExpr(baseStr); ok {
+						mem.OffRaw = baseStr
+					} else {
+						// Unknown include-derived expressions must remain visible
+						// to validation; they are never evidence for offset zero.
+						mem.OffRaw = baseStr
 					}
 					rem := strings.TrimSpace(rest[j2+1:])
 					if rem == "" {
@@ -1096,9 +1262,13 @@ func parseMem(s string) (MemRef, bool) {
 				if u, ok := parseImmExpr(baseStr); ok {
 					return MemRef{Base: br, Off: int64(u)}, true
 				}
-				// Accept (symExpr)(REG) by degrading symExpr to offset 0 when
-				// include-derived constants are unavailable in preprocessing.
-				return MemRef{Base: br, Off: 0}, true
+				if idx, ext, scale, ok := parseIndexScale(baseStr); ok {
+					return MemRef{Base: br, Index: idx, IndexExt: ext, Scale: scale}, true
+				}
+				if _, ok := parseVectorLengthScaleExpr(baseStr); ok {
+					return MemRef{Base: br, OffRaw: baseStr}, true
+				}
+				return MemRef{Base: br, OffRaw: baseStr}, true
 			}
 		}
 		// Accept off(index*scale) with no base, e.g. -1(AX*2).
@@ -1109,7 +1279,7 @@ func parseMem(s string) (MemRef, bool) {
 		return MemRef{Base: "", Off: off, Index: idx, IndexExt: ext, Scale: scale}, true
 	}
 
-	mem := MemRef{Base: base, Off: off}
+	mem := MemRef{Base: base, Off: off, OffRaw: offRaw}
 	if base == FS || base == GS {
 		mem.Base = ""
 		mem.Segment = base
@@ -1140,6 +1310,27 @@ func parseMem(s string) (MemRef, bool) {
 	return mem, true
 }
 
+// Go stack names are annotations; the numeric expression after their sign
+// determines the actual SP displacement. For example tmpdig-(1*4)(SP) and
+// tmpdig-4(SP) address the same slot. Only an evaluable expression is accepted
+// here, so an unresolved macro cannot silently become offset zero.
+// Bare names retain their spelling for architecture-specific AUTO consumers.
+func parseNamedStackConstantOffset(prefix string) (int64, bool) {
+	prefix = strings.TrimSpace(prefix)
+	if len(prefix) < 3 {
+		return 0, false
+	}
+	sep := strings.IndexAny(prefix[1:], "+-") + 1
+	if sep == 0 || sep >= len(prefix)-1 {
+		return 0, false
+	}
+	if !validPPIdentifier(prefix[:sep]) {
+		return 0, false
+	}
+	offset, ok := parseImmExpr(prefix[sep:])
+	return int64(offset), ok
+}
+
 func splitTopLevelCSV(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1149,8 +1340,21 @@ func splitTopLevelCSV(s string) []string {
 	start := 0
 	par := 0
 	brk := 0
+	var quote byte
 	for i := 0; i < len(s); i++ {
+		if quote != 0 {
+			if s[i] == '\\' && quote != '`' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if s[i] == quote {
+				quote = 0
+			}
+			continue
+		}
 		switch s[i] {
+		case '\'', '"', '`':
+			quote = s[i]
 		case '(':
 			par++
 		case ')':

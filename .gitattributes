@@ -1,0 +1,6 @@
+# Shell scripts are executed and inspected verbatim on every CI host.
+*.sh text eol=lf
+# Original Go test drivers and embedded ASM/C retain byte-exact hash guards.
+*.go text eol=lf
+# Tracked ASM conformance sources retain their original whole-program hashes.
+*.s text eol=lf

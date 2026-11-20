@@ -1,0 +1,3 @@
+module example.com/rawsyscall
+
+go 1.20

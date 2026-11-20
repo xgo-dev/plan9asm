@@ -141,6 +141,14 @@ MOVD $const_Bool, R5
 
 func TestGoAsmHeaderDataConstants(t *testing.T) {
 	pkg := types.NewPackage("test/pkg", "pkg")
+	genericName := types.NewTypeName(token.NoPos, pkg, "generic", nil)
+	typeParamName := types.NewTypeName(token.NoPos, pkg, "T", nil)
+	typeParam := types.NewTypeParam(typeParamName, types.NewInterfaceType(nil, nil).Complete())
+	generic := types.NewNamed(genericName, types.NewStruct([]*types.Var{
+		types.NewField(token.NoPos, pkg, "value", typeParam, false),
+	}, nil), nil)
+	generic.SetTypeParams([]*types.TypeParam{typeParam})
+	pkg.Scope().Insert(genericName)
 	pkg.Scope().Insert(types.NewConst(token.NoPos, pkg, "smallInt", types.Typ[types.UntypedInt], constant.MakeInt64(42)))
 	pkg.Scope().Insert(types.NewConst(token.NoPos, pkg, "bigInt", types.Typ[types.UntypedInt], constant.MakeUint64(^uint64(0))))
 	pkg.Scope().Insert(types.NewConst(token.NoPos, pkg, "stringVal", types.Typ[types.UntypedString], constant.MakeString("test")))
@@ -165,6 +173,10 @@ func TestGoAsmHeaderDataConstants(t *testing.T) {
 	}
 	if got := goExpandAsmHeaderTypes(unchanged, pkg, "unsupported"); !bytes.Equal(got, unchanged) {
 		t.Fatalf("unsupported-arch expansion changed source: %q", got)
+	}
+	genericRef := []byte("MOVD $generic__size, R0")
+	if got := goExpandAsmHeaderTypes(genericRef, pkg, "arm64"); !bytes.Equal(got, genericRef) {
+		t.Fatalf("uninstantiated generic struct macro unexpectedly expanded: %q", got)
 	}
 	nonStructPkg := types.NewPackage("test/nonstruct", "nonstruct")
 	nonStructPkg.Scope().Insert(types.NewVar(token.NoPos, nonStructPkg, "value", types.Typ[types.Int]))

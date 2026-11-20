@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -13,14 +10,14 @@ import (
 func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
-		t.Skip("llc not found")
+		t.Fatal("llc not found")
 	}
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "cpu", "cpu_arm64.s"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			t.Skip("internal/cpu/cpu_arm64.s not present in this GOROOT")
+			t.Fatal("internal/cpu/cpu_arm64.s not present in this GOROOT")
 		}
 		t.Fatal(err)
 	}

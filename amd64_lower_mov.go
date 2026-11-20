@@ -6,8 +6,25 @@ import (
 )
 
 func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	if ok, terminated, err := c.lowerMOVNTI(op, ins); ok {
+		return ok, terminated, err
+	}
+	if ok, terminated, err := c.lowerMOVBE(op, ins); ok {
+		return ok, terminated, err
+	}
+	if form, known, err := x86ScalarMoveAliasProperties(op, ins, c.goarch); known {
+		if err != nil {
+			return true, false, err
+		}
+		if !form.spec.load {
+			op = form.spec.canonical // Local lowering only; the original source remains intact.
+		}
+	}
 	switch op {
-	case "MOVQ", "MOVD", "MOVL", "MOVLQZX", "MOVLQSX", "MOVBQZX", "MOVBLZX", "MOVB", "MOVW", "MOVWLZX", "MOVWQZX", "MOVWQSX", "CMOVQLT":
+	case "MOVQ", "MOVD", "MOVDQ2Q", "MOVL", "MOVB", "MOVW", "CMOVQLT",
+		"MOVBWSX", "MOVBWZX", "MOVBLSX", "MOVBLZX", "MOVBQSX", "MOVBQZX",
+		"MOVWLSX", "MOVWLZX", "MOVWQSX", "MOVWQZX", "MOVLQSX", "MOVLQZX",
+		"MOVSWW", "MOVZWW":
 		// ok
 	default:
 		return false, false, nil
@@ -15,71 +32,55 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 	if len(ins.Args) != 2 {
 		return true, false, fmt.Errorf("amd64 %s expects 2 operands: %q", op, ins.Raw)
 	}
+	if view, known, err := x86NamedFrameMoveAddressInstruction(ins, c.goarch); known {
+		if err != nil {
+			return true, false, err
+		}
+		dispatch := ins
+		dispatch.Op = op
+		if x86SourceMoveInstruction(dispatch, c.goarch).Op != x86SourceMoveInstruction(ins, c.goarch).Op {
+			return true, false, fmt.Errorf("named frame MOV address dispatch disagrees with original instruction")
+		}
+		if view.Args[0].Kind == OpFP {
+			if err := c.scalarFPResultInitialized(); err != nil {
+				return true, false, err
+			}
+		}
+		// Reuse LEA's actual bound address and W/L/Q writeback. The source,
+		// frame proof and stored original instruction remain unchanged.
+		return c.lowerArith(view.Op, view)
+	}
+	if known, err := c.lowerGoReadOnlyLoad(ins); known {
+		return true, false, err
+	}
+	if _, ok := amd64ScalarExtensionMoveSpecs[op]; ok {
+		return true, false, c.lowerScalarExtensionMove(op, ins)
+	}
+	if known, err := c.lowerDataBPScalarMove(ins); known {
+		return true, false, err
+	}
+	if form, known, err := x86ScalarStaticStoreProperties(op, ins, c.goarch); known {
+		if err != nil {
+			return true, false, err
+		}
+		return true, false, c.lowerScalarNativeStore(form, ins)
+	}
+	if form, known, err := c.scalarNativeLoadProperties(op, ins); known {
+		if err != nil {
+			return true, false, err
+		}
+		return true, false, c.lowerScalarNativeLoad(form, ins)
+	}
+	if form, known, err := c.scalarNativeStoreProperties(op, ins); known {
+		if err != nil {
+			return true, false, err
+		}
+		return true, false, c.lowerScalarNativeStore(form, ins)
+	}
 	src, dst := ins.Args[0], ins.Args[1]
-	zeroExtendSmallDst := false
-	if op == "MOVLQZX" {
-		op = "MOVL"
-	}
-	if op == "MOVD" {
-		op = "MOVQ"
-	}
-	if op == "MOVBQZX" || op == "MOVBLZX" {
-		op = "MOVB"
-		zeroExtendSmallDst = true
-	}
-	if op == "MOVWQZX" || op == "MOVWLZX" {
-		op = "MOVW"
-		zeroExtendSmallDst = true
-	}
-	if op == "MOVLQSX" || op == "MOVWQSX" {
-		// Sign-extend i32/i16 source to i64 destination register.
-		if dst.Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects dst reg: %q", op, ins.Raw)
-		}
-		srcTy := I32
-		if op == "MOVWQSX" {
-			srcTy = I16
-		}
-		var sv string
-		switch src.Kind {
-		case OpImm:
-			switch srcTy {
-			case I16:
-				sv = fmt.Sprintf("%d", int16(src.Imm))
-			default:
-				sv = fmt.Sprintf("%d", int32(src.Imm))
-			}
-		case OpReg, OpFP:
-			v64, err := c.evalI64(src)
-			if err != nil {
-				return true, false, err
-			}
-			tr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, v64, srcTy)
-			sv = "%" + tr
-		case OpMem:
-			p, ptrType, err := c.ptrFromMem(src.Mem)
-			if err != nil {
-				return true, false, err
-			}
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", ld, srcTy, ptrType, p)
-			sv = "%" + ld
-		case OpSym:
-			p, err := c.ptrFromSB(src.Sym)
-			if err != nil {
-				return true, false, err
-			}
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", ld, srcTy, p)
-			sv = "%" + ld
-		default:
-			return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
-		}
-		se := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = sext %s %s to i64\n", se, srcTy, sv)
-		return true, false, c.storeReg(dst.Reg, "%"+se)
-	}
+	dispatch := ins
+	dispatch.Op = op
+	op = x86SourceMoveInstruction(dispatch, c.goarch).Op
 
 	// Vector moves are handled in lowerVec.
 	if dst.Kind == OpReg {
@@ -123,6 +124,17 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 		widthTy := I8
 		if op == "MOVW" {
 			widthTy = I16
+		} else {
+			// ymovb uses Yrb for register operands on both sides.  The
+			// compatibility closure through Ymb is identical for registers,
+			// including Go's synthesized BP/SI/DI support on 386, but excludes
+			// the amd64-only explicit low-byte aliases when translating 386.
+			if src.Kind == OpReg && !isGoYmbRegisterForArch(src.Reg, c.goarch) {
+				return true, false, fmt.Errorf("amd64 MOVB source register is outside its Go 1.27 class: %q", ins.Raw)
+			}
+			if dst.Kind == OpReg && !isGoYmbRegisterForArch(dst.Reg, c.goarch) {
+				return true, false, fmt.Errorf("amd64 MOVB destination register is outside its Go 1.27 class: %q", ins.Raw)
+			}
 		}
 		var small string
 		switch src.Kind {
@@ -137,6 +149,13 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, v64, widthTy)
 			small = "%" + tr
 		case OpFP:
+			if value, handled, err := c.loadIntegerFPBytes(src.FPOffset, widthTy); handled {
+				if err != nil {
+					return true, false, err
+				}
+				small = value
+				break
+			}
 			v64, err := c.evalFPToI64(src.FPOffset)
 			if err != nil {
 				return true, false, err
@@ -165,13 +184,11 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 		}
 		switch dst.Kind {
 		case OpReg:
-			if zeroExtendSmallDst {
-				z := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", z, widthTy, small)
-				return true, false, c.storeReg(dst.Reg, "%"+z)
-			}
 			return true, false, c.storeRegSized(dst.Reg, widthTy, small)
 		case OpFP:
+			if handled, err := c.storeIntegerFPBytes(dst.FPOffset, widthTy, small); handled {
+				return true, false, err
+			}
 			return true, false, c.storeFPResult(dst.FPOffset, widthTy, small)
 		case OpMem:
 			p, ptrType, err := c.ptrFromMem(dst.Mem)
@@ -200,7 +217,13 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 		case OpReg:
 			var v string
 			var err error
-			if src.Kind == OpMem && src.Mem.Segment != "" {
+			if src.Kind == OpFP {
+				var handled bool
+				v, handled, err = c.loadIntegerFPBytes(src.FPOffset, I64)
+				if !handled {
+					v, err = c.evalI64(src)
+				}
+			} else if src.Kind == OpMem && src.Mem.Segment != "" {
 				p, ptrType, err2 := c.ptrFromMem(src.Mem)
 				if err2 != nil {
 					return true, false, err2
@@ -241,6 +264,9 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 			if err != nil {
 				return true, false, err
 			}
+			if handled, err := c.storeIntegerFPBytes(dst.FPOffset, I64, v); handled {
+				return true, false, err
+			}
 			return true, false, c.storeFPResult(dst.FPOffset, I64, v)
 		case OpMem:
 			// Store i64 to memory (common for writing return values via a pointer).
@@ -274,19 +300,24 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 
 	case "MOVL":
 		// MOVL src, dst
-		if c.goarch != "386" && dst.Kind == OpFP {
-			// Preserve the established amd64 ABI result-slot lowering.
-			if src.Kind != OpReg {
-				return true, false, fmt.Errorf("amd64 MOVL expects reg, fp for stores: %q", ins.Raw)
-			}
-			v64, err := c.loadReg(src.Reg)
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeFPResult(dst.FPOffset, I64, v64)
+		// FP result slots are memory operands in Go's ymovl table, so only a
+		// GP register or a 32-bit immediate can write them. Vector-register
+		// rows are handled by lowerVec before this scalar lowerer.
+		if dst.Kind == OpFP && src.Kind != OpReg && src.Kind != OpImm {
+			return true, false, fmt.Errorf("%s MOVL does not allow memory-to-result-memory: %q", c.goarch, ins.Raw)
 		}
 
-		i32v, err := c.evalIntSized(src, I32)
+		var i32v string
+		var err error
+		if src.Kind == OpFP {
+			var handled bool
+			i32v, handled, err = c.loadIntegerFPBytes(src.FPOffset, I32)
+			if !handled {
+				i32v, err = c.evalIntSized(src, I32)
+			}
+		} else {
+			i32v, err = c.evalIntSized(src, I32)
+		}
 		if err != nil {
 			// Preserve MOVL's existing treatment of unresolved constants from
 			// assembly include files. Explicit `$symbol(SB)` addresses are handled
@@ -305,6 +336,9 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 
 		case OpFP:
 			// Store low 32 bits (common for ret slots).
+			if handled, err := c.storeIntegerFPBytes(dst.FPOffset, I32, i32v); handled {
+				return true, false, err
+			}
 			return true, false, c.storeFPResult(dst.FPOffset, I32, i32v)
 		case OpMem:
 			p, ptrType, err := c.ptrFromMem(dst.Mem)

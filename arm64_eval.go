@@ -13,7 +13,16 @@ func (c *arm64Ctx) imm64(n int64) string {
 // addrI64 computes an i64 address from a MemRef.
 // If postInc is true, mem.Off is treated as post-increment (address displacement is 0).
 func (c *arm64Ctx) addrI64(mem MemRef, postInc bool) (addr string, base Reg, inc int64, err error) {
+	if mem.OffRaw != "" && !arm64NamedStackOffset(mem) {
+		return "", "", 0, fmt.Errorf("arm64: unresolved memory displacement %q", mem.OffRaw)
+	}
 	base = mem.Base
+	// Register encoding 31 denotes SP in an address operand even when the Go
+	// source spells it ZR. RSP is the explicit hardware-stack-pointer spelling;
+	// both use the same modeled stack-pointer slot.
+	if base == ZR || base == Reg("RSP") {
+		base = SP
+	}
 	baseVal, err := c.loadReg(base)
 	if err != nil {
 		return "", "", 0, err
@@ -25,7 +34,11 @@ func (c *arm64Ctx) addrI64(mem MemRef, postInc bool) (addr string, base Reg, inc
 	}
 	sum := baseVal
 	if mem.Index != "" {
-		idxVal, err := c.loadReg(mem.Index)
+		bits, err := arm64RegisterExtensionWidth(mem.IndexExt)
+		if err != nil {
+			return "", "", 0, err
+		}
+		idxVal, err := c.loadRegisterWidth(mem.Index, bits)
 		if err != nil {
 			return "", "", 0, err
 		}
@@ -164,7 +177,11 @@ func (c *arm64Ctx) eval64(op Operand, postInc bool) (string, error) {
 	case OpReg:
 		return c.loadReg(op.Reg)
 	case OpRegExtend:
-		v, err := c.loadReg(op.Reg)
+		bits, err := arm64RegisterExtensionWidth(op.Ext)
+		if err != nil {
+			return "", err
+		}
+		v, err := c.loadRegisterWidth(op.Reg, bits)
 		if err != nil {
 			return "", err
 		}
@@ -249,13 +266,20 @@ func (c *arm64Ctx) eval32(op Operand) (string, error) {
 	case OpImm:
 		return strconv.FormatUint(uint64(uint32(op.Imm)), 10), nil
 	case OpReg:
-		v, err := c.loadReg(op.Reg)
+		v, err := c.loadRegisterWidth(op.Reg, 32)
 		if err != nil {
 			return "", err
 		}
 		return truncate(v), nil
 	case OpRegExtend:
-		v, err := c.loadReg(op.Reg)
+		bits, err := arm64RegisterExtensionWidth(op.Ext)
+		if err != nil {
+			return "", err
+		}
+		if bits > 32 {
+			bits = 32
+		}
+		v, err := c.loadRegisterWidth(op.Reg, bits)
 		if err != nil {
 			return "", err
 		}
@@ -297,7 +321,7 @@ func (c *arm64Ctx) eval32(op Operand) (string, error) {
 		if op.ShiftReg != "" || op.ShiftAmount < 0 || op.ShiftAmount > 31 {
 			return "", fmt.Errorf("arm64: invalid 32-bit shift: %s", op)
 		}
-		v, err := c.loadReg(op.Reg)
+		v, err := c.loadRegisterWidth(op.Reg, 32)
 		if err != nil {
 			return "", err
 		}
@@ -335,6 +359,21 @@ func (c *arm64Ctx) rotateInt(value, typeName string, bits int, shift string) str
 	return "%" + out
 }
 
+func arm64RegisterExtensionWidth(ext ExtendOp) (int, error) {
+	switch ext {
+	case ExtendUXTB, ExtendSXTB:
+		return 8, nil
+	case ExtendUXTH, ExtendSXTH:
+		return 16, nil
+	case ExtendUXTW, ExtendSXTW:
+		return 32, nil
+	case "", ExtendUXTX, ExtendSXTX:
+		return 64, nil
+	default:
+		return 0, fmt.Errorf("arm64: unsupported register extension %q", ext)
+	}
+}
+
 func (c *arm64Ctx) extendReg64(v string, ext ExtendOp) (string, error) {
 	switch ext {
 	case ExtendUXTX, ExtendSXTX:
@@ -369,43 +408,41 @@ func (c *arm64Ctx) extendReg64(v string, ext ExtendOp) (string, error) {
 
 func (c *arm64Ctx) evalFPValue64(op Operand) (string, error) {
 	slot, ok := c.fpParams[op.FPOffset]
-	if !ok {
-		return "", fmt.Errorf("arm64: unsupported FP param slot: %s", op.String())
+	var value string
+	var err error
+	if ok {
+		value, err = c.loadFPParameter(slot)
+	} else if result, found := c.fpResultSlotByOffset(op.FPOffset); found {
+		slot = result
+		value, err = c.loadFPResult(slot)
+	} else {
+		return "", fmt.Errorf("arm64: unsupported FP slot: %s", op.String())
 	}
-	idx := slot.Index
-	if idx < 0 || idx >= len(c.sig.Args) {
-		return "", fmt.Errorf("arm64: FP slot %s invalid arg index %d", op.String(), idx)
+	if err != nil {
+		return "", err
 	}
-	arg := fmt.Sprintf("%%arg%d", idx)
-
 	ty := slot.Type
-	if slot.Field >= 0 {
-		aggTy := c.sig.Args[idx]
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", t, aggTy, arg, slot.Field)
-		arg = "%" + t
-	}
 
 	switch string(ty) {
 	case "i64":
-		return arg, nil
+		return value, nil
 	case "i32", "i16", "i8", "i1":
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", t, ty, arg)
+		fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", t, ty, value)
 		return "%" + t, nil
 	case "double":
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast double %s to i64\n", t, arg)
+		fmt.Fprintf(c.b, "  %%%s = bitcast double %s to i64\n", t, value)
 		return "%" + t, nil
 	case "float":
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast float %s to i32\n", t, arg)
+		fmt.Fprintf(c.b, "  %%%s = bitcast float %s to i32\n", t, value)
 		z := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, t)
 		return "%" + z, nil
 	case "ptr":
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, arg)
+		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, value)
 		return "%" + t, nil
 	default:
 		return "", fmt.Errorf("arm64: FP slot %s unsupported arg type %q", op.String(), ty)
@@ -414,10 +451,18 @@ func (c *arm64Ctx) evalFPValue64(op Operand) (string, error) {
 
 func (c *arm64Ctx) evalFPAddr64(op Operand) (string, error) {
 	p, ok := c.fpResAllocaOff[op.FPOffset]
+	result := ok
 	if !ok {
-		return "0", nil
+		p, ok = c.fpParamAlloca[op.FPOffset]
 	}
-	c.markFPResultAddrTaken(op.FPOffset)
+	if !ok {
+		// The ordinary signature does not recover a caller-owned FP address.
+		// Missing typed backing is context, never a fabricated zero pointer.
+		return "", fmt.Errorf("%w: arm64 FP address %s requires bound typed frame storage", ErrProbeNeedsContext, op.String())
+	}
+	if result {
+		c.markFPResultAddrTaken(op.FPOffset)
+	}
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)
 	return "%" + t, nil
