@@ -329,6 +329,7 @@ func Test386LoweringEdgeCases(t *testing.T) {
 	ident := Operand{Kind: OpIdent, Ident: "invalid"}
 	imm := Operand{Kind: OpImm, Imm: 1}
 	reg := Operand{Kind: OpReg, Reg: AX}
+	binary := c.lowerScalarBinaryRMW
 
 	for _, test := range []struct {
 		name  string
@@ -336,15 +337,15 @@ func Test386LoweringEdgeCases(t *testing.T) {
 		args  []Operand
 		lower func(Op, Instr) (bool, bool, error)
 	}{
-		{name: "ADCL operand count", op: "ADCL"},
-		{name: "ADCL source", op: "ADCL", args: []Operand{ident, reg}},
-		{name: "ADCL destination", op: "ADCL", args: []Operand{imm, ident}},
-		{name: "ADDL source", op: "ADDL", args: []Operand{ident, reg}},
-		{name: "ADDL destination", op: "ADDL", args: []Operand{imm, ident}},
-		{name: "ADDB source", op: "ADDB", args: []Operand{ident, reg}},
-		{name: "ANDW operand count", op: "ANDW"},
-		{name: "ANDW source", op: "ANDW", args: []Operand{ident, reg}},
-		{name: "ANDW destination", op: "ANDW", args: []Operand{imm, ident}},
+		{name: "ADCL operand count", op: "ADCL", lower: binary},
+		{name: "ADCL source", op: "ADCL", args: []Operand{ident, reg}, lower: binary},
+		{name: "ADCL destination", op: "ADCL", args: []Operand{imm, ident}, lower: binary},
+		{name: "ADDL source", op: "ADDL", args: []Operand{ident, reg}, lower: binary},
+		{name: "ADDL destination", op: "ADDL", args: []Operand{imm, ident}, lower: binary},
+		{name: "ADDB source", op: "ADDB", args: []Operand{ident, reg}, lower: binary},
+		{name: "ANDW operand count", op: "ANDW", lower: binary},
+		{name: "ANDW source", op: "ANDW", args: []Operand{ident, reg}, lower: binary},
+		{name: "ANDW destination", op: "ANDW", args: []Operand{imm, ident}, lower: binary},
 		{name: "SETEQ destination", op: "SETEQ", args: []Operand{ident}, lower: c.lowerConditionalSet},
 		{name: "IMULL source", op: "IMULL", args: []Operand{ident}},
 		{name: "IMULL destination", op: "IMULL", args: []Operand{imm, imm}},

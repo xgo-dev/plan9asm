@@ -47,9 +47,9 @@ func TestX86StringLoadStorePairedEffectsCompleteFamily(t *testing.T) {
 									}
 									expected := state.clone()
 									if prefix == "" || count != x86StringCountZero {
-										indexes := []int{7}
+										// Caller-derived cursors remain address values
+										// after the definite per-element stride.
 										if stem == "LODS" {
-											indexes = []int{6}
 											mask := uint8((uint16(1) << uint(width)) - 1)
 											if prefix == "" || count == x86StringCountNonzero {
 												expected.gp[0] |= mask
@@ -59,11 +59,6 @@ func TestX86StringLoadStorePairedEffectsCompleteFamily(t *testing.T) {
 												expected.gp[0] |= 0xf0
 												expected.canonicalGP[0] |= 0xf0
 											}
-										} else if stem == "MOVS" {
-											indexes = append(indexes, 6)
-										}
-										for _, register := range indexes {
-											expected.pointerGP[register] = false
 										}
 										if prefix != "" {
 											// Unlike SCAS/CMPS, every completed repeated transfer
