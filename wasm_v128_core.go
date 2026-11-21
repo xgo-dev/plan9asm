@@ -111,10 +111,10 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 			fmt.Fprintf(b, ", %s %s", typ, rhs)
 		}
 		b.WriteString(")\n")
-	case wasmsimd.FloatCompare, wasmsimd.FloatSelect:
+	case wasmsimd.Compare, wasmsimd.FloatSelect:
 		predicate := newTmp()
-		fmt.Fprintf(b, "  %%%s = fcmp %s %s %s, %s\n", predicate, spec.Operator, typ, lhs, rhs)
-		if spec.Emission == wasmsimd.FloatCompare {
+		fmt.Fprintf(b, "  %%%s = %s %s %s %s, %s\n", predicate, spec.Shape.Comparator, spec.Operator, typ, lhs, rhs)
+		if spec.Emission == wasmsimd.Compare {
 			// Wasm's true lanes contain all one bits.
 			resultType = LLVMType(spec.Shape.MaskType)
 			fmt.Fprintf(b, "  %%%s = sext %s %%%s to %s\n", result, spec.Shape.PredicateType, predicate, resultType)

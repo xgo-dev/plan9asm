@@ -23,6 +23,15 @@ func wasmV128CoreNames() []string {
 			names = append(names, shape+operation)
 		}
 	}
+	for _, shape := range []string{"I8x16", "I16x8", "I32x4", "I64x2"} {
+		operations := "Eq Ne LtS GtS LeS GeS"
+		if shape != "I64x2" {
+			operations += " LtU GtU LeU GeU MinS MinU MaxS MaxU"
+		}
+		for _, op := range strings.Fields(operations) {
+			names = append(names, shape+op)
+		}
+	}
 	return names
 }
 
@@ -72,7 +81,9 @@ func wasmV128CoreObjectFixture() (string, map[string]FuncSig) {
 		function := fmt.Sprintf("core%d", index)
 		sig := FuncSig{Name: function, Ret: I32}
 		body := wasmV128CoreBody(name, [2]uint64{1, 2}, [2]uint64{3, 4}, [2]uint64{5, 6})
-		if bits, _ := wasmV128FloatParts(name); bits != 0 {
+		floatBits, _ := wasmV128FloatParts(name)
+		_, integerOp := wasmV128IntegerParts(name)
+		if floatBits != 0 || wasmV128IntegerOrdering(integerOp) {
 			body = ""
 			for arg := 0; arg < wasmV128CoreInputs(name); arg++ {
 				reg := Reg(fmt.Sprintf("V%d", arg))

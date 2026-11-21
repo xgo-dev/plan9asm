@@ -14,18 +14,13 @@ type wasmV128CoreObservation struct {
 	Want uint32
 }
 
-const wasmV128CorePass = "V128 core PASS 942"
+const wasmV128CorePass = "V128 core PASS 1518"
 
 // Whole-bit Wasm relations, independent of the translator's representation.
 // Observation uses XOR/AnyTrue so it requires no vector store or extraction.
 func wasmV128CoreReference(name string, a, b, mask [2]uint64) [2]uint64 {
-	for _, shape := range []struct {
-		prefix string
-		bits   uint
-	}{{"I8x16", 8}, {"I16x8", 16}, {"I32x4", 32}, {"I64x2", 64}} {
-		if strings.HasPrefix(name, shape.prefix) {
-			return wasmV128IntegerReference(strings.TrimPrefix(name, shape.prefix), shape.bits, a, b)
-		}
+	if bits, op := wasmV128IntegerParts(name); bits != 0 {
+		return wasmV128IntegerReference(op, bits, a, b)
 	}
 	var result [2]uint64
 	for half := range result {
@@ -89,7 +84,7 @@ func wasmV128IntegerReference(op string, bits uint, a, b [2]uint64) [2]uint64 {
 				}
 				lane = uint64(value)
 			default:
-				panic("unknown SIMD integer operation: " + op)
+				lane = wasmV128IntegerOrderingReference(op, bits, x, y)
 			}
 			result[half] |= (lane & mask) << offset
 		}
@@ -119,6 +114,8 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 		inputs := patterns
 		if bits, _ := wasmV128FloatParts(name); bits != 0 {
 			inputs = wasmV128FloatPatterns(bits)
+		} else if bits, op := wasmV128IntegerParts(name); wasmV128IntegerOrdering(op) {
+			inputs = wasmV128IntegerOrderingPatterns(bits)
 		}
 		for _, pattern := range inputs {
 			a, b, mask := pattern[0], pattern[1], pattern[2]
@@ -141,7 +138,7 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 			rows = append(rows, wasmV128CoreObservation{Name: function, Want: want})
 		}
 	}
-	if len(rows) != 942 {
+	if len(rows) != 1518 {
 		t.Fatal("complete vector observation inventory changed", len(rows))
 	}
 	program.WriteString("func main() {\n")

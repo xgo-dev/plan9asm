@@ -10,7 +10,7 @@ const (
 	Core Emission = iota
 	Instruction
 	Intrinsic
-	FloatCompare
+	Compare
 	FloatSelect
 )
 
@@ -18,6 +18,7 @@ type Shape struct {
 	LaneType      string
 	PredicateType string
 	MaskType      string
+	Comparator    string
 	overload      string
 }
 
@@ -70,9 +71,13 @@ func buildForms() map[string]Form {
 		bits   int
 	}{{"I8X16", 8}, {"I16X8", 16}, {"I32X4", 32}, {"I64X2", 64}} {
 		count := 128 / lane.bits
+		laneType := fmt.Sprintf("<%d x i%d>", count, lane.bits)
 		shape := Shape{
-			LaneType: fmt.Sprintf("<%d x i%d>", count, lane.bits),
-			overload: fmt.Sprintf("v%di%d", count, lane.bits),
+			LaneType:      laneType,
+			PredicateType: fmt.Sprintf("<%d x i1>", count),
+			MaskType:      laneType,
+			Comparator:    "icmp",
+			overload:      fmt.Sprintf("v%di%d", count, lane.bits),
 		}
 		add(lane.prefix, shape, operation{"ADD", "add", 2, Instruction})
 		add(lane.prefix, shape, operation{"SUB", "sub", 2, Instruction})
@@ -84,6 +89,22 @@ func buildForms() map[string]Form {
 			add(lane.prefix, shape, operation{"ADDSATU", "uadd.sat", 2, Intrinsic})
 			add(lane.prefix, shape, operation{"SUBSATS", "ssub.sat", 2, Intrinsic})
 			add(lane.prefix, shape, operation{"SUBSATU", "usub.sat", 2, Intrinsic})
+		}
+		add(lane.prefix, shape, operation{"EQ", "eq", 2, Compare})
+		add(lane.prefix, shape, operation{"NE", "ne", 2, Compare})
+		for _, relation := range []struct{ suffix, predicate string }{
+			{"LT", "lt"}, {"GT", "gt"}, {"LE", "le"}, {"GE", "ge"},
+		} {
+			add(lane.prefix, shape, operation{relation.suffix + "S", "s" + relation.predicate, 2, Compare})
+			if lane.bits < 64 {
+				add(lane.prefix, shape, operation{relation.suffix + "U", "u" + relation.predicate, 2, Compare})
+			}
+		}
+		if lane.bits < 64 {
+			add(lane.prefix, shape, operation{"MINS", "smin", 2, Intrinsic})
+			add(lane.prefix, shape, operation{"MINU", "umin", 2, Intrinsic})
+			add(lane.prefix, shape, operation{"MAXS", "smax", 2, Intrinsic})
+			add(lane.prefix, shape, operation{"MAXU", "umax", 2, Intrinsic})
 		}
 	}
 
@@ -103,12 +124,12 @@ func buildForms() map[string]Form {
 		{"MAX", "maximum", 2, Intrinsic},
 		{"PMIN", "ogt", 2, FloatSelect},
 		{"PMAX", "olt", 2, FloatSelect},
-		{"EQ", "oeq", 2, FloatCompare},
-		{"NE", "une", 2, FloatCompare},
-		{"LT", "olt", 2, FloatCompare},
-		{"GT", "ogt", 2, FloatCompare},
-		{"LE", "ole", 2, FloatCompare},
-		{"GE", "oge", 2, FloatCompare},
+		{"EQ", "oeq", 2, Compare},
+		{"NE", "une", 2, Compare},
+		{"LT", "olt", 2, Compare},
+		{"GT", "ogt", 2, Compare},
+		{"LE", "ole", 2, Compare},
+		{"GE", "oge", 2, Compare},
 	}
 	for _, lane := range []struct {
 		prefix, element string
@@ -119,6 +140,7 @@ func buildForms() map[string]Form {
 			LaneType:      fmt.Sprintf("<%d x %s>", count, lane.element),
 			PredicateType: fmt.Sprintf("<%d x i1>", count),
 			MaskType:      fmt.Sprintf("<%d x i%d>", count, lane.bits),
+			Comparator:    "fcmp",
 			overload:      fmt.Sprintf("v%df%d", count, lane.bits),
 		}
 		for _, op := range floatOperations {
