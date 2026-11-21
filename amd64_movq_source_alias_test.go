@@ -161,13 +161,18 @@ func TestX86MOVQSourceAliasesMachineRegisterRows(t *testing.T) {
 				for _, machine := range []string{"GDTR", "IDTR"} {
 					fmt.Fprintf(&body, "%s 0(BX),%s\n%s %s,16(BX)\n", alias, machine, alias, machine)
 				}
-				source := "TEXT machine(SB),4,$0-0\n" + body.String() + "RET\n"
+				word, move := 8, "MOVQ"
+				if target.arch == "386" {
+					word, move = 4, "MOVL"
+				}
+				entry := fmt.Sprintf("TEXT machine(SB),4,$0-%d\n%s table+0(FP),BX\n", word, move)
+				source := entry + body.String() + "RET\n"
 				canonical := strings.ReplaceAll(source, alias+" ", "MOVQ ")
 				if !bytes.Equal(x86OrderingHintGoBytes(t, target.arch, source), x86OrderingHintGoBytes(t, target.arch, canonical)) {
 					t.Fatal("complete machine-register alias bytes changed")
 				}
 				for _, api := range []string{"text", "module", "Go"} {
-					ir, err := x86ScalarFPBitViewAPI(t, source, "func machine()\n", target.arch, target.triple, api)
+					ir, err := x86ScalarFPBitViewAPI(t, source, "func machine(table *byte)\n", target.arch, target.triple, api)
 					if err != nil {
 						t.Fatal("source aliases lost actual Go movtab rows", api, err)
 					}

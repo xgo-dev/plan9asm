@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strconv"
@@ -5809,91 +5810,102 @@ func TestTranslateX86MSRAccessFamilyRejectsFormsOutsideGoOptab(t *testing.T) {
 }
 
 func TestTranslateX86DescriptorTableFamilyCompleteGoAssemblerForms(t *testing.T) {
-	// Go 1.27 groups the system descriptor instructions into these complete
-	// operand tables: LGDT/LIDT and SGDT/SIDT take memory; LLDT/LTR/LMSW take
-	// GP-register or memory inputs; SLDT*/SMSW*/STR* write GP registers or
-	// memory. Q forms exist only on amd64.
-	common := `
-TEXT descriptorforms(SB),NOSPLIT,$32-0
-	LGDT (BX)
-	LIDT 8(SP)
-	SGDT (CX)
-	SIDT 16(SP)
-	LLDT AX
-	LLDT (BX)
-	LTR DI
-	LTR 8(SP)
-	LMSW CX
-	LMSW (DX)
-	SLDTW AX
-	SLDTW (BX)
-	SLDTL DI
-	SLDTL 8(SP)
-	SMSWW CX
-	SMSWW (DX)
-	SMSWL BP
-	SMSWL 16(SP)
-	STRW SI
-	STRW (DI)
-	STRL BX
-	STRL 24(SP)
-	STRL SP
+	// The descriptor table rows use a six- or ten-byte object. Selector
+	// loads consume a word and selector stores use m16 on every spelling.
+	const common = `
+LGDT (BX)
+MOVL $0, local-24(SP)
+MOVL $0, local-20(SP)
+MOVL $0, local-16(SP)
+LIDT local-24(SP)
+SGDT 4(BX)
+SIDT local-16(SP)
+MOVL $1, AX
+LLDT AX
+LLDT (BX)
+LTR AX
+LTR local-16(SP)
+LMSW AX
+LMSW 8(BX)
+SLDTW AX
+SLDTW (BX)
+SLDTL DI
+SLDTL local-24(SP)
+SMSWW CX
+SMSWW 4(BX)
+SMSWL DX
+SMSWL local-16(SP)
+STRW SI
+STRW (BX)
+STRL DI
+STRL local-8(SP)
 `
-	amd64Only := `
-	SLDTQ R11
-	SLDTQ (R12)
-	SMSWQ R13
-	SMSWQ (R14)
-	STRQ R15
-	STRQ (R10)
+	const amd64Only = `
+SLDTQ R11
+SLDTQ (BX)
+SMSWQ R13
+SMSWQ 4(BX)
+STRQ R15
+STRQ 8(BX)
 `
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
 		t.Fatal("LLVM 22 llc not found")
 	}
-	for _, target := range []struct {
-		name   string
-		goarch string
-		triple string
-	}{
-		{name: "darwin-amd64", goarch: "amd64", triple: "x86_64-apple-macosx"},
-		{name: "linux-amd64", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
-		{name: "windows-amd64", goarch: "amd64", triple: "x86_64-pc-windows-msvc"},
-		{name: "linux-386", goarch: "386", triple: "i386-unknown-linux-gnu"},
-		{name: "windows-386", goarch: "386", triple: "i686-pc-windows-msvc"},
-	} {
-		t.Run(target.name, func(t *testing.T) {
-			src := common
-			if target.goarch == "amd64" {
+	for _, target := range x86RawReturnTargets {
+		t.Run(target.triple, func(t *testing.T) {
+			word, move := 8, "MOVQ"
+			if target.arch == "386" {
+				word, move = 4, "MOVL"
+			}
+			src := fmt.Sprintf("TEXT ·descriptorforms(SB),4,$32-%d\n%s address+0(FP), BX\n", word, move) + common
+			if target.arch == "amd64" {
 				src += amd64Only
+			} else {
+				src += "SMSWL BP\nSTRL 24(SP)\n" // Physical alias of local-8(SP).
 			}
-			src += "\tRET\n"
-			file, err := Parse(ArchAMD64, src)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ll, err := Translate(file, Options{
-				TargetTriple: target.triple,
-				Goarch:       target.goarch,
-				Sigs: map[string]FuncSig{
-					"descriptorforms": {Name: "descriptorforms", Ret: Void},
-				},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, want := range []string{
-				`asm sideeffect "lgdt`, `asm sideeffect "lidt`,
-				`asm sideeffect "sgdt`, `asm sideeffect "sidt`,
-				`asm sideeffect "lldt`, `asm sideeffect "ltr`, `asm sideeffect "lmsw`,
-				`asm sideeffect "sldt`, `asm sideeffect "smsw`, `asm sideeffect "str`,
-			} {
-				if !strings.Contains(ll, want) {
-					t.Fatalf("descriptor-table lowering omitted %q:\n%s", want, ll)
+			src += "RET\n"
+			requireX86GoAssemblerResult(t, target.arch, src, true)
+			const declaration = "func descriptorforms(address *byte)"
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, src, declaration, target.arch, target.triple, api)
+				if err != nil {
+					t.Fatal(api, err)
 				}
+				for _, op := range []string{"lgdt", "lidt", "sgdt", "sidt", "lldt", "ltr", "lmsw", "sldt", "smsw", "str"} {
+					if !strings.Contains(ir, `asm sideeffect "`+op) {
+						t.Fatalf("%s omitted %s", api, op)
+					}
+				}
+				compileLLVMToObject(t, llc, target.triple, "descriptor-table.ll", "descriptor-table.o", ir)
 			}
-			compileLLVMToObject(t, llc, target.triple, "descriptor-table.ll", "descriptor-table.o", ll)
 		})
+	}
+}
+
+func TestTranslateX86DescriptorTableFamilyNeedsExactBacking(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		triple := testTargetTriple("linux", arch)
+		for _, row := range []struct {
+			name string
+			body string
+		}{
+			{"uninitialized selector", "LLDT AX\n"},
+			{"short table input", "MOVL $1, table-16(SP)\nLGDT table-16(SP)\n"},
+			{"selector writes only two bytes", "SLDTL slot-8(SP)\nMOVL slot-8(SP), AX\n"},
+			{"physical SP write", "STRL SP\n"},
+		} {
+			t.Run(arch+"/"+row.name, func(t *testing.T) {
+				source := "TEXT ·check(SB),4,$16-0\n" + row.body + "RET\n"
+				requireX86GoAssemblerResult(t, arch, source, true)
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, source, "func check()", arch, triple, api)
+					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatalf("%s: unbound descriptor operation: %v", api, err)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -5941,121 +5953,130 @@ func TestTranslateX86DescriptorTableFamilyRejectsFormsOutsideGoOptab(t *testing.
 }
 
 func TestTranslateX86MachineRegisterMoveFamilyCompleteGoAssemblerForms(t *testing.T) {
-	// This is the complete special-register portion of Go 1.27's ymovtab,
-	// excluding the independently handled segment and TLS moves. MOVQ special
-	// forms are accepted in 386 mode too; CR8 is the sole 64-bit-only register.
-	common := `
-TEXT machineregistermoves(SB),NOSPLIT,$32-0
-	MOVL CR0, AX
-	MOVL BX, CR0
-	MOVL CR2, CX
-	MOVL DX, CR2
-	MOVL CR3, BP
-	MOVL SI, CR3
-	MOVL CR4, DI
-	MOVL AX, CR4
-	MOVQ CR0, BX
-	MOVQ CX, CR0
-	MOVQ CR2, DX
-	MOVQ BP, CR2
-	MOVQ CR3, SI
-	MOVQ DI, CR3
-	MOVQ CR4, AX
-	MOVQ BX, CR4
-	MOVL DR0, CX
-	MOVL DX, DR0
-	MOVL DR6, BP
-	MOVL SI, DR6
-	MOVL DR7, DI
-	MOVL AX, DR7
-	MOVQ DR0, BX
-	MOVQ CX, DR0
-	MOVQ DR2, DX
-	MOVQ BP, DR2
-	MOVQ DR3, SI
-	MOVQ DI, DR3
-	MOVQ DR6, AX
-	MOVQ BX, DR6
-	MOVQ DR7, CX
-	MOVQ DX, DR7
-	MOVL TR6, AX
-	MOVL TR6, 0(SP)
-	MOVL BX, TR6
-	MOVL 4(SP), TR6
-	MOVL TR7, CX
-	MOVL TR7, 8(SP)
-	MOVL DX, TR7
-	MOVL 12(SP), TR7
-	MOVL 0(SP), GDTR
-	MOVL GDTR, 16(SP)
-	MOVL 0(SP), IDTR
-	MOVL IDTR, 16(SP)
-	MOVQ 0(SP), GDTR
-	MOVQ GDTR, 16(SP)
-	MOVQ 0(SP), IDTR
-	MOVQ IDTR, 16(SP)
-	MOVW AX, LDTR
-	MOVW 0(SP), LDTR
-	MOVW LDTR, BX
-	MOVW LDTR, 0(SP)
-	MOVW CX, MSW
-	MOVW 4(SP), MSW
-	MOVW MSW, DX
-	MOVW MSW, 4(SP)
-	MOVW BP, TASK
-	MOVW 8(SP), TASK
-	MOVW TASK, SI
-	MOVW TASK, 8(SP)
-	MOVL CR0, SP
-	MOVQ CR0, SP
-`
-	amd64Only := `
-	MOVL CR8, R11
-	MOVL R12, CR8
-	MOVQ CR8, R13
-	MOVQ R14, CR8
+	// Independent Go ymovtab inventory, grouped by the available spellings.
+	include := []struct {
+		move string
+		regs []string
+	}{
+		{"MOVL", []string{"CR0", "CR2", "CR3", "CR4", "DR0", "DR6", "DR7", "TR6", "TR7"}},
+		{"MOVQ", []string{"CR0", "CR2", "CR3", "CR4", "DR0", "DR2", "DR3", "DR6", "DR7"}},
+	}
+	const aliases = `
+MOVL $0, table-24(SP)
+MOVL $0, table-20(SP)
+MOVL $0, table-16(SP)
+MOVL table-24(SP), GDTR
+MOVL GDTR, table-16(SP)
+MOVQ table-24(SP), GDTR
+MOVQ GDTR, table-16(SP)
+MOVL table-24(SP), IDTR
+MOVL IDTR, table-16(SP)
+MOVQ table-24(SP), IDTR
+MOVQ IDTR, table-16(SP)
+MOVW AX, LDTR
+MOVW table-24(SP), LDTR
+MOVW LDTR, BX
+MOVW LDTR, table-8(SP)
+MOVW AX, MSW
+MOVW table-24(SP), MSW
+MOVW MSW, BX
+MOVW MSW, table-8(SP)
+MOVW AX, TASK
+MOVW table-24(SP), TASK
+MOVW TASK, BX
+MOVW TASK, table-8(SP)
 `
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
 		t.Fatal("LLVM 22 llc not found")
 	}
-	for _, target := range []struct {
-		name   string
-		goarch string
-		triple string
-	}{
-		{name: "darwin-amd64", goarch: "amd64", triple: "x86_64-apple-macosx"},
-		{name: "linux-amd64", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
-		{name: "windows-amd64", goarch: "amd64", triple: "x86_64-pc-windows-msvc"},
-		{name: "linux-386", goarch: "386", triple: "i386-unknown-linux-gnu"},
-		{name: "windows-386", goarch: "386", triple: "i686-pc-windows-msvc"},
-	} {
-		t.Run(target.name, func(t *testing.T) {
-			src := common
-			if target.goarch == "amd64" {
-				src += amd64Only
-			}
-			src += "\tRET\n"
-			file, err := Parse(ArchAMD64, src)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ll, err := Translate(file, Options{
-				TargetTriple: target.triple,
-				Goarch:       target.goarch,
-				Sigs: map[string]FuncSig{
-					"machineregistermoves": {Name: "machineregistermoves", Ret: Void},
-				},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, want := range []string{"%cr0", "%dr0", ".byte 0x0f, 0x24", ".byte 0x0f, 0x26"} {
-				if !strings.Contains(ll, want) {
-					t.Fatalf("machine-register lowering omitted %q:\n%s", want, ll)
+	for _, target := range x86RawReturnTargets {
+		t.Run(target.triple, func(t *testing.T) {
+			var source strings.Builder
+			source.WriteString("TEXT ·machineregistermoves(SB),4,$32-0\nMOVL $1,AX\n")
+			for _, row := range include {
+				for _, special := range row.regs {
+					fmt.Fprintf(&source, "%s %s, BX\n%s AX, %s\n", row.move, special, row.move, special)
 				}
 			}
-			compileLLVMToObject(t, llc, target.triple, "machine-register.ll", "machine-register.o", ll)
+			if target.arch == "amd64" {
+				for _, move := range []string{"MOVL", "MOVQ"} {
+					fmt.Fprintf(&source, "%s CR8, R11\n%s AX, CR8\n", move, move)
+				}
+			}
+			source.WriteString(aliases)
+			if target.arch == "386" {
+				source.WriteString("MOVW TASK, 24(SP)\n")
+			}
+			source.WriteString("RET\n")
+			requireX86GoAssemblerResult(t, target.arch, source.String(), true)
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source.String(), "func machineregistermoves()", target.arch, target.triple, api)
+				if err != nil {
+					t.Fatal(api, err)
+				}
+				for _, op := range []string{"%cr0", "%dr0", ".byte 0x0f, 0x24", ".byte 0x0f, 0x26", "sldtl", "smswl", "strl"} {
+					if !strings.Contains(ir, op) {
+						t.Fatalf("%s omitted %s", api, op)
+					}
+				}
+				compileLLVMToObject(t, llc, target.triple, "machine-register.ll", "machine-register.o", ir)
+			}
+		})
+	}
+}
+
+func TestTranslateX86MachineRegisterMoveFamilyNeedsNativeContext(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		for _, instruction := range []string{
+			"MOVL CR0, SP", "MOVQ CR0, SP", "MOVW TASK, SP",
+			"MOVL TR6, 0(SP)", "MOVL 0(SP), TR7", "MOVL BX, CR0",
+		} {
+			t.Run(arch+"/"+instruction, func(t *testing.T) {
+				source := "TEXT ·check(SB),4,$16-0\n" + instruction + "\nRET\n"
+				requireX86GoAssemblerResult(t, arch, source, true)
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, source, "func check()", arch, testTargetTriple("linux", arch), api)
+					if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatalf("%s: unbound machine-register operation: %v", api, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestTranslateX86MachineRegisterMoveFamilyUsesHardwareWidths(t *testing.T) {
+	const triple = "x86_64-unknown-linux-gnu"
+	for _, row := range []struct {
+		op, register, oracle, irType string
+	}{
+		{"MOVL", "CR3", "MOVQ CR3,AX", "i64"},
+		{"MOVQ", "CR3", "MOVQ CR3,AX", "i64"},
+		{"MOVD", "CR3", "MOVQ CR3,AX", "i64"},
+		{"MOVDQ2Q", "CR3", "MOVQ CR3,AX", "i64"},
+		{"MOVL", "DR6", "MOVQ DR6,AX", "i64"},
+		{"MOVQ", "DR6", "MOVQ DR6,AX", "i64"},
+		{"MOVW", "LDTR", "SLDTL AX", "i32"},
+		{"MOVW", "MSW", "SMSWL AX", "i32"},
+		{"MOVW", "TASK", "STRL AX", "i32"},
+	} {
+		t.Run(row.op+"/"+row.register, func(t *testing.T) {
+			const function = "TEXT ·read(SB),4,$0-8\n%s\nMOVQ AX,ret+0(FP)\nRET\n"
+			source := fmt.Sprintf(function, row.op+" "+row.register+",AX")
+			reference := fmt.Sprintf(function, row.oracle)
+			if !bytes.Equal(x86OrderingHintGoBytes(t, "amd64", source), x86OrderingHintGoBytes(t, "amd64", reference)) {
+				t.Fatal("original Go encoding has a different operand width")
+			}
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source, "func read() uint64", "amd64", triple, api)
+				if err != nil {
+					t.Fatal(api, err)
+				}
+				if !strings.Contains(ir, "call "+row.irType+" asm sideeffect") || strings.Contains(ir, "trunc i64") {
+					t.Fatalf("%s changed the hardware register width", api)
+				}
+			}
 		})
 	}
 }

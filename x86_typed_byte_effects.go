@@ -171,6 +171,12 @@ func x86TypedGPByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bo
 	if effect, known, err := x86TypedBoundByteEffect(op, ins, arch); known {
 		return effect, known, err
 	}
+	if effect, known, err := x86SystemOperandProperties(op, ins, arch); known {
+		if err != nil {
+			return x86TypedByteEffect{}, true, err
+		}
+		return x86TypedByteEffect{operands: []x86TypedByteOperand{effect}, requiresResultProof: true}, true, nil
+	}
 	if effect, known, err := x86TypedLEAByteEffect(op, ins, arch); known {
 		return effect, known, err
 	}

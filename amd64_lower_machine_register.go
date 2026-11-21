@@ -6,54 +6,136 @@ import (
 	"strings"
 )
 
-// lowerMachineRegisterMove covers the complete machine-state-register portion
-// of Go 1.27's x86 ymovtab: CR, DR, and TR registers plus the descriptor-state
-// aliases GDTR, IDTR, LDTR, MSW, and TASK. Segment and TLS moves are a separate
-// family.
-func (c *amd64Ctx) lowerMachineRegisterMove(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	rawOp := strings.ToUpper(string(op))
-	baseOp := rawOp
-	if dot := strings.IndexByte(rawOp, '.'); dot >= 0 {
-		baseOp = rawOp[:dot]
+type x86MachineRegisterForm struct {
+	class      string
+	register   int
+	descriptor string
+	effect     x86TypedByteOperand
+}
+
+var x86DescriptorAliases = map[string]struct {
+	load, store Op
+	word        bool
+}{
+	"gdtr": {"LGDT", "SGDT", false},
+	"idtr": {"LIDT", "SIDT", false},
+	"ldtr": {"LLDT", "SLDTL", true},
+	"msw":  {"LMSW", "SMSWL", true},
+	"task": {"LTR", "STRL", true},
+}
+
+// The Go MOV suffix selects a source row. It does not necessarily select
+// the native operand width, for instance MOVL and MOVQ on CR/DR.
+func x86MachineRegisterProperties(op Op, ins Instr, arch string) (x86MachineRegisterForm, bool, error) {
+	base, _, suffix := strings.Cut(strings.ToUpper(string(op)), ".")
+	if len(ins.Args) != 2 || base != "MOVW" && base != "MOVL" && base != "MOVQ" {
+		return x86MachineRegisterForm{}, false, nil
 	}
-	if baseOp != "MOVW" && baseOp != "MOVL" && baseOp != "MOVQ" {
-		return false, false, nil
+	leftClass, leftIndex, leftSpecial := x86MachineRegisterOperand(ins.Args[0])
+	rightClass, rightIndex, rightSpecial := x86MachineRegisterOperand(ins.Args[1])
+	if !leftSpecial && !rightSpecial {
+		return x86MachineRegisterForm{}, false, nil
 	}
-	if len(ins.Args) != 2 {
-		return false, false, nil
+	fail := func(reason string) (x86MachineRegisterForm, bool, error) {
+		return x86MachineRegisterForm{}, true, fmt.Errorf("%s %s %s: %q", arch, base, reason, ins.Raw)
 	}
-	sourceClass, sourceIndex, sourceSpecial := x86MachineRegisterOperand(ins.Args[0])
-	destinationClass, destinationIndex, destinationSpecial := x86MachineRegisterOperand(ins.Args[1])
-	if !sourceSpecial && !destinationSpecial {
-		return false, false, nil
-	}
-	if rawOp != baseOp {
-		return true, false, fmt.Errorf("%s machine-register %s does not accept instruction suffixes: %q", c.goarch, baseOp, ins.Raw)
-	}
-	if sourceSpecial == destinationSpecial {
-		return true, false, fmt.Errorf("%s %s machine-register form expects exactly one special register: %q", c.goarch, baseOp, ins.Raw)
+	if suffix || leftSpecial == rightSpecial {
+		return fail("requires exactly one special register and no suffix")
 	}
 
-	specialClass, specialIndex := sourceClass, sourceIndex
-	other := ins.Args[1]
-	readSpecial := sourceSpecial
-	if destinationSpecial {
-		specialClass, specialIndex = destinationClass, destinationIndex
-		other = ins.Args[0]
+	class, register, index := rightClass, rightIndex, 0
+	if leftSpecial {
+		class, register, index = leftClass, leftIndex, 1
+	}
+	operand := ins.Args[index]
+	effect := x86TypedByteOperand{index: index, operand: operand, read: !leftSpecial, write: leftSpecial}
+	form := x86MachineRegisterForm{class: class, register: register}
+	if alias, known := x86DescriptorAliases[class]; known {
+		if (base == "MOVW") != alias.word {
+			return fail("is absent from Go's descriptor-register MOV rows")
+		}
+		direct := alias.load
+		if effect.write {
+			direct = alias.store
+		}
+		projected := Instr{Op: direct, Args: ins.Args[index : index+1], Raw: ins.Raw}
+		descriptor, _, err := x86DescriptorProperties(direct, projected, arch)
+		if err != nil {
+			return x86MachineRegisterForm{}, true, err
+		}
+		effect.width = descriptor.effect.width
+		form.descriptor, form.effect = descriptor.mnemonic, effect
+		return form, true, nil
 	}
 
-	switch specialClass {
+	allowed := false
+	switch class {
 	case "cr":
-		return true, false, c.lowerControlDebugRegisterMove(baseOp, "cr", specialIndex, other, readSpecial, ins)
+		allowed = base != "MOVW" && (register == 0 || register == 2 || register == 3 ||
+			register == 4 || register == 8 && arch == "amd64")
 	case "dr":
-		return true, false, c.lowerControlDebugRegisterMove(baseOp, "dr", specialIndex, other, readSpecial, ins)
+		allowed = base != "MOVW" && (register == 0 || register == 6 || register == 7 ||
+			base == "MOVQ" && (register == 2 || register == 3))
 	case "tr":
-		return true, false, c.lowerTestRegisterMove(baseOp, specialIndex, other, readSpecial, ins)
-	case "gdtr", "idtr", "ldtr", "msw", "task":
-		return true, false, c.lowerDescriptorRegisterAlias(baseOp, specialClass, other, readSpecial, ins)
-	default:
-		panic("machine-register classifier drift")
+		allowed = base == "MOVL" && (register == 6 || register == 7)
+		if allowed && isAMD64MemoryOperand(operand) {
+			// Go's Yml table emits bytes for these forms. The actual
+			// special-register opcode has only a GP register operand.
+			return x86MachineRegisterForm{}, true, fmt.Errorf("%w: %s has no architectural test-register memory form: %q",
+				ErrProbeNeedsContext, arch, ins.Raw)
+		}
 	}
+	if !allowed || operand.Kind != OpReg || !isX86YrlRegisterForArch(operand.Reg, arch) {
+		return fail("is outside Go's machine-register GP rows")
+	}
+	effect.width = x86ResultPointerWord(arch)
+	if class == "tr" {
+		effect.width = 4
+	}
+	form.effect = effect
+	return form, true, nil
+}
+
+func (c *amd64Ctx) lowerMachineRegisterMove(op Op, ins Instr) (bool, bool, error) {
+	form, known, err := x86MachineRegisterProperties(op, ins, c.goarch)
+	if !known || err != nil {
+		return known, false, err
+	}
+	if form.descriptor != "" {
+		return true, false, c.emitDescriptor(x86DescriptorForm{mnemonic: form.descriptor, effect: form.effect})
+	}
+	return true, false, c.emitMachineRegisterMove(form)
+}
+
+func (c *amd64Ctx) emitMachineRegisterMove(form x86MachineRegisterForm) error {
+	effect := form.effect
+	typ := amd64IntegerTypeForBits(int(effect.width * 8))
+	special := fmt.Sprintf("%%%s%d", form.class, form.register)
+	assembly, constraint := "mov $0, "+special, "r"
+	if effect.write {
+		assembly, constraint = "mov "+special+", $0", "=r"
+	}
+	if form.class == "tr" {
+		// LLVM has no assembler mnemonic for the legacy TR register rows.
+		opcode := 0x26
+		constraint = "{ax}"
+		if effect.write {
+			opcode, constraint = 0x24, "={ax}"
+		}
+		assembly = fmt.Sprintf(".byte 0x0f, 0x%02x, 0x%02x", opcode, 0xc0|form.register<<3)
+	}
+	constraint += "," + x86SystemAsmClobbers
+	if effect.write {
+		result := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call %s asm sideeffect %q, %q()\n", result, typ, assembly, constraint)
+		return c.storeRegSized(effect.operand.Reg, typ, "%"+result)
+	}
+	value, err := c.evalIntSized(effect.operand, typ)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(%s %s)\n", assembly, constraint, typ, value)
+	return nil
 }
 
 func x86MachineRegisterOperand(operand Operand) (class string, index int, ok bool) {
@@ -81,144 +163,4 @@ func x86MachineRegister(reg Reg) (class string, index int, ok bool) {
 		return "", 0, false
 	}
 	return prefix, index, true
-}
-
-func (c *amd64Ctx) lowerControlDebugRegisterMove(op, class string, index int, other Operand, readSpecial bool, ins Instr) error {
-	if op != "MOVL" && op != "MOVQ" {
-		return fmt.Errorf("%s %s %s register form is absent from Go 1.27's ymovtab: %q", c.goarch, op, strings.ToUpper(class), ins.Raw)
-	}
-	allowed := false
-	switch class {
-	case "cr":
-		allowed = index == 0 || index == 2 || index == 3 || index == 4 || index == 8
-		if index == 8 && c.goarch == "386" {
-			allowed = false
-		}
-	case "dr":
-		if op == "MOVL" {
-			allowed = index == 0 || index == 6 || index == 7
-		} else {
-			allowed = index == 0 || index == 2 || index == 3 || index == 6 || index == 7
-		}
-	}
-	if !allowed {
-		return fmt.Errorf("%s %s %s%d form is absent from Go 1.27's ymovtab: %q", c.goarch, op, strings.ToUpper(class), index, ins.Raw)
-	}
-	if other.Kind != OpReg || !isX86YrlRegisterForArch(other.Reg, c.goarch) {
-		return fmt.Errorf("%s %s %s%d expects a Go 1.27 Yrl GP register: %q", c.goarch, op, strings.ToUpper(class), index, ins.Raw)
-	}
-
-	special := fmt.Sprintf("%%%s%d", class, index)
-	hardwareType := I64
-	if c.goarch == "386" {
-		hardwareType = I32
-	}
-	constraints := "~{memory},~{dirflag},~{fpsr},~{flags}"
-	if readSpecial {
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call %s asm sideeffect %q, %q()\n",
-			call, hardwareType, "mov "+special+", $0", "=r,"+constraints)
-		value := "%" + call
-		resultType := hardwareType
-		if op == "MOVL" && hardwareType == I64 {
-			value = c.truncI64(value, I32)
-			resultType = I32
-		}
-		return c.storeRegSized(other.Reg, resultType, value)
-	}
-
-	value, err := c.loadReg(other.Reg)
-	if err != nil {
-		return err
-	}
-	if hardwareType == I32 {
-		value = c.truncI64(value, I32)
-	}
-	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(%s %s)\n",
-		"mov $0, "+special, "r,"+constraints, hardwareType, value)
-	return nil
-}
-
-func (c *amd64Ctx) lowerTestRegisterMove(op string, index int, other Operand, readSpecial bool, ins Instr) error {
-	if op != "MOVL" || (index != 6 && index != 7) {
-		return fmt.Errorf("%s %s TR%d form is absent from Go 1.27's ymovtab: %q", c.goarch, op, index, ins.Raw)
-	}
-	if other.Kind == OpReg {
-		if !isX86YrlRegisterForArch(other.Reg, c.goarch) {
-			return fmt.Errorf("%s MOVL TR%d operand is outside Go 1.27's Yml class: %q", c.goarch, index, ins.Raw)
-		}
-	} else if !isAMD64MemoryOperand(other) {
-		return fmt.Errorf("%s MOVL TR%d expects a Go 1.27 Yml register or memory: %q", c.goarch, index, ins.Raw)
-	}
-	modRM := 0xc0 | byte(index<<3)
-	constraints := "~{memory},~{dirflag},~{fpsr},~{flags}"
-	if readSpecial {
-		call := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q()\n",
-			call, fmt.Sprintf(".byte 0x0f, 0x24, 0x%02x", modRM), "={ax},"+constraints)
-		return c.storeScalarIntegerOperand(other, I32, "%"+call)
-	}
-	value, err := c.evalIntSized(other, I32)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i32 %s)\n",
-		fmt.Sprintf(".byte 0x0f, 0x26, 0x%02x", modRM), "{ax},"+constraints, value)
-	return nil
-}
-
-func (c *amd64Ctx) lowerDescriptorRegisterAlias(op, class string, other Operand, readSpecial bool, ins Instr) error {
-	directOp := ""
-	switch class {
-	case "gdtr":
-		if op != "MOVL" && op != "MOVQ" {
-			break
-		}
-		if readSpecial {
-			directOp = "SGDT"
-		} else {
-			directOp = "LGDT"
-		}
-	case "idtr":
-		if op != "MOVL" && op != "MOVQ" {
-			break
-		}
-		if readSpecial {
-			directOp = "SIDT"
-		} else {
-			directOp = "LIDT"
-		}
-	case "ldtr":
-		if op == "MOVW" {
-			if readSpecial {
-				directOp = "SLDTW"
-			} else {
-				directOp = "LLDT"
-			}
-		}
-	case "msw":
-		if op == "MOVW" {
-			if readSpecial {
-				directOp = "SMSWW"
-			} else {
-				directOp = "LMSW"
-			}
-		}
-	case "task":
-		if op == "MOVW" {
-			if readSpecial {
-				directOp = "STRW"
-			} else {
-				directOp = "LTR"
-			}
-		}
-	}
-	if directOp == "" {
-		return fmt.Errorf("%s %s %s form is absent from Go 1.27's ymovtab: %q", c.goarch, op, strings.ToUpper(class), ins.Raw)
-	}
-	ok, _, err := c.lowerDescriptorTable(Op(directOp), Instr{Op: Op(directOp), Args: []Operand{other}, Raw: ins.Raw})
-	if !ok {
-		panic("descriptor MOV alias lowering drift")
-	}
-	return err
 }

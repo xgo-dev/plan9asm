@@ -233,6 +233,12 @@ func (frame *x86Mode32FrameState) clearSpills(start, width int) {
 }
 
 func x86Mode32FrameEffect(ins Instr) (x86TypedByteEffect, bool) {
+	if effect, known, err := x86SystemOperandProperties(ins.Op, ins, "386"); known {
+		if err != nil {
+			return x86TypedByteEffect{}, false
+		}
+		return x86TypedByteEffect{operands: []x86TypedByteOperand{effect}}, true
+	}
 	if _, known, err := x86CacheLineWritebackProperties(ins.Op, ins, "386"); known {
 		if err != nil {
 			return x86TypedByteEffect{}, false
