@@ -116,6 +116,9 @@ func AddNamed(names map[string]struct{}) {
 	for name := range forms {
 		names[name] = struct{}{}
 	}
+	for name := range memoryForms {
+		names[name] = struct{}{}
+	}
 }
 
 func buildForms() map[string]Form {

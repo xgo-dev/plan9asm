@@ -85,16 +85,20 @@ func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmsimd.Fo
 	return wasmValue{typ: LLVMType(spec.ResultType()), val: result}
 }
 
+func emitWASMVectorBitcast(b *strings.Builder, newTmp func() string, value string, from, to LLVMType) string {
+	if from == to {
+		return value
+	}
+	result := newTmp()
+	fmt.Fprintf(b, "  %%%s = bitcast %s %s to %s\n", result, from, value, to)
+	return "%" + result
+}
+
 func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, ins Instr, inputs []wasmValue) wasmValue {
 	typ := spec.Shape.LaneType
 	inputType := LLVMType(spec.InputLaneType())
 	cast := func(value string, from, to LLVMType) string {
-		if from == to {
-			return value
-		}
-		result := newTmp()
-		fmt.Fprintf(b, "  %%%s = bitcast %s %s to %s\n", result, from, value, to)
-		return "%" + result
+		return emitWASMVectorBitcast(b, newTmp, value, from, to)
 	}
 
 	lhs := inputs[0].val

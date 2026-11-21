@@ -912,6 +912,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	memoryAddress := func(op string, form wasmMemoryForm) (wasmValue, error) {
 		var base wasmValue
 		var err error
+		width := form.spec.guardedWidth()
 		if form.base != "" {
 			base, err = loadRegister(form.base)
 		} else {
@@ -927,7 +928,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			}
 		}
 		if base.typ == Ptr && !base.stackAddr {
-			if form.spec.access != wasmV128CoreType {
+			if width == 0 {
 				// A direct ABI caller can supply a typed host pointer.
 				return addressPtr(base, form.offset)
 			}
@@ -939,8 +940,8 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if base.typ != I32 || base.stackAddr {
 			return wasmValue{}, fmt.Errorf("%s expects an i32 linear-memory address, got %s", op, base.typ)
 		}
-		if form.spec.access == wasmV128CoreType {
-			emitWASMVectorMemoryBounds(b, base.val, form.offset, newTmp, newLabel)
+		if width != 0 {
+			emitWASMVectorMemoryBounds(b, base.val, form.offset+width, newTmp, newLabel)
 			return addressPtr(base, form.offset)
 		}
 		if form.offset != 0 {
@@ -956,15 +957,25 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	}
 	emitMemory := func(op string, ins Instr, form wasmMemoryForm) error {
 		spec := form.spec
-		if spec.store {
-			value, err := pop(op)
+		var input wasmValue
+		if spec.consumesValue() {
+			var err error
+			input, err = pop(op)
 			if err != nil {
 				return err
 			}
-			if value.typ != spec.stack || value.stackAddr {
-				return fmt.Errorf("%s expects a %s stack value, got %s", op, spec.stack, value.typ)
+			if input.typ != spec.stack || input.stackAddr {
+				return fmt.Errorf("%s expects a %s stack value, got %s", op, spec.stack, input.typ)
 			}
-			value, err = cast(value, spec.access, false)
+		}
+		if spec.store {
+			value := input
+			var err error
+			if spec.vector != nil {
+				value = emitWASMVectorMemoryStoreLane(b, newTmp, form, input)
+			} else {
+				value, err = cast(input, spec.access, false)
+			}
 			if err != nil {
 				return err
 			}
@@ -997,6 +1008,10 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			// A discarded result still observes the original memory trap.
 			fmt.Fprintf(b, "  %%%s = load volatile %s, ptr %s, align 1\n", name, spec.access, address.val)
 			value = wasmValue{typ: spec.access, val: "%" + name}
+		}
+		if spec.vector != nil {
+			push(emitWASMVectorMemoryLoad(b, newTmp, form, value, input))
+			return nil
 		}
 		value, err := cast(value, spec.stack, spec.signed)
 		if err != nil {
@@ -1746,7 +1761,7 @@ func wasmNeedsIncomingContext(fn Func) bool {
 	for _, ins := range fn.Instrs {
 		op := strings.ToUpper(string(ins.Op))
 		_, move := wasmMoveTypes[op]
-		memory := wasmMemoryOps[op]
+		memory, _ := lookupWASMMemoryOp(op)
 		for i, arg := range ins.Args {
 			if memory.store && arg.Kind == OpMem {
 				continue

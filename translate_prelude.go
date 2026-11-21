@@ -73,9 +73,9 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 					wantConversion[spec.intrinsic] = spec
 				}
 			}
-			if memory, ok := wasmMemoryOps[op]; ok {
+			if memory, ok := lookupWASMMemoryOp(op); ok {
 				switch {
-				case memory.access == wasmV128CoreType:
+				case memory.guardedWidth() != 0:
 					if len(ins.Args) == 0 || ins.Args[len(ins.Args)-1].Kind != OpFP {
 						want["memory.size"] = true
 						wantTrap = true

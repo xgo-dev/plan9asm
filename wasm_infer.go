@@ -132,7 +132,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			continue
 		}
 		if memoryKnown {
-			if memory.spec.store {
+			if memory.spec.consumesValue() {
 				if err := popTyped(op, memory.spec.stack); err != nil {
 					return FuncSig{}, err
 				}

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/wasmsimd"
 )
 
 type wasmMemoryOp struct {
@@ -11,25 +13,26 @@ type wasmMemoryOp struct {
 	stack  LLVMType
 	store  bool
 	signed bool
+	vector *wasmsimd.MemoryForm
 }
 
 // The access width is independent of the stack carrier. Narrow loads extend
 // after reading, and narrow stores truncate only after checking the carrier.
 var wasmMemoryOps = map[string]wasmMemoryOp{
-	"I32LOAD":    {I32, I32, false, false},
-	"I64LOAD":    {I64, I64, false, false},
-	"F32LOAD":    {"float", "float", false, false},
-	"F64LOAD":    {"double", "double", false, false},
-	"I32LOAD8S":  {I8, I32, false, true},
-	"I32LOAD8U":  {I8, I32, false, false},
-	"I32LOAD16S": {I16, I32, false, true},
-	"I32LOAD16U": {I16, I32, false, false},
-	"I64LOAD8S":  {I8, I64, false, true},
-	"I64LOAD8U":  {I8, I64, false, false},
-	"I64LOAD16S": {I16, I64, false, true},
-	"I64LOAD16U": {I16, I64, false, false},
-	"I64LOAD32S": {I32, I64, false, true},
-	"I64LOAD32U": {I32, I64, false, false},
+	"I32LOAD":    {access: I32, stack: I32},
+	"I64LOAD":    {access: I64, stack: I64},
+	"F32LOAD":    {access: "float", stack: "float"},
+	"F64LOAD":    {access: "double", stack: "double"},
+	"I32LOAD8S":  {access: I8, stack: I32, signed: true},
+	"I32LOAD8U":  {access: I8, stack: I32},
+	"I32LOAD16S": {access: I16, stack: I32, signed: true},
+	"I32LOAD16U": {access: I16, stack: I32},
+	"I64LOAD8S":  {access: I8, stack: I64, signed: true},
+	"I64LOAD8U":  {access: I8, stack: I64},
+	"I64LOAD16S": {access: I16, stack: I64, signed: true},
+	"I64LOAD16U": {access: I16, stack: I64},
+	"I64LOAD32S": {access: I32, stack: I64, signed: true},
+	"I64LOAD32U": {access: I32, stack: I64},
 	"I32STORE":   {access: I32, stack: I32, store: true},
 	"I64STORE":   {access: I64, stack: I64, store: true},
 	"F32STORE":   {access: "float", stack: "float", store: true},
@@ -43,21 +46,65 @@ var wasmMemoryOps = map[string]wasmMemoryOp{
 	"V128STORE":  {access: wasmV128CoreType, stack: wasmV128CoreType, store: true},
 }
 
+func lookupWASMMemoryOp(name string) (wasmMemoryOp, bool) {
+	if spec, ok := wasmMemoryOps[name]; ok {
+		return spec, true
+	}
+	if vector := wasmsimd.LookupMemory(name); vector != nil {
+		return wasmMemoryOp{
+			access: LLVMType(vector.AccessType), stack: wasmV128CoreType,
+			store: vector.Operation == wasmsimd.MemoryStoreLane, vector: vector,
+		}, true
+	}
+	return wasmMemoryOp{}, false
+}
+
+func (spec wasmMemoryOp) consumesValue() bool {
+	return spec.store || spec.vector != nil && spec.vector.Operation == wasmsimd.MemoryLoadLane
+}
+
+func (spec wasmMemoryOp) guardedWidth() int64 {
+	if spec.vector != nil {
+		return int64(spec.vector.AccessBytes)
+	}
+	if spec.access == wasmV128CoreType {
+		return 16
+	}
+	return 0
+}
+
 type wasmMemoryForm struct {
 	spec   wasmMemoryOp
 	base   Reg
 	offset int64
 	frame  bool
+	lane   int64
 }
 
 func parseWASMMemory(ins Instr, name string) (wasmMemoryForm, bool, error) {
-	spec, found := wasmMemoryOps[name]
+	spec, found := lookupWASMMemoryOp(name)
 	form := wasmMemoryForm{spec: spec}
 	if !found {
 		return form, false, nil
 	}
 	args := ins.Args
-	if spec.store && spec.access == wasmV128CoreType && len(args) != 0 {
+	if spec.vector != nil {
+		if spec.vector.HasLaneIndex() {
+			if len(args) != 2 {
+				return form, true, fmt.Errorf("%s requires an immediate memory offset and a lane index", ins.Op)
+			}
+			lane := args[1]
+			limit := int64(128 / spec.vector.Shape.LaneBits)
+			if lane.Kind != OpImm || lane.ImmIsFloat || lane.ImmRaw != "" || lane.Imm < 0 || lane.Imm >= limit {
+				return form, true, fmt.Errorf("%s requires a lane index between 0 and %d", ins.Op, limit-1)
+			}
+			form.lane = lane.Imm
+			args = args[:1]
+		}
+		if len(args) != 1 || args[0].Kind != OpImm {
+			return form, true, fmt.Errorf("%s requires an immediate memory offset", ins.Op)
+		}
+	} else if spec.store && spec.access == wasmV128CoreType && len(args) != 0 {
 		// Go's V128Store encoder reads To.Offset, but the unary spelling
 		// populates From. An explicit offset belongs in the destination.
 		if zero := args[0]; zero.Kind != OpImm || zero.Imm != 0 || zero.ImmIsFloat || zero.ImmRaw != "" {
@@ -105,14 +152,50 @@ func parseWASMMemory(ins Instr, name string) (wasmMemoryForm, bool, error) {
 
 // Check the whole access before LLVM can scalarize a vector memory operation.
 // An out-of-bounds vector store must trap before writing any of its bytes.
-func emitWASMVectorMemoryBounds(b *strings.Builder, base string, offset int64, newTmp func() string, newLabel func(string) string) {
+func emitWASMVectorMemoryBounds(b *strings.Builder, base string, span int64, newTmp func() string, newLabel func(string) string) {
 	address, end := newTmp(), newTmp()
 	pages, widePages, size, valid := newTmp(), newTmp(), newTmp(), newTmp()
 	fmt.Fprintf(b, "  %%%s = zext i32 %s to i64\n", address, base)
-	fmt.Fprintf(b, "  %%%s = add i64 %%%s, %d\n", end, address, offset+16)
+	fmt.Fprintf(b, "  %%%s = add i64 %%%s, %d\n", end, address, span)
 	fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.memory.size.i32(i32 0)\n", pages)
 	fmt.Fprintf(b, "  %%%s = zext i32 %%%s to i64\n", widePages, pages)
 	fmt.Fprintf(b, "  %%%s = shl i64 %%%s, 16\n", size, widePages)
 	fmt.Fprintf(b, "  %%%s = icmp ule i64 %%%s, %%%s\n", valid, end, size)
 	emitWASMTrapUnless(b, valid, newLabel)
+}
+
+func emitWASMVectorMemoryLoad(b *strings.Builder, newTmp func() string, form wasmMemoryForm, loaded, input wasmValue) wasmValue {
+	spec := form.spec.vector
+	laneType := LLVMType(spec.Shape.LaneType)
+	var vector string
+	switch spec.Operation {
+	case wasmsimd.MemorySplat:
+		vector = emitWASMV128Splat(b, newTmp, spec.Shape, loaded.val)
+	case wasmsimd.MemoryWiden:
+		op := "zext"
+		if spec.Signed {
+			op = "sext"
+		}
+		result := newTmp()
+		fmt.Fprintf(b, "  %%%s = %s %s %s to %s\n", result, op, loaded.typ, loaded.val, laneType)
+		vector = "%" + result
+	case wasmsimd.MemoryZero, wasmsimd.MemoryLoadLane:
+		base := "zeroinitializer"
+		if spec.Operation == wasmsimd.MemoryLoadLane {
+			base = emitWASMVectorBitcast(b, newTmp, input.val, input.typ, laneType)
+		}
+		result := newTmp()
+		fmt.Fprintf(b, "  %%%s = insertelement %s %s, %s %s, i32 %d\n",
+			result, laneType, base, loaded.typ, loaded.val, form.lane)
+		vector = "%" + result
+	}
+	return wasmValue{typ: wasmV128CoreType, val: emitWASMVectorBitcast(b, newTmp, vector, laneType, wasmV128CoreType)}
+}
+
+func emitWASMVectorMemoryStoreLane(b *strings.Builder, newTmp func() string, form wasmMemoryForm, input wasmValue) wasmValue {
+	laneType := LLVMType(form.spec.vector.Shape.LaneType)
+	lanes := emitWASMVectorBitcast(b, newTmp, input.val, input.typ, laneType)
+	result := newTmp()
+	fmt.Fprintf(b, "  %%%s = extractelement %s %s, i32 %d\n", result, laneType, lanes, form.lane)
+	return wasmValue{typ: form.spec.access, val: "%" + result}
 }
