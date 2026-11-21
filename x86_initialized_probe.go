@@ -57,14 +57,30 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 	return initializedVectorProbeSequence(goarch, ins, inputs)
 }
 
-// InitializedVectorMemoryProbeSequence prepares a single fixed-span SIMD
-// memory operand using a declared pointer parameter named memory at 0(FP).
+// InitializedVectorMemoryProbeSequence prepares a single SIMD memory operand
+// using a declared pointer parameter named memory at 0(FP).
 // The sequence keeps the exact original addressing expression. Its caller
 // must supply the extent and alignment if the resulting function is executed.
 func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
 	if goarch != "386" && goarch != "amd64" || !x86ResultNamedPredicateInstruction(ins) ||
 		x86Mode32VectorRegisterContext(ins, goarch) != nil {
 		return nil, false, nil
+	}
+	if form, known, err := x86VSIBProperties(ins, goarch); known {
+		if err != nil || form.prefetch {
+			return nil, false, nil
+		}
+		memory := form.memory.Mem
+		if memory.OffRaw != "" || memory.Segment != "" || memory.IndexExt != "" ||
+			!x86MemoryDisplacementValid(memory.Off, goarch) {
+			return nil, false, nil
+		}
+		registers := []Operand{form.data, form.mask, {Kind: OpReg, Reg: memory.Index}}
+		var activeMask Reg
+		if !form.evex {
+			activeMask = form.mask.Reg
+		}
+		return initializedVectorMemorySequence(goarch, ins, memory.Base, registers, activeMask)
 	}
 	var memory MemRef
 	for _, operand := range ins.Args {
@@ -79,8 +95,7 @@ func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 		}
 		memory = operand.Mem
 	}
-	base, valid := initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: memory.Base})
-	if !valid {
+	if memory.Base == "" {
 		return nil, false, nil
 	}
 	inputs, memoryBytes, valid := initializedVectorOperands(goarch, ins)
@@ -96,6 +111,14 @@ func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 	if memory.Index != "" {
 		registers = append(registers, Operand{Kind: OpReg, Reg: memory.Index})
 	}
+	return initializedVectorMemorySequence(goarch, ins, memory.Base, registers, "")
+}
+
+func initializedVectorMemorySequence(goarch string, ins Instr, addressBase Reg, registers []Operand, activeMask Reg) ([]Instr, bool, error) {
+	base, valid := initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: addressBase})
+	if !valid {
+		return nil, false, nil
+	}
 	for _, input := range registers {
 		if root, valid := initializedX86GPRegister(goarch, input); valid && root == base {
 			return nil, false, nil // The base and an independent numeric input cannot share a register.
@@ -105,12 +128,19 @@ func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 	if !known || err != nil {
 		return nil, known, err
 	}
+	sequence = sequence[:len(sequence)-1]
+	if activeMask != "" {
+		// VEX gather uses vector lane sign bits. Keep the accesses active
+		// instead of compiling a fixture with an all-zero mask.
+		mask := Operand{Kind: OpReg, Reg: activeMask}
+		sequence = append(sequence, x86ProbeInstruction("VPCMPEQD", mask, mask, mask))
+	}
 	move := Op("MOVQ")
 	if goarch == "386" {
 		move = "MOVL"
 	}
 	bind := x86ProbeInstruction(move, Operand{Kind: OpFP, FPName: "memory"}, Operand{Kind: OpReg, Reg: base})
-	return append(sequence[:len(sequence)-1], bind, ins), true, nil
+	return append(sequence, bind, ins), true, nil
 }
 
 func initializedVectorProbeSequence(goarch string, ins Instr, inputs []Operand) ([]Instr, bool, error) {

@@ -491,6 +491,58 @@ func TestInitializedContextReprobeVectorMemory386(t *testing.T) {
 	}
 }
 
+func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
+	for _, row := range []struct {
+		arch, line string
+		eligible   bool
+		activeVEX  bool
+	}{
+		{"amd64", "VGATHERDPS X2, (R13)(X7*2), X1", true, true},
+		{"amd64", "VGATHERDPS 360(R15)(X30*2), K6, X20", true, false},
+		{"amd64", "VPSCATTERDD X2, K5, (AX)(X21*2)", true, false},
+		{"amd64", "VGATHERDPS (SP)(Z4*2), K2, Z20", false, false},
+		{"amd64", "VGATHERDPS X3, 8(X4*1), X6", false, false},
+		{"386", "VPGATHERDD X2, (BP)(X7*2), X1", true, true},
+	} {
+		t.Run(row.arch+"/"+row.line, func(t *testing.T) {
+			ins := compactProbeInstructions(t, row.line)[0]
+			err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, row.arch, ins)
+			if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+				t.Fatalf("expected uninitialized VSIB inputs to require context: %v", err)
+			}
+			form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, row.arch, ins).Form
+			forms := map[string]*formStat{form: {}}
+			captureContextSource(forms, plan9asm.ArchAMD64, row.arch, ins,
+				initializedContextSource{File: "vsib.s", Function: "case", Line: 1}, err)
+			evidence, err := runInitializedContextReprobe(forms, "vector-memory", row.arch, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !row.eligible {
+				if evidence.Status != "not_run" || evidence.EligibleCases != 0 || len(evidence.UnregisteredCases) != 1 {
+					t.Fatalf("unbound stack or absolute base acquired evidence: %+v", evidence)
+				}
+				return
+			}
+			if evidence.Status != "pass" || evidence.EligibleCases != 1 {
+				t.Fatalf("missing VSIB object evidence: %s eligible=%d", evidence.Status, evidence.EligibleCases)
+			}
+			test := evidence.Cases[0]
+			activeVEX := false
+			for _, init := range test.Initialization {
+				if init.Op == "VPCMPEQD" {
+					activeVEX = true
+				}
+			}
+			if !test.MemoryPointerArgument || activeVEX != row.activeVEX ||
+				!reflect.DeepEqual(test.OriginalInstruction, ins) ||
+				test.LLVMObjectCompilation.Status != "pass" || test.RuntimeExecution.Status != "not_run" {
+				t.Fatalf("incorrect VSIB input or evidence: %+v", test)
+			}
+		})
+	}
+}
+
 func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
 	const arch = "386"
 	_, forms, parseErrors, _, err := scanGoAssemblerTestdataWithContexts(runtime.GOROOT(), plan9asm.ArchAMD64, arch, true)

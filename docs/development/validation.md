@@ -332,10 +332,11 @@ object checks. Failed probes, missing/wrong LLVM and objects missing any
 expected executable function fail the command. The `vector-register` profile
 covers typed SIMD and mask-register forms without memory or input flags,
 including legacy floating compares with bare predicates. Use `vector-memory`
-to retain one explicit, typed, fixed-span SIMD memory operand. Its fixture gets the base
-from a declared pointer argument and initializes an independent scalar index
-when present. Stack, implicit, symbolic, aliased and gather/scatter addresses
-stay outside this fixture. The `scalar-register` profile covers typed GP operands,
+for an explicit, typed SIMD memory operand. Its fixture gets the base from a
+declared pointer argument. It initializes an independent scalar index for an
+ordinary address or a vector index and active mask for gather/scatter. Stack,
+base-less, segment-relative, implicit, symbolic and aliased GP addresses stay
+outside this fixture. The `scalar-register` profile covers typed GP operands,
 including explicit and implicit multiply, divide, shifts, comparisons, and
 instructions with FLAGS inputs such as ADC and SETcc. Use `mask-logical` for
 the K-register logical family. All four accept
