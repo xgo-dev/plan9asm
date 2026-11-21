@@ -11,16 +11,20 @@ import (
 // ObserveWindowsAMD64AssemblyText observes the complete checked assembler TEXT
 // inventory. It grants no permission to omit unwind metadata or use a frame.
 func ObserveWindowsAMD64AssemblyText(data, builtinSource []byte) ([]TextRecord, error) {
-	_, observed, err := windowsAMD64AssemblyText(data, builtinSource)
+	_, observed, err := windowsAMD64AssemblyText(data, builtinSource, false, nil)
 	return observed.Texts, err
 }
 
-func windowsAMD64AssemblyText(data, builtinSource []byte) (*checkedGoObject, WindowsAMD64AssemblyUnwind, error) {
+func windowsAMD64AssemblyText(data, builtinSource []byte, sdk bool, referenced sdkReferencedSymbols) (*checkedGoObject, WindowsAMD64AssemblyUnwind, error) {
 	var result WindowsAMD64AssemblyUnwind
 	if len(data) == 0 || len(data) > archiveLimit {
 		return nil, result, contextError("Windows assembly object exceeds its byte bound")
 	}
-	version, err := objectHeaderVersion(data, "windows/amd64")
+	versionReader := objectHeaderVersion
+	if sdk {
+		versionReader = objectVersion
+	}
+	version, err := versionReader(data, "windows/amd64")
 	if err != nil {
 		return nil, result, err
 	}
@@ -37,7 +41,11 @@ func windowsAMD64AssemblyText(data, builtinSource []byte) (*checkedGoObject, Win
 		return nil, result, contextError("invalid Windows assembly object text header")
 	}
 	body := data[end+3:]
-	object, err := checkedObject(body, 4, false)
+	flags := uint32(4) // ObjFlagFromAssembly.
+	if sdk {
+		flags = sdkAssemblyObjectFlags("windows/amd64")
+	}
+	object, err := checkedObject(body, flags, false)
 	if err != nil {
 		return nil, result, err
 	}
@@ -46,7 +54,7 @@ func windowsAMD64AssemblyText(data, builtinSource []byte) (*checkedGoObject, Win
 	for _, index := range []int{3, 4, 5, 6, 7} {
 		for pos := 0; pos < len(object.block(index)); pos += 21 {
 			kind := object.block(index)[pos+10]
-			if kind > schema.kind || schema.kind >= 24 && kind == 2 {
+			if kind > schema.kind || !sdk && schema.kind >= 24 && kind == 2 {
 				return nil, result, contextError("unknown or FIPS Windows assembly symbol kind")
 			}
 		}
@@ -62,7 +70,7 @@ func windowsAMD64AssemblyText(data, builtinSource []byte) (*checkedGoObject, Win
 			return nil, result, contextError("unknown Windows assembly relocation kind")
 		}
 	}
-	texts, err := readCheckedTextObjectKinds(object, "windows/amd64", builtins, nil, false)
+	texts, err := readCheckedTextObjectKinds(object, "windows/amd64", builtins, referenced, sdk)
 	if err != nil {
 		return nil, result, err
 	}
@@ -97,24 +105,47 @@ type WindowsAMD64AssemblyUnwind struct {
 // A live source factory must independently bind original source, actual tools,
 // the pinned producer/schema, full listing and physical prologue/source PCs.
 func ObserveWindowsAMD64AssemblyUnwind(data, builtinSource []byte, privateLeaves ...[]TextRecord) (WindowsAMD64AssemblyUnwind, error) {
-	var result WindowsAMD64AssemblyUnwind
 	if len(privateLeaves) > 1 {
-		return result, contextError("Windows metadata has multiple private source-role inventories")
+		return WindowsAMD64AssemblyUnwind{}, contextError("Windows metadata has multiple private source-role inventories")
 	}
-	object, observed, err := windowsAMD64AssemblyText(data, builtinSource)
+	var leaves []TextRecord
+	if len(privateLeaves) == 1 {
+		leaves = privateLeaves[0]
+	}
+	return observeWindowsAMD64AssemblyUnwind(data, builtinSource, leaves, false, nil)
+}
+
+// ObserveWindowsAMD64SDKAssemblyUnwind reads the SDK object's metadata. The
+// live frame factory joins its complete TEXT inventory to the actual archive,
+// then verifies the source, ABI, frame layout and whether SEH is required.
+func ObserveWindowsAMD64SDKAssemblyUnwind(request SDKASMDataObservationRequest, ordinal int) (WindowsAMD64AssemblyUnwind, error) {
+	const target = "windows/amd64"
+	if request.Target != target || ordinal < 0 || ordinal >= len(request.Sources) {
+		return WindowsAMD64AssemblyUnwind{}, contextError("Windows unwind has no selected SDK assembly object")
+	}
+	referenced, err := sdkReferencedArchiveSymbols(request.Referenced, target)
+	if err != nil {
+		return WindowsAMD64AssemblyUnwind{}, err
+	}
+	return observeWindowsAMD64AssemblyUnwind(request.Sources[ordinal].OriginalObject, request.BuiltinSource, nil, true, referenced)
+}
+
+func observeWindowsAMD64AssemblyUnwind(data, builtinSource []byte, privateLeaves []TextRecord,
+	sdk bool, referenced sdkReferencedSymbols,
+) (WindowsAMD64AssemblyUnwind, error) {
+	object, result, err := windowsAMD64AssemblyText(data, builtinSource, sdk, referenced)
 	if err != nil {
 		return result, err
 	}
-	result = observed
 	texts := result.Texts
 	schema, _ := windowsUnwindFormat(result.Version) // checked by the shared reader
 	var leaves map[uint32]TextRecord
-	if len(privateLeaves) == 1 && len(privateLeaves[0]) != 0 {
-		if len(privateLeaves[0]) > len(texts) {
+	if len(privateLeaves) != 0 {
+		if len(privateLeaves) > len(texts) {
 			return result, contextError("Windows private source-role inventory exceeds its complete object")
 		}
-		leaves = make(map[uint32]TextRecord, len(privateLeaves[0]))
-		for _, text := range privateLeaves[0] {
+		leaves = make(map[uint32]TextRecord, len(privateLeaves))
+		for _, text := range privateLeaves {
 			_, duplicate := leaves[text.Index]
 			if duplicate || text.Name == "" || text.Kind != 1 || text.Flags != 16 ||
 				!(text.Namespace == TextSymbolSelf && text.ABI == 65535 ||
@@ -143,8 +174,9 @@ func ObserveWindowsAMD64AssemblyUnwind(data, builtinSource []byte, privateLeaves
 		if name != "" {
 			names[name] = true
 		}
+		text := symbol[10] == 1 || sdk && symbol[10] == 2
 		for n := object.indices[1][index]; n < object.indices[1][index+1]; n++ {
-			if block(15)[int(n)*9] == schema.aux && symbol[10] != 1 {
+			if block(15)[int(n)*9] == schema.aux && !text {
 				return result, contextError("Windows SEH auxiliary belongs to a non-TEXT definition")
 			}
 		}
@@ -187,9 +219,11 @@ func ObserveWindowsAMD64AssemblyUnwind(data, builtinSource []byte, privateLeaves
 		if private && !reflect.DeepEqual(leaf, text) {
 			return WindowsAMD64AssemblyUnwind{}, contextError("Windows private TEXT differs from its complete source/object association")
 		}
-		if text.Name == "" || textNames[text.Name] || text.Kind != 1 || !private && text.ABI != 0 ||
+		validABI := text.ABI == 0 || private || sdk && (text.ABI == 1 || text.ABI == 65535)
+		validKind := text.Kind == 1 || sdk && text.Kind == 2
+		if text.Name == "" || textNames[text.Name] || !validKind || !validABI ||
 			text.Flags&^16 != 0 || text.Flags2 != schema.flag2 {
-			return WindowsAMD64AssemblyUnwind{}, contextError("Windows closed-local metadata needs complete distinct ABI0 TEXTs")
+			return WindowsAMD64AssemblyUnwind{}, contextError("Windows unwind needs complete distinct TEXT definitions")
 		}
 		textNames[text.Name] = true
 		links := 0
@@ -210,11 +244,11 @@ func ObserveWindowsAMD64AssemblyUnwind(data, builtinSource []byte, privateLeaves
 			used[index] = true
 		}
 		minimumLinks := 1
-		if private {
-			// The original-source join checks whether this leaf has an
-			// automatic frame. Observe either valid object shape here; only
-			// the independently bound zero-frame source can omit SEH.
+		if private || sdk {
+			// The source join checks whether the original body has a frame.
 			minimumLinks = 0
+		}
+		if private {
 			delete(leaves, text.Index)
 		}
 		if links < minimumLinks || links > 1 {

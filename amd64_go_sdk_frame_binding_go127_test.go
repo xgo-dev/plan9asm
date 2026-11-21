@@ -12,7 +12,17 @@ import (
 )
 
 func TestGoAMD64SDKFrameReadonlyDataComposition(t *testing.T) {
+	for _, goos := range []string{"linux", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			checkSDKAMD64FrameReadonlyDataComposition(t, goos)
+		})
+	}
+}
+
+func checkSDKAMD64FrameReadonlyDataComposition(t *testing.T, goos string) {
+	t.Helper()
 	ctx, request := sdkASMDataRequest(t, "amd64", "crypto/internal/fips140/sha512")
+	setSDKAMD64FrameTestProfile(&request, goos, "v1")
 	observed, err := CaptureGoAMD64SDKFrameObservation(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +67,19 @@ func TestGoAMD64SDKFrameReadonlyDataComposition(t *testing.T) {
 		t.Fatal("closed frame/DATA source revived", err)
 	}
 	t.Logf("%d complete source functions and %d readonly definitions; not a full translation result", len(file.Funcs), len(data))
+}
+
+func setSDKAMD64FrameTestProfile(request *GoX86SDKASMDataCaptureRequest, goos, cpu string) {
+	request.Target = goos + "/amd64"
+	for index, pair := range request.Environment {
+		key, _, _ := strings.Cut(pair, "=")
+		switch key {
+		case "GOOS":
+			request.Environment[index] = "GOOS=" + goos
+		case "GOAMD64":
+			request.Environment[index] = "GOAMD64=" + cpu
+		}
+	}
 }
 
 func TestGoAMD64SDKFrameOriginalSourceCapture(t *testing.T) {
@@ -146,14 +169,15 @@ func TestGoAMD64SDKFrameRejectsChangedProfile(t *testing.T) {
 }
 
 func TestGoAMD64SDKFrameOriginalRegisterEntry(t *testing.T) {
-	for _, level := range []string{"v1", "v2"} {
-		t.Run(level, func(t *testing.T) {
+	for _, profile := range []struct{ goos, triple, cpu string }{
+		{"linux", "x86_64-unknown-linux-gnu", "v1"},
+		{"linux", "x86_64-unknown-linux-gnu", "v2"},
+		{"windows", "x86_64-pc-windows-msvc", "v1"},
+		{"windows", "x86_64-pc-windows-msvc", "v2"},
+	} {
+		t.Run(profile.goos+"-"+profile.cpu, func(t *testing.T) {
 			ctx, request := sdkASMDataRequest(t, "amd64", "internal/chacha8rand")
-			for index, pair := range request.Environment {
-				if strings.HasPrefix(pair, "GOAMD64=") {
-					request.Environment[index] = "GOAMD64=" + level
-				}
-			}
+			setSDKAMD64FrameTestProfile(&request, profile.goos, profile.cpu)
 			observed, err := CaptureGoAMD64SDKFrameObservation(ctx, request)
 			if err != nil {
 				t.Fatal(err)
@@ -188,7 +212,7 @@ func TestGoAMD64SDKFrameOriginalRegisterEntry(t *testing.T) {
 			}
 			resolve := testResolveSym(pkg.Path)
 			options := Options{
-				Goarch: "amd64", TargetTriple: "x86_64-unknown-linux-gnu",
+				Goarch: "amd64", TargetTriple: profile.triple,
 				ResolveSym: func(symbol string) string {
 					name := resolve(symbol)
 					if strings.HasSuffix(symbol, "<>") {
@@ -201,7 +225,7 @@ func TestGoAMD64SDKFrameOriginalRegisterEntry(t *testing.T) {
 			if ir, err := Translate(file, options); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("an unbound register signature acquired private stack storage", err)
 			}
-			if level == "v1" {
+			if profile.goos == "linux" && profile.cpu == "v1" {
 				changed := options
 				changed.ResolveSym = func(symbol string) string {
 					if symbol == "·block" {
@@ -230,6 +254,20 @@ func TestGoAMD64SDKFrameOriginalRegisterEntry(t *testing.T) {
 						compileLLVMToObject(t, llc, options.TargetTriple, "register-frame.ll", "register-frame.o", ir)
 					}, assembly)
 				})
+			}
+			if profile.goos == "windows" && profile.cpu == "v1" {
+				unwind := source.sdkFrame.owner.source.observation.Frames[0].Unwind
+				if unwind == nil || len(unwind.Unwind) != 1 {
+					t.Fatal("the original Windows frame must retain its SEH record")
+				}
+				record := &unwind.Unwind[0]
+				if record.PrologueEnd != 4 || record.PushEnd != 1 || len(record.Data) != 12 {
+					t.Fatalf("unexpected original PUSHQ BP and MOVQ SP,BP metadata: %+v", record)
+				}
+				record.Data[6] ^= 1
+				if err := source.Verify(ctx); !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("changed original unwind bytes retained the frame binding", err)
+				}
 			}
 		})
 	}

@@ -409,7 +409,7 @@ func captureGoAMD64FrameSource(ctx context.Context, pkg GoPackage, request GoAMD
 				err = goAMD64FrameDataTextJoin(functions, observed, source.request.Directory, source.origins, "")
 			}
 			if err == nil && unwind != nil {
-				err = goAMD64FrameWindowsUnwindFunctions(functions, source.origins, source.request.Directory, *unwind)
+				err = goAMD64FrameWindowsUnwindFunctions(functions, source.origins, source.request.Directory, "", *unwind)
 			}
 		} else if source.request.Target == "windows/amd64" && (gotoolchain.AuditedGo127(source.env["GOVERSION"]) ||
 			bytes.Contains(listing, []byte(" SSEHUNWINDINFO "))) {

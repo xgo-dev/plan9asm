@@ -176,33 +176,45 @@ func (source *GoAMD64FrameSource) sdkFrameRecords() (map[string]goAMD64FrameFunc
 			}
 			source.origins[observed.File] = strings.Count(string(bytes), "\n") + 1
 		}
-		var observed map[string]goAMD64FrameFunction
-		if len(file.Data)+len(file.Globl) != 0 || bytes.Contains(native.OriginalListing, []byte("\trel ")) {
-			data, readErr := source.fixedLocalDataObservation(input.Name, cpp.Output)
-			if readErr != nil {
-				return nil, nil, readErr
+		var unwind *gostaticstorage.WindowsAMD64AssemblyUnwind
+		if native.Unwind != nil {
+			copy := *native.Unwind
+			copy.Texts = texts
+			unwind = &copy
+		}
+		if (unwind != nil) != (source.request.Target == "windows/amd64") {
+			return nil, nil, goAMD64FrameContext("SDK-primary frame lost its original target unwind inventory")
+		}
+		listing := native.OriginalListing
+		var assemblyData *gostaticstorage.AMD64AssemblyData
+		if len(file.Data)+len(file.Globl) != 0 || bytes.Contains(listing, []byte("\trel ")) {
+			assemblyData, err = source.fixedLocalDataObservation(input.Name, cpp.Output)
+			if err != nil {
+				return nil, nil, err
 			}
-			listing := native.OriginalListing
-			if len(data.Layouts) != 0 {
-				listing, readErr = goAMD64FrameDataListing(listing, data)
-				if readErr != nil {
-					return nil, nil, readErr
+			if len(assemblyData.Layouts) != 0 {
+				listing, err = goAMD64FrameDataListing(listing, assemblyData)
+				if err != nil {
+					return nil, nil, err
 				}
 			}
-			texts, err = goAMD64FrameSourceTexts(listing, data)
-			if err == nil {
-				observed, err = goAMD64FrameListingRecords(listing, file, origin.pkg, source.origins, texts, nil, data,
-					source.request.Target, source.request.Directory, source.env["GOROOT"], registerEntries)
+			texts, err = goAMD64FrameSourceTexts(listing, assemblyData)
+			if err != nil {
+				return nil, nil, err
 			}
-			if err == nil {
-				err = goAMD64FrameDataTextJoin(observed, data, source.request.Directory, source.origins, source.env["GOROOT"])
-			}
-		} else if goAMD64FrameSplitListing(native.OriginalListing) {
-			observed, err = goAMD64FrameListingRecords(native.OriginalListing, file, origin.pkg, source.origins, texts, nil, nil,
-				source.request.Target, source.request.Directory, source.env["GOROOT"], registerEntries)
-		} else {
-			observed, err = goAMD64FrameListingRecords(native.OriginalListing, file, origin.pkg, source.origins,
-				texts, nil, nil, "", "", "", registerEntries)
+		}
+		target := ""
+		if unwind != nil || assemblyData != nil || goAMD64FrameSplitListing(listing) {
+			target = source.request.Target
+		}
+		dir, root := source.request.Directory, source.env["GOROOT"]
+		observed, err := goAMD64FrameListingRecords(listing, file, origin.pkg, source.origins, texts, unwind, assemblyData,
+			target, dir, root, registerEntries)
+		if err == nil && assemblyData != nil {
+			err = goAMD64FrameDataTextJoin(observed, assemblyData, dir, source.origins, root)
+		}
+		if err == nil && unwind != nil {
+			err = goAMD64FrameWindowsUnwindFunctions(observed, source.origins, dir, root, *unwind)
 		}
 		if err != nil {
 			return nil, nil, err

@@ -110,13 +110,15 @@ func goAMD64FrameWindowsUnwindListing(listing []byte, file *File, pkg GoPackage,
 	if err != nil {
 		return nil, err
 	}
-	if err := goAMD64FrameWindowsUnwindFunctions(functions, origins, directory, observed); err != nil {
+	if err := goAMD64FrameWindowsUnwindFunctions(functions, origins, directory, "", observed); err != nil {
 		return nil, err
 	}
 	return functions, nil
 }
 
-func goAMD64FrameWindowsUnwindFunctions(functions map[string]goAMD64FrameFunction, origins map[string]int, directory string, observed gostaticstorage.WindowsAMD64AssemblyUnwind) error {
+func goAMD64FrameWindowsUnwindFunctions(functions map[string]goAMD64FrameFunction, origins map[string]int,
+	directory, root string, observed gostaticstorage.WindowsAMD64AssemblyUnwind,
+) error {
 	if len(observed.Texts) != len(functions) {
 		return goAMD64FrameContext("Windows object/listing complete TEXT inventories differ")
 	}
@@ -127,11 +129,8 @@ func goAMD64FrameWindowsUnwindFunctions(functions map[string]goAMD64FrameFunctio
 	seen := make(map[string]bool)
 	for _, text := range observed.Texts {
 		fn, exists := functions[text.Name]
-		abi := uint16(0)
-		if fn.privateLeaf {
-			abi = fn.nativeABI
-		}
-		if !exists || seen[text.Name] || text.ABI != abi || text.Kind != 1 || text.Flags != fn.nativeFlags() || text.Flags2 != observed.TextFlags2 ||
+		if !exists || seen[text.Name] || text.ABI != fn.nativeABI || text.Kind != 1 && text.Kind != 2 ||
+			text.Flags != fn.nativeFlags() || text.Flags2 != observed.TextFlags2 ||
 			!bytes.Equal(text.Code, fn.code) || fn.prologue < 0 || fn.prologue >= len(fn.code) {
 			return goAMD64FrameContext("Windows object/listing TEXT name/ABI/code role differs")
 		}
@@ -151,7 +150,7 @@ func goAMD64FrameWindowsUnwindFunctions(functions map[string]goAMD64FrameFunctio
 					return err
 				}
 			}
-			if err := goAMD64FrameSourcePCs(text, fn, directory, origins, ""); err != nil {
+			if err := goAMD64FrameSourcePCs(text, fn, directory, origins, root); err != nil {
 				return err
 			}
 			continue
@@ -165,7 +164,7 @@ func goAMD64FrameWindowsUnwindFunctions(functions map[string]goAMD64FrameFunctio
 			fn.prologue+first.Len+second.Len != int(metadata.PrologueEnd) {
 			return goAMD64FrameContext("Windows unwind frame end differs from actual automatic prologue")
 		}
-		if err := goAMD64FrameSourcePCs(text, fn, directory, origins, ""); err != nil {
+		if err := goAMD64FrameSourcePCs(text, fn, directory, origins, root); err != nil {
 			return err
 		}
 	}

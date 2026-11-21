@@ -177,7 +177,7 @@ func TestGoAMD64WindowsFramedLeafRequiresSEH(t *testing.T) {
 			t.Fatal("original private frame lacks exactly one SEH owner", links)
 		}
 		observed.Texts[index].Auxiliary = filtered
-		if err := goAMD64FrameWindowsUnwindFunctions(source.functions, source.origins, request.Directory, observed); !errors.Is(err, ErrProbeNeedsContext) {
+		if err := goAMD64FrameWindowsUnwindFunctions(source.functions, source.origins, request.Directory, "", observed); !errors.Is(err, ErrProbeNeedsContext) {
 			t.Fatal("framed helper borrowed the zero-frame SEH exemption", err)
 		}
 		return

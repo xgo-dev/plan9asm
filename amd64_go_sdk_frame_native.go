@@ -19,6 +19,7 @@ type sdkAMD64FrameNativeObservation struct {
 	Source                         string
 	OriginalListing, MappedListing []byte
 	Records                        []sdkAMD64FrameNativeRecord
+	Unwind                         *gostaticstorage.WindowsAMD64AssemblyUnwind
 }
 
 // Both native listings share one explicit SDK-primary representation bound.
@@ -117,6 +118,16 @@ func (source *GoX86SDKASMDataSource) captureSDKFrameListings(ctx context.Context
 			return err
 		}
 	}
+	windows := source.request.Target == "windows/amd64"
+	if windows {
+		builtin, err := source.guard.windowsUnwindBuiltin()
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(builtin, source.observation.ObjectInputs.BuiltinSource) {
+			return sdkASMDataContext("SDK-primary unwind and assembly use different builtin sources")
+		}
+	}
 	for ordinal, input := range source.observation.ObjectInputs.Sources {
 		var objects, listings [2][]byte
 		paths := [2]string{filepath.Join(source.request.Directory, input.Name), filepath.Join(source.guard.owned, fmt.Sprintf("expanded-%d.s", ordinal))}
@@ -149,9 +160,21 @@ func (source *GoX86SDKASMDataSource) captureSDKFrameListings(ctx context.Context
 		if err != nil || !reflect.DeepEqual(first, second) {
 			return sdkASMDataContext("SDK-primary original/mapped complete native frame metadata differs: %v", err)
 		}
-		source.observation.Frames = append(source.observation.Frames, sdkAMD64FrameNativeObservation{
+		frame := sdkAMD64FrameNativeObservation{
 			Source: input.Name, OriginalListing: listings[0], MappedListing: listings[1], Records: first,
-		})
+		}
+		if windows {
+			unwind, err := gostaticstorage.ObserveWindowsAMD64SDKAssemblyUnwind(source.observation.ObjectInputs, ordinal)
+			if err != nil {
+				return sdkASMDataContext("SDK-primary original Windows unwind metadata: %v", err)
+			}
+			if unwind.Version != source.guard.env["GOVERSION"] || !reflect.DeepEqual(unwind.Texts, original) {
+				return sdkASMDataContext("SDK-primary unwind differs from the complete original listing object")
+			}
+			unwind.Texts = nil // The already-joined object retains this inventory.
+			frame.Unwind = &unwind
+		}
+		source.observation.Frames = append(source.observation.Frames, frame)
 	}
 	return nil
 }
