@@ -1,4 +1,4 @@
-package main
+package opcodeinventory
 
 import (
 	"errors"
@@ -299,9 +299,23 @@ func (bindings *sharedX86OpcodeBindings) opcodeMap(expression ast.Expr, depth in
 	return nil
 }
 
-// Shared effects also contain operand/condition switches. Only actual typed
-// opcode dispatch can advertise names; unrelated maps and suffixes cannot.
-func collectSharedX86OpcodeDispatch(supported map[string]struct{}, file *ast.File, types *sharedX86OpcodeTypes) {
+// CollectSharedX86 extracts name claims from typed opcode dispatch in shared
+// x86 files. Condition strings and unrelated maps cannot advertise opcodes.
+func CollectSharedX86(supported map[string]struct{}, root string, files, sharedFiles []*ast.File, normalize func(string) string) error {
+	if len(sharedFiles) == 0 {
+		return nil
+	}
+	types, err := loadSharedX86OpcodeTypes(root, files)
+	if err != nil {
+		return err
+	}
+	for _, file := range sharedFiles {
+		collectSharedX86OpcodeDispatch(supported, file, types, normalize)
+	}
+	return nil
+}
+
+func collectSharedX86OpcodeDispatch(supported map[string]struct{}, file *ast.File, types *sharedX86OpcodeTypes, normalize func(string) string) {
 	if types.op == nil || file.Name.Name != types.packageName {
 		return
 	}
@@ -313,7 +327,7 @@ func collectSharedX86OpcodeDispatch(supported map[string]struct{}, file *ast.Fil
 		}
 		name, err := strconv.Unquote(literal.Value)
 		if err == nil {
-			if name = normalizeOp(name); name != "" {
+			if name = normalize(name); name != "" {
 				supported[name] = struct{}{}
 			}
 		}

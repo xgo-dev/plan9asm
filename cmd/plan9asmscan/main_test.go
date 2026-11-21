@@ -548,6 +548,68 @@ var packedFamilySpecs = map[string]int{
 	}
 }
 
+func TestExtractSupportedOpsUsesDeclaredX86Widths(t *testing.T) {
+	dir := t.TempDir()
+	source := `package sample
+type x86OpcodeWidths map[string]string
+type unrelatedWidths map[string]string
+var families = x86OpcodeWidths{"OR": "BWLQ", "BTC": "WLQ", "INVALID": "V"}
+var unrelated = unrelatedWidths{"OTHER": "BWLQ"}
+`
+	for _, file := range []string{"amd64_widths.go", "arm64_widths.go"} {
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, arch := range []string{"386", "amd64", "arm64"} {
+		supported, err := extractSupportedOps(dir, arch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"ORB", "ORW", "ORL", "ORQ", "BTCW", "BTCL", "BTCQ"} {
+			_, found := supported[name]
+			want := arch == "amd64" || arch == "386" && !strings.HasSuffix(name, "Q")
+			if found != want {
+				t.Errorf("%s %s support = %t, want %t", arch, name, found, want)
+			}
+		}
+		for _, name := range []string{"OR", "BTCB", "INVALIDV", "OTHERB"} {
+			if _, found := supported[name]; found {
+				t.Errorf("%s advertised undeclared operation %s", arch, name)
+			}
+		}
+	}
+}
+
+func TestExtractSupportedOpsFindsSharedTypedX86Dispatch(t *testing.T) {
+	dir := t.TempDir()
+	for filename, source := range map[string]string{
+		"types.go": "package sample\ntype Op string\ntype Instr struct { Op Op }\n",
+		"x86_syscall.go": `package sample
+func syscall(ins Instr) bool {
+	return ins.Op == "SYSCALL"
+}
+func condition(op string) bool {
+	return op == "UNRELATED"
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, filename), []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	supported, err := extractSupportedOps(dir, "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := supported["SYSCALL"]; !found {
+		t.Error("shared typed syscall opcode was not extracted")
+	}
+	if _, found := supported["UNRELATED"]; found {
+		t.Error("an ordinary string comparison was advertised as an opcode")
+	}
+}
+
 func TestExtractSupportedOpsFindsSingleFamilyOpcodeComparison(t *testing.T) {
 	dir := t.TempDir()
 	src := `package sample

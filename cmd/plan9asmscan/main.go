@@ -22,6 +22,7 @@ import (
 
 	"github.com/xgo-dev/plan9asm"
 	"github.com/xgo-dev/plan9asm/internal/gotoolchain"
+	"github.com/xgo-dev/plan9asm/internal/opcodeinventory"
 )
 
 type pkgJSON struct {
@@ -933,7 +934,16 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("stat %s: %w", parserPath, err)
 	}
+	if loweringArch == "amd64" {
+		shared, err := filepath.Glob(filepath.Join(repoRoot, "x86_*.go"))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, shared...)
+	}
 	sort.Strings(files)
+	var sharedFiles []*ast.File
+	var extractionFiles []*ast.File
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
@@ -945,6 +955,11 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 		parsed, err := parser.ParseFile(token.NewFileSet(), f, src, 0)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s for supported instructions: %w", f, err)
+		}
+		extractionFiles = append(extractionFiles, parsed)
+		if strings.HasPrefix(filepath.Base(f), "x86_") {
+			sharedFiles = append(sharedFiles, parsed)
+			continue
 		}
 		for _, decl := range parsed.Decls {
 			gen, ok := decl.(*ast.GenDecl)
@@ -970,7 +985,7 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 				for _, value := range spec.Values {
 					literal, ok := value.(*ast.CompositeLit)
 					if ok {
-						collectSupportedOpcodeMap(supported, literal)
+						opcodeinventory.CollectMap(supported, literal, goarch, normalizeOp)
 					}
 				}
 			}
@@ -1006,18 +1021,18 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 						continue
 					}
 					mapType, isMap := literal.Type.(*ast.MapType)
-					keyType, stringKeyed := mapTypeKeyIdent(mapType)
+					keyType, stringKeyed := opcodeinventory.MapKeyIdent(mapType)
 					if !isMap || !stringKeyed || keyType != "string" {
 						continue
 					}
-					collectSupportedOpcodeMap(supported, literal)
+					opcodeinventory.CollectMap(supported, literal, goarch, normalizeOp)
 				}
 			}
 			if literal, ok := node.(*ast.CompositeLit); ok {
 				mapType, isMap := literal.Type.(*ast.MapType)
-				keyType, opKeyed := mapTypeKeyIdent(mapType)
+				keyType, opKeyed := opcodeinventory.MapKeyIdent(mapType)
 				if isMap && opKeyed && keyType == "Op" {
-					collectSupportedOpcodeMap(supported, literal)
+					opcodeinventory.CollectMap(supported, literal, goarch, normalizeOp)
 				}
 			}
 			clause, ok := node.(*ast.CaseClause)
@@ -1043,6 +1058,9 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 			return true
 		})
 	}
+	if err := opcodeinventory.CollectSharedX86(supported, repoRoot, extractionFiles, sharedFiles, normalizeOp); err != nil {
+		return nil, err
+	}
 	return supported, nil
 }
 
@@ -1060,39 +1078,6 @@ func opcodeComparedWithOp(left, right ast.Expr) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func collectSupportedOpcodeMap(supported map[string]struct{}, literal *ast.CompositeLit) {
-	mapType, isMap := literal.Type.(*ast.MapType)
-	keyType, supportedKey := mapTypeKeyIdent(mapType)
-	if !isMap || !supportedKey || keyType != "string" && keyType != "Op" {
-		return
-	}
-	for _, elt := range literal.Elts {
-		pair, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		key, ok := pair.Key.(*ast.BasicLit)
-		if !ok || key.Kind != token.STRING {
-			continue
-		}
-		candidate, _ := strconv.Unquote(key.Value)
-		if op := normalizeOp(candidate); op != "" {
-			supported[op] = struct{}{}
-		}
-	}
-}
-
-func mapTypeKeyIdent(mapType *ast.MapType) (string, bool) {
-	if mapType == nil {
-		return "", false
-	}
-	ident, ok := mapType.Key.(*ast.Ident)
-	if !ok {
-		return "", false
-	}
-	return ident.Name, true
 }
 
 func attachEncoderCatalog(rep *report, ops map[string]*opStat, catalog []encoderFormReport) {

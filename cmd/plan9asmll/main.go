@@ -28,6 +28,7 @@ import (
 	"github.com/xgo-dev/plan9asm/gotoolprofile"
 	"github.com/xgo-dev/plan9asm/internal/asmsig"
 	"github.com/xgo-dev/plan9asm/internal/goabi"
+	"github.com/xgo-dev/plan9asm/internal/opcodeinventory"
 	"github.com/xgo-dev/plan9asm/internal/sdkfrontend"
 	"golang.org/x/tools/go/packages"
 )
@@ -2563,7 +2564,7 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 					if !ok {
 						continue
 					}
-					collectSupportedOpcodeMap(supported, literal, goarch)
+					opcodeinventory.CollectMap(supported, literal, goarch, normalizeOp)
 				}
 			}
 		}
@@ -2603,45 +2604,19 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 						continue
 					}
 					mapType, isMap := literal.Type.(*ast.MapType)
-					keyType, stringKeyed := mapTypeKeyIdent(mapType)
+					keyType, stringKeyed := opcodeinventory.MapKeyIdent(mapType)
 					if !isMap || !stringKeyed || keyType != "string" {
 						continue
 					}
-					for _, elt := range literal.Elts {
-						pair, ok := elt.(*ast.KeyValueExpr)
-						if !ok {
-							continue
-						}
-						key, ok := pair.Key.(*ast.BasicLit)
-						if !ok || key.Kind != token.STRING {
-							continue
-						}
-						candidate, _ := strconv.Unquote(key.Value)
-						if nop := normalizeOp(candidate); nop != "" {
-							supported[nop] = struct{}{}
-						}
-					}
+					opcodeinventory.CollectMap(supported, literal, goarch, normalizeOp)
 				}
 			}
 			literal, ok := node.(*ast.CompositeLit)
 			if ok {
 				mapType, isMap := literal.Type.(*ast.MapType)
-				keyType, isOpMap := mapTypeKeyIdent(mapType)
+				keyType, isOpMap := opcodeinventory.MapKeyIdent(mapType)
 				if isMap && isOpMap && keyType == "Op" {
-					for _, elt := range literal.Elts {
-						pair, ok := elt.(*ast.KeyValueExpr)
-						if !ok {
-							continue
-						}
-						key, ok := pair.Key.(*ast.BasicLit)
-						if !ok || key.Kind != token.STRING {
-							continue
-						}
-						candidate, _ := strconv.Unquote(key.Value)
-						if nop := normalizeOp(candidate); nop != "" {
-							supported[nop] = struct{}{}
-						}
-					}
+					opcodeinventory.CollectMap(supported, literal, goarch, normalizeOp)
 				}
 			}
 			clause, ok := node.(*ast.CaseClause)
@@ -2667,14 +2642,8 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 			return true
 		})
 	}
-	if len(sharedFiles) != 0 {
-		types, err := loadSharedX86OpcodeTypes(repoRoot, extractionFiles)
-		if err != nil {
-			return nil, err
-		}
-		for _, file := range sharedFiles {
-			collectSharedX86OpcodeDispatch(supported, file, types)
-		}
+	if err := opcodeinventory.CollectSharedX86(supported, repoRoot, extractionFiles, sharedFiles, normalizeOp); err != nil {
+		return nil, err
 	}
 	return supported, nil
 }
@@ -2693,57 +2662,6 @@ func opcodeComparedWithOp(left, right ast.Expr) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func collectSupportedOpcodeMap(supported map[string]struct{}, literal *ast.CompositeLit, goarch string) {
-	name, named := literal.Type.(*ast.Ident)
-	widthFamilies := named && name.Name == "x86OpcodeWidths" && (goarch == "386" || goarch == "amd64")
-	mapType, isMap := literal.Type.(*ast.MapType)
-	keyType, supportedKey := mapTypeKeyIdent(mapType)
-	if !widthFamilies && (!isMap || !supportedKey || keyType != "string" && keyType != "Op") {
-		return
-	}
-	for _, elt := range literal.Elts {
-		pair, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		key, ok := pair.Key.(*ast.BasicLit)
-		if !ok || key.Kind != token.STRING {
-			continue
-		}
-		candidate, _ := strconv.Unquote(key.Value)
-		if widthFamilies {
-			value, ok := pair.Value.(*ast.BasicLit)
-			if !ok || value.Kind != token.STRING {
-				continue
-			}
-			widths, _ := strconv.Unquote(value.Value)
-			for _, width := range widths {
-				if !strings.ContainsRune("BWLQ", width) || width == 'Q' && goarch == "386" {
-					continue
-				}
-				if op := normalizeOp(candidate + string(width)); op != "" {
-					supported[op] = struct{}{}
-				}
-			}
-			continue
-		}
-		if nop := normalizeOp(candidate); nop != "" {
-			supported[nop] = struct{}{}
-		}
-	}
-}
-
-func mapTypeKeyIdent(mapType *ast.MapType) (string, bool) {
-	if mapType == nil {
-		return "", false
-	}
-	ident, ok := mapType.Key.(*ast.Ident)
-	if !ok {
-		return "", false
-	}
-	return ident.Name, true
 }
 
 func flattenUnsupportedAgg(agg map[string]int) []opCount {
