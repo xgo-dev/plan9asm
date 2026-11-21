@@ -49,7 +49,7 @@ func TestX86ScalarShiftArchitecturalChoiceProducerFacts(t *testing.T) {
 						state.gp[register] = 0xff
 					}
 					before := state.clone()
-					accepted, recognized := x86LoweredScalarShiftChoiceStep(ins, &state, nil, 0, arch)
+					accepted, recognized := (&amd64Ctx{}).loweredScalarShiftChoiceStep(ins, &state, nil, 0, arch)
 					required := uint8(0)
 					if strings.HasPrefix(row.text, "RCLB $10") || strings.HasPrefix(row.text, "RCRL CL") {
 						required = cf
@@ -98,7 +98,7 @@ func TestX86ScalarShiftArchitecturalChoiceRawOriginBoundaries(t *testing.T) {
 							state.gp[register] = 0xff
 						}
 						before := state.clone()
-						accepted, _ := x86LoweredScalarShiftChoiceStep(changed, &state, nil, 0, arch)
+						accepted, _ := (&amd64Ctx{}).loweredScalarShiftChoiceStep(changed, &state, nil, 0, arch)
 						if mutation == "origin" {
 							// x86Encoded relaxes physical operand grammar; it is not
 							// a universal raw-origin bit. These legacy instructions
@@ -110,7 +110,7 @@ func TestX86ScalarShiftArchitecturalChoiceRawOriginBoundaries(t *testing.T) {
 								t.Fatal("origin deletion unexpectedly retained another physical restriction")
 							}
 							want := before.clone()
-							wantAccepted, _ := x86LoweredScalarShiftChoiceStep(named, &want, nil, 0, arch)
+							wantAccepted, _ := (&amd64Ctx{}).loweredScalarShiftChoiceStep(named, &want, nil, 0, arch)
 							if accepted != wantAccepted || !reflect.DeepEqual(state, want) {
 								t.Fatal("indistinguishable named instructions acquired different numerical contracts")
 							}
@@ -211,7 +211,7 @@ func TestX86ScalarShiftArchitecturalChoiceEveryInputByteBeforeAlias(t *testing.T
 						state := x86ResultState{gp: row.inputs, flags: x86ByteFlagsAll}
 						state.gp[register] &^= 1 << missing
 						before := state.clone()
-						accepted, known := x86LoweredScalarShiftChoiceStep(ins, &state, nil, 0, arch)
+						accepted, known := (&amd64Ctx{}).loweredScalarShiftChoiceStep(ins, &state, nil, 0, arch)
 						valid := row.inputs[register]&(1<<missing) == 0
 						if !known || valid && (!accepted || state.gp[row.result]&row.resultMask != row.resultMask) ||
 							!valid && accepted && state.gp[row.result]&row.resultMask == row.resultMask ||

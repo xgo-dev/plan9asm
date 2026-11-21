@@ -583,7 +583,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86LoweredBMI2ShiftResultStep(ins, state, owned, resultOffset, arch); known {
 			return accepted
 		}
-		if accepted, known := x86LoweredScalarShiftChoiceStep(ins, state, owned, resultOffset, arch); known {
+		if accepted, known := c.loweredScalarShiftChoiceStep(ins, state, owned, resultOffset, arch); known {
 			return accepted // Only this producer-specific emitter materializes finite ISA-undefined outputs.
 		}
 		if accepted, known := x86LoweredAccumulatorSignExtendResultStep(ins, state, owned, resultOffset, arch); known {
@@ -787,7 +787,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86MaskMoveResultStep(ins, state, owned, resultOffset, arch, true); known {
 			return accepted // The same KMOV emitter retains the complete volatile native width.
 		}
-		if accepted, known := x86LoweredNativeConditionalSet(ins, state, arch); known {
+		if accepted, known := c.loweredNativeConditionalSet(ins, state, arch); known {
 			return accepted // The same typed SETcc emitter preserves its exact volatile byte write.
 		}
 		if accepted, known := x86LoweredIFMAStep(ins, state, owned, arch); known {

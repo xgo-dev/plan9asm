@@ -30,16 +30,8 @@ func (c *amd64Ctx) scalarStaticMoveTransfer(ins Instr, state *x86ResultState, ow
 		return false, known
 	}
 	if !x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil ||
-		state == nil || c.fpStaticAddressValues == nil || c.resolve == nil {
+		state == nil || !c.ownsWritableStaticScalar(form.destination, form.bytes, arch) {
 		return false, true
-	}
-	address, valid := x86StaticSBReadAddress(form.destination, arch)
-	if !valid || c.fpScalarData[address] < form.bytes {
-		return false, true
-	}
-	name := resolveAssemblyDataSymbol(address.symbol, c.resolve)
-	if !c.fpStaticAddressValues.objects[name] || !c.fpStaticAddressValues.writable[name] {
-		return false, true // Numeric extent alone does not establish a writable backing object.
 	}
 	if form.source.Kind == OpReg {
 		index, _, valid := x86ResultGP(form.source.Reg, form.bytes, arch)

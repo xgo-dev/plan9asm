@@ -25,19 +25,17 @@ func (c *amd64Ctx) scalarStaticExchangeTransfer(ins Instr, state *x86ResultState
 	if err != nil {
 		return false, true
 	}
-	address, static := x86StaticSBReadAddress(form.other, arch)
+	_, static := x86StaticSBReadAddress(form.other, arch)
 	if !static {
 		return false, false // The native pointer, register and physical frame routes keep their own inputs.
 	}
-	values := c.fpStaticAddressValues
 	if !x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil ||
-		values == nil || state == nil || c.resolve == nil {
+		state == nil {
 		return false, true
 	}
 	width := int64(spec.bits / 8)
-	symbol := resolveAssemblyDataSymbol(address.symbol, c.resolve)
 	index, _, valid := x86ResultGP(form.register.Reg, width, arch)
-	if !values.objects[symbol] || !values.writable[symbol] || c.fpScalarData[address] < width ||
+	if !c.ownsWritableStaticScalar(form.other, width, arch) ||
 		!valid || state.pointerGP[index] || !x86ResultRead(form.register, width, state, owned, arch) {
 		return false, true
 	}
@@ -57,7 +55,7 @@ func (c *amd64Ctx) scalarStaticRMWTransfer(ins Instr, state *x86ResultState, own
 	if form.spec.bitString {
 		return c.scalarStaticBitStringTransfer(form, state, owned, arch)
 	}
-	destination, static := x86StaticSBReadAddress(form.destination, arch)
+	_, static := x86StaticSBReadAddress(form.destination, arch)
 	relocation := x86AbsoluteRelocationSource(form.source, arch, form.spec.bits)
 	if !static && (!relocation || form.destination.Kind != OpReg) {
 		return false, false
@@ -68,8 +66,7 @@ func (c *amd64Ctx) scalarStaticRMWTransfer(ins Instr, state *x86ResultState, own
 	}
 	width := int64(form.spec.bits / 8)
 	if static {
-		name := resolveAssemblyDataSymbol(destination.symbol, c.resolve)
-		if !values.writable[name] || c.fpScalarData[destination] < width {
+		if !c.ownsWritableStaticScalar(form.destination, width, arch) {
 			return false, true // A numeric extent alone is not writable storage.
 		}
 	} else if !x86ResultRead(form.destination, width, state, owned, arch) {
@@ -110,17 +107,12 @@ func (c *amd64Ctx) scalarStaticRMWTransfer(ins Instr, state *x86ResultState, own
 // register-indexed access. If native execution continues, only its FLAGS result
 // becomes numerical. No dynamic extent or reusable memory fact is exported.
 func (c *amd64Ctx) scalarStaticBitStringTransfer(form x86LockScalarRMWForm, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	destination, static := x86StaticSBReadAddress(form.destination, arch)
+	_, static := x86StaticSBReadAddress(form.destination, arch)
 	if !static {
 		return false, false
 	}
-	values := c.fpStaticAddressValues
-	if values == nil || state == nil {
-		return false, true
-	}
-	name := resolveAssemblyDataSymbol(destination.symbol, c.resolve)
 	width := int64(form.spec.bits / 8)
-	if !values.objects[name] || !values.writable[name] || c.fpScalarData[destination] < width ||
+	if state == nil || !c.ownsWritableStaticScalar(form.destination, width, arch) ||
 		!x86ResultRead(form.source, width, state, owned, arch) {
 		return false, true
 	}

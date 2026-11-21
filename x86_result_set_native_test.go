@@ -12,6 +12,7 @@ import (
 var x86NativeSetOracle = strings.Fields("SETCC SETCS SETEQ SETGE SETGT SETHI SETLE SETLS SETLT SETMI SETNE SETOC SETOS SETPC SETPL SETPS")
 
 func TestX86NativeConditionalSetExactFlagsAndState(t *testing.T) {
+	context := &amd64Ctx{}
 	for _, arch := range []string{"386", "amd64"} {
 		for _, op := range x86NativeSetOracle {
 			t.Run(arch+"/"+op, func(t *testing.T) {
@@ -40,7 +41,7 @@ func TestX86NativeConditionalSetExactFlagsAndState(t *testing.T) {
 						state := x86ResultState{flags: flags}
 						state.pointerGP[0], state.gp[1], state.masks[7] = pointer, 0xff, true
 						before := state.clone()
-						accepted, known := x86LoweredNativeConditionalSet(ins, &state, arch)
+						accepted, known := context.loweredNativeConditionalSet(ins, &state, arch)
 						if !known || accepted != (pointer && flags&required == required) || !reflect.DeepEqual(state, before) {
 							t.Fatal("SETcc invented FLAGS/address or changed numerical state", flags, pointer, accepted, known)
 						}

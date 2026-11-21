@@ -64,10 +64,26 @@ func (c *amd64Ctx) emitScalarCarryRotate(stem string, bits int, value, count64 s
 	// count to five (six for Q) bits first; loadScalarShiftCount already did that.
 	// B/W then reduce it modulo 9/17, while L/Q values are already below 33/65.
 	totalBits := bits + 1
-	effective64 := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = urem i64 %s, %d\n", effective64, count64, totalBits)
-
 	wideType := LLVMType(fmt.Sprintf("i%d", totalBits))
+	count := c.newTmp()
+	conversion := "trunc"
+	if bits == 64 {
+		conversion = "zext"
+	}
+	fmt.Fprintf(c.b, "  %%%s = %s i64 %s to %s\n", count, conversion, count64, wideType)
+	effective := count
+	if bits < 32 {
+		// The remainder fits in i9/i17 and requires no 64-bit division on 386.
+		effective = c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = urem %s %%%s, %d\n", effective, wideType, count, totalBits)
+	}
+	zero := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zero, wideType, effective)
+	inverseRaw := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = sub %s %d, %%%s\n", inverseRaw, wideType, totalBits, effective)
+	inverse := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s 0, %s %%%s\n", inverse, zero, wideType, wideType, inverseRaw)
+
 	valueWide := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", valueWide, amd64IntegerTypeForBits(bits), value, wideType)
 	oldCF := c.loadFlag(c.flagsCFSlot)
@@ -78,30 +94,14 @@ func (c *amd64Ctx) emitScalarCarryRotate(stem string, bits int, value, count64 s
 	combined := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = or %s %%%s, %%%s\n", combined, wideType, valueWide, cfHigh)
 
-	toWideCount := func(value string) string {
-		converted := c.newTmp()
-		if totalBits <= 64 {
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", converted, value, wideType)
-		} else {
-			fmt.Fprintf(c.b, "  %%%s = zext i64 %s to %s\n", converted, value, wideType)
-		}
-		return "%" + converted
-	}
-	effective := toWideCount("%" + effective64)
-	inverseRaw := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = sub i64 %d, %%%s\n", inverseRaw, totalBits, effective64)
-	inverse64 := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = urem i64 %%%s, %d\n", inverse64, inverseRaw, totalBits)
-	inverse := toWideCount("%" + inverse64)
-
 	left := c.newTmp()
 	right := c.newTmp()
 	if stem == "RCL" {
-		fmt.Fprintf(c.b, "  %%%s = shl %s %%%s, %s\n", left, wideType, combined, effective)
-		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %s\n", right, wideType, combined, inverse)
+		fmt.Fprintf(c.b, "  %%%s = shl %s %%%s, %%%s\n", left, wideType, combined, effective)
+		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %%%s\n", right, wideType, combined, inverse)
 	} else {
-		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %s\n", right, wideType, combined, effective)
-		fmt.Fprintf(c.b, "  %%%s = shl %s %%%s, %s\n", left, wideType, combined, inverse)
+		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %%%s\n", right, wideType, combined, effective)
+		fmt.Fprintf(c.b, "  %%%s = shl %s %%%s, %%%s\n", left, wideType, combined, inverse)
 	}
 	rotated := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = or %s %%%s, %%%s\n", rotated, wideType, left, right)
@@ -134,11 +134,9 @@ func (c *amd64Ctx) emitScalarCarryRotate(stem string, bits int, value, count64 s
 	multiple := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp ugt i64 %s, 1\n", multiple, count64)
 	chosenOF := c.emitScalarShiftArchitecturalChoice(I1, "%"+multiple, "%"+definedOF)
-	nonzero := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", nonzero, effective64)
 	oldOF := c.loadFlag(c.flagsOFSlot)
 	newOF := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %s, i1 %s\n", newOF, nonzero, chosenOF, oldOF)
+	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %s, i1 %s\n", newOF, zero, oldOF, chosenOF)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newOF, c.flagsOFSlot)
 	return "%" + result
 }

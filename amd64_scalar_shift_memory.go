@@ -51,11 +51,11 @@ func x86LoweredScalarShiftMemory(ins Instr, state *x86ResultState, owned []bool,
 	if !x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil {
 		return false, true
 	}
-	return x86LoweredScalarShiftTransfer(ins, form, state, owned, resultOffset, arch), true
+	return x86LoweredScalarShiftTransfer(ins, form, state, owned, resultOffset, arch, false), true
 }
 
 func x86LoweredScalarShiftTransfer(ins Instr, form x86ScalarShiftForm, state *x86ResultState,
-	owned []bool, resultOffset int64, arch string) bool {
+	owned []bool, resultOffset int64, arch string, ownedStaticDestination bool) bool {
 	effect := form.inputEffect()
 	if state.flags&effect.flagsRead != effect.flagsRead {
 		return false
@@ -70,7 +70,7 @@ func x86LoweredScalarShiftTransfer(ins Instr, form x86ScalarShiftForm, state *x8
 			continue
 		}
 		if nativeDestination && input.index == form.destinationIndex {
-			if !x86ResultIncomingPointerAddressIdentity(input.operand, state, arch) {
+			if !ownedStaticDestination && !x86ResultIncomingPointerAddressIdentity(input.operand, state, arch) {
 				return false
 			}
 			continue

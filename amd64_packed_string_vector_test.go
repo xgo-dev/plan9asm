@@ -423,7 +423,7 @@ func TestX86PackedStringIndependentFPFieldsRequireEveryByte(t *testing.T) {
 	}
 }
 
-func x86PackedStringCompileObject(t *testing.T, llc, triple, ir, level string) {
+func x86PackedStringCompileObject(t *testing.T, llc, triple, ir, level string) string {
 	t.Helper()
 	if level != "-O0" && level != "-O2" {
 		t.Fatal("unexpected packed-string object level", level)
@@ -438,4 +438,5 @@ func x86PackedStringCompileObject(t *testing.T, llc, triple, ir, level string) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		t.Fatalf("packed-string object is missing/nonregular/empty: %v", err)
 	}
+	return output
 }

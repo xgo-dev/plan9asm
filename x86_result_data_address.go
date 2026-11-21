@@ -111,6 +111,21 @@ func x86LoweredStaticAddressValues(file *File, resolve func(string) string, sigs
 	return values
 }
 
+// Paired scalar stores use both the emitted numeric extent and the writable
+// object identity. A label or relocation alone supplies neither fact.
+func (c *amd64Ctx) ownsWritableStaticScalar(destination Operand, width int64, arch string) bool {
+	values := c.fpStaticAddressValues
+	if width <= 0 || values == nil || c.resolve == nil {
+		return false
+	}
+	address, valid := x86StaticSBReadAddress(destination, arch)
+	if !valid || c.fpScalarData[address] < width {
+		return false
+	}
+	name := resolveAssemblyDataSymbol(address.symbol, c.resolve)
+	return values.objects[name] && values.writable[name]
+}
+
 // Reuse the existing MOVQ source aliases and SB grammar. The only new value
 // role is one complete native word; indexed reads and physical frame writes
 // retain their independent contracts. Address annotations follow the same

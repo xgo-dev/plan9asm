@@ -76,15 +76,16 @@ func x86CallerConditionalSetStep(ins *Instr, state *x86SourceStackState, proof *
 }
 
 // Only the paired lowering may continue an actual volatile native-byte store.
-// FLAGS and incoming address identity must already exist; no logical memory,
-// canonical result, caller envelope or pointer bound is produced here.
-func x86LoweredNativeConditionalSet(ins Instr, state *x86ResultState, arch string) (bool, bool) {
+// FLAGS and either an incoming address or owned writable byte must already
+// exist. The store establishes no reusable memory or register facts.
+func (c *amd64Ctx) loweredNativeConditionalSet(ins Instr, state *x86ResultState, arch string) (bool, bool) {
 	form, known, err := x86ConditionalSetProperties(ins.Op, ins, arch)
-	if !known || err != nil || form.destination.Kind != OpMem || !x86OrdinaryNativeMemoryOperand(form.destination, arch) {
+	if !known || err != nil || !x86OrdinaryNativeMemoryOperand(form.destination, arch) {
 		return false, false
 	}
 	required := x86ByteConditionFlags(form.condition)
 	return x86ResultNamedPredicateInstruction(ins) && ins.x86NumericalRead == nil &&
 		required != 0 && state.flags&required == required &&
-		x86ResultIncomingPointerAddressIdentity(form.destination, state, arch), true
+		(c.ownsWritableStaticScalar(form.destination, 1, arch) ||
+			x86ResultIncomingPointerAddressIdentity(form.destination, state, arch)), true
 }

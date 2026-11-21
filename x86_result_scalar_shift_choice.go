@@ -83,7 +83,7 @@ func x86RawLegacyScalarShiftSource(ins Instr, arch string) bool {
 // It grants neither public-query definedness nor native FLAGS, entry, caller,
 // frame or memory-backing authority. Native RMW retains its exact volatile load
 // and store, including zero count and otherwise unobservable chosen outputs.
-func x86LoweredScalarShiftChoiceStep(ins Instr, state *x86ResultState, owned []bool,
+func (c *amd64Ctx) loweredScalarShiftChoiceStep(ins Instr, state *x86ResultState, owned []bool,
 	resultOffset int64, arch string) (bool, bool) {
 	form, known, err := x86ScalarShiftProperties(ins.Op, ins, arch)
 	if !known || form.bmi2 {
@@ -101,7 +101,9 @@ func x86LoweredScalarShiftChoiceStep(ins Instr, state *x86ResultState, owned []b
 	}
 	next := state.clone()
 	next.loweredStaticReads = state.loweredStaticReads
-	if x86LoweredScalarShiftTransfer(local, form, &next, owned, resultOffset, arch) {
+	ownedStaticDestination := x86ResultNamedPredicateInstruction(ins) &&
+		c.ownsWritableStaticScalar(form.destination, int64(form.bits/8), arch)
+	if x86LoweredScalarShiftTransfer(local, form, &next, owned, resultOffset, arch, ownedStaticDestination) {
 		*state = next
 		return true, true
 	}
