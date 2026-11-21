@@ -11,7 +11,7 @@ var arm64RawFloatFamilies = [...]arm64RawFamily{
 	arm64RawNoGPOrMemoryForm(decodeARM64RawHalfFMA, (*arm64Ctx).lowerRawHalfFMA),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawFMULByElement, (*arm64Ctx).lowerRawFMULByElement),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarHalfUnary, (*arm64Ctx).lowerRawScalarHalfUnary),
-	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarSIMDFloatToInt, (*arm64Ctx).lowerRawScalarSIMDFloatToInt),
+	arm64RawNoGPOrMemoryForm(decodeARM64RawSIMDFloatToInt, (*arm64Ctx).lowerARM64SIMDFloatToInt),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarFloatBinary, (*arm64Ctx).lowerRawScalarFloatBinary),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarFloatCompare, (*arm64Ctx).lowerRawScalarFloatCompare),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawConditionalCompare, (*arm64Ctx).lowerARM64ConditionalCompare),
@@ -55,7 +55,6 @@ var arm64RawFloatFamilies = [...]arm64RawFamily{
 		func(form arm64RawScalarFCVTToInt) arm64RawContinuationEffects {
 			return arm64RawContinuationEffects{gpWrites: arm64RawGPBit(form.destination)}
 		}),
-	arm64RawNoGPOrMemoryForm(decodeARM64RawFCVTZ, (*arm64Ctx).lowerRawFCVTZ),
 }
 
 func decodeARM64RawFloatFamily(word uint32) (arm64RawFamily, arm64RawContinuationEffects, bool) {

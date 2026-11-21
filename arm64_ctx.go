@@ -805,7 +805,7 @@ func (c *arm64Ctx) scanUsedRegs() {
 					markReg(Reg(fmt.Sprintf("V%d", form.source)))
 					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
 				}
-				if form, ok := decodeARM64RawScalarSIMDFloatToInt(word); ok {
+				if form, ok := decodeARM64RawSIMDFloatToInt(word); ok {
 					markReg(Reg(fmt.Sprintf("V%d", form.source)))
 					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
 				}
@@ -913,10 +913,6 @@ func (c *arm64Ctx) scanUsedRegs() {
 					if form.destination != 31 {
 						markReg(Reg(fmt.Sprintf("R%d", form.destination)))
 					}
-				}
-				if form, ok := decodeARM64RawFCVTZ(word); ok {
-					markReg(Reg(fmt.Sprintf("V%d", form.source)))
-					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
 				}
 				if form, ok := decodeARM64RawMoveWide(word); ok && form.destination != 31 {
 					markReg(Reg(fmt.Sprintf("R%d", form.destination)))
@@ -1661,7 +1657,11 @@ func (c *arm64Ctx) storeReg(r Reg, v string) error {
 }
 
 func (c *arm64Ctx) loadVReg(r Reg) (string, error) {
-	c.recordMachineRegister(r, 128, false)
+	return c.loadVRegWidth(r, 128)
+}
+
+func (c *arm64Ctx) loadVRegWidth(r Reg, width int) (string, error) {
+	c.recordMachineRegister(r, width, false)
 	idx, ok := arm64ParseVReg(r)
 	if !ok {
 		idx, ok = arm64ParseFReg(r)

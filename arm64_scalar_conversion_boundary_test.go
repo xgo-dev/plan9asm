@@ -160,10 +160,10 @@ func TestARM64ScalarConversionTargetPreflightPreservesRegisteredRawFamilies(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := validateARM64ScalarConversionNativeTarget(file, Options{TargetTriple: "aarch64-unknown-linux-gnu"}); err != nil {
+		if err := validateARM64ConversionNativeTarget(file, Options{TargetTriple: "aarch64-unknown-linux-gnu"}); err != nil {
 			t.Errorf("native scalar preflight rejected existing %s: %v", lines[index], err)
 		}
-		if err := validateARM64ScalarConversionNativeTarget(file, Options{}); !errors.Is(err, ErrProbeNeedsContext) {
+		if err := validateARM64ConversionNativeTarget(file, Options{}); !errors.Is(err, ErrProbeNeedsContext) {
 			t.Errorf("existing %s obscured missing native target: %v", lines[index], err)
 		}
 	}

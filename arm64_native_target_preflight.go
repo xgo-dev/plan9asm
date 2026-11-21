@@ -25,7 +25,7 @@ func validateARM64NativeTargets(file *File, options Options) error {
 	file = arm64NativeTargetCodeView(file)
 	var targetError error
 	for _, validate := range []func(*File, Options) error{
-		validateARM64ScalarConversionNativeTarget,
+		validateARM64ConversionNativeTarget,
 		validateARM64ScalarCompareTarget,
 		validateARM64FPControlTarget,
 		validateARM64ScalarBinaryTarget,

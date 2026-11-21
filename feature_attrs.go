@@ -1377,7 +1377,7 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				if _, ok := decodeARM64RawScalarHalfUnary(word); ok {
 					add("+fullfp16")
 				}
-				if form, ok := decodeARM64RawScalarSIMDFloatToInt(word); ok && form.bits == 16 {
+				if form, ok := decodeARM64RawSIMDFloatToInt(word); ok && form.arrangement.elementBits == 16 {
 					add("+fullfp16")
 				}
 				if form, ok := decodeARM64RawFMULByElement(word); ok && form.arrangement.elementBits == 16 {

@@ -34,8 +34,8 @@ func TestTranslateARM64RawFCVTZCompleteAdvancedSIMDFormats(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, want := range []string{
-				"@llvm.fptosi.sat.v2i32.v2f32", "@llvm.fptosi.sat.v4i32.v4f32", "@llvm.fptosi.sat.v2i64.v2f64",
-				"@llvm.fptoui.sat.v2i32.v2f32", "@llvm.fptoui.sat.v4i32.v4f32", "@llvm.fptoui.sat.v2i64.v2f64",
+				"fcvtzs $0.2s, $1.2s", "fcvtzs $0.4s, $1.4s", "fcvtzs $0.2d, $1.2d",
+				"fcvtzu $0.2s, $1.2s", "fcvtzu $0.4s, $1.4s", "fcvtzu $0.2d, $1.2d",
 			} {
 				found := false
 				for _, line := range strings.Split(ll, "\n") {
@@ -117,7 +117,7 @@ int main(void) {
 
 func TestARM64RawFCVTZDecoderRejectsAdjacentAndReservedEncodings(t *testing.T) {
 	for _, word := range []uint32{0x4e21d800, 0x1e38c000, 0x0ee1b800} { // SCVTF, scalar FCVTZS, reserved D1.
-		if _, ok := decodeARM64RawFCVTZ(word); ok {
+		if _, ok := decodeARM64RawSIMDFloatToInt(word); ok {
 			t.Fatalf("FCVTZS/FCVTZU decoder accepted adjacent/reserved encoding %#08x", word)
 		}
 	}

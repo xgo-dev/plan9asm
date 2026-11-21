@@ -13,7 +13,7 @@ func arm64RawWordPreflightError(instruction Instr) error {
 	if err != nil {
 		return err
 	}
-	if arm64RawScalarConversion(word) {
+	if arm64RawNativeConversion(word) {
 		return nil
 	}
 	if _, valid := arm64RawContinuationEffectsForWord(word); valid {

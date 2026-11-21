@@ -112,13 +112,9 @@ func (c *arm64Ctx) lowerARM64ScalarConversion(form arm64ScalarConversionForm) er
 			opcode = "ucvtf"
 		}
 	} else {
-		modes := [...]string{"n", "a", "p", "m", "z"}
-		if int(form.rounding) >= len(modes) {
+		opcode = arm64FloatToIntegerMnemonic(form.rounding, form.unsigned)
+		if opcode == "" {
 			return fmt.Errorf("arm64 unsupported scalar float rounding mode %d", form.rounding)
-		}
-		opcode = "fcvt" + modes[form.rounding] + "s"
-		if form.unsigned {
-			opcode = "fcvt" + modes[form.rounding] + "u"
 		}
 	}
 	finish := c.recordARM64ScalarConversion(form)

@@ -374,6 +374,12 @@ func (c *arm64Ctx) lowerARM64VectorFloatArithmeticForm(op Op, ins Instr, allowRa
 }
 
 func (c *arm64Ctx) lowerARM64VectorFloatUnary(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	if form, handled, err := parseARM64VectorFloatToInt(op, ins); handled {
+		if err == nil {
+			err = c.lowerARM64SIMDFloatToInt(form)
+		}
+		return true, false, err
+	}
 	operations := map[Op]string{
 		"VFABS":   "fabs",
 		"VFNEG":   "neg",
@@ -382,16 +388,6 @@ func (c *arm64Ctx) lowerARM64VectorFloatUnary(op Op, ins Instr) (ok bool, termin
 		"VFRINTP": "ceil",
 		"VFRINTM": "floor",
 		"VFRINTZ": "trunc",
-		"VFCVTZS": "fptosi.sat",
-		"VFCVTZU": "fptoui.sat",
-		"VFCVTNS": "fptosi.roundeven.sat",
-		"VFCVTNU": "fptoui.roundeven.sat",
-		"VFCVTMS": "fptosi.floor.sat",
-		"VFCVTMU": "fptoui.floor.sat",
-		"VFCVTAS": "fptosi.round.sat",
-		"VFCVTAU": "fptoui.round.sat",
-		"VFCVTPS": "fptosi.ceil.sat",
-		"VFCVTPU": "fptoui.ceil.sat",
 		"VSCVTF":  "sitofp",
 		"VUCVTF":  "uitofp",
 	}
@@ -416,7 +412,6 @@ func (c *arm64Ctx) lowerARM64VectorFloatUnary(op Op, ins Instr) (ok bool, termin
 		floatType, floatSuffix = "double", "f64"
 	}
 	vectorFloatSuffix := fmt.Sprintf("v%d%s", arrangement.lanes, floatSuffix)
-	vectorIntegerSuffix := fmt.Sprintf("v%di%d", arrangement.lanes, arrangement.elementBits)
 
 	switch operation {
 	case "sitofp", "uitofp":
@@ -427,42 +422,6 @@ func (c *arm64Ctx) lowerARM64VectorFloatUnary(op Op, ins Instr) (ok bool, termin
 		converted := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = %s <%d x i%d> %s to <%d x %s>\n", converted, operation, arrangement.lanes, arrangement.elementBits, source, arrangement.lanes, floatType)
 		return true, false, c.storeARM64VectorFloat(ins.Args[1].Reg, arrangement, "%"+converted)
-	case "fptosi.sat", "fptoui.sat",
-		"fptosi.roundeven.sat", "fptoui.roundeven.sat",
-		"fptosi.floor.sat", "fptoui.floor.sat",
-		"fptosi.round.sat", "fptoui.round.sat",
-		"fptosi.ceil.sat", "fptoui.ceil.sat":
-		source, err := c.loadARM64VectorFloat(ins.Args[0].Reg, arrangement)
-		if err != nil {
-			return true, false, err
-		}
-		roundingIntrinsic := ""
-		switch {
-		case strings.Contains(operation, ".roundeven."):
-			roundingIntrinsic = "roundeven"
-		case strings.Contains(operation, ".floor."):
-			roundingIntrinsic = "floor"
-		case strings.Contains(operation, ".round."):
-			roundingIntrinsic = "round"
-		case strings.Contains(operation, ".ceil."):
-			roundingIntrinsic = "ceil"
-		}
-		if roundingIntrinsic != "" {
-			rounded := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = call <%d x %s> @llvm.%s.%s(<%d x %s> %s)\n",
-				rounded, arrangement.lanes, floatType, roundingIntrinsic, vectorFloatSuffix,
-				arrangement.lanes, floatType, source)
-			source = "%" + rounded
-		}
-		conversionIntrinsic := "fptosi.sat"
-		if strings.HasPrefix(operation, "fptoui") {
-			conversionIntrinsic = "fptoui.sat"
-		}
-		converted := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call <%d x i%d> @llvm.%s.%s.%s(<%d x %s> %s)\n",
-			converted, arrangement.lanes, arrangement.elementBits, conversionIntrinsic, vectorIntegerSuffix, vectorFloatSuffix,
-			arrangement.lanes, floatType, source)
-		return true, false, c.storeARM64VectorInteger(ins.Args[1].Reg, arrangement, "%"+converted)
 	default:
 		source, err := c.loadARM64VectorFloat(ins.Args[0].Reg, arrangement)
 		if err != nil {

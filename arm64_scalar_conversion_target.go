@@ -10,20 +10,20 @@ func arm64ScalarConversionNativeTarget(triple string) bool {
 	return len(parts) >= 3 && (parts[0] == "aarch64" || parts[0] == "arm64")
 }
 
-func arm64RawScalarConversion(word uint32) bool {
+func arm64RawNativeConversion(word uint32) bool {
 	if _, ok := decodeARM64RawScalarFCVTToInt(word); ok {
 		return true
 	}
 	if _, ok := decodeARM64RawScalarIntToFloat(word); ok {
 		return true
 	}
-	if _, ok := decodeARM64RawScalarSIMDFloatToInt(word); ok {
+	if _, ok := decodeARM64RawSIMDFloatToInt(word); ok {
 		return true
 	}
 	return false
 }
 
-func validateARM64ScalarConversionNativeTarget(file *File, options Options) error {
+func validateARM64ConversionNativeTarget(file *File, options Options) error {
 	if file == nil || file.Arch != ArchARM64 {
 		return nil
 	}
@@ -40,12 +40,18 @@ func validateARM64ScalarConversionNativeTarget(file *File, options Options) erro
 					continue
 				}
 				word := uint32(instruction.Args[0].Imm)
-				if arm64RawScalarConversion(word) {
+				if arm64RawNativeConversion(word) {
 					needsNative = true
 				}
 				continue
 			}
-			_, matched, err := parseARM64ScalarConversion(arm64ControlOp(instruction), instruction)
+			op := arm64ControlOp(instruction)
+			_, matched, err := parseARM64ScalarConversion(op, instruction)
+			if err != nil {
+				return err
+			}
+			needsNative = needsNative || matched
+			_, matched, err = parseARM64VectorFloatToInt(op, instruction)
 			if err != nil {
 				return err
 			}
@@ -59,7 +65,7 @@ func validateARM64ScalarConversionNativeTarget(file *File, options Options) erro
 		return rawError // Illegal/dead WORDs are not target-context successes.
 	}
 	if !arm64ScalarConversionNativeTarget(options.TargetTriple) || options.Goarch != "" && options.Goarch != "arm64" {
-		return fmt.Errorf("%w: ARM64 scalar conversion requires an explicit native little-endian AArch64 FPCR/FPSR target, got %q/%q",
+		return fmt.Errorf("%w: ARM64 conversion requires an explicit native little-endian AArch64 FPCR/FPSR target, got %q/%q",
 			ErrProbeNeedsContext, options.Goarch, options.TargetTriple)
 	}
 	return nil

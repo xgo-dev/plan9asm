@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -8,25 +9,25 @@ import (
 )
 
 func TestTranslateARM64RawFloatToIntegerRoundingCompleteBaseFormats(t *testing.T) {
-	// The base A64 Advanced SIMD family has five rounding modes, signed and
-	// unsigned results, and S2/S4/D2 arrangements. H4/H8 belong to the
-	// optional FP16 extension and are deliberately outside this base matrix.
-	bases := []uint32{
-		0x0e21a800, // FCVTNS
-		0x0e21b800, // FCVTMS
-		0x0e21c800, // FCVTAS
-		0x0ea1a800, // FCVTPS
-		0x0ea1b800, // FCVTZS
+	forms, encodings := arm64SIMDFloatToIntCases(t, true)
+	if len(forms) != 50 || len(encodings) != 50 {
+		t.Fatalf("packed conversion matrix has %d forms and %d encodings", len(forms), len(encodings))
 	}
-	modifiers := []uint32{0, 1 << 30, 1<<30 | 1<<22} // S2, S4, D2.
 	var source strings.Builder
 	source.WriteString("TEXT rawfcvtroundforms(SB),$0-0\n")
-	for _, base := range bases {
-		for _, unsigned := range []uint32{0, 1 << 29} {
-			for _, modifier := range modifiers {
-				fmt.Fprintf(&source, "\tWORD $%#08x\n", base|unsigned|modifier|30<<5|29)
+	for index, form := range forms {
+		lanes := int(form.register[0] - '0')
+		for src := 0; src < 32; src++ {
+			for dst := 0; dst < 32; dst++ {
+				word := encodings[index] | uint32(src)<<5 | uint32(dst)
+				decoded, ok := decodeARM64RawSIMDFloatToInt(word)
+				if !ok || decoded.arrangement != (arm64VectorArrangement{elementBits: form.bits, lanes: lanes}) ||
+					decoded.unsigned != form.unsigned || decoded.source != src || decoded.destination != dst {
+					t.Fatalf("%s %s %#08x decoded as %+v, ok=%v", form.name, form.register, word, decoded, ok)
+				}
 			}
 		}
+		fmt.Fprintf(&source, "\tWORD $%#08x\n", encodings[index]|30<<5|29)
 	}
 	source.WriteString("\tRET\n")
 	requireARM64GoAssemblerResult(t, source.String(), true)
@@ -34,7 +35,7 @@ func TestTranslateARM64RawFloatToIntegerRoundingCompleteBaseFormats(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc"} {
+	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-freebsd", "aarch64-pc-windows-msvc"} {
 		t.Run(triple, func(t *testing.T) {
 			ll, err := Translate(file, Options{
 				TargetTriple: triple,
@@ -46,13 +47,14 @@ func TestTranslateARM64RawFloatToIntegerRoundingCompleteBaseFormats(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, intrinsic := range []string{
-				"@llvm.roundeven.", "@llvm.floor.", "@llvm.round.", "@llvm.ceil.",
-				"@llvm.fptosi.sat.", "@llvm.fptoui.sat.",
-			} {
-				if !strings.Contains(ll, intrinsic) {
-					t.Fatalf("raw FCVT rounding family omitted %s for %s:\n%s", intrinsic, triple, ll)
+			for _, form := range forms {
+				want := fmt.Sprintf("asm sideeffect \"%s $0.%s, $1.%s\"", form.name, form.register, form.register)
+				if !strings.Contains(ll, want) {
+					t.Fatalf("raw FCVT rounding family omitted %q for %s", want, triple)
 				}
+			}
+			if !strings.Contains(ll, `"target-features"="+fullfp16"`) {
+				t.Fatal("packed half conversions omitted +fullfp16")
 			}
 			llc := findLLVM22Tool("llc")
 			if llc == "" {
@@ -60,6 +62,23 @@ func TestTranslateARM64RawFloatToIntegerRoundingCompleteBaseFormats(t *testing.T
 			}
 			compileLLVMToObject(t, llc, triple, "arm64-raw-fcvt-round.ll", "arm64-raw-fcvt-round.o", ll)
 		})
+	}
+}
+
+func TestARM64VectorFloatToIntTargetBoundary(t *testing.T) {
+	for _, instruction := range []string{"WORD $0x0e79a8d7", "VFCVTZS V6.S2,V23.S2"} {
+		source := "TEXT conversion(SB),4,$0-0\n" + instruction + "\nRET\n"
+		for _, api := range []string{"text", "module", "Go"} {
+			ir, err := arm64ScalarConversionAPI(t, api, source, "aarch64-unknown-linux-gnu")
+			if err != nil || !strings.Contains(ir, "asm sideeffect \"fcvt") {
+				t.Fatalf("%s lost %s native lowering: %v", api, instruction, err)
+			}
+			for _, triple := range []string{"", "aarch64_be-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"} {
+				if _, err := arm64ScalarConversionAPI(t, api, source, triple); !errors.Is(err, ErrProbeNeedsContext) {
+					t.Errorf("%s %s on %q: want target context, got %v", api, instruction, triple, err)
+				}
+			}
+		}
 	}
 }
 
