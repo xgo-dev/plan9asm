@@ -163,18 +163,6 @@ func TestARM64AtomicCoverage(t *testing.T) {
 	if ptr, err := c.atomicMemPtr(MemRef{Base: "R10", Off: 48}); err != nil || ptr == "" {
 		t.Fatalf("atomicMemPtr() = (%q, %v)", ptr, err)
 	}
-	if ty, align := arm64AtomicLoadStoreType("LDAXRB"); ty != I64 || align != 8 {
-		t.Fatalf("arm64AtomicLoadStoreType(LDAXRB) = (%s, %d)", ty, align)
-	}
-	if ty, align := arm64AtomicStoreExclusiveType("STLXRB"); ty != I8 || align != 1 {
-		t.Fatalf("arm64AtomicStoreExclusiveType(STLXRB) = (%s, %d)", ty, align)
-	}
-	if ty, err := arm64AtomicRMWType("LDCLRALW"); err != nil || ty != I32 {
-		t.Fatalf("arm64AtomicRMWType(LDCLRALW) = (%s, %v)", ty, err)
-	}
-	if _, err := arm64AtomicRMWType("BAD"); err == nil {
-		t.Fatalf("arm64AtomicRMWType(BAD) unexpectedly succeeded")
-	}
 	if size, err := arm64AtomicTypeSize(I64); err != nil || size != 8 {
 		t.Fatalf("arm64AtomicTypeSize(I64) = (%d, %v)", size, err)
 	}

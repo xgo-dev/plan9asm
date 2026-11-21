@@ -8,9 +8,36 @@ import (
 type arm64AtomicRMWForm struct {
 	typeName  LLVMType
 	operation string
-	ordering  string
+	order     uint32
 	invert    bool
 }
+
+type arm64AtomicRMWSpec struct {
+	stem      string
+	operation string
+	invert    bool
+}
+
+// Indexed by the LSE o3:opc field. The same Go encoder rows use every
+// width and both independent acquire/release bits for each operation.
+var arm64AtomicRMWSpecs = [...]arm64AtomicRMWSpec{
+	0: {"LDADD", "add", false},
+	1: {"LDCLR", "and", true},
+	2: {"LDEOR", "xor", false},
+	3: {"LDOR", "or", false},
+	8: {"SWP", "xchg", false},
+}
+
+const (
+	arm64AtomicWidthSuffix = "BHWD"
+	arm64AtomicAcquireBit  = 2
+)
+
+var (
+	arm64AtomicWidthType   = [...]LLVMType{I8, I16, I32, I64}
+	arm64AtomicOrderSuffix = [...]string{"", "L", "A", "AL"}
+	arm64AtomicOrdering    = [...]string{"monotonic", "release", "acquire", "acq_rel"}
+)
 
 type arm64AtomicCASForm struct {
 	typeName     LLVMType
@@ -56,104 +83,81 @@ func parseARM64ExclusiveOpcode(op Op) (arm64ExclusiveForm, bool) {
 	return form, true
 }
 
+func arm64AtomicLSEFormat(format string) (size, order uint32, ok bool) {
+	if format == "" {
+		return 0, 0, false
+	}
+	width := strings.IndexByte(arm64AtomicWidthSuffix, format[len(format)-1])
+	if width < 0 {
+		return 0, 0, false
+	}
+	ordering := format[:len(format)-1]
+	for index, suffix := range arm64AtomicOrderSuffix {
+		if ordering == suffix {
+			return uint32(width), uint32(index), true
+		}
+	}
+	return 0, 0, false
+}
+
 func parseARM64AtomicCASOpcode(op Op) (arm64AtomicCASForm, bool) {
-	name := strings.ToUpper(string(op))
-	if !strings.HasPrefix(name, "CAS") || strings.HasPrefix(name, "CASP") || len(name) < 4 {
+	format, found := strings.CutPrefix(strings.ToUpper(string(op)), "CAS")
+	if !found {
 		return arm64AtomicCASForm{}, false
 	}
-	tail := strings.TrimPrefix(name, "CAS")
-	typeName := LLVMType("")
-	width := tail[len(tail)-1]
-	switch width {
-	case 'B':
-		typeName = I8
-	case 'H':
-		typeName = I16
-	case 'W':
-		typeName = I32
-	case 'D':
-		typeName = I64
-	default:
+	size, order, matched := arm64AtomicLSEFormat(format)
+	// Go's CAS byte and halfword rows omit the acquire-only and release-only forms.
+	if !matched || size < 2 && (order == 1 || order == 2) {
 		return arm64AtomicCASForm{}, false
 	}
-	order := tail[:len(tail)-1]
-	form := arm64AtomicCASForm{typeName: typeName}
-	switch order {
-	case "":
-		form.successOrder, form.failureOrder = "monotonic", "monotonic"
-	case "A":
-		if width == 'B' || width == 'H' {
-			return arm64AtomicCASForm{}, false
-		}
-		form.successOrder, form.failureOrder = "acquire", "acquire"
-	case "L":
-		if width == 'B' || width == 'H' {
-			return arm64AtomicCASForm{}, false
-		}
-		form.successOrder, form.failureOrder = "release", "monotonic"
-	case "AL":
-		form.successOrder, form.failureOrder = "acq_rel", "acquire"
-	default:
-		return arm64AtomicCASForm{}, false
-	}
-	return form, true
+	return arm64AtomicCASForm{
+		typeName: arm64AtomicWidthType[size], successOrder: arm64AtomicOrdering[order],
+		failureOrder: arm64AtomicOrdering[order&arm64AtomicAcquireBit],
+	}, true
 }
 
 func parseARM64AtomicRMWOpcode(op Op) (arm64AtomicRMWForm, bool) {
 	name := strings.ToUpper(string(op))
-	operation := ""
-	invert := false
-	prefix := ""
-	for _, candidate := range []struct {
-		prefix    string
-		operation string
-		invert    bool
-	}{
-		{"LDADD", "add", false},
-		{"LDCLR", "and", true},
-		{"LDEOR", "xor", false},
-		{"LDOR", "or", false},
-		{"SWP", "xchg", false},
-	} {
-		if strings.HasPrefix(name, candidate.prefix) {
-			prefix, operation, invert = candidate.prefix, candidate.operation, candidate.invert
-			break
+	for _, spec := range arm64AtomicRMWSpecs {
+		if spec.stem == "" || !strings.HasPrefix(name, spec.stem) {
+			continue
 		}
+		size, order, matched := arm64AtomicLSEFormat(name[len(spec.stem):])
+		if !matched {
+			return arm64AtomicRMWForm{}, false
+		}
+		return arm64AtomicRMWForm{
+			typeName: arm64AtomicWidthType[size], operation: spec.operation, order: order, invert: spec.invert,
+		}, true
 	}
-	if prefix == "" {
-		return arm64AtomicRMWForm{}, false
+	return arm64AtomicRMWForm{}, false
+}
+
+func decodeARM64AtomicRMWWord(word uint32, original Instr) (Instr, bool) {
+	const variable = uint32(3<<30 | 3<<22 | 31<<16 | 15<<12 | 31<<5 | 31)
+	if word&^variable != 0x38200000 {
+		return Instr{}, false
 	}
-	tail := strings.TrimPrefix(name, prefix)
-	if len(tail) < 1 {
-		return arm64AtomicRMWForm{}, false
+	operation := word >> 12 & 15
+	if operation >= uint32(len(arm64AtomicRMWSpecs)) || arm64AtomicRMWSpecs[operation].stem == "" {
+		return Instr{}, false
 	}
-	typeName := LLVMType("")
-	switch tail[len(tail)-1] {
-	case 'B':
-		typeName = I8
-	case 'H':
-		typeName = I16
-	case 'W':
-		typeName = I32
-	case 'D':
-		typeName = I64
-	default:
-		return arm64AtomicRMWForm{}, false
+	size, order := word>>30, word>>22&3
+	register := func(n uint32, reg31 Reg) Reg {
+		if n == 31 {
+			return reg31
+		}
+		return Reg(fmt.Sprintf("R%d", n))
 	}
-	ordering := ""
-	switch tail[:len(tail)-1] {
-	case "":
-		ordering = "monotonic"
-	case "A":
-		ordering = "acquire"
-	case "L":
-		ordering = "release"
-	case "AL":
-		ordering = "acq_rel"
-	default:
-		return arm64AtomicRMWForm{}, false
-	}
-	return arm64AtomicRMWForm{typeName: typeName, operation: operation, ordering: ordering, invert: invert}, true
+	return Instr{
+		Op: Op(arm64AtomicRMWSpecs[operation].stem + arm64AtomicOrderSuffix[order] + string(arm64AtomicWidthSuffix[size])),
+		Args: []Operand{
+			{Kind: OpReg, Reg: register(word>>16&31, ZR)},
+			{Kind: OpMem, Mem: MemRef{Base: register(word>>5&31, "RSP")}},
+			{Kind: OpReg, Reg: register(word&31, ZR)},
+		},
+		Raw: original.Raw, arm64Encoded: true,
+	}, true
 }
 
 func (c *arm64Ctx) lowerAtomic(op Op, ins Instr) (ok bool, terminated bool, err error) {
@@ -181,15 +185,13 @@ func (c *arm64Ctx) lowerAtomic(op Op, ins Instr) (ok bool, terminated bool, err 
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.exclusiveValidSlot)
 		return true, false, nil
 
-	case "LDARW", "LDARH", "LDARB", "LDAR", "LDAXRW", "LDAXRB", "LDAXR":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpMem || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects mem, reg: %q", op, ins.Raw)
-		}
-		if !arm64AtomicZeroOffsetMemory(ins.Args[0].Mem) {
-			return true, false, fmt.Errorf("arm64 %s memory must be a zero-offset general-register, RSP, or ZR address: %q", op, ins.Raw)
+	case "LDARW", "LDARH", "LDARB", "LDAR":
+		mem, err := arm64ScalarAtomicMemory(ins, 0, 2)
+		if err != nil {
+			return true, false, err
 		}
 		ty, align := arm64AtomicLoadStoreType(op)
-		ptr, err := c.atomicMemPtr(ins.Args[0].Mem)
+		ptr, err := c.atomicMemPtr(mem)
 		if err != nil {
 			return true, false, err
 		}
@@ -199,27 +201,15 @@ func (c *arm64Ctx) lowerAtomic(op Op, ins Instr) (ok bool, terminated bool, err 
 		if err != nil {
 			return true, false, err
 		}
-		if op == "LDAXRW" || op == "LDAXRB" || op == "LDAXR" {
-			size, err := arm64AtomicTypeSize(ty)
-			if err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  store i1 true, ptr %s\n", c.exclusiveValidSlot)
-			fmt.Fprintf(c.b, "  store ptr %s, ptr %s\n", ptr, c.exclusivePtrSlot)
-			fmt.Fprintf(c.b, "  store i8 %d, ptr %s\n", size, c.exclusiveSizeSlot)
-			fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v, c.exclusiveValueSlot)
-		}
 		return true, false, c.storeReg(ins.Args[1].Reg, v)
 
 	case "STLRW", "STLRH", "STLRB", "STLR":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpMem {
-			return true, false, fmt.Errorf("arm64 %s expects reg, mem: %q", op, ins.Raw)
-		}
-		if !arm64AtomicZeroOffsetMemory(ins.Args[1].Mem) {
-			return true, false, fmt.Errorf("arm64 %s memory must be a zero-offset general-register, RSP, or ZR address: %q", op, ins.Raw)
+		mem, err := arm64ScalarAtomicMemory(ins, 1, 2)
+		if err != nil {
+			return true, false, err
 		}
 		ty, align := arm64AtomicLoadStoreType(op)
-		src, err := c.loadReg(ins.Args[0].Reg)
+		src, err := c.loadRegisterWidth(ins.Args[0].Reg, align*8)
 		if err != nil {
 			return true, false, err
 		}
@@ -227,222 +217,23 @@ func (c *arm64Ctx) lowerAtomic(op Op, ins Instr) (ok bool, terminated bool, err 
 		if err != nil {
 			return true, false, err
 		}
-		ptr, err := c.atomicMemPtr(ins.Args[1].Mem)
+		ptr, err := c.atomicMemPtr(mem)
 		if err != nil {
 			return true, false, err
 		}
 		fmt.Fprintf(c.b, "  store atomic %s %s, ptr %s release, align %d\n", ty, v, ptr, align)
 		return true, false, nil
 
-	case "STLXRW", "STLXRB", "STLXR":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpMem || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects srcReg, mem, statusReg: %q", op, ins.Raw)
-		}
-		ty, align := arm64AtomicStoreExclusiveType(op)
-		size, err := arm64AtomicTypeSize(ty)
-		if err != nil {
-			return true, false, err
-		}
-		src, err := c.loadReg(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		newv, err := c.atomicTruncFromI64(src, ty)
-		if err != nil {
-			return true, false, err
-		}
-		ptr, err := c.atomicMemPtr(ins.Args[1].Mem)
-		if err != nil {
-			return true, false, err
-		}
-
-		loadedValid := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", loadedValid, c.exclusiveValidSlot)
-		loadedPtr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load ptr, ptr %s\n", loadedPtr, c.exclusivePtrSlot)
-		ptrMatch := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq ptr %%%s, %s\n", ptrMatch, loadedPtr, ptr)
-		loadedSize := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s\n", loadedSize, c.exclusiveSizeSlot)
-		sizeMatch := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, %d\n", sizeMatch, loadedSize, size)
-		precond := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i1 %%%s, %%%s\n", precond, loadedValid, ptrMatch)
-		canTry := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i1 %%%s, %%%s\n", canTry, precond, sizeMatch)
-
-		id := c.newTmp()
-		tryLabel := arm64LLVMBlockName("stlxr_try_" + id)
-		failLabel := arm64LLVMBlockName("stlxr_fail_" + id)
-		mergeLabel := arm64LLVMBlockName("stlxr_merge_" + id)
-
-		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", canTry, tryLabel, failLabel)
-
-		fmt.Fprintf(c.b, "\n%s:\n", tryLabel)
-		expected64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", expected64, c.exclusiveValueSlot)
-		expected, err := c.atomicTruncFromI64("%"+expected64, ty)
-		if err != nil {
-			return true, false, err
-		}
-		cx := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = cmpxchg ptr %s, %s %s, %s %s seq_cst seq_cst, align %d\n", cx, ptr, ty, expected, ty, newv, align)
-		ok := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue {%s, i1} %%%s, 1\n", ok, ty, cx)
-		failI1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", failI1, ok)
-		tryStatus := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i64\n", tryStatus, failI1)
-		fmt.Fprintf(c.b, "  br label %%%s\n", mergeLabel)
-
-		fmt.Fprintf(c.b, "\n%s:\n", failLabel)
-		fmt.Fprintf(c.b, "  br label %%%s\n", mergeLabel)
-
-		fmt.Fprintf(c.b, "\n%s:\n", mergeLabel)
-		status := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = phi i64 [ %%%s, %%%s ], [ 1, %%%s ]\n", status, tryStatus, tryLabel, failLabel)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.exclusiveValidSlot)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+status)
-
-	case "SWPALB", "SWPALW", "SWPALD":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpMem || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects srcReg, mem, dstReg: %q", op, ins.Raw)
-		}
-		ty, err := arm64AtomicRMWType(op)
-		if err != nil {
-			return true, false, err
-		}
-		src64, err := c.loadReg(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		src, err := c.atomicTruncFromI64(src64, ty)
-		if err != nil {
-			return true, false, err
-		}
-		ptr, err := c.atomicMemPtr(ins.Args[1].Mem)
-		if err != nil {
-			return true, false, err
-		}
-		old := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = atomicrmw xchg ptr %s, %s %s seq_cst\n", old, ptr, ty, src)
-		old64, err := c.atomicExtendToI64("%"+old, ty)
-		if err != nil {
-			return true, false, err
-		}
-		return true, false, c.storeReg(ins.Args[2].Reg, old64)
-
-	case "LDADDALW", "LDADDALD", "LDORALB", "LDORALW", "LDORALD", "LDCLRALB", "LDCLRALW", "LDCLRALD",
-		"LDEORB", "LDEORH", "LDEORW", "LDEORD",
-		"LDEORAB", "LDEORAH", "LDEORAW", "LDEORAD",
-		"LDEORLB", "LDEORLH", "LDEORLW", "LDEORLD",
-		"LDEORALB", "LDEORALH", "LDEORALW", "LDEORALD":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpMem || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects srcReg, mem, dstReg: %q", op, ins.Raw)
-		}
-		ty, err := arm64AtomicRMWType(op)
-		if err != nil {
-			return true, false, err
-		}
-		src64, err := c.loadReg(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		src, err := c.atomicTruncFromI64(src64, ty)
-		if err != nil {
-			return true, false, err
-		}
-		ptr, err := c.atomicMemPtr(ins.Args[1].Mem)
-		if err != nil {
-			return true, false, err
-		}
-
-		rmwo := ""
-		arg := src
-		switch op {
-		case "LDADDALW", "LDADDALD":
-			rmwo = "add"
-		case "LDORALB", "LDORALW", "LDORALD":
-			rmwo = "or"
-		case "LDEORB", "LDEORH", "LDEORW", "LDEORD",
-			"LDEORAB", "LDEORAH", "LDEORAW", "LDEORAD",
-			"LDEORLB", "LDEORLH", "LDEORLW", "LDEORLD",
-			"LDEORALB", "LDEORALH", "LDEORALW", "LDEORALD":
-			rmwo = "xor"
-		case "LDCLRALB", "LDCLRALW", "LDCLRALD":
-			rmwo = "and"
-			// LDCLR updates memory as: mem = mem & ~src.
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor %s %s, -1\n", t, ty, src)
-			arg = "%" + t
-		}
-
-		old := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = atomicrmw %s ptr %s, %s %s seq_cst\n", old, rmwo, ptr, ty, arg)
-		old64, err := c.atomicExtendToI64("%"+old, ty)
-		if err != nil {
-			return true, false, err
-		}
-		return true, false, c.storeReg(ins.Args[2].Reg, old64)
-
-	case "CASALW", "CASALD":
-		// CASAL{W,D} expectedReg, (ptrReg), newReg
-		// The expected register is updated with the loaded memory value.
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpMem || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects expectedReg, mem, newReg: %q", op, ins.Raw)
-		}
-		ty := I32
-		align := 4
-		if op == "CASALD" {
-			ty = I64
-			align = 8
-		}
-		exp64, err := c.loadReg(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		exp, err := c.atomicTruncFromI64(exp64, ty)
-		if err != nil {
-			return true, false, err
-		}
-		new64, err := c.loadReg(ins.Args[2].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		newv, err := c.atomicTruncFromI64(new64, ty)
-		if err != nil {
-			return true, false, err
-		}
-		ptr, err := c.atomicMemPtr(ins.Args[1].Mem)
-		if err != nil {
-			return true, false, err
-		}
-		cx := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = cmpxchg ptr %s, %s %s, %s %s seq_cst seq_cst, align %d\n", cx, ptr, ty, exp, ty, newv, align)
-		old := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue {%s, i1} %%%s, 0\n", old, ty, cx)
-		old64, err := c.atomicExtendToI64("%"+old, ty)
-		if err != nil {
-			return true, false, err
-		}
-		return true, false, c.storeReg(ins.Args[0].Reg, old64)
 	}
 	return false, false, nil
 }
 
 func (c *arm64Ctx) lowerAtomicRMWFamily(form arm64AtomicRMWForm, ins Instr) error {
-	if arm64AtomicOpcodeHasSuffix(ins.Op) || len(ins.Args) != 3 ||
-		ins.Args[0].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[0].Reg) ||
-		ins.Args[1].Kind != OpMem ||
-		ins.Args[2].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[2].Reg) {
-		return fmt.Errorf("arm64 %s expects source register, zero-offset register memory, destination register: %q", ins.Op, ins.Raw)
+	mem, err := arm64ScalarAtomicMemory(ins, 1, 3)
+	if err != nil {
+		return err
 	}
-	mem := ins.Args[1].Mem
-	if mem.Sym != "" || mem.Segment != "" || mem.Index != "" || mem.Off != 0 || mem.OffRaw != "" ||
-		(mem.Base != Reg("RSP") && !isARM64GeneralOrZeroReg(mem.Base)) {
-		return fmt.Errorf("arm64 %s memory must be exactly (R0-R30), (RSP), or (ZR): %q", ins.Op, ins.Raw)
-	}
-	source64, err := c.loadReg(ins.Args[0].Reg)
+	source64, err := c.loadRegisterWidth(ins.Args[0].Reg, arm64MachineScalarWidth(form.typeName))
 	if err != nil {
 		return err
 	}
@@ -461,7 +252,12 @@ func (c *arm64Ctx) lowerAtomicRMWFamily(form arm64AtomicRMWForm, ins Instr) erro
 		return err
 	}
 	old := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = atomicrmw %s ptr %s, %s %s %s\n", old, form.operation, pointer, form.typeName, argument, form.ordering)
+	order := form.order
+	if ins.Args[2].Reg == ZR {
+		order &^= arm64AtomicAcquireBit // FEAT_LSE suppresses acquire when Rt is 31.
+	}
+	fmt.Fprintf(c.b, "  %%%s = atomicrmw %s ptr %s, %s %s %s\n",
+		old, form.operation, pointer, form.typeName, argument, arm64AtomicOrdering[order])
 	old64, err := c.atomicExtendToI64("%"+old, form.typeName)
 	if err != nil {
 		return err
@@ -470,16 +266,9 @@ func (c *arm64Ctx) lowerAtomicRMWFamily(form arm64AtomicRMWForm, ins Instr) erro
 }
 
 func (c *arm64Ctx) lowerAtomicCASFamily(form arm64AtomicCASForm, ins Instr) error {
-	if arm64AtomicOpcodeHasSuffix(ins.Op) || len(ins.Args) != 3 ||
-		ins.Args[0].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[0].Reg) ||
-		ins.Args[1].Kind != OpMem ||
-		ins.Args[2].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[2].Reg) {
-		return fmt.Errorf("arm64 %s expects expected register, zero-offset register memory, new-value register: %q", ins.Op, ins.Raw)
-	}
-	mem := ins.Args[1].Mem
-	if mem.Sym != "" || mem.Segment != "" || mem.Index != "" || mem.Off != 0 || mem.OffRaw != "" ||
-		(mem.Base != Reg("RSP") && !isARM64GeneralOrZeroReg(mem.Base)) {
-		return fmt.Errorf("arm64 %s memory must be exactly (R0-R30), (RSP), or (ZR): %q", ins.Op, ins.Raw)
+	mem, err := arm64ScalarAtomicMemory(ins, 1, 3)
+	if err != nil {
+		return err
 	}
 	expected64, err := c.loadReg(ins.Args[0].Reg)
 	if err != nil {
@@ -518,24 +307,13 @@ func (c *arm64Ctx) lowerAtomicCASFamily(form arm64AtomicCASForm, ins Instr) erro
 }
 
 func (c *arm64Ctx) lowerExclusiveFamily(form arm64ExclusiveForm, ins Instr) error {
-	wantArgs := 3
+	memoryIndex, wantArgs := 1, 3
 	if form.isLoad {
-		wantArgs = 2
+		memoryIndex, wantArgs = 0, 2
 	}
-	if arm64AtomicOpcodeHasSuffix(ins.Op) || len(ins.Args) != wantArgs {
-		return fmt.Errorf("arm64 %s has invalid exclusive load/store operands: %q", ins.Op, ins.Raw)
-	}
-	memoryIndex := 1
-	if form.isLoad {
-		memoryIndex = 0
-	}
-	if ins.Args[memoryIndex].Kind != OpMem {
-		return fmt.Errorf("arm64 %s requires a zero-offset register memory operand: %q", ins.Op, ins.Raw)
-	}
-	mem := ins.Args[memoryIndex].Mem
-	if mem.Sym != "" || mem.Segment != "" || mem.Index != "" || mem.Off != 0 || mem.OffRaw != "" ||
-		(mem.Base != Reg("RSP") && !isARM64GeneralOrZeroReg(mem.Base)) {
-		return fmt.Errorf("arm64 %s memory must be exactly (R0-R30), (RSP), or (ZR): %q", ins.Op, ins.Raw)
+	mem, err := arm64ScalarAtomicMemory(ins, memoryIndex, wantArgs)
+	if err != nil {
+		return err
 	}
 	pointer, err := c.atomicMemPtr(mem)
 	if err != nil {
@@ -546,9 +324,6 @@ func (c *arm64Ctx) lowerExclusiveFamily(form arm64ExclusiveForm, ins Instr) erro
 		return err
 	}
 	if form.isLoad {
-		if ins.Args[1].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[1].Reg) {
-			return fmt.Errorf("arm64 %s destination must be a general register or ZR: %q", ins.Op, ins.Raw)
-		}
 		loaded := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load atomic %s, ptr %s %s, align %d\n", loaded, form.typeName, pointer, form.successOrder, size)
 		value64, err := c.atomicExtendToI64("%"+loaded, form.typeName)
@@ -560,10 +335,6 @@ func (c *arm64Ctx) lowerExclusiveFamily(form arm64ExclusiveForm, ins Instr) erro
 		fmt.Fprintf(c.b, "  store i8 %d, ptr %s\n", size, c.exclusiveSizeSlot)
 		fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", value64, c.exclusiveValueSlot)
 		return c.storeReg(ins.Args[1].Reg, value64)
-	}
-	if ins.Args[0].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[0].Reg) ||
-		ins.Args[2].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[2].Reg) {
-		return fmt.Errorf("arm64 %s source and status must be general registers or ZR: %q", ins.Op, ins.Raw)
 	}
 	source64, err := c.loadReg(ins.Args[0].Reg)
 	if err != nil {
@@ -628,9 +399,28 @@ func (c *arm64Ctx) atomicMemPtr(mem MemRef) (string, error) {
 	return "%" + pt, nil
 }
 
-func arm64AtomicZeroOffsetMemory(mem MemRef) bool {
-	return mem.Sym == "" && mem.Segment == "" && mem.Index == "" && mem.Off == 0 && mem.OffRaw == "" &&
-		(mem.Base == Reg("RSP") || isARM64GeneralOrZeroReg(mem.Base))
+func arm64ScalarAtomicMemory(ins Instr, memoryIndex, wantArgs int) (MemRef, error) {
+	fail := func() (MemRef, error) {
+		return MemRef{}, fmt.Errorf("arm64 %s requires general or zero registers and one zero-offset register address: %q", ins.Op, ins.Raw)
+	}
+	if arm64AtomicOpcodeHasSuffix(ins.Op) || len(ins.Args) != wantArgs {
+		return fail()
+	}
+	for index, argument := range ins.Args {
+		if index != memoryIndex && (argument.Kind != OpReg || !isARM64GeneralOrZeroReg(argument.Reg)) {
+			return fail()
+		}
+	}
+	argument := ins.Args[memoryIndex]
+	mem := argument.Mem
+	if argument.Kind != OpMem || mem != (MemRef{Base: mem.Base}) ||
+		(mem.Base != "RSP" && !isARM64GeneralOrZeroReg(mem.Base)) {
+		return fail()
+	}
+	if mem.Base == "RSP" || mem.Base == ZR {
+		mem.Base = SP // Encoding 31 is SP only in the address bank.
+	}
+	return mem, nil
 }
 
 func arm64AtomicLoadStoreType(op Op) (LLVMType, int) {
@@ -639,42 +429,10 @@ func arm64AtomicLoadStoreType(op Op) (LLVMType, int) {
 		return I8, 1
 	case "LDARH", "STLRH":
 		return I16, 2
-	case "LDARW", "LDAXRW", "STLRW":
+	case "LDARW", "STLRW":
 		return I32, 4
 	default:
 		return I64, 8
-	}
-}
-
-func arm64AtomicStoreExclusiveType(op Op) (LLVMType, int) {
-	switch op {
-	case "STLXRB":
-		return I8, 1
-	case "STLXRW":
-		return I32, 4
-	default:
-		return I64, 8
-	}
-}
-
-func arm64AtomicRMWType(op Op) (LLVMType, error) {
-	if form, ok := parseARM64AtomicRMWOpcode(op); ok {
-		return form.typeName, nil
-	}
-	switch op {
-	case "SWPALB", "LDORALB", "LDCLRALB",
-		"LDEORB", "LDEORAB", "LDEORLB", "LDEORALB":
-		return I8, nil
-	case "LDEORH", "LDEORAH", "LDEORLH", "LDEORALH":
-		return I16, nil
-	case "SWPALW", "LDADDALW", "LDORALW", "LDCLRALW",
-		"LDEORW", "LDEORAW", "LDEORLW", "LDEORALW":
-		return I32, nil
-	case "SWPALD", "LDADDALD", "LDORALD", "LDCLRALD",
-		"LDEORD", "LDEORAD", "LDEORLD", "LDEORALD":
-		return I64, nil
-	default:
-		return "", fmt.Errorf("arm64: unsupported atomic rmw op %s", op)
 	}
 }
 

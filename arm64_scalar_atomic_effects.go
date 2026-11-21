@@ -2,8 +2,8 @@ package plan9asm
 
 // Scalar atomics have a memory operand before their final GP operand. Treating
 // only that final operand as a write would miss an actual saved-LR overwrite.
-// Reuse the lowerer's complete opcode families; operand errors remain its
-// responsibility and never acquire a narrower control-effect exception here.
+// Use the lowerer's address/register grammar so the analysis also treats
+// encoded base 31 as SP and cannot grant effects to a malformed instruction.
 func (state *arm64ControlState) transferScalarAtomicStore(ins Instr, op Op) bool {
 	output, data := 2, 0
 	status := false
@@ -17,13 +17,14 @@ func (state *arm64ControlState) transferScalarAtomicStore(ins Instr, op Op) bool
 	} else if _, matched := parseARM64AtomicRMWOpcode(op); !matched {
 		return false
 	}
-	if len(ins.Args) != 3 || ins.Args[1].Kind != OpMem {
+	mem, err := arm64ScalarAtomicMemory(ins, 1, 3)
+	if err != nil {
 		return false
 	}
 	// CAS/exclusive may leave the original bytes untouched. Arithmetic RMW
 	// results are not an affine/code pointer proof either. Preserve all prior
 	// address taint, but mark both stored contents and returned old bits unknown.
-	memory := ins.Args[1]
+	memory := Operand{Kind: OpMem, Mem: mem}
 	observed := arm64ControlUnion(state.source(memory, false), arm64ControlExternal())
 	value := arm64ControlUnion(observed, state.source(ins.Args[data], false))
 	state.write(memory, value, false)
