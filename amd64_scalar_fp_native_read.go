@@ -416,6 +416,15 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 				state.nativeLEAAddressBits = x86NativeLEAAddressBits{}
 			}
 		}()
+		if accepted, known := goFuncvalReadTransfer(funcvalReads, ordinal, ins, state, arch); known {
+			return accepted
+		}
+		if accepted, known := x86ResultSDKLiteralStep(ins, state, owned, resultOffset, arch); known {
+			return accepted // Consume the exact bound source before an overlapping native-memory family.
+		}
+		if accepted, known := x86ResultNumericalReadStep(ins, state, owned, resultOffset, arch); known {
+			return accepted // A checked mutable SB source keeps its own lifetime and byte effects.
+		}
 		if state.mode32Frame != nil {
 			for _, operand := range ins.Args {
 				if _, local := state.mode32Frame.offset(operand, 0); local {
@@ -425,15 +434,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 					return x86ScalarFPResultTransfer(ins, state, owned, resultOffset, arch)
 				}
 			}
-		}
-		if accepted, known := goFuncvalReadTransfer(funcvalReads, ordinal, ins, state, arch); known {
-			return accepted
-		}
-		if accepted, known := x86ResultSDKLiteralStep(ins, state, owned, resultOffset, arch); known {
-			return accepted // Consume the exact bound source before an overlapping native-memory family.
-		}
-		if accepted, known := x86ResultNumericalReadStep(ins, state, owned, resultOffset, arch); known {
-			return accepted // A checked mutable SB source keeps its own lifetime and byte effects.
 		}
 		if accepted, known := c.loweredElidedSchedulerHookStep(ins, state, arch); known {
 			return accepted // The existing elision does not supply a callable ABI.
