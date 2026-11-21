@@ -21,6 +21,7 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 		x86TypedPackedAbsSignByteEffect,
 		x86TypedPackedFloatShuffleByteEffect,
 		x86TypedTernaryLogicByteEffect,
+		x86TypedPackedDotByteEffect,
 	} {
 		if known {
 			break

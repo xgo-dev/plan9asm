@@ -3,6 +3,10 @@ package plan9asm
 import "fmt"
 
 func decodedX86IntegerPackedDotInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86IntegerPackedDotInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86IntegerPackedDotInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || p.mapNumber != 2 || p.evex && p.pp == 2 {
 		return Instr{}, 0, false, nil // BF16 owns EVEX.F3, not integer VNNI.
@@ -20,7 +24,7 @@ func decodedX86IntegerPackedDotInstruction(code []byte, mode int) (Instr, int, b
 	if p.w {
 		return Instr{}, 0, true, fmt.Errorf("integer dot-product encoding requires W0")
 	}
-	ins, size, known, err := decodedX86BinaryVectorOperands(code, p, mode, op, 32)
+	ins, size, known, err := decodedX86BinaryVectorOperandsWithMemory(code, p, mode, op, 32, memory)
 	if err != nil || !known {
 		return ins, size, known, err
 	}

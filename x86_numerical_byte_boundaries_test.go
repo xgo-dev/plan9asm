@@ -297,6 +297,7 @@ func TestX86NumericalNativeBoundariesDefaultRawFamiliesRemainStrict(t *testing.T
 		{"VPSIGND table(SB),Y1,Y2", decodedX86RawPackedSignInstruction},
 		{"VSHUFPS $177,table(SB),Y1,Y2", decodedX86VSHUFPSInstruction},
 		{"VSHUFPD.BCST.Z $3,table(SB),Z1,K1,Z2", decodedX86VSHUFPSInstruction},
+		{"VPDPWSSDS.BCST.Z table(SB),Z1,K1,Z2", decodedX86IntegerPackedDotInstruction},
 		{"VMOVD table(SB),X2", decodedX86VMOVQInstruction},
 		{"VMOVQ table(SB),X31", decodedX86VMOVQInstruction},
 		{"VPTEST table(SB),Y2", decodedX86VEXVectorTestInstruction},
