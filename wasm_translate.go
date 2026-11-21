@@ -3,6 +3,7 @@ package plan9asm
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -31,7 +32,18 @@ type wasmControlFrame struct {
 func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, wasmABI WASMABI, annotateSource bool) (err error) {
 	// Validate source format before dead-block removal. Pure dead operators may
 	// disappear, but malformed source must not acquire an apparent pass.
-	for _, ins := range fn.Instrs {
+	var memoryForms map[int]wasmScalarMemoryForm
+	for i, ins := range fn.Instrs {
+		form, found, err := parseWASMScalarMemory(ins, normalizeInstructionOpcode(ins.Op))
+		if err != nil {
+			return err
+		}
+		if found {
+			if memoryForms == nil {
+				memoryForms = make(map[int]wasmScalarMemoryForm)
+			}
+			memoryForms[i] = form
+		}
 		if _, _, err := parseWASMFloatBinary(ins); err != nil {
 			return err
 		}
@@ -150,19 +162,21 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		}
 		return wasmValue{typ: to, val: "%" + name}, nil
 	}
-	wasmRType := I64
+	var wasmRType LLVMType
 	argRegTypes := make(map[Reg]LLVMType, len(sig.ArgRegs))
 	for i, reg := range sig.ArgRegs {
 		if i < len(sig.Args) {
 			argRegTypes[reg] = sig.Args[i]
 		}
-		if i >= len(sig.Args) || !strings.HasPrefix(strings.ToUpper(string(reg)), "R") {
+		if i >= len(sig.Args) || wasmRType != "" || !strings.HasPrefix(strings.ToUpper(string(reg)), "R") {
 			continue
 		}
 		if sig.Args[i] == I32 || sig.Args[i] == I64 {
 			wasmRType = sig.Args[i]
-			break
 		}
+	}
+	if wasmRType == "" {
+		wasmRType = I64
 	}
 	registerType := func(reg Reg) (LLVMType, error) {
 		name := strings.ToUpper(string(reg))
@@ -197,13 +211,16 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			return "", fmt.Errorf("unsupported wasm register %s", reg)
 		}
 	}
-	for _, ins := range fn.Instrs {
+	for index, ins := range fn.Instrs {
 		for _, arg := range ins.Args {
 			var reg Reg
 			switch arg.Kind {
 			case OpReg:
 				reg = arg.Reg
 			case OpMem:
+				if memoryForms[index].spec.store {
+					continue // The store's explicit base spelling does not read a register.
+				}
 				reg = arg.Mem.Base
 			default:
 				continue
@@ -891,47 +908,6 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		fmt.Fprintf(b, "  %%%s = getelementptr i8, ptr %s, i32 %d\n", name, v.val, offset)
 		return wasmValue{typ: Ptr, val: "%" + name}, nil
 	}
-	emitMemoryLoad := func(op string, offset int64, spec wasmMemoryLoadOp) error {
-		address, err := pop(op)
-		if err != nil {
-			return err
-		}
-		address, err = addressPtr(address, offset)
-		if err != nil {
-			return err
-		}
-		name := newTmp()
-		fmt.Fprintf(b, "  %%%s = load %s, ptr %s, align 1\n", name, spec.loadType, address.val)
-		v := wasmValue{typ: spec.loadType, val: "%" + name}
-		if spec.loadType != spec.resultType {
-			v, err = cast(v, spec.resultType, spec.signed)
-			if err != nil {
-				return err
-			}
-		}
-		push(v)
-		return nil
-	}
-	emitMemoryStore := func(op string, offset int64, spec wasmMemoryStoreOp) error {
-		value, err := pop(op)
-		if err != nil {
-			return err
-		}
-		address, err := pop(op)
-		if err != nil {
-			return err
-		}
-		address, err = addressPtr(address, offset)
-		if err != nil {
-			return err
-		}
-		value, err = cast(value, spec.storeType, false)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(b, "  store %s %s, ptr %s, align 1\n", spec.storeType, value.val, address.val)
-		return nil
-	}
 	root := &wasmControlFrame{kind: "function", endLabel: "wasm_function_return"}
 	if physicalRet != Void {
 		root.resultType = physicalRet
@@ -948,6 +924,92 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	}
 	newLabel := func(prefix string) string {
 		return prefix + "_" + newTmp()
+	}
+	scalarMemoryAddress := func(op string, form wasmScalarMemoryForm) (wasmValue, error) {
+		var base wasmValue
+		var err error
+		if form.base != "" {
+			base, err = loadRegister(form.base)
+		} else {
+			base, err = pop(op)
+		}
+		if err != nil {
+			return wasmValue{}, err
+		}
+		if form.base != "" && base.typ == I64 {
+			base, err = cast(base, I32, false)
+			if err != nil {
+				return wasmValue{}, err
+			}
+		}
+		if base.typ == Ptr && !base.stackAddr {
+			// A direct ABI caller can supply a typed host pointer.
+			return addressPtr(base, form.offset)
+		}
+		if base.typ != I32 || base.stackAddr {
+			return wasmValue{}, fmt.Errorf("%s expects an i32 linear-memory address, got %s", op, base.typ)
+		}
+		if form.offset != 0 {
+			// Wasm adds the unsigned offset without wrapping. Native memory
+			// instructions still check the end of the access against memory.
+			valid, effective := newTmp(), newTmp()
+			fmt.Fprintf(b, "  %%%s = icmp ule i32 %s, %d\n", valid, base.val, math.MaxUint32-form.offset)
+			emitWASMTrapUnless(b, valid, newLabel)
+			fmt.Fprintf(b, "  %%%s = add i32 %s, %d\n", effective, base.val, form.offset)
+			base.val = "%" + effective
+		}
+		return cast(base, Ptr, false)
+	}
+	emitScalarMemory := func(op string, ins Instr, form wasmScalarMemoryForm) error {
+		spec := form.spec
+		if spec.store {
+			value, err := pop(op)
+			if err != nil {
+				return err
+			}
+			if value.typ != spec.stack || value.stackAddr {
+				return fmt.Errorf("%s expects a %s stack value, got %s", op, spec.stack, value.typ)
+			}
+			value, err = cast(value, spec.access, false)
+			if err != nil {
+				return err
+			}
+			if form.frame {
+				if len(stack) != 0 && stack[len(stack)-1].stackAddr {
+					stack = stack[:len(stack)-1]
+				}
+				return storeResult(ins.Args[0], value)
+			}
+			address, err := scalarMemoryAddress(op, form)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(b, "  store volatile %s %s, ptr %s, align 1\n", spec.access, value.val, address.val)
+			return nil
+		}
+		var value wasmValue
+		if form.frame {
+			var err error
+			value, err = loadOperand(ins.Args[0], spec.access)
+			if err != nil {
+				return err
+			}
+		} else {
+			address, err := scalarMemoryAddress(op, form)
+			if err != nil {
+				return err
+			}
+			name := newTmp()
+			// A discarded result still observes the original memory trap.
+			fmt.Fprintf(b, "  %%%s = load volatile %s, ptr %s, align 1\n", name, spec.access, address.val)
+			value = wasmValue{typ: spec.access, val: "%" + name}
+		}
+		value, err := cast(value, spec.stack, spec.signed)
+		if err != nil {
+			return err
+		}
+		push(value)
+		return nil
 	}
 	emitLabel := func(label string) {
 		fmt.Fprintf(b, "%s:\n", label)
@@ -1136,7 +1198,10 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			if err != nil {
 				return err
 			}
-			if value.typ != spec.source || value.stackAddr {
+			if value.stackAddr {
+				return fmt.Errorf("%s cannot convert a stack-address marker", ins.Op)
+			}
+			if value.typ != spec.source {
 				return fmt.Errorf("%s expects one %s stack value, got %s", ins.Op, spec.source, value.typ)
 			}
 			push(spec.emit(b, value, newTmp, newLabel))
@@ -1234,57 +1299,8 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			push(wasmValue{typ: spec.typ, val: "%" + name})
 			continue
 		}
-		if spec, ok := wasmMemoryLoadOps[op]; ok {
-			if len(ins.Args) != 1 {
-				return fmt.Errorf("%s expects one operand", ins.Op)
-			}
-			if ins.Args[0].Kind == OpFP || ins.Args[0].Kind == OpMem {
-				v, err := loadOperand(ins.Args[0], spec.loadType)
-				if err != nil {
-					return err
-				}
-				if spec.loadType != spec.resultType {
-					v, err = cast(v, spec.resultType, spec.signed)
-					if err != nil {
-						return err
-					}
-				}
-				push(v)
-				continue
-			}
-			if ins.Args[0].Kind != OpImm {
-				return fmt.Errorf("%s expects an FP slot or immediate memory offset, got %s", ins.Op, ins.Args[0])
-			}
-			if err := emitMemoryLoad(op, ins.Args[0].Imm, spec); err != nil {
-				return err
-			}
-			continue
-		}
-		if spec, ok := wasmMemoryStoreOps[op]; ok {
-			if len(ins.Args) != 1 {
-				return fmt.Errorf("%s expects one operand", ins.Op)
-			}
-			if ins.Args[0].Kind != OpFP {
-				if ins.Args[0].Kind != OpImm {
-					return fmt.Errorf("%s expects an FP slot or immediate memory offset, got %s", ins.Op, ins.Args[0])
-				}
-				if err := emitMemoryStore(op, ins.Args[0].Imm, spec); err != nil {
-					return err
-				}
-				continue
-			}
-			v, err := pop(op)
-			if err != nil {
-				return err
-			}
-			if len(stack) != 0 && stack[len(stack)-1].stackAddr {
-				stack = stack[:len(stack)-1]
-			}
-			v, err = cast(v, spec.storeType, false)
-			if err != nil {
-				return err
-			}
-			if err := storeResult(ins.Args[0], v); err != nil {
+		if form, ok := memoryForms[insIndex]; ok {
+			if err := emitScalarMemory(op, ins, form); err != nil {
 				return err
 			}
 			continue
@@ -1472,15 +1488,6 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return fmt.Errorf("F64Const expects one floating immediate")
 			}
 			push(wasmValue{typ: LLVMType("double"), val: fmt.Sprintf("0x%016X", uint64(ins.Args[0].Imm))})
-		case "F64LOAD":
-			if len(ins.Args) != 1 || ins.Args[0].Kind != OpFP {
-				return fmt.Errorf("F64Load expects an FP slot")
-			}
-			v, err := loadOperand(ins.Args[0], LLVMType("double"))
-			if err != nil {
-				return err
-			}
-			push(v)
 		case "I32EQZ", "NOT":
 			if err := emitIntCompare(op, I32, "eq", true); err != nil {
 				return err
@@ -1516,20 +1523,6 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			push(wasmValue{typ: ifTrue.typ, val: "%" + name})
 		case "DROP":
 			if _, err := pop(op); err != nil {
-				return err
-			}
-		case "F64STORE":
-			if len(ins.Args) != 1 || ins.Args[0].Kind != OpFP {
-				return fmt.Errorf("F64Store expects an FP slot")
-			}
-			v, err := pop(op)
-			if err != nil {
-				return err
-			}
-			if len(stack) != 0 && stack[len(stack)-1].stackAddr {
-				stack = stack[:len(stack)-1]
-			}
-			if err := storeResult(ins.Args[0], v); err != nil {
 				return err
 			}
 		case "CURRENTMEMORY":
@@ -1752,7 +1745,11 @@ func wasmNeedsIncomingContext(fn Func) bool {
 	for _, ins := range fn.Instrs {
 		op := strings.ToUpper(string(ins.Op))
 		_, move := wasmMoveTypes[op]
+		memory := wasmScalarMemoryOps[op]
 		for i, arg := range ins.Args {
+			if memory.store && arg.Kind == OpMem {
+				continue
+			}
 			writes := (op == "SET" || op == "TEE") && i == 0 && arg.Kind == OpReg ||
 				move && i == 1 && arg.Kind == OpReg
 			if writes && arg.Reg == Reg("CTXT") {

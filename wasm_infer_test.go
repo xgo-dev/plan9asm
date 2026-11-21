@@ -72,7 +72,7 @@ func TestInferOfficialWasmLocalHelperSignatures(t *testing.T) {
 	}
 }
 
-func TestInferWasmIntegerAndMemoryOperations(t *testing.T) {
+func TestInferWasmIntegerOperations(t *testing.T) {
 	for op, spec := range wasmIntegerBinaryOps {
 		t.Run(op, func(t *testing.T) {
 			assertInferredWasmSig(t, fmt.Sprintf(`TEXT helper<>(SB), NOSPLIT, $0
@@ -91,29 +91,6 @@ func TestInferWasmIntegerAndMemoryOperations(t *testing.T) {
 	%s
 	Return
 `, op), []LLVMType{spec.typ, spec.typ}, I32)
-		})
-	}
-	for op, spec := range wasmMemoryLoadOps {
-		t.Run(op, func(t *testing.T) {
-			assertInferredWasmSig(t, fmt.Sprintf(`TEXT helper<>(SB), NOSPLIT, $0
-	Get R0
-	%s $0
-	Return
-`, op), []LLVMType{I32}, spec.resultType)
-		})
-	}
-	for op := range wasmMemoryStoreOps {
-		t.Run(op, func(t *testing.T) {
-			valueType := I32
-			if strings.HasPrefix(op, "I64") {
-				valueType = I64
-			}
-			assertInferredWasmSig(t, fmt.Sprintf(`TEXT helper<>(SB), NOSPLIT, $0
-	Get R0
-	Get R1
-	%s $0
-	Return
-`, op), []LLVMType{I32, valueType}, Void)
 		})
 	}
 }

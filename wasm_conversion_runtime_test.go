@@ -85,13 +85,7 @@ const fs = require('fs');
 const rows = JSON.parse(fs.readFileSync(process.argv[2]));
 const instantiate = bytes => new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
 const translated = instantiate(fs.readFileSync(process.argv[1]));
-function uleb(value) {
-  const bytes = [];
-  for (; value >= 0x80; value >>>= 7) bytes.push((value & 0x7f) | 0x80);
-  return [...bytes, value];
-}
-const vector = items => [...uleb(items.length), ...items.flat()];
-const section = (id, body) => [id, ...uleb(body.length), ...body];
+` + wasmTestSectionJS + `
 const before = {I32: [0xa7], I64: [], F32: [0xa7, 0xbe], F64: [0xbf]};
 const after = {I32: [0xad], I64: [], F32: [0xbc, 0xad], F64: [0xbd]};
 const native = instantiate(Uint8Array.from([
@@ -148,4 +142,14 @@ for (const {Name, Result} of rows) {
     }
   }
 }
+`
+
+const wasmTestSectionJS = `
+function uleb(value) {
+  const bytes = [];
+  for (; value >= 0x80; value >>>= 7) bytes.push((value & 0x7f) | 0x80);
+  return [...bytes, value];
+}
+const vector = items => [...uleb(items.length), ...items.flat()];
+const section = (id, body) => [id, ...uleb(body.length), ...body];
 `

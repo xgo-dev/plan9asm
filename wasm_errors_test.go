@@ -96,11 +96,11 @@ func TestTranslateWasmDiagnostics(t *testing.T) {
 		{name: "compare empty", body: "I32Eq", want: "operand stack underflow"},
 		{name: "compare left cast", body: "F64Load x+0(FP)\nI32Const $1\nI32Eq", sig: frameF64, want: "unsupported wasm cast double to i32"},
 		{name: "compare right cast", body: "I32Const $1\nF64Load x+0(FP)\nI32Eq", sig: frameF64, want: "unsupported wasm cast double to i32"},
-		{name: "load arguments", body: "I64Load", want: "expects one operand"},
-		{name: "load operand", body: "I64Load R0", want: "expects an FP slot or immediate memory offset"},
+		{name: "load arguments", body: "I64Load", want: "requires a scalar memory operand"},
+		{name: "load operand", body: "I64Load R0", want: "expects an FP slot, register memory operand or immediate offset"},
 		{name: "float load operand", body: "F64Load R0", want: "expects an FP slot"},
-		{name: "wrap cast", body: "F64Load x+0(FP)\nI32WrapI64", sig: frameF64, want: "unsupported wasm cast double to i32"},
-		{name: "extend cast", body: "F64Load x+0(FP)\nI64ExtendI32U", sig: frameF64, want: "unsupported wasm cast double to i64"},
+		{name: "wrap cast", body: "F64Load x+0(FP)\nI32WrapI64", sig: frameF64, want: "expects one i64 stack value, got double"},
+		{name: "extend cast", body: "F64Load x+0(FP)\nI64ExtendI32U", sig: frameF64, want: "expects one i32 stack value, got double"},
 		{name: "eqz cast", body: "F64Load x+0(FP)\nI64Eqz", sig: frameF64, want: "unsupported wasm cast double to i64"},
 		{name: "select condition underflow", body: "Select", want: "operand stack underflow"},
 		{name: "select false underflow", body: "I32Const $1\nSelect", want: "operand stack underflow"},
@@ -111,13 +111,13 @@ func TestTranslateWasmDiagnostics(t *testing.T) {
 		{name: "float operation underflow", body: "F64Floor", want: "operand stack underflow"},
 		{name: "float operation type", body: "I64Const $1\nF64Floor", want: "expects f64"},
 		{name: "select mismatch", body: "I32Const $1\nI64Const $2\nI32Const $1\nSelect", want: "Select value type mismatch"},
-		{name: "integer store operand", body: "I64Store", want: "expects one operand"},
+		{name: "integer store without value", body: "I64Store", want: "operand stack underflow"},
 		{name: "integer store value", body: "I64Store $0", want: "operand stack underflow"},
 		{name: "integer store address", body: "I64Const $1\nI64Store $0", want: "operand stack underflow"},
-		{name: "integer store destination", body: "I64Const $1\nI64Const $2\nI64Store R0", want: "expects an FP slot or immediate memory offset"},
+		{name: "integer store destination", body: "I64Const $1\nI64Const $2\nI64Store R0", want: "expects an FP slot, register memory operand or immediate offset"},
 		{name: "unknown integer result", body: "I64Const $1\nI64Store ret+0(FP)", want: "unknown FP result"},
-		{name: "integer store cast", body: "Get SP\nF64Load x+0(FP)\nI32Store ret+8(FP)", sig: frameF64, want: "unsupported wasm cast double to i32"},
-		{name: "i32 store operand", body: "I32Store", want: "expects one operand"},
+		{name: "integer store cast", body: "Get SP\nF64Load x+0(FP)\nI32Store ret+8(FP)", sig: frameF64, want: "I32STORE expects a i32 stack value, got double"},
+		{name: "i32 store without value", body: "I32Store", want: "operand stack underflow"},
 		{name: "unknown i32 result", body: "I32Const $1\nI32Store ret+0(FP)", want: "unknown FP result"},
 		{name: "grow underflow", body: "GrowMemory", want: "operand stack underflow"},
 		{name: "grow cast", body: "F64Load x+0(FP)\nGrowMemory", sig: frameF64, want: "unsupported wasm cast double to i32"},
@@ -261,7 +261,7 @@ func TestTranslateWasmCallingAndRegisterSuccessPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(ir, "load i8") || !strings.Contains(ir, "sext i8") {
+		if !strings.Contains(ir, "load volatile i8") || !strings.Contains(ir, "sext i8") {
 			t.Fatalf("narrow memory load IR is incomplete:\n%s", ir)
 		}
 	})

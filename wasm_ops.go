@@ -14,16 +14,6 @@ type wasmIntegerOp struct {
 	op  string
 }
 
-type wasmMemoryLoadOp struct {
-	loadType   LLVMType
-	resultType LLVMType
-	signed     bool
-}
-
-type wasmMemoryStoreOp struct {
-	storeType LLVMType
-}
-
 type wasmFloatUnaryOp struct {
 	typ       LLVMType
 	intrinsic string
@@ -96,29 +86,4 @@ var wasmIntegerCompareOps = map[string]wasmIntegerOp{
 	"I64LEU": {I64, "ule"},
 	"I64GES": {I64, "sge"},
 	"I64GEU": {I64, "uge"},
-}
-
-var wasmMemoryLoadOps = map[string]wasmMemoryLoadOp{
-	"I32LOAD":    {I32, I32, false},
-	"I32LOAD8S":  {I8, I32, true},
-	"I32LOAD8U":  {I8, I32, false},
-	"I32LOAD16S": {I16, I32, true},
-	"I32LOAD16U": {I16, I32, false},
-	"I64LOAD":    {I64, I64, false},
-	"I64LOAD8S":  {I8, I64, true},
-	"I64LOAD8U":  {I8, I64, false},
-	"I64LOAD16S": {I16, I64, true},
-	"I64LOAD16U": {I16, I64, false},
-	"I64LOAD32S": {I32, I64, true},
-	"I64LOAD32U": {I32, I64, false},
-}
-
-var wasmMemoryStoreOps = map[string]wasmMemoryStoreOp{
-	"I32STORE":   {I32},
-	"I32STORE8":  {I8},
-	"I32STORE16": {I16},
-	"I64STORE":   {I64},
-	"I64STORE8":  {I8},
-	"I64STORE16": {I16},
-	"I64STORE32": {I32},
 }

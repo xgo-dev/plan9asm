@@ -54,6 +54,18 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		}
 		return nil
 	}
+	popTyped := func(op string, typ LLVMType) error {
+		if len(stack) == 0 {
+			return fmt.Errorf("%s: %s operand stack underflow", name, op)
+		}
+		value := pop(op)
+		for reg := range value.regs {
+			if !wasmRegisterCarries(reg, typ) {
+				return fmt.Errorf("%s: %s register %s does not carry %s", name, op, reg, typ)
+			}
+		}
+		return require(value, typ)
+	}
 	typedUnary := func(op string, in, out LLVMType) error {
 		v := pop(op)
 		if err := require(v, in); err != nil {
@@ -96,26 +108,45 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err != nil {
 			return FuncSig{}, err
 		}
+		memory, memoryKnown, err := parseWASMScalarMemory(ins, op)
+		if err != nil {
+			return FuncSig{}, err
+		}
 		if terminated && op != "ELSE" && op != "END" && op != "LABEL" {
 			continue
 		}
 		if op == "ELSE" || op == "END" {
 			terminated = false
 		}
-		if conversionKnown {
-			if len(stack) == 0 {
-				return FuncSig{}, fmt.Errorf("%s: %s requires one stack operand", name, op)
-			}
-			for reg := range stack[len(stack)-1].regs {
-				typ := wasmDefaultRegisterType(reg)
-				source := conversion.source
-				if typ != source && !(typ == I64 && source == I32 || typ == I32 && source == I64) {
-					return FuncSig{}, fmt.Errorf("%s: %s register %s does not carry %s", name, op, reg, source)
+		if memoryKnown {
+			if memory.spec.store {
+				if err := popTyped(op, memory.spec.stack); err != nil {
+					return FuncSig{}, err
 				}
 			}
-			if err := typedUnary(op, conversion.source, conversion.result); err != nil {
+			switch {
+			case memory.frame:
+				// A bound FP slot takes its address from the frame contract.
+			case memory.base == "":
+				if err := popTyped(op, I32); err != nil {
+					return FuncSig{}, err
+				}
+			default:
+				reg := memory.base
+				if reg != SP && !written[reg] {
+					inputs[reg] = true
+				}
+			}
+			if !memory.spec.store {
+				push(wasmInferValue{typ: memory.spec.stack})
+			}
+			continue
+		}
+		if conversionKnown {
+			if err := popTyped(op, conversion.source); err != nil {
 				return FuncSig{}, err
 			}
+			push(wasmInferValue{typ: conversion.result})
 			continue
 		}
 		if vectorKnown {
@@ -225,38 +256,6 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		case "I64EQZ":
 			if err := typedUnary(op, I64, I32); err != nil {
 				return FuncSig{}, err
-			}
-		case "I32LOAD", "I32LOAD8S", "I32LOAD8U", "I32LOAD16S", "I32LOAD16U":
-			if len(ins.Args) == 1 && ins.Args[0].Kind != OpFP {
-				if err := require(pop(op), I32); err != nil {
-					return FuncSig{}, err
-				}
-			}
-			push(wasmInferValue{typ: I32})
-		case "I64LOAD", "I64LOAD8S", "I64LOAD8U", "I64LOAD16S", "I64LOAD16U", "I64LOAD32S", "I64LOAD32U":
-			if len(ins.Args) == 1 && ins.Args[0].Kind != OpFP {
-				if err := require(pop(op), I32); err != nil {
-					return FuncSig{}, err
-				}
-			}
-			push(wasmInferValue{typ: I64})
-		case "I32STORE", "I32STORE8", "I32STORE16":
-			if err := require(pop(op), I32); err != nil {
-				return FuncSig{}, err
-			}
-			if len(ins.Args) == 1 && ins.Args[0].Kind != OpFP {
-				if err := require(pop(op), I32); err != nil {
-					return FuncSig{}, err
-				}
-			}
-		case "I64STORE", "I64STORE8", "I64STORE16", "I64STORE32":
-			if err := require(pop(op), I64); err != nil {
-				return FuncSig{}, err
-			}
-			if len(ins.Args) == 1 && ins.Args[0].Kind != OpFP {
-				if err := require(pop(op), I32); err != nil {
-					return FuncSig{}, err
-				}
 			}
 		case "SELECT":
 			condition := pop(op)
@@ -393,6 +392,11 @@ func wasmBlockResultType(code int64) LLVMType {
 	default:
 		return ""
 	}
+}
+
+func wasmRegisterCarries(reg Reg, want LLVMType) bool {
+	typ := wasmDefaultRegisterType(reg)
+	return typ == want || typ == I64 && want == I32 || typ == I32 && want == I64
 }
 
 func wasmDefaultRegisterType(reg Reg) LLVMType {

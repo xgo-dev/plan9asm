@@ -123,10 +123,14 @@ func (spec wasmConversionOp) emitTrapCheck(b *strings.Builder, value wasmValue, 
 		}
 	}
 	above, below, valid := newTmp(), newTmp(), newTmp()
-	trap, next := newLabel("conversion_trap"), newLabel("conversion_valid")
 	fmt.Fprintf(b, "  %%%s = fcmp %s %s %s, 0x%016X\n", above, predicate, value.typ, value.val, math.Float64bits(lower))
 	fmt.Fprintf(b, "  %%%s = fcmp olt %s %s, 0x%016X\n", below, value.typ, value.val, math.Float64bits(upper))
 	fmt.Fprintf(b, "  %%%s = and i1 %%%s, %%%s\n", valid, above, below)
+	emitWASMTrapUnless(b, valid, newLabel)
+}
+
+func emitWASMTrapUnless(b *strings.Builder, valid string, newLabel func(string) string) {
+	trap, next := newLabel("wasm_trap"), newLabel("wasm_valid")
 	fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n%s:\n", valid, next, trap, trap)
 	fmt.Fprintf(b, "  call void @llvm.trap()\n  unreachable\n%s:\n", next)
 }
