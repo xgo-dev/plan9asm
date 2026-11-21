@@ -418,6 +418,72 @@ func TestInitializedContextReprobeVectorRegistersAndImplicitMemory(t *testing.T)
 	}
 }
 
+func TestInitializedContextReprobeVectorMemoryUsesDeclaredPointer(t *testing.T) {
+	const arch = "amd64"
+	instructions := []string{
+		"CMPPS (BX), X2, $7",
+		"VPMINUD (AX), X14, K7, X7",
+		"VCVTPS2PH $126, X7, K5, -7(CX)(DX*8)",
+		"VSHUFPS $13, 15(R8)(R14*4), X0, K6, X1",
+		"VPMINUD 99(R15)(R15*4), Z9, K5, Z0",
+		"VSHUFPS $67, (SP), Z9, K7, Z9",
+		"MASKMOVOU X0,X2",
+		"ADDSUBPD X2,X3",
+	}
+	forms := make(map[string]*formStat)
+	for i, line := range instructions {
+		ins := compactProbeInstructions(t, line)[0]
+		err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, arch, ins)
+		if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+			t.Fatalf("%s: expected missing inputs in the original probe, got %v", line, err)
+		}
+		form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, arch, ins).Form
+		forms[form] = &formStat{}
+		captureContextSource(forms, plan9asm.ArchAMD64, arch, ins,
+			initializedContextSource{File: "memory.s", Function: "case", Line: i + 1}, err)
+	}
+	evidence, err := runInitializedContextReprobe(forms, "vector-memory", arch, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Status != "pass" || evidence.EligibleCases != 4 || len(evidence.UnregisteredCases) != 4 {
+		t.Fatalf("unexpected fixed-span selection: status=%s eligible=%d unregistered=%d",
+			evidence.Status, evidence.EligibleCases, len(evidence.UnregisteredCases))
+	}
+	for i, row := range evidence.Cases {
+		original := compactProbeInstructions(t, instructions[i])[0]
+		if !row.MemoryPointerArgument || !reflect.DeepEqual(row.OriginalInstruction, original) ||
+			row.IRTextGeneration.Status != "pass" || row.LLVMObjectCompilation.Status != "pass" ||
+			row.RuntimeExecution.Status != "not_run" {
+			t.Fatalf("wrong memory evidence for %s: %+v", instructions[i], row)
+		}
+	}
+}
+
+func TestInitializedContextReprobeVectorMemory386(t *testing.T) {
+	const arch = "386"
+	ins := compactProbeInstructions(t, "CMPPS 16(BP)(CX*2), X2, $7")[0]
+	err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, arch, ins)
+	if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+		t.Fatalf("expected the uninitialized address to require context: %v", err)
+	}
+	form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, arch, ins).Form
+	forms := map[string]*formStat{form: {}}
+	captureContextSource(forms, plan9asm.ArchAMD64, arch, ins,
+		initializedContextSource{File: "memory_386.s", Function: "case", Line: 1}, err)
+	evidence, err := runInitializedContextReprobe(forms, "vector-memory", arch, "")
+	if err != nil || evidence.Status != "pass" || evidence.EligibleCases != 1 {
+		t.Fatalf("initialized 386 vector memory did not compile: %v %+v", err, evidence)
+	}
+	row := evidence.Cases[0]
+	fn, sig := row.function("initialized.0", arch)
+	if fn.ArgSize != 4 || !reflect.DeepEqual(sig.Args, []plan9asm.LLVMType{plan9asm.Ptr}) ||
+		row.Initialization[len(row.Initialization)-1].Op != "MOVL" ||
+		row.LLVMObjectCompilation.Status != "pass" || row.RuntimeExecution.Status != "not_run" {
+		t.Fatalf("wrong 386 memory declaration or object evidence: %+v %+v", sig, row)
+	}
+}
+
 func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
 	const arch = "386"
 	_, forms, parseErrors, _, err := scanGoAssemblerTestdataWithContexts(runtime.GOROOT(), plan9asm.ArchAMD64, arch, true)

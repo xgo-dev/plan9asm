@@ -198,12 +198,12 @@ func main() {
 		corpus   = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9")
 		goroot   = flag.String("goroot", "", "Go root containing official assembler testdata (default: active Go toolchain)")
 		input    = flag.String("input", "", "input file for corpora that require one")
-		reprobe  = flag.String("initialized-context-reprobe", "", "synthetic input profile for objects: mask-logical|scalar-register|vector-register")
+		reprobe  = flag.String("initialized-context-reprobe", "", "synthetic input profile for objects: mask-logical|scalar-register|vector-register|vector-memory")
 		llc      = flag.String("llc", "", "LLVM22 llc executable for an explicitly enabled initialized-context reprobe")
 	)
 	flag.Parse()
 	if *reprobe != "" && (initializedContextProfiles[*reprobe] == nil || (*goarch != "386" && *goarch != "amd64")) {
-		fatalf("initialized-context-reprobe requires mask-logical, scalar-register or vector-register and target 386/amd64")
+		fatalf("initialized-context-reprobe requires a registered synthetic input profile and target 386/amd64")
 	}
 	if *reprobe != "" && *corpus != "std" && *corpus != "go-asm" {
 		fatalf("initialized-context-reprobe requires a std or go-asm corpus with exact x86 sources")

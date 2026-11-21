@@ -32,6 +32,7 @@ type initializedContextCase struct {
 	OriginalStatus        string                   `json:"original_status"`
 	Source                initializedContextSource `json:"source"`
 	Initialization        []plan9asm.Instr         `json:"initialization"`
+	MemoryPointerArgument bool                     `json:"memory_pointer_argument,omitempty"`
 	IRTextGeneration      scanEvidenceStage        `json:"ir_text_generation"`
 	LLVMObjectCompilation scanEvidenceStage        `json:"llvm_object_compilation"`
 	RuntimeExecution      scanEvidenceStage        `json:"runtime_execution"`
@@ -61,6 +62,7 @@ type initializedContextReport struct {
 var initializedContextProfiles = map[string]func(string, plan9asm.Instr) ([]plan9asm.Instr, bool, error){
 	"mask-logical":    plan9asm.InitializedMaskLogicalProbeSequence,
 	"scalar-register": plan9asm.InitializedScalarRegisterProbeSequence,
+	"vector-memory":   plan9asm.InitializedVectorMemoryProbeSequence,
 	"vector-register": plan9asm.InitializedVectorRegisterProbeSequence,
 }
 
@@ -135,6 +137,7 @@ func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, l
 			return result, err
 		}
 		source.Initialization = sequence[:len(sequence)-1]
+		source.MemoryPointerArgument = profile == "vector-memory"
 		result.Cases = append(result.Cases, source)
 	}
 	result.EligibleCases = len(result.Cases)
@@ -155,7 +158,7 @@ func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, l
 	failedProbes := 0
 	for i := range result.Cases {
 		test := &result.Cases[i]
-		if err := plan9asm.ProbeInstructionSequence(plan9asm.ArchAMD64, goarch, test.sequence()); err != nil {
+		if err := test.probe(goarch); err != nil {
 			where := test.Source
 			if firstProbeErr == nil {
 				firstProbeErr = fmt.Errorf("%s:%d (%s instruction %d): %w", where.File, where.Line, where.Function, where.InstructionIndex, err)
@@ -205,6 +208,40 @@ func (test initializedContextCase) sequence() []plan9asm.Instr {
 	return append(sequence, test.OriginalInstruction)
 }
 
+func (test initializedContextCase) probe(goarch string) error {
+	if !test.MemoryPointerArgument {
+		return plan9asm.ProbeInstructionSequence(plan9asm.ArchAMD64, goarch, test.sequence())
+	}
+	fn, sig := test.function("initialized.memory", goarch)
+	file := &plan9asm.File{Arch: plan9asm.ArchAMD64, Funcs: []plan9asm.Func{fn}}
+	triple, _, _ := initializedContextTarget(goarch)
+	_, err := plan9asm.Translate(file, plan9asm.Options{Goarch: goarch, TargetTriple: triple,
+		Sigs: map[string]plan9asm.FuncSig{sig.Name: sig}})
+	return err
+}
+
+func (test initializedContextCase) function(name, goarch string) (plan9asm.Func, plan9asm.FuncSig) {
+	sequence := append(test.sequence(), plan9asm.Instr{Op: "RET", Raw: "RET"})
+	fn := plan9asm.Func{Sym: name, Instrs: sequence}
+	sig := plan9asm.FuncSig{Name: name, Ret: plan9asm.Void}
+	if test.MemoryPointerArgument {
+		fn.ArgSize = 8
+		if goarch == "386" {
+			fn.ArgSize = 4
+		}
+		sig.Args = []plan9asm.LLVMType{plan9asm.Ptr}
+		sig.Frame.Params = []plan9asm.FrameSlot{{Name: "memory", Type: plan9asm.Ptr, Field: -1}}
+	}
+	return fn, sig
+}
+
+func initializedContextTarget(goarch string) (string, elf.Machine, elf.Class) {
+	if goarch == "386" {
+		return "i386-unknown-linux-gnu", elf.EM_386, elf.ELFCLASS32
+	}
+	return "x86_64-unknown-linux-gnu", elf.EM_X86_64, elf.ELFCLASS64
+}
+
 func initializedContextLLC(name string) (string, error) {
 	if name == "" {
 		var err error
@@ -240,17 +277,14 @@ func compileInitializedContextBatch(cases []initializedContextCase, goarch, llc 
 		}
 		batch.CaseIndexes = append(batch.CaseIndexes, start+index)
 		name := fmt.Sprintf("initialized.%d", start+index)
-		sequence := append(test.sequence(), plan9asm.Instr{Op: "RET", Raw: "RET"})
-		file.Funcs = append(file.Funcs, plan9asm.Func{Sym: name, Instrs: sequence})
-		sigs[name] = plan9asm.FuncSig{Name: name, Ret: plan9asm.Void}
+		fn, sig := test.function(name, goarch)
+		file.Funcs = append(file.Funcs, fn)
+		sigs[name] = sig
 	}
 	if len(batch.CaseIndexes) == 0 {
 		return batch, nil
 	}
-	triple, machine, class := "x86_64-unknown-linux-gnu", elf.EM_X86_64, elf.ELFCLASS64
-	if goarch == "386" {
-		triple, machine, class = "i386-unknown-linux-gnu", elf.EM_386, elf.ELFCLASS32
-	}
+	triple, machine, class := initializedContextTarget(goarch)
 	ir, err := plan9asm.Translate(file, plan9asm.Options{Goarch: goarch, TargetTriple: triple, Sigs: sigs})
 	if err != nil {
 		return batch, fmt.Errorf("initialized-context LLVM IR: %w", err)

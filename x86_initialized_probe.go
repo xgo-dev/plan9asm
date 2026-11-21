@@ -50,11 +50,70 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 		x86Mode32VectorRegisterContext(ins, goarch) != nil {
 		return nil, false, nil
 	}
-	inputs, valid := initializedVectorRegisterOperands(goarch, ins)
+	inputs, memoryBytes, valid := initializedVectorOperands(goarch, ins)
+	if !valid || memoryBytes != 0 {
+		return nil, false, nil
+	}
+	return initializedVectorProbeSequence(goarch, ins, inputs)
+}
+
+// InitializedVectorMemoryProbeSequence prepares a single fixed-span vector
+// memory operand using a declared pointer parameter named memory at 0(FP).
+// The sequence keeps the exact original addressing expression. Its caller
+// must supply the extent and alignment if the resulting function is executed.
+func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
+	if goarch != "386" && goarch != "amd64" || !x86ResultNamedPredicateInstruction(ins) ||
+		x86Mode32VectorRegisterContext(ins, goarch) != nil {
+		return nil, false, nil
+	}
+	var memory MemRef
+	for _, operand := range ins.Args {
+		if operand.Kind != OpMem {
+			continue
+		}
+		if memory.Base != "" || operand.Mem.Base == "" || operand.Mem.Sym != "" ||
+			operand.Mem.OffRaw != "" || operand.Mem.Segment != "" || operand.Mem.IndexExt != "" ||
+			operand.Mem.Index == "" && operand.Mem.Scale != 0 ||
+			!x86MemoryRegisterEncodingValid(operand.Mem, goarch) {
+			return nil, false, nil
+		}
+		memory = operand.Mem
+	}
+	base, valid := initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: memory.Base})
 	if !valid {
 		return nil, false, nil
 	}
+	inputs, memoryBytes, valid := initializedVectorOperands(goarch, ins)
+	if !valid || memoryBytes < 1 || memoryBytes > 64 {
+		return nil, false, nil
+	}
+	registers := make([]Operand, 0, len(inputs)+1)
+	for _, input := range inputs {
+		if input.Kind != OpMem {
+			registers = append(registers, input)
+		}
+	}
+	if memory.Index != "" {
+		registers = append(registers, Operand{Kind: OpReg, Reg: memory.Index})
+	}
+	for _, input := range registers {
+		if root, valid := initializedX86GPRegister(goarch, input); valid && root == base {
+			return nil, false, nil // The base and an independent numeric input cannot share a register.
+		}
+	}
+	sequence, known, err := initializedVectorProbeSequence(goarch, ins, registers)
+	if !known || err != nil {
+		return nil, known, err
+	}
+	move := Op("MOVQ")
+	if goarch == "386" {
+		move = "MOVL"
+	}
+	bind := x86ProbeInstruction(move, Operand{Kind: OpFP, FPName: "memory"}, Operand{Kind: OpReg, Reg: base})
+	return append(sequence[:len(sequence)-1], bind, ins), true, nil
+}
 
+func initializedVectorProbeSequence(goarch string, ins Instr, inputs []Operand) ([]Instr, bool, error) {
 	var widths [32]int
 	var masks [8]bool
 	var gp []Reg
@@ -135,35 +194,40 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 	return append(sequence, ins), true, nil
 }
 
-func initializedVectorRegisterOperands(goarch string, ins Instr) ([]Operand, bool) {
+func initializedVectorOperands(goarch string, ins Instr) ([]Operand, int64, bool) {
 	// The typed floating compare parser has already validated the literal.
 	// In the legacy spelling a bare predicate is an OpSym in the parsed
 	// source. Take only the form's actual inputs and retain that spelling.
 	if form, known, err := x86FloatCompareProperties(ins, goarch); known {
-		if err != nil || form.memory >= 0 {
-			return nil, false
+		if err != nil {
+			return nil, 0, false
 		}
 		inputs := []Operand{ins.Args[form.first], ins.Args[form.second]}
 		if form.mask >= 0 {
 			inputs = append(inputs, ins.Args[form.mask])
 		}
-		return inputs, true
+		return inputs, int64(form.memoryBytes), true
 	}
 
 	effect, known, err := x86TypedInstructionByteEffect(ins.Op, ins, goarch)
 	if !known || err != nil || effect.dynamicMemory || effect.flagsRead != 0 {
-		return nil, false
+		return nil, 0, false
 	}
 	inputs := append([]Operand(nil), ins.Args...)
+	var memoryBytes int64
 	for _, input := range effect.operands {
 		if input.operand.Kind == OpMem || input.operand.Kind == OpSym {
-			return nil, false
+			if input.index < 0 || input.index >= len(ins.Args) || input.width <= 0 ||
+				memoryBytes != 0 && memoryBytes != input.width {
+				return nil, 0, false
+			}
+			memoryBytes = input.width
 		}
 		if input.read {
 			inputs = append(inputs, input.operand)
 		}
 	}
-	return inputs, true
+	return inputs, memoryBytes, true
 }
 
 // InitializedScalarRegisterProbeSequence constructs an object-only probe for
