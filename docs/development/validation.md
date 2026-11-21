@@ -331,9 +331,10 @@ probe retains its exact source and diagnostics while the other cases proceed to
 object checks. Failed probes, missing/wrong LLVM and objects missing any
 expected executable function fail the command. The vector profile covers typed
 register forms without memory or input flags, including legacy floating compares
-with bare predicates. Use
-`scalar-register` for register SETcc and implicit multiply/divide, and
-`mask-logical` for the K-register logical family. All three accept
+with bare predicates. The `scalar-register` profile covers typed GP operands,
+including explicit and implicit multiply, divide, shifts, comparisons, and
+instructions with FLAGS inputs such as ADC and SETcc. Use `mask-logical` for
+the K-register logical family. All three accept
 `-goarch=386` and cover occurrences in the selected SDK corpus. A synthetic
 input can still take an architectural fault. The report records object evidence
 without certifying the original function's inputs or runtime behavior.

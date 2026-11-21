@@ -167,9 +167,9 @@ func initializedVectorRegisterOperands(goarch string, ins Instr) ([]Operand, boo
 }
 
 // InitializedScalarRegisterProbeSequence constructs an object-only probe for
-// SETcc and implicit-accumulator multiply and divide with register operands.
-// It supplies numerical inputs without modifying the source instruction or
-// granting the original function any register, FLAGS, or memory facts.
+// register-only GP forms. Implicit accumulator multiplication and division
+// have dedicated inputs. Other families use their typed operand and FLAGS
+// dependencies. The original instruction is retained unchanged.
 func InitializedScalarRegisterProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
 	if goarch != "386" && goarch != "amd64" || !x86ResultNamedPredicateInstruction(ins) {
 		return nil, false, nil
@@ -200,8 +200,11 @@ func InitializedScalarRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 		return append(sequence, ins), true, nil
 	}
 	form, known, err := x86ImplicitDivideProperties(ins.Op, ins, goarch)
+	if !known {
+		return initializedX86GPEffectProbe(goarch, ins, seed)
+	}
 	root, valid := initializedX86GPRegister(goarch, form.source)
-	if !known || err != nil || !valid {
+	if err != nil || !valid {
 		return nil, false, nil
 	}
 
@@ -222,6 +225,71 @@ func InitializedScalarRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 		sequence = append(sequence, seed(root, 0x101))
 	}
 	return append(sequence, ins), true, nil
+}
+
+func initializedX86GPEffectProbe(goarch string, ins Instr, seed func(Reg, int64) Instr) ([]Instr, bool, error) {
+	// Source spelling must still be register-only, including any operands
+	// that the byte dependencies omit (for example, zeroing or count zero).
+	for _, operand := range ins.Args {
+		if operand.Kind == OpImm && operand.ImmRaw == "" && !operand.ImmIsFloat {
+			continue
+		}
+		if _, valid := initializedX86GPRegister(goarch, operand); !valid {
+			return nil, false, nil
+		}
+	}
+	effect, valid := initializedX86GPInputs(goarch, ins)
+	if !valid || effect.dynamicMemory {
+		return nil, false, nil
+	}
+	var sequence []Instr
+	if effect.flagsRead != 0 {
+		ax := Operand{Kind: OpReg, Reg: AX}
+		sequence = append(sequence, x86ProbeInstruction("CMPL", ax, ax))
+	}
+	seen := make(map[Reg]bool)
+	for _, input := range effect.operands {
+		if input.operand.Kind == OpImm {
+			continue
+		}
+		root, valid := initializedX86GPRegister(goarch, input.operand)
+		if !valid {
+			return nil, false, nil
+		}
+		if input.read && !seen[root] {
+			// The low five/six bits give a count of two, including for a
+			// variable W double shift. Every byte is initialized.
+			sequence = append(sequence, seed(root, 0x01020202))
+			seen[root] = true
+		}
+	}
+	if len(sequence) == 0 {
+		return nil, false, nil
+	}
+	return append(sequence, ins), true, nil
+}
+
+func initializedX86GPInputs(goarch string, ins Instr) (x86TypedByteEffect, bool) {
+	if form, known, err := x86ScalarShiftProperties(ins.Op, ins, goarch); known {
+		// The fixture supplies the variable count explicitly. Use the
+		// input effect because the output effect depends on that count.
+		if err != nil || form.hasMemory() {
+			return x86TypedByteEffect{}, false
+		}
+		return form.inputEffect(), true
+	}
+	if form, known, err := x86ScalarCompareProperties(ins.Op, ins, goarch); known {
+		if err != nil || form.memory != -1 {
+			return x86TypedByteEffect{}, false
+		}
+		width := int64(form.bits / 8)
+		return x86TypedByteEffect{operands: []x86TypedByteOperand{
+			{index: 0, operand: form.args[0], width: width, read: true},
+			{index: 1, operand: form.args[1], width: width, read: true},
+		}}, true
+	}
+	effect, known, err := x86TypedGPByteEffect(ins.Op, ins, goarch)
+	return effect, known && err == nil
 }
 
 func initializedX86GPRegister(goarch string, operand Operand) (Reg, bool) {

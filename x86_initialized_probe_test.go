@@ -69,6 +69,19 @@ func TestInitializedX86RegisterProbeFamiliesAndBoundaries(t *testing.T) {
 			if arch == "386" {
 				scalar = append(scalar, "IDIVL BP")
 			}
+			for _, width := range widths {
+				for _, stem := range []string{"ADC", "ADD", "CMP", "SBB", "SUB"} {
+					scalar = append(scalar, stem+width+" BX,AX")
+				}
+				for _, stem := range []string{"RCL", "RCR", "ROL", "ROR", "SAR", "SAL", "SHL", "SHR"} {
+					scalar = append(scalar, stem+width+" $1,AX", stem+width+" CX,AX")
+				}
+				if width != "B" {
+					scalar = append(scalar, "IMUL"+width+" AX,BX", "IMUL"+width+" $4,CX",
+						"SHL"+width+" $2,AX,BX", "SHR"+width+" CX,AX,BX")
+				}
+			}
+			scalar = append(scalar, "CMOVLLE DI,SI", "ANDNL DX,CX,AX", "ADCXL AX,BX")
 			checkInitializedRegisterFamily(t, arch, scalar, InitializedScalarRegisterProbeSequence)
 
 			var vector []string
@@ -86,7 +99,10 @@ func TestInitializedX86RegisterProbeFamiliesAndBoundaries(t *testing.T) {
 				{InitializedScalarRegisterProbeSequence, "SETCC symbol+4(SB)"},
 				{InitializedScalarRegisterProbeSequence, "DIVB (BX)"},
 				{InitializedScalarRegisterProbeSequence, "IDIVL SP"},
-				{InitializedScalarRegisterProbeSequence, "IMULL AX,BX"},
+				{InitializedScalarRegisterProbeSequence, "IMULL (AX),BX"},
+				{InitializedScalarRegisterProbeSequence, "MOVL AX,CR0"},
+				{InitializedScalarRegisterProbeSequence, "RCRL X0,AX"},
+				{InitializedScalarRegisterProbeSequence, "LOOP next"},
 				{InitializedVectorRegisterProbeSequence, "CMPPD symbol+4(SB),X1,4"},
 				{InitializedVectorRegisterProbeSequence, "CMPPD X0,X1,symbol"},
 				{InitializedVectorRegisterProbeSequence, "CMPPD X0,X1,128"},
