@@ -22,6 +22,7 @@ const (
 	ReplaceLane
 	IntegerWiden
 	IntegerNarrow
+	Convert
 )
 
 type ValueType string
@@ -65,6 +66,7 @@ type Form struct {
 	Shape        Shape
 	CanonicalNaN bool
 	Widening     WideningLanes
+	Conversion   *LaneConversion
 }
 
 func (f Form) Arity() int { return len(f.stack.inputs) }
@@ -85,11 +87,22 @@ func (f Form) HasLaneIndex() bool {
 }
 
 func (f Form) HasIntrinsic() bool {
-	return f.Emission == Intrinsic || f.Emission == IntegerAbs
+	return f.Emission == Intrinsic || f.Emission == IntegerAbs ||
+		f.Conversion != nil && f.Conversion.Intrinsic != ""
 }
 
 func (f Form) IntrinsicName() string {
+	if f.Conversion != nil {
+		return f.Conversion.Intrinsic
+	}
 	return "llvm." + f.Operator + "." + f.Shape.overload
+}
+
+func (f Form) IntrinsicSignature() (result, input string) {
+	if f.Conversion != nil {
+		return f.Conversion.ResultType, f.Conversion.InputType
+	}
+	return f.Shape.LaneType, f.Shape.LaneType
 }
 
 var forms = buildForms()
@@ -176,17 +189,7 @@ func buildForms() map[string]Form {
 		bits   int
 	}{{"I8X16", 8}, {"I16X8", 16}, {"I32X4", 32}, {"I64X2", 64}} {
 		count := 128 / lane.bits
-		element := ValueType(fmt.Sprintf("i%d", lane.bits))
-		laneType := fmt.Sprintf("<%d x %s>", count, element)
-		shape := Shape{
-			LaneType:      laneType,
-			Element:       element,
-			LaneBits:      lane.bits,
-			PredicateType: fmt.Sprintf("<%d x i1>", count),
-			MaskType:      laneType,
-			Comparator:    "icmp",
-			overload:      fmt.Sprintf("v%di%d", count, lane.bits),
-		}
+		shape := integerShape(lane.bits)
 		scalar := I32
 		if lane.bits == 64 {
 			scalar = I64
@@ -274,16 +277,7 @@ func buildForms() map[string]Form {
 		element ValueType
 		bits    int
 	}{{"F32X4", F32, 32}, {"F64X2", F64, 64}} {
-		count := 128 / lane.bits
-		shape := Shape{
-			LaneType:      fmt.Sprintf("<%d x %s>", count, lane.element),
-			Element:       lane.element,
-			LaneBits:      lane.bits,
-			PredicateType: fmt.Sprintf("<%d x i1>", count),
-			MaskType:      fmt.Sprintf("<%d x i%d>", count, lane.bits),
-			Comparator:    "fcmp",
-			overload:      fmt.Sprintf("v%df%d", count, lane.bits),
-		}
+		shape := floatShape(lane.bits, lane.element)
 		addLaneOperations(lane.prefix, shape, lane.element)
 		for _, op := range floatOperations {
 			add(lane.prefix, shape, op)
@@ -294,5 +288,33 @@ func buildForms() map[string]Form {
 			}
 		}
 	}
+	addConversions(result, unary)
 	return result
+}
+
+func integerShape(bits int) Shape {
+	count := 128 / bits
+	element := ValueType(fmt.Sprintf("i%d", bits))
+	typ := vectorType(count, element)
+	return Shape{
+		LaneType: typ, Element: element, LaneBits: bits, MaskType: typ,
+		PredicateType: fmt.Sprintf("<%d x i1>", count),
+		Comparator:    "icmp",
+		overload:      fmt.Sprintf("v%di%d", count, bits),
+	}
+}
+
+func floatShape(bits int, element ValueType) Shape {
+	count := 128 / bits
+	return Shape{
+		LaneType: vectorType(count, element), Element: element, LaneBits: bits,
+		PredicateType: fmt.Sprintf("<%d x i1>", count),
+		MaskType:      fmt.Sprintf("<%d x i%d>", count, bits),
+		Comparator:    "fcmp",
+		overload:      fmt.Sprintf("v%df%d", count, bits),
+	}
+}
+
+func vectorType(lanes int, element ValueType) string {
+	return fmt.Sprintf("<%d x %s>", lanes, element)
 }

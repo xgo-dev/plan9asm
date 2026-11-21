@@ -53,6 +53,9 @@ func wasmV128CoreNames() []string {
 			}
 		}
 	}
+	for _, form := range wasmV128ConversionTestForms {
+		names = append(names, form.name)
+	}
 	return names
 }
 
@@ -61,6 +64,9 @@ func wasmV128CoreConstant(value [2]uint64) string {
 }
 
 func wasmV128CoreInputs(name string) int {
+	if _, ok := wasmV128ConversionTestLookup(name); ok {
+		return 1
+	}
 	if _, op := wasmV128FloatParts(name); op != "" {
 		switch op {
 		case "Abs", "Neg", "Sqrt", "Ceil", "Floor", "Trunc", "Nearest":
@@ -110,12 +116,13 @@ func wasmV128CoreObjectFixture() (string, map[string]FuncSig) {
 		body := wasmV128CoreBody(name, [2]uint64{1, 2}, [2]uint64{3, 4}, [2]uint64{5, 6})
 		floatBits, _ := wasmV128FloatParts(name)
 		_, integerOp := wasmV128IntegerParts(name)
+		_, conversion := wasmV128ConversionTestLookup(name)
 		switch {
 		case wasmV128IntegerShift(integerOp):
 			body = "Get V0\nGet R0\nI32WrapI64\n" + name + "\n"
 			sig.Args = []LLVMType{I64, "<4 x i32>"}
 			sig.ArgRegs = []Reg{"R0", "V0"}
-		case floatBits != 0 || wasmV128IntegerOrdering(integerOp) ||
+		case floatBits != 0 || conversion || wasmV128IntegerOrdering(integerOp) ||
 			wasmV128IntegerUnary(integerOp) || strings.HasPrefix(integerOp, "Ext") ||
 			strings.HasPrefix(integerOp, "Narrow"):
 			body = ""

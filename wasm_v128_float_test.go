@@ -14,6 +14,9 @@ func TestWASMV128FloatAliasedInputsPreserveNaNSemantics(t *testing.T) {
 	sigs := make(map[string]FuncSig)
 	var rows []wasmFloatBinaryRuntimeRow
 	for _, opcode := range wasmV128CoreNames() {
+		if _, ok := wasmV128ConversionTestLookup(opcode); ok {
+			continue
+		}
 		bits, operation := wasmV128FloatParts(opcode)
 		if bits == 0 {
 			continue

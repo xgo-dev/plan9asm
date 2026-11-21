@@ -130,6 +130,8 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		return wasmValue{typ: wasmV128CoreType, val: cast(wide, resultType, wasmV128CoreType)}
 	case wasmsimd.IntegerNarrow:
 		emitWASMV128IntegerNarrow(b, newTmp, spec, result, lhs, rhs)
+	case wasmsimd.Convert:
+		result = emitWASMV128Conversion(b, newTmp, spec, result, lhs)
 	case wasmsimd.Shift:
 		amount := emitWASMV128ShiftCount(b, newTmp, spec.Shape, inputs[1].val)
 		fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", result, spec.Operator, typ, lhs, amount)
@@ -179,6 +181,31 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		resultType = integerType
 	}
 	return wasmValue{typ: wasmV128CoreType, val: cast(value, resultType, wasmV128CoreType)}
+}
+
+func emitWASMV128Conversion(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, result, input string) string {
+	conversion := spec.Conversion
+	source := spec.InputLaneType()
+	if source != conversion.InputType {
+		picked := newTmp()
+		fmt.Fprintf(b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
+			picked, source, input, source, conversion.Lanes, wasmV128ShuffleIndices(conversion.Lanes, 0, 1))
+		input = "%" + picked
+	}
+	if conversion.Intrinsic != "" {
+		fmt.Fprintf(b, "  %%%s = call %s @%s(%s %s)\n",
+			result, conversion.ResultType, conversion.Intrinsic, conversion.InputType, input)
+	} else {
+		fmt.Fprintf(b, "  %%%s = %s %s %s to %s\n", result, spec.Operator, conversion.InputType, input, conversion.ResultType)
+	}
+	if conversion.ResultType != spec.Shape.LaneType {
+		padded := newTmp()
+		count := 128 / spec.Shape.LaneBits
+		fmt.Fprintf(b, "  %%%s = shufflevector %s %%%s, %s zeroinitializer, <%d x i32> <%s>\n",
+			padded, conversion.ResultType, result, conversion.ResultType, count, wasmV128ShuffleIndices(count, 0, 1))
+		return padded
+	}
+	return result
 }
 
 func wasmV128ShuffleIndices(count, first, step int) string {

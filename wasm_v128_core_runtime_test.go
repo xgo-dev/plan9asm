@@ -15,7 +15,7 @@ type wasmV128CoreObservation struct {
 	Want uint32
 }
 
-const wasmV128CoreObservations = 2800
+const wasmV128CoreObservations = 3100
 
 var wasmV128CorePass = fmt.Sprintf("V128 core PASS %d", wasmV128CoreObservations)
 
@@ -149,6 +149,16 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 		rows = append(rows, wasmV128CoreObservation{Name: function, Want: want})
 	}
 	for _, name := range wasmV128CoreNames() {
+		if form, ok := wasmV128ConversionTestLookup(name); ok {
+			for _, input := range form.inputs() {
+				expected, mask := form.reference(input)
+				body := wasmV128CoreConstant(input) + name + "\n" +
+					wasmV128CoreConstant(mask) + "V128And\n" +
+					wasmV128CoreConstant(expected) + "V128Xor\nV128AnyTrue\n"
+				add(body, 0)
+			}
+			continue
+		}
 		inputs := patterns
 		if bits, _ := wasmV128FloatParts(name); bits != 0 {
 			inputs = wasmV128FloatPatterns(bits)

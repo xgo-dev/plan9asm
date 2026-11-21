@@ -120,12 +120,12 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	sort.Strings(vectorIntrinsics)
 	for _, intrinsic := range vectorIntrinsics {
 		spec := wantVectorIntrinsic[intrinsic]
-		typ := spec.Shape.LaneType
-		fmt.Fprintf(b, "declare %s @%s(%s", typ, intrinsic, typ)
+		result, input := spec.IntrinsicSignature()
+		fmt.Fprintf(b, "declare %s @%s(%s", result, intrinsic, input)
 		if spec.Emission == wasmsimd.IntegerAbs {
 			b.WriteString(", i1 immarg")
 		} else {
-			b.WriteString(strings.Repeat(", "+typ, spec.Arity()-1))
+			b.WriteString(strings.Repeat(", "+input, spec.Arity()-1))
 		}
 		b.WriteString(")\n")
 	}
