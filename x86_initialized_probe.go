@@ -41,7 +41,7 @@ func InitializedMaskLogicalProbeSequence(goarch string, ins Instr) ([]Instr, boo
 }
 
 // InitializedVectorRegisterProbeSequence builds an object-only probe for
-// named x86 forms with a typed effect and register or literal operands. It
+// named x86 SIMD forms with a typed effect and register or literal operands. It
 // defines the explicit registers (including masked merge destinations) and
 // any implicit register reads listed in the effect. The original instruction
 // is retained unchanged.
@@ -57,7 +57,7 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 	return initializedVectorProbeSequence(goarch, ins, inputs)
 }
 
-// InitializedVectorMemoryProbeSequence prepares a single fixed-span vector
+// InitializedVectorMemoryProbeSequence prepares a single fixed-span SIMD
 // memory operand using a declared pointer parameter named memory at 0(FP).
 // The sequence keeps the exact original addressing expression. Its caller
 // must supply the extent and alignment if the resulting function is executed.
@@ -118,7 +118,7 @@ func initializedVectorProbeSequence(goarch string, ins Instr, inputs []Operand) 
 	var masks [8]bool
 	var gp []Reg
 	seenGP := make(map[Reg]bool)
-	hasVector := false
+	hasSIMD := false
 	add := func(operand Operand) bool {
 		if operand.Kind == OpImm {
 			return operand.ImmRaw == ""
@@ -135,11 +135,12 @@ func initializedVectorProbeSequence(goarch string, ins Instr, inputs []Operand) 
 			if width > widths[index] {
 				widths[index] = width
 			}
-			hasVector = true
+			hasSIMD = true
 			return true
 		}
 		if index, mask := amd64ParseKReg(reg); mask {
 			masks[index] = true
+			hasSIMD = true
 			return true
 		}
 		root, valid := initializedX86GPRegister(goarch, operand)
@@ -157,7 +158,7 @@ func initializedVectorProbeSequence(goarch string, ins Instr, inputs []Operand) 
 			return nil, false, nil
 		}
 	}
-	if !hasVector {
+	if !hasSIMD {
 		return nil, false, nil
 	}
 
@@ -210,7 +211,10 @@ func initializedVectorOperands(goarch string, ins Instr) ([]Operand, int64, bool
 	}
 
 	effect, known, err := x86TypedInstructionByteEffect(ins.Op, ins, goarch)
-	if !known || err != nil || effect.dynamicMemory || effect.flagsRead != 0 {
+	if !known {
+		return initializedExplicitSIMDOperands(goarch, ins)
+	}
+	if err != nil || effect.dynamicMemory || effect.flagsRead != 0 {
 		return nil, 0, false
 	}
 	inputs := append([]Operand(nil), ins.Args...)
@@ -228,6 +232,45 @@ func initializedVectorOperands(goarch string, ins Instr) ([]Operand, int64, bool
 		}
 	}
 	return inputs, memoryBytes, true
+}
+
+// These complete family grammars expose every register in the original
+// operand list, including a merge destination. Their validated memory tuple
+// must stay independent of the output vector width.
+func initializedExplicitSIMDOperands(goarch string, ins Instr) ([]Operand, int64, bool) {
+	if f, known, err := x86PackedShiftProperties(ins.Op, ins, goarch); known {
+		if err != nil || f.mmx {
+			return nil, 0, false
+		}
+		inputs := append([]Operand(nil), ins.Args...)
+		inputs[f.count] = f.countOperand
+		return inputs, int64(f.memoryBytes), true
+	}
+	if f, known, err := x86BroadcastProperties(ins.Op, ins, goarch); known {
+		width := int64(0)
+		if err == nil && isAMD64MemoryOperand(ins.Args[0]) {
+			width = int64(f.sourceBytes)
+		}
+		return ins.Args, width, err == nil
+	}
+	if f, known, err := x86FloatArithmeticProperties(ins, goarch, ""); known {
+		return ins.Args, int64(f.memoryBytes), err == nil
+	}
+	if f, known, err := amd64PackedVectorMoveProperties(ins, goarch); known {
+		width := int64(0)
+		if f.memory >= 0 {
+			width = int64(f.byteWidth)
+		}
+		return ins.Args, width, err == nil && !f.undefinedOpcode()
+	}
+	const packedFamilies = x86PackedArithmeticAdd | x86PackedArithmeticSubtract | x86PackedArithmeticLowMultiply
+	if f, known, err := x86PackedArithmeticProperties(ins.Op, ins, goarch, packedFamilies); known {
+		return ins.Args, int64(f.memoryBytes), err == nil && !f.mmx
+	}
+	if f, known, err := x86PackedLogicalProperties(ins, goarch); known {
+		return ins.Args, int64(f.memoryBytes), err == nil && !f.mmx
+	}
+	return nil, 0, false
 }
 
 // InitializedScalarRegisterProbeSequence constructs an object-only probe for

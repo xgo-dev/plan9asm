@@ -120,6 +120,17 @@ func TestInitializedX86RegisterProbeFamiliesAndBoundaries(t *testing.T) {
 	}
 }
 
+func TestInitializedX86SharedVectorFamilyRegisters(t *testing.T) {
+	checkInitializedRegisterFamily(t, "amd64", []string{
+		"VPSRAW $79, X11, K4, X15",
+		"VPSRLQ $67, Y14, K4, Y20",
+		"VPBROADCASTD R14, K1, X15",
+		"VPBROADCASTQ CX, K1, Z3",
+		"VMAXPD.SAE Z3, Z2, K1, Z1",
+		"VMAXPD X2, X9, X2",
+	}, InitializedVectorRegisterProbeSequence)
+}
+
 func checkInitializedRegisterFamily(t *testing.T, arch string, sources []string, profile func(string, Instr) ([]Instr, bool, error)) {
 	t.Helper()
 	var originalGo strings.Builder

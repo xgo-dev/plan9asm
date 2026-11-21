@@ -330,9 +330,9 @@ IR and LLVM22 object outcomes in batches of at most 32 functions. A failed IR
 probe retains its exact source and diagnostics while the other cases proceed to
 object checks. Failed probes, missing/wrong LLVM and objects missing any
 expected executable function fail the command. The `vector-register` profile
-covers typed register forms without memory or input flags, including legacy
-floating compares with bare predicates. Use `vector-memory` to retain one
-explicit, typed, fixed-span vector memory operand. Its fixture gets the base
+covers typed SIMD and mask-register forms without memory or input flags,
+including legacy floating compares with bare predicates. Use `vector-memory`
+to retain one explicit, typed, fixed-span SIMD memory operand. Its fixture gets the base
 from a declared pointer argument and initializes an independent scalar index
 when present. Stack, implicit, symbolic, aliased and gather/scatter addresses
 stay outside this fixture. The `scalar-register` profile covers typed GP operands,

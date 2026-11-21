@@ -425,6 +425,13 @@ func TestInitializedContextReprobeVectorMemoryUsesDeclaredPointer(t *testing.T) 
 		"VPMINUD (AX), X14, K7, X7",
 		"VCVTPS2PH $126, X7, K5, -7(CX)(DX*8)",
 		"VSHUFPS $13, 15(R8)(R14*4), X0, K6, X1",
+		"VPSRAW $79, 15(DX)(BX*2), K4, X15",
+		"VPSRLQ (BX), Y15, Y2",
+		"VPBROADCASTD -7(DI)(R8*8), K1, X26",
+		"VMAXPD.BCST (AX), Z2, K1, Z1",
+		"VMOVUPS X22, K3, 7(SI)(DI*4)",
+		"KMOVB K0, (AX)",
+		"KMOVQ 7(AX), K6",
 		"VPMINUD 99(R15)(R15*4), Z9, K5, Z0",
 		"VSHUFPS $67, (SP), Z9, K7, Z9",
 		"MASKMOVOU X0,X2",
@@ -446,7 +453,7 @@ func TestInitializedContextReprobeVectorMemoryUsesDeclaredPointer(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if evidence.Status != "pass" || evidence.EligibleCases != 4 || len(evidence.UnregisteredCases) != 4 {
+	if evidence.Status != "pass" || evidence.EligibleCases != 11 || len(evidence.UnregisteredCases) != 4 {
 		t.Fatalf("unexpected fixed-span selection: status=%s eligible=%d unregistered=%d",
 			evidence.Status, evidence.EligibleCases, len(evidence.UnregisteredCases))
 	}
