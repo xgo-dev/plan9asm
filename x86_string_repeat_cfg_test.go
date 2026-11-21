@@ -76,16 +76,9 @@ func TestX86StringRepeatCFGAcceptsOnlyUnambiguousAdjacency(t *testing.T) {
 							if _, err := x86ResultStringMemorySourcePlan(file.Funcs[0], arch); err != nil {
 								t.Fatal("the original loop lost its unambiguous prefix binding", err)
 							}
-							for _, api := range []string{"text", "module", "Go"} {
-								ir, err := x86ScalarFPBitViewAPI(t, source, declarations, arch, triple, api)
-								if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-									t.Fatal("prefix binding granted a reusable updated native cursor", api, err)
-								}
-							}
-							// The original Go loop remains unchanged in its object
-							// owner above. This separate positive replenishes the
-							// declared inputs on every iteration; it does not certify
-							// the original loop's updated-cursor memory contract.
+							x86CheckStringRepeatBackedge(t, source, declarations, arch, triple, row)
+							// Also exercise the original positive control with
+							// both the caller inputs and count replenished.
 							begin := strings.IndexByte(source, '\n') + 1
 							label := strings.Index(source, "repeat:\n")
 							if begin <= 0 || label <= begin {
@@ -100,6 +93,41 @@ func TestX86StringRepeatCFGAcceptsOnlyUnambiguousAdjacency(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+func x86CheckStringRepeatBackedge(t *testing.T, source, declarations, arch, triple string, row x86StringMemoryRow) {
+	t.Helper()
+	for _, api := range []string{"text", "module", "Go"} {
+		ir, err := x86ScalarFPBitViewAPI(t, source, declarations, arch, triple, api)
+		if row.kind == "scas" || row.kind == "cmps" {
+			// A compare-controlled repeat can leave CX positive on the backedge.
+			if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("compare-controlled repeat accepted an unproven second access", api, err)
+			}
+			continue
+		}
+		if err != nil || !strings.Contains(ir, "@"+x86StringMemoryHelper(row)+"(") {
+			t.Fatal("counted repeat lost its original loop", api, err)
+		}
+	}
+	if row.kind == "scas" || row.kind == "cmps" {
+		return
+	}
+
+	// A counted move/load/store exhausts CX. Reset it and replace the
+	// caller-derived cursor to exercise an unbound access on the backedge.
+	cursor := "DI"
+	if row.kind == "lods" {
+		cursor = "SI"
+	}
+	unbound := strings.Replace(source, "TESTL BX,BX\nJNE repeat",
+		"MOVL $3,CX\nMOVL $1,"+cursor+"\nTESTL BX,BX\nJNE repeat", 1)
+	for _, api := range []string{"text", "module", "Go"} {
+		ir, err := x86ScalarFPBitViewAPI(t, unbound, declarations, arch, triple, api)
+		if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+			t.Fatal("repeat prefix accepted an unbound cursor on the backedge", api, err)
 		}
 	}
 }
