@@ -34,16 +34,16 @@ type wasmControlFrame struct {
 func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, wasmABI WASMABI, annotateSource bool) (err error) {
 	// Validate source format before dead-block removal. Pure dead operators may
 	// disappear, but malformed source must not acquire an apparent pass.
-	var memoryForms map[int]wasmScalarMemoryForm
+	var memoryForms map[int]wasmMemoryForm
 	for i, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
-		form, found, err := parseWASMScalarMemory(ins, op)
+		form, found, err := parseWASMMemory(ins, op)
 		if err != nil {
 			return err
 		}
 		if found {
 			if memoryForms == nil {
-				memoryForms = make(map[int]wasmScalarMemoryForm)
+				memoryForms = make(map[int]wasmMemoryForm)
 			}
 			memoryForms[i] = form
 		}
@@ -909,7 +909,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	newLabel := func(prefix string) string {
 		return prefix + "_" + newTmp()
 	}
-	scalarMemoryAddress := func(op string, form wasmScalarMemoryForm) (wasmValue, error) {
+	memoryAddress := func(op string, form wasmMemoryForm) (wasmValue, error) {
 		var base wasmValue
 		var err error
 		if form.base != "" {
@@ -927,11 +927,21 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			}
 		}
 		if base.typ == Ptr && !base.stackAddr {
-			// A direct ABI caller can supply a typed host pointer.
-			return addressPtr(base, form.offset)
+			if form.spec.access != wasmV128CoreType {
+				// A direct ABI caller can supply a typed host pointer.
+				return addressPtr(base, form.offset)
+			}
+			base, err = cast(base, I32, false)
+			if err != nil {
+				return wasmValue{}, err
+			}
 		}
 		if base.typ != I32 || base.stackAddr {
 			return wasmValue{}, fmt.Errorf("%s expects an i32 linear-memory address, got %s", op, base.typ)
+		}
+		if form.spec.access == wasmV128CoreType {
+			emitWASMVectorMemoryBounds(b, base.val, form.offset, newTmp, newLabel)
+			return addressPtr(base, form.offset)
 		}
 		if form.offset != 0 {
 			// Wasm adds the unsigned offset without wrapping. Native memory
@@ -944,7 +954,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		}
 		return cast(base, Ptr, false)
 	}
-	emitScalarMemory := func(op string, ins Instr, form wasmScalarMemoryForm) error {
+	emitMemory := func(op string, ins Instr, form wasmMemoryForm) error {
 		spec := form.spec
 		if spec.store {
 			value, err := pop(op)
@@ -962,9 +972,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				if len(stack) != 0 && stack[len(stack)-1].stackAddr {
 					stack = stack[:len(stack)-1]
 				}
-				return storeResult(ins.Args[0], value)
+				return storeResult(ins.Args[len(ins.Args)-1], value)
 			}
-			address, err := scalarMemoryAddress(op, form)
+			address, err := memoryAddress(op, form)
 			if err != nil {
 				return err
 			}
@@ -979,7 +989,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return err
 			}
 		} else {
-			address, err := scalarMemoryAddress(op, form)
+			address, err := memoryAddress(op, form)
 			if err != nil {
 				return err
 			}
@@ -1291,7 +1301,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			continue
 		}
 		if form, ok := memoryForms[insIndex]; ok {
-			if err := emitScalarMemory(op, ins, form); err != nil {
+			if err := emitMemory(op, ins, form); err != nil {
 				return err
 			}
 			continue
@@ -1736,7 +1746,7 @@ func wasmNeedsIncomingContext(fn Func) bool {
 	for _, ins := range fn.Instrs {
 		op := strings.ToUpper(string(ins.Op))
 		_, move := wasmMoveTypes[op]
-		memory := wasmScalarMemoryOps[op]
+		memory := wasmMemoryOps[op]
 		for i, arg := range ins.Args {
 			if memory.store && arg.Kind == OpMem {
 				continue

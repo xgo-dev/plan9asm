@@ -73,9 +73,17 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 					wantConversion[spec.intrinsic] = spec
 				}
 			}
-			if _, ok := wasmScalarMemoryOps[op]; ok && len(ins.Args) == 1 {
-				arg := ins.Args[0]
-				wantTrap = wantTrap || arg.Kind == OpImm && arg.Imm != 0 || arg.Kind == OpMem && arg.Mem.Off != 0
+			if memory, ok := wasmMemoryOps[op]; ok {
+				switch {
+				case memory.access == wasmV128CoreType:
+					if len(ins.Args) == 0 || ins.Args[len(ins.Args)-1].Kind != OpFP {
+						want["memory.size"] = true
+						wantTrap = true
+					}
+				case len(ins.Args) == 1:
+					arg := ins.Args[0]
+					wantTrap = wantTrap || arg.Kind == OpImm && arg.Imm != 0 || arg.Kind == OpMem && arg.Mem.Off != 0
+				}
 			}
 			if spec, ok := wasmFloatUnaryOps[op]; ok && spec.intrinsic != "" {
 				wantFloatUnary[string(spec.typ)+"|"+spec.intrinsic] = true

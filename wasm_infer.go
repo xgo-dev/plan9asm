@@ -108,7 +108,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err != nil {
 			return FuncSig{}, err
 		}
-		memory, memoryKnown, err := parseWASMScalarMemory(ins, op)
+		memory, memoryKnown, err := parseWASMMemory(ins, op)
 		if err != nil {
 			return FuncSig{}, err
 		}

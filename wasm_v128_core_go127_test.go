@@ -25,22 +25,7 @@ func TestWASMV128RelaxedTruncActualGoEncoding(t *testing.T) {
 	for index, name := range mnemonics {
 		fmt.Fprintf(&source, "TEXT relax%d(SB),4,$0-0\nGet V0\n%s\nReturn\n", index, name)
 	}
-	dir := t.TempDir()
-	input, output := filepath.Join(dir, "relax.s"), filepath.Join(dir, "relax.o")
-	if err := os.WriteFile(input, []byte(source.String()), 0600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := runtimeOracleStageContext(t)
-	defer cancel()
-	command := exec.CommandContext(ctx, "go", "tool", "asm", "-o", output, input)
-	command.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm", "GOTOOLCHAIN=local")
-	if log, err := runtimeOracleCombinedOutput(ctx, command); err != nil {
-		t.Fatalf("original Go relaxed truncation assembly: %v\n%s", err, log)
-	}
-	data, err := os.ReadFile(output)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := wasmV128ActualGoBytes(t, source.String(), "js")
 	for index, name := range mnemonics {
 		op := byte(0x81 + index)
 		switch {
@@ -52,6 +37,45 @@ func TestWASMV128RelaxedTruncActualGoEncoding(t *testing.T) {
 			t.Errorf("unrecognized original Go encoding for %s", name)
 		}
 	}
+}
+
+func TestWASMV128MemoryActualGoEncoding(t *testing.T) {
+	for _, goos := range wasmPackedGoPlatforms {
+		t.Run(goos, func(t *testing.T) {
+			data := wasmV128ActualGoBytes(t, wasmV128MemorySource, goos)
+			for _, encoding := range [][]byte{
+				{0xfd, 0x00, 0, 3}, // v128.load at offset 3, alignment 1.
+				{0xfd, 0x0b, 0, 0}, // implicit zero destination offset.
+				{0xfd, 0x0b, 0, 3}, // offset on the explicit destination.
+				{0xfd, 0x0b, 0, 5}, // register spelling supplies only the offset.
+			} {
+				if !bytes.Contains(data, encoding) {
+					t.Errorf("original Go object omitted vector memory encoding % x", encoding)
+				}
+			}
+		})
+	}
+}
+
+func wasmV128ActualGoBytes(t *testing.T, source, goos string) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	input, output := filepath.Join(dir, "source.s"), filepath.Join(dir, "source.o")
+	if err := os.WriteFile(input, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := runtimeOracleStageContext(t)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "tool", "asm", "-o", output, input)
+	command.Env = append(os.Environ(), "GOOS="+goos, "GOARCH=wasm", "GOTOOLCHAIN=local")
+	if log, err := runtimeOracleCombinedOutput(ctx, command); err != nil {
+		t.Fatalf("original Go %s/wasm assembly: %v\n%s", goos, err, log)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 // Go's assembler gained the SIMD namespace in Go 1.27. Its independent

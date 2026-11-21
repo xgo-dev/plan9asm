@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-type wasmScalarMemoryOp struct {
+type wasmMemoryOp struct {
 	access LLVMType
 	stack  LLVMType
 	store  bool
@@ -15,7 +15,7 @@ type wasmScalarMemoryOp struct {
 
 // The access width is independent of the stack carrier. Narrow loads extend
 // after reading, and narrow stores truncate only after checking the carrier.
-var wasmScalarMemoryOps = map[string]wasmScalarMemoryOp{
+var wasmMemoryOps = map[string]wasmMemoryOp{
 	"I32LOAD":    {I32, I32, false, false},
 	"I64LOAD":    {I64, I64, false, false},
 	"F32LOAD":    {"float", "float", false, false},
@@ -39,29 +39,40 @@ var wasmScalarMemoryOps = map[string]wasmScalarMemoryOp{
 	"I64STORE8":  {access: I8, stack: I64, store: true},
 	"I64STORE16": {access: I16, stack: I64, store: true},
 	"I64STORE32": {access: I32, stack: I64, store: true},
+	"V128LOAD":   {access: wasmV128CoreType, stack: wasmV128CoreType},
+	"V128STORE":  {access: wasmV128CoreType, stack: wasmV128CoreType, store: true},
 }
 
-type wasmScalarMemoryForm struct {
-	spec   wasmScalarMemoryOp
+type wasmMemoryForm struct {
+	spec   wasmMemoryOp
 	base   Reg
 	offset int64
 	frame  bool
 }
 
-func parseWASMScalarMemory(ins Instr, name string) (wasmScalarMemoryForm, bool, error) {
-	spec, found := wasmScalarMemoryOps[name]
-	form := wasmScalarMemoryForm{spec: spec}
+func parseWASMMemory(ins Instr, name string) (wasmMemoryForm, bool, error) {
+	spec, found := wasmMemoryOps[name]
+	form := wasmMemoryForm{spec: spec}
 	if !found {
 		return form, false, nil
 	}
-	if strings.ToUpper(string(ins.Op)) != name || len(ins.Args) > 1 || len(ins.Args) == 0 && !spec.store {
-		return form, true, fmt.Errorf("%s requires a scalar memory operand without suffixes", ins.Op)
+	args := ins.Args
+	if spec.store && spec.access == wasmV128CoreType && len(args) != 0 {
+		// Go's V128Store encoder reads To.Offset, but the unary spelling
+		// populates From. An explicit offset belongs in the destination.
+		if zero := args[0]; zero.Kind != OpImm || zero.Imm != 0 || zero.ImmIsFloat || zero.ImmRaw != "" {
+			return form, true, fmt.Errorf("%s expects a zero offset or the form $0,destination", ins.Op)
+		}
+		args = args[1:]
+	}
+	if strings.ToUpper(string(ins.Op)) != name || len(args) > 1 || len(args) == 0 && !spec.store {
+		return form, true, fmt.Errorf("%s requires a memory operand without suffixes", ins.Op)
 	}
 	// The Go encoder uses zero when the store offset is omitted.
-	if len(ins.Args) == 0 {
+	if len(args) == 0 {
 		return form, true, nil
 	}
-	switch arg := ins.Args[0]; arg.Kind {
+	switch arg := args[0]; arg.Kind {
 	case OpFP:
 		form.frame = true
 		return form, true, nil
@@ -90,4 +101,18 @@ func parseWASMScalarMemory(ins Instr, name string) (wasmScalarMemoryForm, bool, 
 		return form, true, fmt.Errorf("%s memory offset %d is outside uint32", ins.Op, form.offset)
 	}
 	return form, true, nil
+}
+
+// Check the whole access before LLVM can scalarize a vector memory operation.
+// An out-of-bounds vector store must trap before writing any of its bytes.
+func emitWASMVectorMemoryBounds(b *strings.Builder, base string, offset int64, newTmp func() string, newLabel func(string) string) {
+	address, end := newTmp(), newTmp()
+	pages, widePages, size, valid := newTmp(), newTmp(), newTmp(), newTmp()
+	fmt.Fprintf(b, "  %%%s = zext i32 %s to i64\n", address, base)
+	fmt.Fprintf(b, "  %%%s = add i64 %%%s, %d\n", end, address, offset+16)
+	fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.memory.size.i32(i32 0)\n", pages)
+	fmt.Fprintf(b, "  %%%s = zext i32 %%%s to i64\n", widePages, pages)
+	fmt.Fprintf(b, "  %%%s = shl i64 %%%s, 16\n", size, widePages)
+	fmt.Fprintf(b, "  %%%s = icmp ule i64 %%%s, %%%s\n", valid, end, size)
+	emitWASMTrapUnless(b, valid, newLabel)
 }
