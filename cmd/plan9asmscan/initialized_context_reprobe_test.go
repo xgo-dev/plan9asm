@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,20 @@ func init() {
 		if os.Getenv("PLAN9ASMSCAN_REPROBE_TEST_LLC") == "nonzero" {
 			fmt.Fprintln(os.Stderr, "deliberate object compiler failure")
 			os.Exit(7)
+		}
+		if os.Getenv("PLAN9ASMSCAN_REPROBE_TEST_LLC") == "wrong-functions" {
+			if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "-o" {
+				fmt.Fprintln(os.Stderr, "test fixture expected an output path")
+				os.Exit(2)
+			}
+			data, err := os.ReadFile(os.Getenv("PLAN9ASMSCAN_REPROBE_TEST_WRONG_OBJECT"))
+			if err == nil {
+				err = os.WriteFile(os.Args[len(os.Args)-1], data, 0o600)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
 		}
 		// A successful exit with no object must not become compilation evidence.
 		os.Exit(0)
@@ -320,7 +335,7 @@ func initializedReprobeTestInputs(t *testing.T, arch string, test initializedRep
 }
 
 func TestInitializedContextReprobeDoesNotCreditBrokenLLVM(t *testing.T) {
-	for _, mode := range []string{"missing", "wrong-version", "no-object", "nonzero"} {
+	for _, mode := range []string{"missing", "wrong-version", "no-object", "nonzero", "wrong-functions"} {
 		t.Run(mode, func(t *testing.T) {
 			root, pkg, _ := initializedReprobeTestFixture(t)
 			llc := filepath.Join(t.TempDir(), "reprobe-llc-fixture")
@@ -330,12 +345,35 @@ func TestInitializedContextReprobeDoesNotCreditBrokenLLVM(t *testing.T) {
 			if mode != "missing" {
 				initializedReprobeTestLink(t, llc)
 			}
+			if mode == "wrong-functions" {
+				t.Setenv("PLAN9ASMSCAN_REPROBE_TEST_WRONG_OBJECT", initializedReprobeUnrelatedObject(t))
+			}
 			_, stderr, err := initializedReprobeTestRun(t, root, pkg, "amd64", llc, mode, true)
 			if err == nil || !strings.Contains(strings.ToLower(string(stderr)), "llvm") || strings.Contains(string(stderr), "flag provided but not defined") {
 				t.Fatalf("LLVM %s must fail closed, not report a profile pass: %v\n%s", mode, err, stderr)
 			}
+			if mode == "wrong-functions" && !strings.Contains(string(stderr), "missing executable function initialized.0") {
+				t.Fatalf("valid ELF with unrelated code must fail at the function identity check:\n%s", stderr)
+			}
 		})
 	}
+}
+
+func initializedReprobeUnrelatedObject(t *testing.T) string {
+	t.Helper()
+	llc, err := initializedContextLLC("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	source, object := filepath.Join(dir, "unrelated.ll"), filepath.Join(dir, "unrelated.o")
+	if err := os.WriteFile(source, []byte("define void @unrelated() { ret void }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := initializedContextCommand(llc, "-filetype=obj", "-mtriple=x86_64-unknown-linux-gnu", source, "-o", object); err != nil {
+		t.Fatal(err)
+	}
+	return object
 }
 
 func TestInitializedContextReprobeVectorRegistersAndImplicitMemory(t *testing.T) {
@@ -377,5 +415,45 @@ func TestInitializedContextReprobeVectorRegistersAndImplicitMemory(t *testing.T)
 			test.RuntimeExecution.Status != "not_run" {
 			t.Fatalf("wrong evidence for %s: %+v", instructions[i], test)
 		}
+	}
+}
+
+func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
+	const arch = "386"
+	_, forms, parseErrors, _, err := scanGoAssemblerTestdataWithContexts(runtime.GOROOT(), plan9asm.ArchAMD64, arch, true)
+	if err != nil || len(parseErrors) != 0 {
+		t.Fatalf("official 386 assembler corpus: %v, parse errors: %v", err, parseErrors)
+	}
+	for _, test := range []struct {
+		profile string
+		want    []string
+	}{
+		{"vector-register", []string{"CMPPD X0, X1, 4"}},
+		{"scalar-register", []string{"SETCC AX", "DIVB AX", "IMULL AX"}},
+	} {
+		t.Run(test.profile, func(t *testing.T) {
+			evidence, err := runInitializedContextReprobe(forms, test.profile, arch, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.Status != "pass" || len(evidence.ObjectBatches) == 0 {
+				t.Fatalf("official 386 register forms lack LLVM object evidence: %s", evidence.Status)
+			}
+			compiled := make(map[string]bool)
+			for _, row := range evidence.Cases {
+				if row.OriginalStatus != "context-required" || row.Source.File == "" ||
+					row.LLVMObjectCompilation.Status != "pass" || row.RuntimeExecution.Status != "not_run" {
+					t.Fatalf("wrong evidence for official source occurrence: %+v", row)
+				}
+				if row.Source.File == "386.s" {
+					compiled[strings.Join(strings.Fields(row.OriginalInstruction.Raw), " ")] = true
+				}
+			}
+			for _, instruction := range test.want {
+				if !compiled[instruction] {
+					t.Errorf("missing initialized LLVM object for original %q", instruction)
+				}
+			}
+		})
 	}
 }

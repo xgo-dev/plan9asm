@@ -60,6 +60,7 @@ type initializedContextReport struct {
 
 var initializedContextProfiles = map[string]func(string, plan9asm.Instr) ([]plan9asm.Instr, bool, error){
 	"mask-logical":    plan9asm.InitializedMaskLogicalProbeSequence,
+	"scalar-register": plan9asm.InitializedScalarRegisterProbeSequence,
 	"vector-register": plan9asm.InitializedVectorRegisterProbeSequence,
 }
 
@@ -295,7 +296,39 @@ func compileInitializedContextBatch(cases []initializedContextCase, goarch, llc 
 	if parsed.Type != elf.ET_REL || parsed.Machine != machine || parsed.Class != class {
 		return batch, fmt.Errorf("initialized-context LLVM object has a foreign target/type")
 	}
+	if err := checkInitializedContextFunctions(parsed, batch.CaseIndexes); err != nil {
+		return batch, err
+	}
 	batch.ObjectSize, batch.ObjectSHA256 = int64(len(data)), fmt.Sprintf("%x", sha256.Sum256(data))
 	batch.Status = "pass"
 	return batch, nil
+}
+
+func checkInitializedContextFunctions(object *elf.File, cases []int) error {
+	symbols, err := object.Symbols()
+	if err != nil {
+		return fmt.Errorf("read initialized-context LLVM object functions: %w", err)
+	}
+	executable := make(map[string]bool, len(cases))
+	for _, symbol := range symbols {
+		if elf.ST_TYPE(symbol.Info) != elf.STT_FUNC || symbol.Size == 0 ||
+			symbol.Section == elf.SHN_UNDEF || int(symbol.Section) >= len(object.Sections) {
+			continue
+		}
+		section := object.Sections[symbol.Section]
+		if section.Type != elf.SHT_PROGBITS || section.Flags&elf.SHF_EXECINSTR == 0 || symbol.Value < section.Addr {
+			continue
+		}
+		offset := symbol.Value - section.Addr
+		if offset <= section.Size && symbol.Size <= section.Size-offset {
+			executable[symbol.Name] = true
+		}
+	}
+	for _, index := range cases {
+		name := fmt.Sprintf("initialized.%d", index)
+		if !executable[name] {
+			return fmt.Errorf("initialized-context LLVM object missing executable function %s", name)
+		}
+	}
+	return nil
 }

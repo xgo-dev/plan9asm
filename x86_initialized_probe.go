@@ -50,8 +50,8 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 		x86Mode32VectorRegisterContext(ins, goarch) != nil {
 		return nil, false, nil
 	}
-	effect, known, err := x86TypedInstructionByteEffect(ins.Op, ins, goarch)
-	if !known || err != nil || effect.dynamicMemory || effect.flagsRead != 0 {
+	inputs, valid := initializedVectorRegisterOperands(goarch, ins)
+	if !valid {
 		return nil, false, nil
 	}
 
@@ -83,8 +83,8 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 			masks[index] = true
 			return true
 		}
-		root, valid := x86CallerGP(reg)
-		if !valid || !isX86YrlRegisterForArch(root, goarch) || x86LogicalSourceFrameRegister(root, goarch) {
+		root, valid := initializedX86GPRegister(goarch, operand)
+		if !valid {
 			return false
 		}
 		if !seenGP[root] {
@@ -93,16 +93,8 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 		}
 		return true
 	}
-	for _, operand := range ins.Args {
+	for _, operand := range inputs {
 		if !add(operand) {
-			return nil, false, nil
-		}
-	}
-	for _, input := range effect.operands {
-		if input.operand.Kind == OpMem || input.operand.Kind == OpSym {
-			return nil, false, nil
-		}
-		if input.read && !add(input.operand) {
 			return nil, false, nil
 		}
 	}
@@ -141,6 +133,103 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 		}
 	}
 	return append(sequence, ins), true, nil
+}
+
+func initializedVectorRegisterOperands(goarch string, ins Instr) ([]Operand, bool) {
+	// The typed floating compare parser has already validated the literal.
+	// In the legacy spelling a bare predicate is an OpSym in the parsed
+	// source. Take only the form's actual inputs and retain that spelling.
+	if form, known, err := x86FloatCompareProperties(ins, goarch); known {
+		if err != nil || form.memory >= 0 {
+			return nil, false
+		}
+		inputs := []Operand{ins.Args[form.first], ins.Args[form.second]}
+		if form.mask >= 0 {
+			inputs = append(inputs, ins.Args[form.mask])
+		}
+		return inputs, true
+	}
+
+	effect, known, err := x86TypedInstructionByteEffect(ins.Op, ins, goarch)
+	if !known || err != nil || effect.dynamicMemory || effect.flagsRead != 0 {
+		return nil, false
+	}
+	inputs := append([]Operand(nil), ins.Args...)
+	for _, input := range effect.operands {
+		if input.operand.Kind == OpMem || input.operand.Kind == OpSym {
+			return nil, false
+		}
+		if input.read {
+			inputs = append(inputs, input.operand)
+		}
+	}
+	return inputs, true
+}
+
+// InitializedScalarRegisterProbeSequence constructs an object-only probe for
+// SETcc and implicit-accumulator multiply and divide with register operands.
+// It supplies numerical inputs without modifying the source instruction or
+// granting the original function any register, FLAGS, or memory facts.
+func InitializedScalarRegisterProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
+	if goarch != "386" && goarch != "amd64" || !x86ResultNamedPredicateInstruction(ins) {
+		return nil, false, nil
+	}
+	move := Op("MOVL")
+	if goarch == "amd64" {
+		move = "MOVQ"
+	}
+	seed := func(reg Reg, value int64) Instr {
+		return x86ProbeInstruction(move, Operand{Kind: OpImm, Imm: value}, Operand{Kind: OpReg, Reg: reg})
+	}
+	if form, known, err := x86ConditionalSetProperties(ins.Op, ins, goarch); known {
+		if _, valid := initializedX86GPRegister(goarch, form.destination); err != nil || !valid {
+			return nil, false, nil
+		}
+		ax := Operand{Kind: OpReg, Reg: AX}
+		return []Instr{seed(AX, 1), x86ProbeInstruction("CMPL", ax, ax), ins}, true, nil
+	}
+	if form, known, err := x86ImplicitMultiplyProperties(ins.Op, ins, goarch); known {
+		root, valid := initializedX86GPRegister(goarch, form.source)
+		if err != nil || !valid {
+			return nil, false, nil
+		}
+		sequence := []Instr{seed(AX, 0x101)}
+		if root != AX {
+			sequence = append(sequence, seed(root, 0x101))
+		}
+		return append(sequence, ins), true, nil
+	}
+	form, known, err := x86ImplicitDivideProperties(ins.Op, ins, goarch)
+	root, valid := initializedX86GPRegister(goarch, form.source)
+	if !known || err != nil || !valid {
+		return nil, false, nil
+	}
+
+	// A divisor that aliases the high half cannot have the ordinary
+	// positive-dividend setup. Signed -1/-1 fits. Unsigned division of
+	// this shape always faults; retain that instruction in the object.
+	highHalf := form.spec.bits == 8 && strings.EqualFold(string(form.source.Reg), "AH") || form.spec.bits != 8 && root == DX
+	low, high := int64(1), int64(0)
+	if form.spec.signed && highHalf {
+		low, high = -1, -1
+	}
+	sequence := []Instr{seed(AX, low)}
+	if form.spec.bits != 8 {
+		sequence = append(sequence, seed(DX, high))
+	}
+	if root != AX && !highHalf {
+		// Both the low and high byte spellings of this root see 1.
+		sequence = append(sequence, seed(root, 0x101))
+	}
+	return append(sequence, ins), true, nil
+}
+
+func initializedX86GPRegister(goarch string, operand Operand) (Reg, bool) {
+	if operand.Kind != OpReg {
+		return "", false
+	}
+	root, valid := x86CallerGP(operand.Reg)
+	return root, valid && isX86YrlRegisterForArch(root, goarch) && !x86LogicalSourceFrameRegister(root, goarch)
 }
 
 func x86ProbeInstruction(op Op, operands ...Operand) Instr {

@@ -1,6 +1,11 @@
 package plan9asm
 
-import "testing"
+import (
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestInitializedMaskLogicalProbeSourceBoundaries(t *testing.T) {
 	for _, source := range []string{
@@ -40,4 +45,87 @@ func TestInitializedMaskLogicalProbeSourceBoundaries(t *testing.T) {
 	if sequence, known, err := InitializedMaskLogicalProbeSequence("amd64", other); known || err != nil || sequence != nil {
 		t.Fatal("profile expanded beyond its registered typed family", sequence, known, err)
 	}
+}
+
+func TestInitializedX86RegisterProbeFamiliesAndBoundaries(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			scalar := []string{}
+			for _, condition := range []string{"CC", "CS", "EQ", "GE", "GT", "HI", "LE", "LS", "LT", "MI", "NE", "OC", "OS", "PC", "PL", "PS"} {
+				scalar = append(scalar, "SET"+condition+" AH")
+			}
+			widths := []string{"B", "W", "L"}
+			if arch == "amd64" {
+				widths = append(widths, "Q")
+			}
+			for _, stem := range []string{"DIV", "IDIV", "MUL", "IMUL"} {
+				for _, width := range widths {
+					for _, reg := range []string{"AX", "BX", "DX"} {
+						scalar = append(scalar, stem+width+" "+reg)
+					}
+				}
+				scalar = append(scalar, stem+"B AH", stem+"B BH")
+			}
+			if arch == "386" {
+				scalar = append(scalar, "IDIVL BP")
+			}
+			checkInitializedRegisterFamily(t, arch, scalar, InitializedScalarRegisterProbeSequence)
+
+			var vector []string
+			for _, op := range []string{"CMPPD", "CMPPS", "CMPSD", "CMPSS"} {
+				for _, predicate := range []int{-128, 4, 127} {
+					vector = append(vector, fmt.Sprintf("%s X0,X1,%d", op, predicate))
+				}
+			}
+			checkInitializedRegisterFamily(t, arch, vector, InitializedVectorRegisterProbeSequence)
+
+			for _, test := range []struct {
+				profile func(string, Instr) ([]Instr, bool, error)
+				source  string
+			}{
+				{InitializedScalarRegisterProbeSequence, "SETCC symbol+4(SB)"},
+				{InitializedScalarRegisterProbeSequence, "DIVB (BX)"},
+				{InitializedScalarRegisterProbeSequence, "IDIVL SP"},
+				{InitializedScalarRegisterProbeSequence, "IMULL AX,BX"},
+				{InitializedVectorRegisterProbeSequence, "CMPPD symbol+4(SB),X1,4"},
+				{InitializedVectorRegisterProbeSequence, "CMPPD X0,X1,symbol"},
+				{InitializedVectorRegisterProbeSequence, "CMPPD X0,X1,128"},
+			} {
+				original := x86ScalarLaneInstruction(t, test.source)
+				if sequence, known, err := test.profile(arch, original); known || err != nil || sequence != nil {
+					t.Errorf("unbound or invalid form %s acquired probe inputs: %v %v %v", test.source, sequence, known, err)
+				}
+				original.x86Encoded = true
+				if sequence, known, err := test.profile(arch, original); known || err != nil || sequence != nil {
+					t.Errorf("raw %s acquired named probe inputs: %v %v %v", test.source, sequence, known, err)
+				}
+			}
+		})
+	}
+}
+
+func checkInitializedRegisterFamily(t *testing.T, arch string, sources []string, profile func(string, Instr) ([]Instr, bool, error)) {
+	t.Helper()
+	var originalGo strings.Builder
+	for i, source := range sources {
+		original := x86ScalarLaneInstruction(t, source)
+		sequence, known, err := profile(arch, original)
+		if !known || err != nil || len(sequence) < 2 {
+			t.Errorf("%s missing typed initialization: %v %v %v", source, sequence, known, err)
+			continue
+		}
+		if !reflect.DeepEqual(sequence[len(sequence)-1], original) {
+			t.Errorf("%s changed source form: %+v", source, sequence)
+			continue
+		}
+		if err := ProbeInstructionSequence(ArchAMD64, arch, sequence); err != nil {
+			t.Errorf("%s with initialized inputs: %v", source, err)
+		}
+		fmt.Fprintf(&originalGo, "TEXT ·Initialized%d(SB),4,$0-0\n", i)
+		for _, ins := range sequence {
+			originalGo.WriteString(ins.Raw + "\n")
+		}
+		originalGo.WriteString("RET\n")
+	}
+	requireX86GoAssemblerResult(t, arch, originalGo.String(), true)
 }
