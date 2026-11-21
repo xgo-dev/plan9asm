@@ -2,10 +2,9 @@ package plan9asm
 
 import "strings"
 
-// Validated legacy and non-masked VEX forms share source-width and dependency
-// axes, not permission. The consumer selects its admitted generation first;
-// legacy reads its old destination, VEX independently writes and clears it.
-// A physical MMX source is supplied by the parser, never reinterpreted here.
+// Validated packed forms share source-width and dependency axes. Legacy
+// preserves its upper alias, and VEX/EVEX clears it. EVEX merges read the
+// active-width destination before writing it.
 func x86PackedBinaryDependencyEffect(ins Instr, form x86PackedBinaryForm, source Operand) x86TypedByteEffect {
 	width := int64(form.byteWidth)
 	sourceWidth := width
@@ -16,7 +15,11 @@ func x86PackedBinaryDependencyEffect(ins Instr, form x86PackedBinaryForm, source
 	if !form.legacy {
 		count = 3
 	}
-	effect := x86TypedByteEffect{operands: make([]x86TypedByteOperand, count)}
+	capacity := count
+	if form.mask >= 0 {
+		capacity++
+	}
+	effect := x86TypedByteEffect{operands: make([]x86TypedByteOperand, count, capacity)}
 	effect.operands[0] = x86TypedByteOperand{index: form.first, operand: source, width: sourceWidth, read: true}
 	effect.operands[1] = x86TypedByteOperand{index: form.second, operand: ins.Args[form.second], width: width, read: true, write: form.legacy}
 	if form.legacy && !form.mmx {
@@ -25,13 +28,25 @@ func x86PackedBinaryDependencyEffect(ins Instr, form x86PackedBinaryForm, source
 		effect.vector = x86TypedVectorEffect{x86TypedVectorUpperZero, 1}
 		effect.operands[2] = x86TypedByteOperand{index: form.destination, operand: ins.Args[form.destination], width: width, write: true}
 	}
+	effect.addWritemask(ins, form.mask, form.zeroing)
 	return effect
+}
+
+// The destination is the last dependency of a packed vector-producing form.
+// The bound proof tracks defined mask bits without assuming their values.
+func (effect *x86TypedByteEffect) addWritemask(ins Instr, mask int, zeroing bool) {
+	if mask < 0 {
+		return
+	}
+	effect.operands[len(effect.operands)-1].read = !zeroing
+	effect.operands = append(effect.operands, x86TypedByteOperand{
+		index: mask, operand: ins.Args[mask], width: 8, read: true,
+	})
 }
 
 type x86PackedBinaryEffectForm struct {
 	x86PackedBinaryForm
 	source Operand // Retains the actual MMX bank of a legacy GP spelling.
-	vex    bool
 }
 
 // Keep the existing family parsers as the only opcode/form authority. This
@@ -65,15 +80,15 @@ func x86PackedBinaryEffectProperties(op Op, ins Instr, arch string) (x86PackedBi
 		return x86PackedBinaryEffectForm{}, false, nil // Negative filter only; the specs below remain authoritative.
 	}
 	if form, known, err := x86LegacyIntegerArithmeticProperties(op, ins, arch); known {
-		return x86PackedBinaryEffectForm{form.x86PackedBinaryForm, form.source, false}, true, err
+		return x86PackedBinaryEffectForm{form.x86PackedBinaryForm, form.source}, true, err
 	}
 	if form, known, err := x86PackedLowMultiplyProperties(op, ins, arch); known {
 		var source Operand
 		if err == nil {
 			source = ins.Args[form.first]
 		}
-		return x86PackedBinaryEffectForm{form.x86PackedBinaryForm, source, form.spec.encoding != x86PackedLogicalEVEX}, true, err
+		return x86PackedBinaryEffectForm{form.x86PackedBinaryForm, source}, true, err
 	}
 	form, known, err := x86PackedPhysicalProperties(op, ins, arch, "")
-	return x86PackedBinaryEffectForm{form.x86PackedBinaryForm, form.source, true}, known, err
+	return x86PackedBinaryEffectForm{form.x86PackedBinaryForm, form.source}, known, err
 }

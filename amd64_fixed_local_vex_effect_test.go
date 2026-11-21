@@ -294,12 +294,12 @@ func TestGoAMD64FixedLocalVEXBinaryInputAndAliasEffects(t *testing.T) {
 	} {
 		t.Run(operation, func(t *testing.T) {
 			ins := x86ScalarLaneInstruction(t, operation)
-			if _, known, err := fixedLocalVectorByteEffect(ins); known && err == nil {
-				t.Fatal("separate EVEX form acquired a VEX effect before input checks")
+			if _, known, err := fixedLocalVectorByteEffect(ins); !known || err != nil {
+				t.Fatal("typed EVEX dependencies were not projected", err)
 			}
-			fn, sig, _ := fixedLocalVEXFixture(t, operation)
-			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
-				t.Fatal("separate EVEX width/mask/broadcast acquired VEX permission", err)
+			state := x86FixedLocalState{}
+			if err := fixedLocalVectorStep(&ins, &state, &x86FixedLocalProof{}, 0); !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("EVEX width/mask/broadcast acquired uninitialized inputs", err)
 			}
 		})
 	}

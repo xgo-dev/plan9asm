@@ -66,7 +66,7 @@ func TestX86FixedLocalBroadcastOriginalFormsAndEffects(t *testing.T) {
 					t.Fatalf("original row did not select VEX: %x", encoded)
 				}
 				ins := x86ScalarLaneInstruction(t, row.instruction())
-				effect, known, err := x86UnmaskedVEXByteEffect(ins.Op, ins, arch)
+				effect, known, err := x86VectorDependencyByteEffect(ins.Op, ins, arch)
 				if !known || err != nil || len(effect.operands) != 2 {
 					t.Fatal("complete broadcast family lacks its typed dependency", known, err)
 				}

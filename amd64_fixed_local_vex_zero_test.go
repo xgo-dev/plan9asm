@@ -83,7 +83,7 @@ func TestGoAMD64FixedLocalVEXLogicalZeroConsumers(t *testing.T) {
 						if zero && resultErr != nil || !zero && !errors.Is(resultErr, ErrProbeNeedsContext) {
 							t.Fatal("ordinary result consumer changed its logical dependency", resultErr)
 						}
-						effect, known, err := x86UnmaskedVEXByteEffect(ins.Op, ins, "amd64")
+						effect, known, err := x86VectorDependencyByteEffect(ins.Op, ins, "amd64")
 						if !known || err != nil || len(effect.operands) != 3 {
 							t.Fatal("complete VEX logical source lacks its typed effect", known, err)
 						}

@@ -343,6 +343,15 @@ the K-register logical family. Use `scalar-memory` for fixed-width GP
 memory effects with the same explicit pointer fixture. It also initializes
 reaching FLAGS and any implicit accumulator inputs required by the form.
 Dynamic bit strings and private stack effects require separate validation.
+For AMD64 EVEX integer arithmetic and shifts with private stack reads,
+`TestGoAMD64FixedLocalEVEXRead` covers the Go table's operand formats and
+observed instruction boundaries. Exact Go source fixtures with SP and an
+indexed SP address exercise the three translation APIs on Linux, Darwin and
+Windows targets. The frame proof requires a defined mask and all potentially
+accessed bytes. Broadcast uses its scalar tuple, and only merging forms
+require the previous destination. These checks provide object evidence for
+the exact source fixtures and track execution separately.
+
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies
 the shared register value. The probe retains the original scale and displacement.

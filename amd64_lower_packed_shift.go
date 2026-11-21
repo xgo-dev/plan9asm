@@ -91,9 +91,12 @@ func (c *amd64Ctx) lowerX86PackedShift(op Op, ins Instr) (bool, bool, error) {
 			}
 		}
 		if form.mask >= 0 {
-			old, err := c.loadPackedCompareLanes(ins.Args[form.destination], form.byteWidth, form.laneBits, false)
-			if err != nil {
-				return true, false, err
+			old := "zeroinitializer"
+			if !form.zeroing {
+				old, err = c.loadPackedCompareLanes(ins.Args[form.destination], form.byteWidth, form.laneBits, false)
+				if err != nil {
+					return true, false, err
+				}
 			}
 			result = amd64ApplyIntegerLaneMask(c, lanes, form.laneBits, result, old, mask, form.zeroing)
 		}

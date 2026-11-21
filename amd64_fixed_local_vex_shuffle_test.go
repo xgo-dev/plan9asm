@@ -73,7 +73,7 @@ func TestGoAMD64FixedLocalVEXShuffleBoundaries(t *testing.T) {
 	for _, name := range []string{"VPSHUFD", "VPSHUFHW", "VPSHUFLW"} {
 		t.Run(name+"/dispatch identity", func(t *testing.T) {
 			ins := x86YMMReadSource(t, "PSHUFD $0,X1,X2")
-			if _, known, err := x86UnmaskedVEXByteEffect(Op(name), ins, "amd64"); !known || err == nil {
+			if _, known, err := x86VectorDependencyByteEffect(Op(name), ins, "amd64"); !known || err == nil {
 				t.Fatal("VEX dispatch changed a legacy source's upper-write contract", known, err)
 			}
 		})

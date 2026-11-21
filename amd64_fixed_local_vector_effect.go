@@ -3,7 +3,6 @@ package plan9asm
 import "strings"
 
 // Only descriptors with explicit vector storage/alias metadata participate.
-// MMX, unregistered upper writes and wider banks keep their separate owners.
 func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if ins.x86NumericalRead != nil {
 		return x86TypedByteEffect{}, false, nil // Preserve the existing owner-specific consumer.
@@ -12,11 +11,14 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if _, known := amd64Reciprocal14Specs[Op(base)]; known {
 		return x86TypedFloatingHelperByteEffect(ins.Op, ins, "amd64")
 	}
-	parse := x86PackedBinaryByteEffect
-	if strings.HasPrefix(strings.ToUpper(string(ins.Op)), "V") {
-		parse = x86UnmaskedVEXByteEffect
+	var effect x86TypedByteEffect
+	var known bool
+	var err error
+	if strings.HasPrefix(base, "V") {
+		effect, known, err = x86VectorDependencyByteEffect(ins.Op, ins, "amd64")
+	} else {
+		effect, known, err = x86PackedBinaryByteEffect(ins.Op, ins, "amd64")
 	}
-	effect, known, err := parse(ins.Op, ins, "amd64")
 	if !known {
 		effect, known, err = x86TypedPackedIntegerCompareByteEffect(ins.Op, ins, "amd64")
 	}
@@ -31,9 +33,14 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	for _, operand := range effect.operands {
 		switch operand.operand.Kind {
 		case OpReg:
+			if amd64IsKOperand(operand.operand) {
+				valid = valid && operand.width == 8 && operand.read && !operand.write
+				continue
+			}
 			width := amd64VectorByteWidth(operand.operand.Reg)
 			index, vector := amd64VectorRegisterIndex(operand.operand.Reg, width)
-			valid = valid && vector && index < 16 && operand.width == int64(width)
+			valid = valid && vector && (index < 16 || effect.vector.upperWrite == x86TypedVectorUpperZero) &&
+				operand.width == int64(width)
 		case OpMem, OpSym:
 			valid = valid && operand.width > 0
 		case OpImm:

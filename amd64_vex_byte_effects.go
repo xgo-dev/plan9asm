@@ -2,22 +2,21 @@ package plan9asm
 
 import "strings"
 
-// This is a typed dependency adapter, not a source/storage authority or an
-// opcode whitelist. Each family retains its complete existing operand parser.
-// The current consumer explicitly closes only non-masked VEX; EVEX storage,
-// writemasks and EVEX broadcasts remain with their separately validated owners.
-func x86UnmaskedVEXByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+// The fixed-local consumer also admits EVEX read forms for the integer
+// arithmetic and shift families. The same typed operands describe both
+// encodings; other effects keep their existing consumers.
+func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
 	if !strings.HasPrefix(strings.ToUpper(string(op)), "V") {
 		return x86TypedByteEffect{}, false, nil
 	}
 	if form, known, err := x86PackedArithmeticProperties(ins.Op, ins, arch, x86PackedArithmeticAdd|x86PackedArithmeticSubtract); known {
-		return x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm, true, err)
+		return x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
 	}
 	if form, known, err := x86PackedBinaryEffectProperties(op, ins, arch); known {
-		return x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm, form.vex, err)
+		return x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
 	}
 	if form, known, err := x86IntegerMinMaxProperties(op, ins, arch); known {
-		return x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm, form.spec.laneBits <= 32, err)
+		return x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
 	}
 	if form, known, err := x86PackedLogicalProperties(ins, arch); known {
 		effect, known, err := x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm,
@@ -83,7 +82,13 @@ func x86UnmaskedVEXByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect
 		return x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm, true, err)
 	}
 	if form, known, err := x86PackedShiftProperties(op, ins, arch); known {
-		return x86UnmaskedVEXShiftEffect(ins, form, err)
+		if err != nil {
+			return x86TypedByteEffect{}, true, err
+		}
+		if form.legacy || form.mmx {
+			return x86TypedByteEffect{}, true, goAMD64FrameContext("packed shift needs a VEX/EVEX vector result: %s", ins.Op)
+		}
+		return x86PackedShiftDependencyEffect(ins, form), true, nil
 	}
 	if form, known, err := x86BroadcastProperties(op, ins, arch); known {
 		if err != nil {
@@ -152,27 +157,20 @@ func x86LowVEXVectorOperands(ins Instr) bool {
 }
 
 func x86UnmaskedVEXBinaryEffect(ins Instr, form x86PackedBinaryForm, vex bool, err error) (x86TypedByteEffect, bool, error) {
-	if err != nil {
-		return x86TypedByteEffect{}, true, err
+	if err == nil && (!vex || form.mask >= 0 || form.broadcast || form.zeroing || !x86LowVEXVectorOperands(ins)) {
+		err = goAMD64FrameContext("vector effect requires its separate non-VEX consumer: %s", ins.Op)
 	}
-	if !vex || form.legacy || form.mmx || form.mask >= 0 || form.broadcast || form.zeroing || !x86LowVEXVectorOperands(ins) {
-		return x86TypedByteEffect{}, true, goAMD64FrameContext("vector effect requires its separate non-VEX consumer: %s", ins.Op)
-	}
-	return x86PackedBinaryDependencyEffect(ins, form, ins.Args[form.first]), true, nil
+	return x86VectorBinaryDependencyEffect(ins, form, err)
 }
 
-func x86UnmaskedVEXShiftEffect(ins Instr, form x86PackedShiftForm, err error) (x86TypedByteEffect, bool, error) {
+func x86VectorBinaryDependencyEffect(ins Instr, form x86PackedBinaryForm, err error) (x86TypedByteEffect, bool, error) {
 	if err != nil {
 		return x86TypedByteEffect{}, true, err
 	}
-	// The grammar's numerical dimensions distinguish VEX from the EVEX-only
-	// word-per-lane and arithmetic-qword forms without a second opcode list.
-	if form.legacy || form.mmx || form.mask >= 0 || form.broadcast || form.zeroing || !x86LowVEXVectorOperands(ins) ||
-		form.arithmetic && form.laneBits == 64 || form.countMode == x86PackedShiftPerLane && form.laneBits == 16 ||
-		form.countOperand.Kind == OpImm && form.memory == form.data {
-		return x86TypedByteEffect{}, true, goAMD64FrameContext("shift effect requires its separate non-VEX consumer: %s", ins.Op)
+	if form.legacy || form.mmx {
+		return x86TypedByteEffect{}, true, goAMD64FrameContext("packed binary instruction needs a VEX/EVEX vector result: %s", ins.Op)
 	}
-	return x86PackedShiftDependencyEffect(ins, form), true, nil
+	return x86PackedBinaryDependencyEffect(ins, form, ins.Args[form.first]), true, nil
 }
 
 // Numerical register dependencies and native access widths are separate axes.
@@ -184,6 +182,13 @@ func x86PackedShiftDependencyEffect(ins Instr, form x86PackedShiftForm) x86Typed
 		countWidth = 1
 	} else if form.countMode == x86PackedShiftUniform {
 		countWidth = 16 // The full m128 access is observable, not just its low qword.
+	}
+	dataWidth := width
+	switch form.memory {
+	case form.count:
+		countWidth = int64(form.memoryBytes)
+	case form.data:
+		dataWidth = int64(form.memoryBytes)
 	}
 	var dataBytes, countBytes uint64
 	for output := 0; output < form.byteWidth; output++ {
@@ -198,7 +203,7 @@ func x86PackedShiftDependencyEffect(ins Instr, form x86PackedShiftForm) x86Typed
 		vector: vector,
 		operands: []x86TypedByteOperand{
 			{index: form.count, operand: form.countOperand, width: countWidth, read: true},
-			{index: form.data, operand: ins.Args[form.data], width: width, read: dataBytes != 0 || ins.Args[form.data].Kind != OpReg},
+			{index: form.data, operand: ins.Args[form.data], width: dataWidth, read: dataBytes != 0 || ins.Args[form.data].Kind != OpReg},
 			{index: form.destination, operand: ins.Args[form.destination], width: width, write: true},
 		},
 	}
@@ -208,5 +213,6 @@ func x86PackedShiftDependencyEffect(ins Instr, form x86PackedShiftForm) x86Typed
 	if ins.Args[form.data].Kind == OpReg {
 		effect.operands[1].requiredBytes = dataBytes
 	}
+	effect.addWritemask(ins, form.mask, form.zeroing)
 	return effect
 }
