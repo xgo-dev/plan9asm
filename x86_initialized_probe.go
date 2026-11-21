@@ -227,8 +227,17 @@ func initializedVectorOperands(goarch string, ins Instr) ([]Operand, int64, bool
 	if !known {
 		return initializedExplicitSIMDOperands(goarch, ins)
 	}
-	if err != nil || effect.dynamicMemory || effect.flagsRead != 0 {
+	if err != nil || effect.flagsRead != 0 {
 		return nil, 0, false
+	}
+	if effect.dynamicMemory {
+		// Compact/expand accesses a mask-selected prefix. The full vector
+		// width bounds that prefix for a probe using a declared pointer.
+		form, known, err := x86PackedCompactProperties(ins.Op, ins, goarch)
+		if !known || err != nil || form.memory < 0 || form.undefinedOpcode() {
+			return nil, 0, false
+		}
+		return ins.Args, int64(form.byteWidth), true
 	}
 	inputs := append([]Operand(nil), ins.Args...)
 	var memoryBytes int64

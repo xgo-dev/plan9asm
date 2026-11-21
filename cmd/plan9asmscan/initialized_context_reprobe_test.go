@@ -500,6 +500,81 @@ func TestInitializedContextReprobeVectorMemory386(t *testing.T) {
 	}
 }
 
+func TestInitializedContextReprobeVectorMemoryCompactExpand(t *testing.T) {
+	for _, arch := range []string{"amd64", "386"} {
+		t.Run(arch, func(t *testing.T) {
+			forms := make(map[string]*formStat)
+			eligible := make(map[int]plan9asm.Instr)
+			line := 0
+			add := func(source string, ordinary bool) {
+				t.Helper()
+				line++
+				ins := compactProbeInstructions(t, source)[0]
+				err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, arch, ins)
+				if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+					t.Fatalf("%s: expected missing inputs in the original probe, got %v", source, err)
+				}
+				form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, arch, ins).Form
+				if forms[form] == nil {
+					forms[form] = &formStat{}
+				}
+				captureContextSource(forms, plan9asm.ArchAMD64, arch, ins,
+					initializedContextSource{File: "compact.s", Function: "case", Line: line}, err)
+				if ordinary {
+					eligible[line] = ins
+				}
+			}
+
+			// Go's compact/expand tables pair an unmasked and masked memory
+			// row for every vector width. Only expand allows a zeroing memory
+			// form with an ordinary continuation.
+			for _, bank := range []string{"X", "Y", "Z"} {
+				reg := bank + "2"
+				for _, suffix := range []string{"PS", "PD", "B", "W", "D", "Q"} {
+					prefix := "VP"
+					if suffix == "PS" || suffix == "PD" {
+						prefix = "V"
+					}
+					compress, expand := prefix+"COMPRESS"+suffix, prefix+"EXPAND"+suffix
+					add(compress+" "+reg+", (BX)", true)
+					add(compress+" "+reg+", K7, 7(BX)(SI*2)", true)
+					terminal := compactProbeInstructions(t, compress+".Z "+reg+", K7, (BX)")[0]
+					if seq, known, err := plan9asm.InitializedVectorMemoryProbeSequence(arch, terminal); known || err != nil || seq != nil {
+						t.Fatalf("terminal encoding acquired a memory continuation: %s", terminal.Raw)
+					}
+					add(expand+" (BX), "+reg, true)
+					add(expand+" 7(BX)(SI*2), K7, "+reg, true)
+					add(expand+".Z (BX), K7, "+reg, true)
+				}
+			}
+			add("VPEXPANDQ 16(SP), K7, Z2", false)
+			add("VPCOMPRESSQ Z2, K7, 99(SI)(SI*4)", false)
+
+			evidence, err := runInitializedContextReprobe(forms, "vector-memory", arch, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.Status != "pass" || evidence.EligibleCases != 90 ||
+				len(evidence.UnregisteredCases) != 2 {
+				t.Fatalf("unexpected compact/expand selection: status=%s eligible=%d unregistered=%d",
+					evidence.Status, evidence.EligibleCases, len(evidence.UnregisteredCases))
+			}
+			for _, row := range evidence.Cases {
+				original, found := eligible[row.Source.Line]
+				if !found || !row.MemoryPointerArgument || !reflect.DeepEqual(row.OriginalInstruction, original) ||
+					row.IRTextGeneration.Status != "pass" || row.LLVMObjectCompilation.Status != "pass" ||
+					row.RuntimeExecution.Status != "not_run" {
+					t.Fatalf("wrong compact/expand evidence: %+v", row)
+				}
+				delete(eligible, row.Source.Line)
+			}
+			if len(eligible) != 0 {
+				t.Fatalf("missing %d original compact/expand occurrences", len(eligible))
+			}
+		})
+	}
+}
+
 func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
 	for _, row := range []struct {
 		arch, line string
