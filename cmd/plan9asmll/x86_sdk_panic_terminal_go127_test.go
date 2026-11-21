@@ -71,3 +71,50 @@ func TestCompileOneSelectedSDK386AtomicWholeFile(t *testing.T) {
 		}
 	}
 }
+
+func TestCompileOneSelectedSDK386ABI0TailPreservesGlobalEntry(t *testing.T) {
+	const packagePath = "crypto/internal/fips140/bigmod"
+	setX86SDKNumericalCLIProfile(t, "explicit")
+	t.Setenv("GOROOT", runtime.GOROOT())
+	t.Chdir(filepath.Join(runtime.GOROOT(), "src", filepath.FromSlash(packagePath)))
+	packages, environment, err := loadPkgsInEnvironment("linux", "386", []string{"."}, nil, "", true, false, nil)
+	if err != nil || len(packages) != 1 || packages[0].PkgPath != packagePath {
+		t.Fatal("could not load the original SDK package", err)
+	}
+	pkg := packages[0]
+	config, err := resolveCompileConfig(true, "", true, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Context = arm64PrivateCLIContext(t)
+	config.x86CallerSelections = captureX86CallerSelectionsInEnvironment(packages, "linux/386", environment)
+	output := filepath.Join(t.TempDir(), "nat.ll")
+	task := asmTask{PkgPath: pkg.PkgPath, AsmFile: filepath.Join(pkg.Dir, "nat_386.s"), OutLL: output}
+	if err := compileOne(pkg, plan9asm.ArchAMD64, "linux", "386", "i386-unknown-linux-gnu", task, false, config); err != nil {
+		t.Fatal(err)
+	}
+	object, err := elf.Open(strings.TrimSuffix(output, ".ll") + ".o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer object.Close()
+	if object.Machine != elf.EM_386 {
+		t.Fatal("expected i386 native object", object.Machine)
+	}
+	symbols, err := object.Symbols()
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := make(map[string]bool)
+	for _, symbol := range symbols {
+		if elf.ST_TYPE(symbol.Info) == elf.STT_FUNC && elf.ST_BIND(symbol.Info) == elf.STB_GLOBAL &&
+			symbol.Section != elf.SHN_UNDEF && symbol.Size != 0 {
+			definitions[symbol.Name] = true
+		}
+	}
+	for _, name := range []string{"addMulVVWx", packagePath + ".addMulVVW1024", packagePath + ".addMulVVW1536", packagePath + ".addMulVVW2048"} {
+		if !definitions[name] {
+			t.Errorf("the LLVM object omitted global function %s", name)
+		}
+	}
+}

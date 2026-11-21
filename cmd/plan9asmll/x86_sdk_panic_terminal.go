@@ -45,8 +45,8 @@ func sdkPanicTerminalCandidate(pkg *packages.Package, file *plan9asm.File) bool 
 	return false
 }
 
-func sdkPanicTerminalFallback(pkg *packages.Package, task asmTask, reads *plan9asm.GoAssemblySourceReadReport,
-	triple string, annotate bool, resolve func(string) string, config compileConfig,
+func sdk386SourceFallback(pkg *packages.Package, task asmTask, reads *plan9asm.GoAssemblySourceReadReport,
+	triple string, annotate bool, resolve func(string) string, config compileConfig, tail bool,
 ) func(llvm.Context) (llvm.Module, error) {
 	return func(irCtx llvm.Context) (llvm.Module, error) {
 		const target = "linux/386"
@@ -70,7 +70,11 @@ func sdkPanicTerminalFallback(pkg *packages.Package, task asmTask, reads *plan9a
 			GoBinary: binary, Directory: filepath.Dir(member), PackagePath: pkg.PkgPath,
 			Target: target, Environment: selected.env,
 		}
-		result, err := plan9asm.TranslateGoX86SDKPanicTerminalModuleInContext(config.Context, irCtx, request,
+		translate := plan9asm.TranslateGoX86SDKPanicTerminalModuleInContext
+		if tail {
+			translate = plan9asm.TranslateGoX86SDKABI0TailModuleInContext
+		}
+		result, err := translate(config.Context, irCtx, request,
 			plan9asm.GoModuleOptions{
 				FileName: member, GOOS: "linux", GOARCH: "386", TargetTriple: triple,
 				ResolveSym: resolve, AnnotateSource: annotate,
@@ -82,7 +86,7 @@ func sdkPanicTerminalFallback(pkg *packages.Package, task asmTask, reads *plan9a
 			after, err := gotoolprofile.FileSHA256(name)
 			if err != nil || after != before {
 				result.Module.Dispose()
-				return llvm.Module{}, fmt.Errorf("the original assembly or include changed during SDK call observation")
+				return llvm.Module{}, fmt.Errorf("the original assembly or include changed during SDK source observation")
 			}
 		}
 		return result.Module, nil
