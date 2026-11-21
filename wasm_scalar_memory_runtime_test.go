@@ -63,7 +63,7 @@ func TestWASMScalarMemoryNativeDifferential(t *testing.T) {
 		}
 		for _, level := range []string{"0", "2"} {
 			t.Run(route+"/O"+level, func(t *testing.T) {
-				wasmRunScalarMemory(t, ir, level, wasmScalarMemoryDifferential, matrix)
+				runLLVMWASMObject(t, ir, level, wasmScalarMemoryDifferential, matrix)
 			})
 		}
 	}

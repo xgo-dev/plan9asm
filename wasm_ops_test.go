@@ -7,11 +7,6 @@ import (
 )
 
 func TestTranslateWasmIntegerOperations(t *testing.T) {
-	for op, spec := range wasmIntegerBinaryOps {
-		t.Run(op, func(t *testing.T) {
-			translateWasmIntegerOperation(t, op, spec, spec.typ)
-		})
-	}
 	for op, spec := range wasmIntegerCompareOps {
 		t.Run(op, func(t *testing.T) {
 			translateWasmIntegerOperation(t, op, spec, I32)

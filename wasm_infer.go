@@ -112,11 +112,24 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err != nil {
 			return FuncSig{}, err
 		}
+		integerBinary, integerBinaryKnown, err := parseWASMIntegerBinary(ins, op)
+		if err != nil {
+			return FuncSig{}, err
+		}
 		if terminated && op != "ELSE" && op != "END" && op != "LABEL" {
 			continue
 		}
 		if op == "ELSE" || op == "END" {
 			terminated = false
+		}
+		if integerBinaryKnown {
+			for i := 0; i < 2; i++ {
+				if err := popTyped(op, integerBinary.typ); err != nil {
+					return FuncSig{}, err
+				}
+			}
+			push(wasmInferValue{typ: integerBinary.typ})
+			continue
 		}
 		if memoryKnown {
 			if memory.spec.store {
@@ -231,16 +244,6 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			push(wasmInferValue{typ: I32})
 		case "I64CONST":
 			push(wasmInferValue{typ: I64})
-		case "I32ADD", "I32SUB", "I32MUL", "I32AND", "I32OR", "I32XOR",
-			"I32DIVS", "I32DIVU", "I32REMS", "I32REMU", "I32SHL", "I32SHRS", "I32SHRU":
-			if err := typedBinary(op, I32, I32); err != nil {
-				return FuncSig{}, err
-			}
-		case "I64ADD", "I64SUB", "I64MUL", "I64AND", "I64OR", "I64XOR",
-			"I64DIVS", "I64DIVU", "I64REMS", "I64REMU", "I64SHL", "I64SHRS", "I64SHRU":
-			if err := typedBinary(op, I64, I64); err != nil {
-				return FuncSig{}, err
-			}
 		case "I32EQ", "I32NE", "I32LTS", "I32LTU", "I32GTS", "I32GTU", "I32LES", "I32LEU", "I32GES", "I32GEU":
 			if err := typedBinary(op, I32, I32); err != nil {
 				return FuncSig{}, err

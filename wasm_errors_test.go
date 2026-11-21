@@ -45,9 +45,9 @@ func TestTranslateWasmDiagnostics(t *testing.T) {
 				{Offset: 8, Type: I64, Index: 1, Field: -1},
 			}},
 		}, want: "multiple FP result slots are unsupported"},
-		{name: "argument register cast", body: "Get R0\nI64Const $1\nI64Add\nDrop\nRET", sig: FuncSig{
+		{name: "argument register type", body: "Get R0\nI64Const $1\nI64Add\nDrop\nRET", sig: FuncSig{
 			Name: "op", Args: []LLVMType{"double"}, Ret: Void, ArgRegs: []Reg{"R0"},
-		}, want: "unsupported wasm cast double to i64"},
+		}, want: "expects two i64 stack values, got double and i64"},
 		{name: "tail operand", body: "JMP R0", want: "direct (SB) symbol"},
 		{name: "tail signature", body: "JMP target(SB)", want: "missing signature for tail target"},
 		{name: "tail argument count", body: "JMP target(SB)", sig: FuncSig{Name: "op", Ret: Void}, extra: map[string]FuncSig{
@@ -91,8 +91,8 @@ func TestTranslateWasmDiagnostics(t *testing.T) {
 		{name: "constant arguments", body: "I64Const", want: "expects one integer immediate"},
 		{name: "binary empty", body: "I32Add", want: "operand stack underflow"},
 		{name: "binary left empty", body: "I32Const $1\nI32Add", want: "operand stack underflow"},
-		{name: "binary left cast", body: "F64Load x+0(FP)\nI32Const $1\nI32Add", sig: frameF64, want: "unsupported wasm cast double to i32"},
-		{name: "binary right cast", body: "I32Const $1\nF64Load x+0(FP)\nI32Add", sig: frameF64, want: "unsupported wasm cast double to i32"},
+		{name: "binary left type", body: "F64Load x+0(FP)\nI32Const $1\nI32Add", sig: frameF64, want: "expects two i32 stack values, got double and i32"},
+		{name: "binary right type", body: "I32Const $1\nF64Load x+0(FP)\nI32Add", sig: frameF64, want: "expects two i32 stack values, got i32 and double"},
 		{name: "compare empty", body: "I32Eq", want: "operand stack underflow"},
 		{name: "compare left cast", body: "F64Load x+0(FP)\nI32Const $1\nI32Eq", sig: frameF64, want: "unsupported wasm cast double to i32"},
 		{name: "compare right cast", body: "I32Const $1\nF64Load x+0(FP)\nI32Eq", sig: frameF64, want: "unsupported wasm cast double to i32"},

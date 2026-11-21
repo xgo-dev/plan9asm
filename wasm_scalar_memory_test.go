@@ -81,7 +81,7 @@ TEXT implicitLoad(SB),4,$0-0
 	if err != nil {
 		t.Fatal(err)
 	}
-	wasmRunScalarMemory(t, ir, "2", `
+	runLLVMWASMObject(t, ir, "2", `
 const bytes = require('fs').readFileSync(process.argv[1]);
 const {defaultStore, offsetStore, implicitLoad, memory} = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
 const view = new DataView(memory.buffer);
@@ -203,7 +203,7 @@ func TestWASMScalarMemoryDroppedLoadStillTraps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wasmRunScalarMemory(t, ir, "2", `
+	runLLVMWASMObject(t, ir, "2", `
 const bytes = require('fs').readFileSync(process.argv[1]);
 const {discard, memory} = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
 if (discard(0) !== 42n) throw Error('valid discarded load failed');
@@ -219,7 +219,7 @@ for (const address of [memory.buffer.byteLength, 0xffffffff]) {
 `)
 }
 
-func wasmRunScalarMemory(t *testing.T, ir, level, script string, arguments ...string) {
+func runLLVMWASMObject(t *testing.T, ir, level, script string, arguments ...string) {
 	t.Helper()
 	dir := t.TempDir()
 	input := filepath.Join(dir, "input.ll")

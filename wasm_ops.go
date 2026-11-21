@@ -50,6 +50,8 @@ var wasmIntegerBinaryOps = map[string]wasmIntegerOp{
 	"I32SHL":  {I32, "shl"},
 	"I32SHRS": {I32, "ashr"},
 	"I32SHRU": {I32, "lshr"},
+	"I32ROTL": {I32, "fshl"},
+	"I32ROTR": {I32, "fshr"},
 	"I64ADD":  {I64, "add"},
 	"I64SUB":  {I64, "sub"},
 	"I64MUL":  {I64, "mul"},
@@ -63,6 +65,8 @@ var wasmIntegerBinaryOps = map[string]wasmIntegerOp{
 	"I64SHL":  {I64, "shl"},
 	"I64SHRS": {I64, "ashr"},
 	"I64SHRU": {I64, "lshr"},
+	"I64ROTL": {I64, "fshl"},
+	"I64ROTR": {I64, "fshr"},
 }
 
 var wasmIntegerCompareOps = map[string]wasmIntegerOp{

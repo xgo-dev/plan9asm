@@ -49,14 +49,20 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	want := make(map[string]bool)
 	wantFloatUnary := make(map[string]bool)
 	wantFloatBinary := make(map[string]bool)
-	wantIntegerCount := make(map[string]bool)
+	wantIntegerIntrinsic := make(map[string]bool)
 	wantConversion := make(map[string]wasmConversionOp)
 	wantTrap := false
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
 			op := normalizeInstructionOpcode(ins.Op)
 			if spec, ok := wasmIntegerCountOps[op]; ok {
-				wantIntegerCount[spec.intrinsic+"."+string(spec.typ)] = true
+				wantIntegerIntrinsic[spec.intrinsic+"."+string(spec.typ)] = true
+			}
+			if spec, ok := wasmIntegerBinaryOps[op]; ok {
+				wantTrap = wantTrap || spec.traps()
+				if intrinsic := spec.rotateIntrinsic(); intrinsic != "" {
+					wantIntegerIntrinsic[intrinsic] = true
+				}
 			}
 			if spec, ok := wasmConversionOps[op]; ok {
 				wantTrap = wantTrap || spec.traps
@@ -102,12 +108,15 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 		b.WriteString("declare void @llvm.memmove.p0.p0.i32(ptr, ptr, i32, i1 immarg)\n")
 	}
 	for _, typ := range []LLVMType{I32, I64} {
-		for _, intrinsic := range []string{"ctlz", "cttz", "ctpop"} {
+		for _, intrinsic := range []string{"ctlz", "cttz", "ctpop", "fshl", "fshr"} {
 			name := intrinsic + "." + string(typ)
-			if wantIntegerCount[name] {
+			if wantIntegerIntrinsic[name] {
 				fmt.Fprintf(b, "declare %s @llvm.%s(%s", typ, name, typ)
-				if intrinsic != "ctpop" {
+				switch intrinsic {
+				case "ctlz", "cttz":
 					b.WriteString(", i1 immarg")
+				case "fshl", "fshr":
+					fmt.Fprintf(b, ", %s, %s", typ, typ)
 				}
 				b.WriteString(")\n")
 			}
@@ -138,7 +147,7 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 			}
 		}
 	}
-	if len(want) != 0 || len(wantFloatUnary) != 0 || len(wantFloatBinary) != 0 || len(conversions) != 0 || wantTrap {
+	if len(want) != 0 || len(wantIntegerIntrinsic) != 0 || len(wantFloatUnary) != 0 || len(wantFloatBinary) != 0 || len(conversions) != 0 || wantTrap {
 		b.WriteString("\n")
 	}
 }

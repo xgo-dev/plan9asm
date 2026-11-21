@@ -34,7 +34,8 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	// disappear, but malformed source must not acquire an apparent pass.
 	var memoryForms map[int]wasmScalarMemoryForm
 	for i, ins := range fn.Instrs {
-		form, found, err := parseWASMScalarMemory(ins, normalizeInstructionOpcode(ins.Op))
+		op := normalizeInstructionOpcode(ins.Op)
+		form, found, err := parseWASMScalarMemory(ins, op)
 		if err != nil {
 			return err
 		}
@@ -43,6 +44,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				memoryForms = make(map[int]wasmScalarMemoryForm)
 			}
 			memoryForms[i] = form
+		}
+		if _, _, err := parseWASMIntegerBinary(ins, op); err != nil {
+			return err
 		}
 		if _, _, err := parseWASMFloatBinary(ins); err != nil {
 			return err
@@ -845,28 +849,6 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		blockTerminated = false
 		return nil
 	}
-	emitIntBinary := func(op string, typ LLVMType, llvmOp string) error {
-		rhs, err := pop(op)
-		if err != nil {
-			return err
-		}
-		lhs, err := pop(op)
-		if err != nil {
-			return err
-		}
-		lhs, err = cast(lhs, typ, false)
-		if err != nil {
-			return err
-		}
-		rhs, err = cast(rhs, typ, false)
-		if err != nil {
-			return err
-		}
-		name := newTmp()
-		fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", name, llvmOp, typ, lhs.val, rhs.val)
-		push(wasmValue{typ: typ, val: "%" + name})
-		return nil
-	}
 	emitIntCompare := func(op string, typ LLVMType, pred string, unary bool) error {
 		rhs := wasmValue{typ: typ, val: "0"}
 		var err error
@@ -1208,9 +1190,18 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			continue
 		}
 		if spec, ok := wasmIntegerBinaryOps[op]; ok {
-			if err := emitIntBinary(op, spec.typ, spec.op); err != nil {
+			right, err := pop(op)
+			if err != nil {
 				return err
 			}
+			left, err := pop(op)
+			if err != nil {
+				return err
+			}
+			if left.typ != spec.typ || right.typ != spec.typ || left.stackAddr || right.stackAddr {
+				return fmt.Errorf("%s expects two %s stack values, got %s and %s", ins.Op, spec.typ, left.typ, right.typ)
+			}
+			push(spec.emitBinary(b, left, right, newTmp, newLabel))
 			continue
 		}
 		if spec, ok := wasmIntegerCompareOps[op]; ok {
