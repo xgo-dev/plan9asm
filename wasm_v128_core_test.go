@@ -12,7 +12,12 @@ import (
 // This semantic inventory is independent of the translator and host Go's
 // assembler version. LLVM coverage must also run before Go 1.27 added SIMD.
 func wasmV128CoreNames() []string {
-	return []string{"V128Const", "V128Not", "V128And", "V128Andnot", "V128Or", "V128Xor", "V128Bitselect", "V128AnyTrue"}
+	return []string{
+		"V128Const", "V128Not", "V128And", "V128Andnot", "V128Or", "V128Xor", "V128Bitselect", "V128AnyTrue",
+		"I8x16Add", "I8x16AddSatS", "I8x16AddSatU", "I8x16Sub", "I8x16SubSatS", "I8x16SubSatU",
+		"I16x8Add", "I16x8AddSatS", "I16x8AddSatU", "I16x8Sub", "I16x8SubSatS", "I16x8SubSatU", "I16x8Mul",
+		"I32x4Add", "I32x4Sub", "I32x4Mul", "I64x2Add", "I64x2Sub", "I64x2Mul",
+	}
 }
 
 func wasmV128CoreConstant(value [2]uint64) string {

@@ -21,7 +21,8 @@ func TestWASMV128CoreActualGoNamespaceAndObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	var names []string
-	for _, match := range regexp.MustCompile(`"(V128(?:Const|Not|And|Andnot|Or|Xor|Bitselect|AnyTrue))"`).FindAllSubmatch(data, -1) {
+	pattern := `"(V128(?:Const|Not|And|Andnot|Or|Xor|Bitselect|AnyTrue)|I(?:8x16|16x8|32x4|64x2)(?:Add(?:Sat[SU])?|Sub(?:Sat[SU])?|Mul))"`
+	for _, match := range regexp.MustCompile(pattern).FindAllSubmatch(data, -1) {
 		names = append(names, string(match[1]))
 	}
 	if !reflect.DeepEqual(names, wasmV128CoreNames()) {
@@ -54,7 +55,7 @@ func TestWASMV128CoreOriginalGoRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	output, err := runtimeOracleCombinedOutput(ctx, command)
-	if err != nil || strings.TrimSpace(string(output)) != "V128 core PASS 48" {
+	if err != nil || strings.TrimSpace(string(output)) != wasmV128CorePass {
 		t.Fatalf("original Go V128 core execution: %v\n%s", err, output)
 	}
 }

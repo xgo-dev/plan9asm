@@ -14,9 +14,19 @@ type wasmV128CoreObservation struct {
 	Want uint32
 }
 
+const wasmV128CorePass = "V128 core PASS 270"
+
 // Whole-bit Wasm relations, independent of the translator's representation.
-// Core-only observation uses XOR/AnyTrue, not new memory/extraction opcodes.
+// Observation uses XOR/AnyTrue so it requires no vector store or extraction.
 func wasmV128CoreReference(name string, a, b, mask [2]uint64) [2]uint64 {
+	for _, shape := range []struct {
+		prefix string
+		bits   uint
+	}{{"I8x16", 8}, {"I16x8", 16}, {"I32x4", 32}, {"I64x2", 64}} {
+		if strings.HasPrefix(name, shape.prefix) {
+			return wasmV128IntegerReference(strings.TrimPrefix(name, shape.prefix), shape.bits, a, b)
+		}
+	}
 	var result [2]uint64
 	for half := range result {
 		switch name {
@@ -41,6 +51,52 @@ func wasmV128CoreReference(name string, a, b, mask [2]uint64) [2]uint64 {
 	return result
 }
 
+func wasmV128IntegerReference(op string, bits uint, a, b [2]uint64) [2]uint64 {
+	mask := uint64(1)<<bits - 1
+	signExtend := func(x uint64) int64 { return int64(x<<(64-bits)) >> (64 - bits) }
+	var result [2]uint64
+	for half := range result {
+		for offset := uint(0); offset < 64; offset += bits {
+			x, y := a[half]>>offset&mask, b[half]>>offset&mask
+			var lane uint64
+			switch op {
+			case "Add":
+				lane = x + y
+			case "Sub":
+				lane = x - y
+			case "Mul":
+				lane = x * y
+			case "AddSatU":
+				lane = x + y
+				if lane > mask {
+					lane = mask
+				}
+			case "SubSatU":
+				if x > y {
+					lane = x - y
+				}
+			case "AddSatS", "SubSatS":
+				delta := signExtend(y)
+				if op == "SubSatS" {
+					delta = -delta
+				}
+				value := signExtend(x) + delta
+				limit := int64(1) << (bits - 1)
+				if value < -limit {
+					value = -limit
+				} else if value >= limit {
+					value = limit - 1
+				}
+				lane = uint64(value)
+			default:
+				panic("unknown SIMD integer operation: " + op)
+			}
+			result[half] |= (lane & mask) << offset
+		}
+	}
+	return result
+}
+
 func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[string]FuncSig, []byte) {
 	t.Helper()
 	patterns := [][3][2]uint64{
@@ -50,6 +106,10 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 		{{1, 0}, {0, ^uint64(0)}, {0x5555555555555555, 0xaaaaaaaaaaaaaaaa}},
 		{{0x0123456789abcdef, 0xfedcba9876543210}, {0x89abcdef01234567, 0x76543210fedcba98}, {0xf0f00f0ff0f00f0f, 0x0f0ff0f00f0ff0f0}},
 		{{0x8000000000000000, 0x7fffffffffffffff}, {0x7fffffffffffffff, 0x8000000000000000}, {^uint64(0), ^uint64(0)}},
+		{{0x7f7f7f7f7f7f7f7f, 0x7fff7fff7fff7fff}, {0x0101010101010101, 0x0001000100010001}, {0, 0}},
+		{{0x8080808080808080, 0x8000800080008000}, {^uint64(0), ^uint64(0)}, {0, 0}},
+		{{0x8080808080808080, 0x7fff7fff7fff7fff}, {0x0101010101010101, ^uint64(0)}, {0, 0}},
+		{{^uint64(0), 0}, {0x0101010101010101, ^uint64(0)}, {0, 0}},
 	}
 	var source, original, program strings.Builder
 	program.WriteString("package main\nimport \"fmt\"\n")
@@ -74,14 +134,14 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 			rows = append(rows, wasmV128CoreObservation{Name: function, Want: want})
 		}
 	}
-	if len(rows) != 48 {
-		t.Fatal("complete eight-member, six-pattern observation inventory changed", len(rows))
+	if len(rows) != 270 {
+		t.Fatal("complete vector observation inventory changed", len(rows))
 	}
 	program.WriteString("func main() {\n")
 	for _, row := range rows {
 		fmt.Fprintf(&program, "if got := %s(); got != %d { panic(fmt.Sprintf(\"%s: %%d\", got)) }\n", row.Name, row.Want, row.Name)
 	}
-	program.WriteString("fmt.Println(\"V128 core PASS 48\")\n}\n")
+	fmt.Fprintf(&program, "fmt.Println(%q)\n}\n", wasmV128CorePass)
 	data, err := json.Marshal(rows)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +179,7 @@ func TestWASMV128CoreThreeAPIsLLVMRuntime(t *testing.T) {
 					t.Fatal(err)
 				}
 				output := wasmFloatBinaryCommand(t, wasmPackedNode(t), "-e", wasmV128CoreNodeCheck, binary, inputs)
-				if strings.TrimSpace(output) != "V128 core PASS 48" {
+				if strings.TrimSpace(output) != wasmV128CorePass {
 					t.Fatal("incomplete V128 core execution", output)
 				}
 			})

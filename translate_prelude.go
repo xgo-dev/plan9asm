@@ -51,6 +51,7 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	wantFloatBinary := make(map[string]bool)
 	wantIntegerIntrinsic := make(map[string]bool)
 	wantConversion := make(map[string]wasmConversionOp)
+	var wantVectorIntrinsic map[string]LLVMType
 	wantTrap := false
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
@@ -80,6 +81,12 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 			if spec, ok := wasmFloatBinaryOps[op]; ok && spec.intrinsic != "" {
 				wantFloatBinary[string(spec.typ)+"|"+spec.intrinsic] = true
 			}
+			if spec, ok := wasmV128CoreOps[op]; ok && spec.saturating {
+				if wantVectorIntrinsic == nil {
+					wantVectorIntrinsic = make(map[string]LLVMType)
+				}
+				wantVectorIntrinsic[spec.intrinsic()] = spec.laneType()
+			}
 			switch op {
 			case "MEMORYCOPY":
 				want["memmove"] = true
@@ -103,6 +110,15 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	for _, intrinsic := range conversions {
 		spec := wantConversion[intrinsic]
 		fmt.Fprintf(b, "declare %s @%s(%s)\n", spec.result, intrinsic, spec.source)
+	}
+	vectorIntrinsics := make([]string, 0, len(wantVectorIntrinsic))
+	for intrinsic := range wantVectorIntrinsic {
+		vectorIntrinsics = append(vectorIntrinsics, intrinsic)
+	}
+	sort.Strings(vectorIntrinsics)
+	for _, intrinsic := range vectorIntrinsics {
+		typ := wantVectorIntrinsic[intrinsic]
+		fmt.Fprintf(b, "declare %s @%s(%s, %s)\n", typ, intrinsic, typ, typ)
 	}
 	if want["memmove"] {
 		b.WriteString("declare void @llvm.memmove.p0.p0.i32(ptr, ptr, i32, i1 immarg)\n")
