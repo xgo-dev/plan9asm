@@ -329,8 +329,12 @@ func TestX86Reciprocal14FixedLocalTypedRolesRetainAllInputsAndStorage(t *testing
 	for _, member := range x86FloatingHelperOracleMembers() {
 		ins := x86ScalarLaneInstruction(t, x86FloatingHelperOracleInstruction(member, false))
 		effect, known, err := x86TypedFloatingHelperByteEffect(ins.Op, ins, "amd64")
-		if !known || err != nil || effect.vector.memoryAlignment != 0 {
-			t.Fatal("reciprocal14 metadata widened another native helper's private storage role", member.name, err)
+		want := x86TypedVectorEffect{x86TypedVectorUpperZero, 1}
+		if member.maskResult {
+			want.upperWrite = x86TypedVectorNoWrite
+		}
+		if !known || err != nil || effect.vector != want {
+			t.Fatal("native helper has incorrect vector alias or alignment requirements", member.name, effect.vector, err)
 		}
 	}
 }

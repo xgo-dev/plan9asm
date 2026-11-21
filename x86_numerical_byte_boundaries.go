@@ -96,7 +96,7 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		decodedX86NumericalConversionBoundary,
 		decodedX86VEXFMA3InstructionWithMemory,
 		decodedX86VEXBinaryFloatInstructionWithMemory,
-		decodedX86NumericalReciprocal14Boundary,
+		decodedX86NumericalFloatingHelperBoundary,
 		decodedX86AESInstructionWithMemory,
 		decodedX86MaskMoveInstructionWithMemory,
 		decodedX86PackedMoveInstructionWithMemory,
@@ -239,39 +239,6 @@ func decodedX86VEXPackedUnpackBoundary(code []byte, mode int, memory x86RawMemor
 	// VEX always reads the full vector tuple. The EVEX lane width only
 	// affects broadcast scaling, which cannot occur in this encoding.
 	return decodedX86BinaryVectorOperandsWithMemory(code, p, mode, form.op, 0, memory)
-}
-
-// Only observe complete Go-emitted instruction boundaries. This does not
-// decode raw source or supply a native read/entry/storage capability. Scalar
-// tuple scaling changes the address, never the encoded length; discard the
-// binary transport's operand projection rather than exposing it as a scalar
-// instruction. The independently bound original source owns those operands.
-func decodedX86NumericalReciprocal14Boundary(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
-	p, matched := decodeX86RawVectorEncoding(code)
-	if !matched || !p.evex || p.mapNumber != 2 || p.opcode < 0x4c || p.opcode > 0x4f {
-		return Instr{}, 0, false, nil
-	}
-	scalar := p.opcode&1 != 0
-	if !scalar && p.upper != 0 || scalar && (p.vectorLength != 0 || p.broadcast) {
-		return Instr{}, 0, true, numericalSBContext("noncanonical Go reciprocal14 source or scalar prefix")
-	}
-	family, suffix, bits := "VRCP14", "PS", 32
-	if p.opcode >= 0x4e {
-		family = "VRSQRT14"
-	}
-	if scalar {
-		suffix = "SS"
-	}
-	if p.w {
-		bits = 64
-		if scalar {
-			suffix = "SD"
-		} else {
-			suffix = "PD"
-		}
-	}
-	_, length, known, err := decodedX86BinaryVectorOperandsWithMemory(code, p, mode, Op(family+suffix), bits, memory)
-	return Instr{}, length, known, err
 }
 
 // Keep the original raw-source dispatch order: EVEX 19/W0 is F32X2, not

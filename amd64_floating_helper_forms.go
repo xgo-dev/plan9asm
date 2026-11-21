@@ -183,36 +183,36 @@ func x86TypedFloatingHelperByteEffect(op Op, ins Instr, arch string) (x86TypedBy
 		firstWidth = int64(form.memoryBytes)
 	}
 	outputWidth := int64(form.byteWidth)
+	upper := x86TypedVectorUpperZero
 	if form.spec.maskResult {
 		outputWidth = 8
+		upper = x86TypedVectorNoWrite
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
-	}}
-	if form.spec.estimate14 || form.spec.estimate28 {
-		effect.vector.upperWrite = x86TypedVectorUpperZero
-		// Native estimates accept unaligned memory. Their original
-		// masked access/fault behavior still executes in the native helper;
-		// this alignment metadata supplies no private/caller storage authority.
-		effect.vector.memoryAlignment = 1
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{upper, 1},
+		operands: []x86TypedByteOperand{
+			{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
+		},
 	}
+	active := x86CallerVectorByteMask(int64(form.activeBytes()))
 	if form.second >= 0 {
-		// A scalar upper source is copied as bits. Sparse numerical knowledge
-		// is retained separately by the precise result-byte transfer.
-		effect.operands = append(effect.operands, x86TypedByteOperand{
+		second := x86TypedByteOperand{
 			index: form.second, operand: ins.Args[form.second], width: int64(form.byteWidth), read: true,
-		})
-		if (form.spec.estimate14 || form.spec.estimate28) && form.spec.scalar {
-			effect.operands[len(effect.operands)-1].requiredBytes = 0xffff &^ x86CallerVectorByteMask(int64(form.activeBytes()))
 		}
+		if form.spec.scalar && !form.spec.second {
+			second.requiredBytes = 0xffff &^ active // This source contributes only the copied upper X bytes.
+		}
+		effect.operands = append(effect.operands, second)
 	}
-	effect.operands = append(effect.operands, x86TypedByteOperand{
+	destination := x86TypedByteOperand{
 		index: form.destination, operand: ins.Args[form.destination], width: outputWidth,
 		read: !form.spec.maskResult && (form.spec.readDestination || form.mask >= 0 && !form.properties.zeroing), write: true,
-	})
-	if (form.spec.estimate14 || form.spec.estimate28) && form.spec.scalar && form.mask >= 0 && !form.properties.zeroing {
-		effect.operands[len(effect.operands)-1].requiredBytes = x86CallerVectorByteMask(int64(form.activeBytes()))
 	}
+	if destination.read && form.spec.scalar {
+		destination.requiredBytes = active
+	}
+	effect.operands = append(effect.operands, destination)
 	if form.mask >= 0 {
 		effect.operands = append(effect.operands, x86TypedByteOperand{
 			index: form.mask, operand: ins.Args[form.mask], width: 8, read: true,

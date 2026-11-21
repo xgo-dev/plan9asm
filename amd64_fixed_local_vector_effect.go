@@ -8,9 +8,6 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 		return x86TypedByteEffect{}, false, nil // Preserve the existing owner-specific consumer.
 	}
 	base, _, _ := strings.Cut(strings.ToUpper(string(ins.Op)), ".")
-	if _, known := amd64Reciprocal14Specs[Op(base)]; known {
-		return x86TypedFloatingHelperByteEffect(ins.Op, ins, "amd64")
-	}
 	var effect x86TypedByteEffect
 	var known bool
 	var err error
@@ -23,7 +20,8 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 		effect, known, err = x86TypedPackedIntegerCompareByteEffect(ins.Op, ins, "amd64")
 	}
 	if !known {
-		return effect, false, nil
+		// These forms also accept individually typed scalar FP fields.
+		return x86TypedFloatingHelperByteEffect(ins.Op, ins, "amd64")
 	}
 	if err != nil {
 		return x86TypedByteEffect{}, true, goAMD64FrameContext("fixed local vector form is not closed: %v", err)

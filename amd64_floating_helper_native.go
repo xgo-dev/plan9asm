@@ -121,7 +121,7 @@ func (c *amd64Ctx) emitNativeFloatingClass(ins Instr, form x86FloatingHelperForm
 	input, inputType, inputConstraint, inputTemplate, err := c.nativeFloatingCompareSource(ins.Args[form.first],
 		x86FloatCompareForm{x86FloatBinaryForm: x86FloatBinaryForm{
 			bits: form.spec.bits, byteWidth: form.byteWidth, memoryBytes: form.memoryBytes, scalar: form.spec.scalar,
-		}}, typ, mask)
+		}, maskResult: true}, typ, mask)
 	if err != nil {
 		return err
 	}

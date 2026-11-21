@@ -107,12 +107,25 @@ func x86LegacyFloatingBinaryMember(opcode string) bool {
 // X86FloatingImmediateControlRows retains the five complete PS/PD/SS/SD
 // immediate-control families. Numerical/environment contracts stay typed.
 func X86FloatingImmediateControlRows(legacy X86LegacyCatalog, avx []X86AVXRule) ([]X86PackedBinaryRow, error) {
-	return x86PackedBinaryRows(legacy, avx, `
+	return x86PackedBinaryRows(legacy, avx, x86FloatingImmediateControlNames)
+}
+
+const x86FloatingImmediateControlNames = `
 		VGETMANTPS VGETMANTPD VGETMANTSS VGETMANTSD
 		VRNDSCALEPS VRNDSCALEPD VRNDSCALESS VRNDSCALESD
 		VREDUCEPS VREDUCEPD VREDUCESS VREDUCESD
 		VFIXUPIMMPS VFIXUPIMMPD VFIXUPIMMSS VFIXUPIMMSD
-		VRANGEPS VRANGEPD VRANGESS VRANGESD`)
+		VRANGEPS VRANGEPD VRANGESS VRANGESD`
+
+// X86FloatingHelperRows joins the floating immediate, exponent, scale,
+// classification and estimate families that use the native helper transport.
+func X86FloatingHelperRows(legacy X86LegacyCatalog, avx []X86AVXRule) ([]X86PackedBinaryRow, error) {
+	return x86PackedBinaryRows(legacy, avx, x86FloatingImmediateControlNames+`
+		VGETEXPPS VGETEXPPD VGETEXPSS VGETEXPSD
+		VSCALEFPS VSCALEFPD VSCALEFSS VSCALEFSD
+		VFPCLASSPSX VFPCLASSPSY VFPCLASSPSZ VFPCLASSPDX VFPCLASSPDY VFPCLASSPDZ VFPCLASSSS VFPCLASSSD
+		VEXP2PS VEXP2PD VRCP28PS VRCP28PD VRCP28SS VRCP28SD VRSQRT28PS VRSQRT28PD VRSQRT28SS VRSQRT28SD `+
+		x86Reciprocal14Names)
 }
 
 // X86CompactExpandRows retains both unary directions and all twelve members.
@@ -259,9 +272,10 @@ func X86PackedBitCountConflictRows(legacy X86LegacyCatalog, avx []X86AVXRule) ([
 // X86Reciprocal14Rows retains all packed/scalar EVEX reciprocal14 estimates.
 // The byte grammar owns roles and tuples, not numerical or native authority.
 func X86Reciprocal14Rows(legacy X86LegacyCatalog, avx []X86AVXRule) ([]X86PackedBinaryRow, error) {
-	return x86PackedBinaryRows(legacy, avx,
-		"VRCP14PS VRCP14PD VRCP14SS VRCP14SD VRSQRT14PS VRSQRT14PD VRSQRT14SS VRSQRT14SD")
+	return x86PackedBinaryRows(legacy, avx, x86Reciprocal14Names)
 }
+
+const x86Reciprocal14Names = "VRCP14PS VRCP14PD VRCP14SS VRCP14SD VRSQRT14PS VRSQRT14PD VRSQRT14SS VRSQRT14SD"
 
 // X86PackedRotateRows retains the complete immediate and per-lane D/Q rotate family.
 // Variable members remain independently owned by the EVEX binary remainder scope.

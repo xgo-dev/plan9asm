@@ -384,6 +384,9 @@ native operation with its MXCSR exception behavior and explicit SAE forms.
 FMA3 uses the same exact scalar, broadcast and packed memory widths. Its old
 destination supplies arithmetic input even under zeroing. Scalar forms retain
 the remaining X bytes and clear the alias above X.
+Floating exponent, scale, classification, immediate control and estimate
+families share the original EVEX boundary and fixed-frame checks. The boundary
+accounts for the immediate byte without granting raw-source access to storage.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies
