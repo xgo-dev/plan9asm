@@ -126,7 +126,32 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 			fmt.Fprintf(b, "  %%%s = select %s %%%s, %s %s, %s %s\n", result, spec.Shape.PredicateType, predicate, typ, rhs, typ, lhs)
 		}
 	}
-	return wasmValue{typ: wasmV128CoreType, val: cast("%"+result, resultType, wasmV128CoreType)}
+	value := "%" + result
+	if spec.CanonicalNaN {
+		integerType := LLVMType(spec.Shape.MaskType)
+		value = emitWASMV128CanonicalNaN(b, newTmp, spec.Shape, cast(value, resultType, integerType))
+		resultType = integerType
+	}
+	return wasmValue{typ: wasmV128CoreType, val: cast(value, resultType, wasmV128CoreType)}
+}
+
+func emitWASMV128CanonicalNaN(b *strings.Builder, newTmp func() string, shape wasmsimd.Shape, value string) string {
+	// LLVM can fold arithmetic to an operand when the operand is aliased or
+	// another input is an identity. Check the lane bits after the operation
+	// so a dynamic signaling NaN still becomes a valid Wasm arithmetic NaN.
+	bits := shape.LaneBits
+	signless, infinity, canonical := wasmFloatNaNBits(bits)
+	splat := func(bitsValue uint64) string {
+		lane := fmt.Sprintf("i%d %d", bits, bitsValue)
+		return "<" + strings.Repeat(lane+", ", 128/bits-1) + lane + ">"
+	}
+	typ := shape.MaskType
+	magnitude, isNaN, result := newTmp(), newTmp(), newTmp()
+	fmt.Fprintf(b, "  %%%s = and %s %s, %s\n", magnitude, typ, value, splat(signless))
+	fmt.Fprintf(b, "  %%%s = icmp ugt %s %%%s, %s\n", isNaN, typ, magnitude, splat(infinity))
+	fmt.Fprintf(b, "  %%%s = select %s %%%s, %s %s, %s %s\n",
+		result, shape.PredicateType, isNaN, typ, splat(canonical), typ, value)
+	return "%" + result
 }
 
 func emitWASMV128ShiftCount(b *strings.Builder, newTmp func() string, shape wasmsimd.Shape, count string) string {

@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+func wasmFloatNaNBits(bits int) (signless, infinity, canonical uint64) {
+	if bits == 64 {
+		return 0x7fffffffffffffff, 0x7ff0000000000000, 0x7ff8000000000000
+	}
+	return 0x7fffffff, 0x7f800000, 0x7fc00000
+}
+
 // Go's scalar floating binary families share pure, zero-operand stack grammar.
 // Comparisons produce i32; arithmetic and min/max retain the operand width.
 type wasmFloatBinaryOp struct {

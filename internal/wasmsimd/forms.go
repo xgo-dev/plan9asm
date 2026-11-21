@@ -41,10 +41,11 @@ type Shape struct {
 }
 
 type Form struct {
-	stack    stackSignature
-	Emission Emission
-	Operator string
-	Shape    Shape
+	stack        stackSignature
+	Emission     Emission
+	Operator     string
+	Shape        Shape
+	CanonicalNaN bool
 }
 
 func (f Form) Arity() int { return len(f.stack.inputs) }
@@ -156,6 +157,16 @@ func buildForms() map[string]Form {
 	floatOperations := []operation{
 		{"ABS", "fabs", unary, Intrinsic},
 		{"NEG", "fneg", unary, Instruction},
+		{"PMIN", "ogt", binary, FloatSelect},
+		{"PMAX", "olt", binary, FloatSelect},
+		{"EQ", "oeq", binary, Compare},
+		{"NE", "une", binary, Compare},
+		{"LT", "olt", binary, Compare},
+		{"GT", "ogt", binary, Compare},
+		{"LE", "ole", binary, Compare},
+		{"GE", "oge", binary, Compare},
+	}
+	floatArithmetic := []operation{
 		{"SQRT", "sqrt", unary, Intrinsic},
 		{"CEIL", "ceil", unary, Intrinsic},
 		{"FLOOR", "floor", unary, Intrinsic},
@@ -167,14 +178,6 @@ func buildForms() map[string]Form {
 		{"DIV", "fdiv", binary, Instruction},
 		{"MIN", "minimum", binary, Intrinsic},
 		{"MAX", "maximum", binary, Intrinsic},
-		{"PMIN", "ogt", binary, FloatSelect},
-		{"PMAX", "olt", binary, FloatSelect},
-		{"EQ", "oeq", binary, Compare},
-		{"NE", "une", binary, Compare},
-		{"LT", "olt", binary, Compare},
-		{"GT", "ogt", binary, Compare},
-		{"LE", "ole", binary, Compare},
-		{"GE", "oge", binary, Compare},
 	}
 	for _, lane := range []struct {
 		prefix, element string
@@ -191,6 +194,11 @@ func buildForms() map[string]Form {
 		}
 		for _, op := range floatOperations {
 			add(lane.prefix, shape, op)
+		}
+		for _, op := range floatArithmetic {
+			result[lane.prefix+op.suffix] = Form{
+				stack: op.stack, Emission: op.emission, Operator: op.operator, Shape: shape, CanonicalNaN: true,
+			}
 		}
 	}
 	return result

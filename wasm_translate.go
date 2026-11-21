@@ -1250,10 +1250,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				// canonical NaN is valid for every permitted input payload.
 				// Integer bits keep optimization from discarding quieting as
 				// a redundant floating-point operation.
-				signless, infinity, canonical := uint64(0x7fffffff), uint64(0x7f800000), uint64(0x7fc00000)
-				if bits == 64 {
-					signless, infinity, canonical = 0x7fffffffffffffff, 0x7ff0000000000000, 0x7ff8000000000000
-				}
+				signless, infinity, canonical := wasmFloatNaNBits(bits)
 				raw, magnitude, isNaN, selected, normalized := newTmp(), newTmp(), newTmp(), newTmp(), newTmp()
 				fmt.Fprintf(b, "  %%%s = bitcast %s %%%s to i%d\n", raw, spec.typ, name, bits)
 				fmt.Fprintf(b, "  %%%s = and i%d %%%s, %d\n", magnitude, bits, raw, signless)
