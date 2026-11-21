@@ -150,6 +150,9 @@ func x86PlainNOPRegister(register Reg, arch string) bool {
 }
 
 func x86PlainNOPMemory(memory MemRef, arch string) (bool, error) {
+	if x86AbsoluteMemoryRef(memory) {
+		return true, nil
+	}
 	if memory.IndexExt != "" || memory.Sym == "" && memory.Base == "" &&
 		memory.Index == "" && memory.Segment == "" {
 		return false, nil
