@@ -79,7 +79,7 @@ func x86OtherFixedVectorValueProperties(ins Instr, arch string) (x86PackedBinary
 		}, false, true, err
 	}
 	if parsed, spec, recognized, parseErr := x86IndexedPermuteProperties(ins.Op, ins, arch); recognized {
-		return parsed, spec.mode != amd64IndexedPermuteSingle, recognized, parseErr
+		return parsed, spec.readsOldDestination(), recognized, parseErr
 	}
 	if parsed, recognized, parseErr := x86GFNIProperties(ins.Op, ins, arch); recognized {
 		return parsed.x86PackedBinaryForm, false, recognized, parseErr

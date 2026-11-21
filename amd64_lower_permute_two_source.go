@@ -16,6 +16,10 @@ type amd64IndexedPermuteSpec struct {
 	broadcast bool
 }
 
+func (spec amd64IndexedPermuteSpec) readsOldDestination() bool {
+	return spec.mode != amd64IndexedPermuteSingle
+}
+
 // amd64IndexedPermuteSpecs models the complete Go 1.27 _yvblendmpd grammar
 // for the single-table VPERMB/W and both two-table VPERMI2*/VPERMT2*
 // families. Broadcast capability is an opcode property, not a consequence of
@@ -65,11 +69,14 @@ func (c *amd64Ctx) lowerIndexedPermute(op Op, ins Instr) (ok bool, terminated bo
 	if err != nil {
 		return true, false, err
 	}
-	oldBytes, err := c.loadPackedCompareBytes(destination, byteWidth)
-	if err != nil {
-		return true, false, err
+	old := "zeroinitializer"
+	if spec.readsOldDestination() || form.mask >= 0 && !form.zeroing {
+		oldBytes, err := c.loadPackedCompareBytes(destination, byteWidth)
+		if err != nil {
+			return true, false, err
+		}
+		old = c.bitcastVectorBytesToIntegerLanes(byteWidth, lanes, spec.laneBits, oldBytes)
 	}
-	old := c.bitcastVectorBytesToIntegerLanes(byteWidth, lanes, spec.laneBits, oldBytes)
 	computed := ""
 	switch spec.mode {
 	case amd64IndexedPermuteSingle:

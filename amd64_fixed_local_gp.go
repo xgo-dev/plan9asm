@@ -120,12 +120,16 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 		return fail()
 	}
 	alignment := int64(1)
-	if effect.vector.upperWrite != x86TypedVectorUpperUnknown {
-		if effect.vector.upperWrite != x86TypedVectorUpperPreserve && effect.vector.upperWrite != x86TypedVectorUpperZero ||
-			effect.vector.memoryAlignment <= 0 {
+	upper := effect.vector.upperWrite
+	switch upper {
+	case x86TypedVectorUpperUnknown:
+	case x86TypedVectorUpperPreserve, x86TypedVectorUpperZero, x86TypedVectorNoWrite:
+		if effect.vector.memoryAlignment <= 0 {
 			return fail()
 		}
 		alignment = effect.vector.memoryAlignment
+	default:
+		return fail()
 	}
 	// Read all inputs before any write, including aliased outputs. RMW receives
 	// one write-capable access certificate only after its old bytes are proved.
@@ -144,7 +148,7 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 				if operand.requiredBytes != 0 {
 					mask = operand.requiredBytes
 				}
-				if effect.vector.upperWrite == x86TypedVectorUpperUnknown || mask == 0 ||
+				if upper == x86TypedVectorUpperUnknown || mask == 0 ||
 					state.vectors[x86CallerVectorRoot(operand.operand.Reg)]&mask != mask {
 					return fail()
 				}
@@ -188,13 +192,20 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 				fixedLocalNumericalStore(state, offset, operand.width, true)
 			}
 		case OpReg:
+			if amd64IsKOperand(operand.operand) {
+				if operand.width != 8 || upper != x86TypedVectorNoWrite {
+					return fail()
+				}
+				state.masks[operand.operand.Reg] = true
+				continue
+			}
 			if amd64VectorByteWidth(operand.operand.Reg) != 0 {
 				mask := x86CallerVectorByteMask(operand.width)
-				if effect.vector.upperWrite == x86TypedVectorUpperUnknown || mask == 0 {
+				if upper != x86TypedVectorUpperPreserve && upper != x86TypedVectorUpperZero || mask == 0 {
 					return fail()
 				}
 				root := x86CallerVectorRoot(operand.operand.Reg)
-				if effect.vector.upperWrite == x86TypedVectorUpperZero {
+				if upper == x86TypedVectorUpperZero {
 					state.vectors[root] = ^uint64(0)
 				} else {
 					state.vectors[root] |= mask

@@ -54,19 +54,5 @@ func x86TypedIFMAByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, 
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	width := int64(form.byteWidth)
-	firstWidth := width
-	if form.memory >= 0 {
-		firstWidth = int64(form.memoryBytes)
-	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
-		{index: form.second, operand: ins.Args[form.second], width: width, read: true},
-		{index: form.destination, operand: ins.Args[form.destination], width: width, read: true, write: true},
-	}}
-	if form.mask >= 0 {
-		effect.operands = append(effect.operands,
-			x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true})
-	}
-	return effect, true, nil
+	return x86TypedFixedVectorInputs(ins, form.x86PackedBinaryForm, true), true, nil
 }

@@ -65,16 +65,20 @@ func x86TypedQwordLookupByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 	if form.memory >= 0 {
 		firstWidth = int64(form.memoryBytes)
 	}
-	outputWidth := width
+	outputWidth, upper := width, x86TypedVectorUpperZero
 	if form.spec.output == amd64QwordBitLookupMask {
-		outputWidth = 8
+		outputWidth, upper = 8, x86TypedVectorNoWrite
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
-		{index: form.second, operand: ins.Args[form.second], width: width, read: true},
-		{index: form.destination, operand: ins.Args[form.destination], width: outputWidth,
-			read: form.spec.output == amd64QwordBitLookupBytes && form.mask >= 0 && !form.zeroing, write: true},
-	}}
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{upper, 1},
+		operands: []x86TypedByteOperand{
+			{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
+			{index: form.second, operand: ins.Args[form.second], width: width, read: true},
+			{index: form.destination, operand: ins.Args[form.destination], width: outputWidth,
+				read: form.spec.output == amd64QwordBitLookupBytes && form.mask >= 0 && !form.zeroing, write: true},
+		},
+	}
 	if form.mask >= 0 {
 		effect.operands = append(effect.operands,
 			x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true})

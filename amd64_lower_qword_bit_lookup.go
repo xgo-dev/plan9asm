@@ -67,9 +67,12 @@ func (c *amd64Ctx) lowerQwordBitLookup(op Op, ins Instr) (ok bool, terminated bo
 
 	if spec.output == amd64QwordBitLookupBytes {
 		if form.mask >= 0 {
-			old, loadErr := c.loadPackedCompareBytes(destination, byteWidth)
-			if loadErr != nil {
-				return true, false, loadErr
+			old := "zeroinitializer"
+			if !form.zeroing {
+				old, err = c.loadPackedCompareBytes(destination, byteWidth)
+				if err != nil {
+					return true, false, err
+				}
 			}
 			selectedBytes = amd64ApplyIntegerLaneMask(c, byteWidth, 8, selectedBytes, old, writeMask, form.zeroing)
 		}

@@ -8534,6 +8534,10 @@ func decodedX86PackedIntegerArithmeticInstructionWithMemory(code []byte, mode in
 // decodedX86IndexedPermuteInstruction recognizes the complete EVEX-only
 // VPERMI2 and VPERMT2 families behind Go 1.27's shared _yvblendmpd table.
 func decodedX86IndexedPermuteInstruction(code []byte, mode int) (instruction Instr, length int, ok bool, err error) {
+	return decodedX86IndexedPermuteInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86IndexedPermuteInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
 	i, segment, addressOverride := x86RawSegmentPrefixes(code)
 	if mode != 32 && mode != 64 {
 		return Instr{}, 0, false, nil
@@ -8624,7 +8628,7 @@ func decodedX86IndexedPermuteInstruction(code []byte, mode int) (instruction Ins
 	if broadcast {
 		disp8Scale = laneBytes
 	}
-	firstSource, consumed, decodeErr := decodedX86EVEXRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, vectorPrefix, disp8Scale)
+	firstSource, consumed, decodeErr := memory.evex(code[modRMIndex:], mode, bExt, xExt, segment, vectorPrefix, disp8Scale)
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}
@@ -8778,11 +8782,11 @@ func decodedX86PackedCompactInstruction(code []byte, mode int, memory x86RawMemo
 // VPMADD52HUQ/LUQ family behind Go 1.27's _yvblendmpd table. x/arch v0.14
 // rejects these encodings.
 func decodedX86IFMAInstruction(code []byte, mode int) (Instr, int, bool, error) {
-	return decodedX86EVEXQwordBinaryInstruction(code, mode, false)
+	return decodedX86EVEXQwordBinaryInstruction(code, mode, false, x86RawMemoryDecoder{})
 }
 
 func decodedX86QwordLookupInstruction(code []byte, mode int) (Instr, int, bool, error) {
-	return decodedX86EVEXQwordBinaryInstruction(code, mode, true)
+	return decodedX86EVEXQwordBinaryInstruction(code, mode, true, x86RawMemoryDecoder{})
 }
 
 // decodedX86VPINSRInstruction recognizes the complete VEX.128 VPINSR

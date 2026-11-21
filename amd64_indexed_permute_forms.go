@@ -29,6 +29,14 @@ func x86IndexedPermuteProperties(op Op, ins Instr, arch string) (x86PackedBinary
 	return form, spec, true, err
 }
 
+func x86TypedIndexedPermuteByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	form, spec, known, err := x86IndexedPermuteProperties(op, ins, arch)
+	if !known || err != nil {
+		return x86TypedByteEffect{}, known, err
+	}
+	return x86TypedFixedVectorInputs(ins, form, spec.readsOldDestination()), true, nil
+}
+
 func x86ResultIndexedPermuteStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
 	form, spec, known, err := x86IndexedPermuteProperties(ins.Op, ins, arch)
 	if !known {
@@ -37,5 +45,5 @@ func x86ResultIndexedPermuteStep(ins Instr, state *x86ResultState, owned []bool,
 	if err != nil {
 		return false, true
 	}
-	return x86ResultFixedVectorInputs(ins, form, spec.mode != amd64IndexedPermuteSingle, state, owned, arch), true
+	return x86ResultFixedVectorInputs(ins, form, spec.readsOldDestination(), state, owned, arch), true
 }

@@ -150,6 +150,9 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		decodedX86FunnelShiftInstructionWithMemory,
 		decodedX86RawVectorBitCountInstructionWithMemory,
 		decodedX86NumericalConflictBoundary,
+		decodedX86IndexedPermuteInstructionWithMemory,
+		decodedX86NumericalSingleTablePermuteBoundary,
+		decodedX86NumericalQwordBinaryBoundary,
 	}
 	if ins, length, known, err := decodedX86VEXMoveMaskInstruction(code, mode); known || err != nil {
 		if err == nil && mode == 32 {
@@ -178,6 +181,35 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		return length, err
 	}
 	return 0, numericalSBContext("unregistered or truncated whole native VEX/EVEX encoding")
+}
+
+// VPERMB/W uses the same two-source physical shape as the indexed family.
+// This recognises named-Go bytes without adding a raw-source consumer.
+func decodedX86NumericalSingleTablePermuteBoundary(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
+	p, known := decodeX86RawVectorEncoding(code)
+	if !known || !p.evex || p.mapNumber != 2 || p.pp != 1 || p.opcode != 0x8d {
+		return Instr{}, 0, false, nil
+	}
+	op := Op("VPERMB")
+	if p.w {
+		op = "VPERMW"
+	}
+	return decodedX86BinaryVectorOperandsWithMemory(code, p, mode, op, 0, memory)
+}
+
+func decodedX86NumericalQwordBinaryBoundary(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
+	p, known := decodeX86RawVectorEncoding(code)
+	if !known || !p.evex || p.mapNumber != 2 || p.pp != 1 {
+		return Instr{}, 0, false, nil
+	}
+	switch p.opcode {
+	case 0x83, 0x8f:
+		return decodedX86EVEXQwordBinaryInstruction(code, mode, true, memory)
+	case 0xb4, 0xb5:
+		return decodedX86EVEXQwordBinaryInstruction(code, mode, false, memory)
+	default:
+		return Instr{}, 0, false, nil
+	}
 }
 
 func decodedX86NumericalConflictBoundary(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {

@@ -21,11 +21,14 @@ func fixedLocalVectorStackAssembly(t *testing.T, name, operation, setup string, 
 	source.WriteString("VMOVUPS (SP),Z0\nMOVQ $1,BP\n")
 	source.WriteString(setup)
 	seeded := map[Reg]bool{"Z0": true, omit: true}
-	for _, arg := range ins.Args {
+	for index, arg := range ins.Args {
 		if arg.Kind != OpReg {
 			continue
 		}
 		if amd64IsKOperand(arg) && !seeded[arg.Reg] {
+			if index == len(ins.Args)-1 {
+				continue // A mask result must define its own value.
+			}
 			fmt.Fprintf(&source, "KMOVQ AX,%s\n", arg.Reg)
 			seeded[arg.Reg] = true
 		} else if amd64VectorByteWidth(arg.Reg) != 0 {
@@ -38,9 +41,12 @@ func fixedLocalVectorStackAssembly(t *testing.T, name, operation, setup string, 
 	}
 	destination := ins.Args[len(ins.Args)-1]
 	fmt.Fprintln(&source, operation)
-	if destination.Kind == OpReg {
+	switch {
+	case amd64IsKOperand(destination):
+		fmt.Fprintf(&source, "KMOVQ %s,AX\n", destination.Reg)
+	case destination.Kind == OpReg:
 		fmt.Fprintf(&source, "VMOVUPS %s,128(SP)\nMOVQ 128(SP),AX\n", destination.Reg)
-	} else {
+	default:
 		fmt.Fprintf(&source, "MOVB %s,AL\n", destination.String())
 	}
 	source.WriteString("MOVQ AX,ret+8(FP)\nRET\n")

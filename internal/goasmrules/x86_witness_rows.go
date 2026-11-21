@@ -366,6 +366,11 @@ func X86PackedEVEXBinaryRemainderRows(legacy X86LegacyCatalog, avx []X86AVXRule)
 		VPROLVD VPROLVQ VPRORVD VPRORVQ VPSHLDVW VPSHLDVD VPSHLDVQ VPSHRDVW VPSHRDVD VPSHRDVQ`)
 }
 
+// X86QwordLookupRows retains the vector and mask result encodings.
+func X86QwordLookupRows(legacy X86LegacyCatalog, avx []X86AVXRule) ([]X86PackedBinaryRow, error) {
+	return x86PackedBinaryRows(legacy, avx, "VPMULTISHIFTQB VPSHUFBITQMB")
+}
+
 // X86PackedBinaryPilotRows covers the shared packed add/subtract and D/Q
 // low-multiply pilot. MMX and the separate W multiply family are not included.
 // PADDD is a frontend alias, not an additional official encoder row.

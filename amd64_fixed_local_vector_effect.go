@@ -28,22 +28,24 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if err != nil {
 		return x86TypedByteEffect{}, true, goAMD64FrameContext("fixed local vector form is not closed: %v", err)
 	}
-	valid := effect.vector.upperWrite == x86TypedVectorUpperPreserve && effect.vector.memoryAlignment == 16 ||
-		effect.vector.upperWrite == x86TypedVectorUpperZero && effect.vector.memoryAlignment == 1
+	upper := effect.vector.upperWrite
+	valid := upper == x86TypedVectorUpperPreserve && effect.vector.memoryAlignment == 16 ||
+		(upper == x86TypedVectorUpperZero || upper == x86TypedVectorNoWrite) && effect.vector.memoryAlignment == 1
 	for _, operand := range effect.operands {
 		switch operand.operand.Kind {
 		case OpReg:
 			if amd64IsKOperand(operand.operand) {
-				valid = valid && operand.width == 8 && operand.read && !operand.write
+				valid = valid && operand.width == 8 && (operand.read || operand.write) &&
+					(!operand.write || upper == x86TypedVectorNoWrite)
 				continue
 			}
 			width := amd64VectorByteWidth(operand.operand.Reg)
 			index, vector := amd64VectorRegisterIndex(operand.operand.Reg, width)
 			// A widening source can consume only the low bytes of its
 			// physical register. A write still describes the whole view.
-			valid = valid && vector && (index < 16 || effect.vector.upperWrite == x86TypedVectorUpperZero) &&
+			valid = valid && vector && (index < 16 || upper != x86TypedVectorUpperPreserve) &&
 				operand.width > 0 && operand.width <= int64(width) &&
-				(!operand.write || operand.width == int64(width))
+				(!operand.write || operand.width == int64(width) && upper != x86TypedVectorNoWrite)
 		case OpMem, OpSym:
 			valid = valid && operand.width > 0
 		case OpImm:

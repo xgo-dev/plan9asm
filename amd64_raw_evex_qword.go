@@ -7,27 +7,8 @@ import (
 
 // These complete EVEX-only qword families share physical field decoding,
 // not operand authority or their independent numerical and memory effects.
-func decodedX86EVEXQwordBinaryInstruction(code []byte, mode int, lookup bool) (instruction Instr, length int, ok bool, err error) {
-	i := 0
-	segment := Reg("")
-	addressOverride := false
-	for i < len(code) {
-		switch code[i] {
-		case 0x64:
-			segment = FS
-			i++
-		case 0x65:
-			segment = GS
-			i++
-		case 0x67:
-			addressOverride = true
-			i++
-		default:
-			goto evex
-		}
-	}
-
-evex:
+func decodedX86EVEXQwordBinaryInstruction(code []byte, mode int, lookup bool, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
+	i, segment, addressOverride := x86RawSegmentPrefixes(code)
 	if mode != 32 && mode != 64 {
 		return Instr{}, 0, false, nil
 	}
@@ -101,7 +82,7 @@ evex:
 	if broadcast {
 		disp8Scale = 8
 	}
-	firstSource, consumed, decodeErr := decodedX86EVEXRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, vectorName, disp8Scale)
+	firstSource, consumed, decodeErr := memory.evex(code[modRMIndex:], mode, bExt, xExt, segment, vectorName, disp8Scale)
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}

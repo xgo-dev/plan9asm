@@ -42,6 +42,7 @@ const (
 	x86TypedVectorUpperUnknown x86TypedVectorUpperWrite = iota
 	x86TypedVectorUpperPreserve
 	x86TypedVectorUpperZero
+	x86TypedVectorNoWrite // Vector inputs with an independently typed non-vector result.
 )
 
 const (

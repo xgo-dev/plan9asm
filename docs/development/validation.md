@@ -369,6 +369,11 @@ Conflict, bit count, funnel shifts and vector align share the same initialized
 frame mechanism. A variable funnel shift always reads its old destination
 as input, including with zeroing. Conflict and align still read their complete
 memory tuple with a zero output mask, or the original scalar for broadcast.
+For indexed table permutations and IFMA, the frame proof retains the old
+index, table or accumulator input even with zeroing. Bit-to-mask lookup
+reads the writemask before defining its K result, including when they use
+the same register. The proof bounds the full possible stack input span,
+while lowering retains the lookup's byte-granular masked reads.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies
