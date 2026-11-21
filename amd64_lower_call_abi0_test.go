@@ -23,8 +23,8 @@ func TestTranslateX86ABI0CallUsesOutgoingStackFrame(t *testing.T) {
 				"\t" + target.mov + " $3, AX\n" +
 				"\t" + target.mov + " AX, 16(SP)\n" +
 				"\tMOVL $0x3fc00000, 24(SP)\n" +
-				"\t" + target.mov + " $4, AX\n" +
-				"\t" + target.mov + " AX, 32(SP)\n" +
+				"\tMOVL $0, 32(SP)\n" +
+				"\tMOVL $0x40100000, 36(SP)\n" +
 				"\tCALL ·abi0Callee(SB)\n" +
 				"\t" + target.mov + " 40(SP), AX\n" +
 				"\tRET\n"

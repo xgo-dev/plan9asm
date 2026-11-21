@@ -1,6 +1,11 @@
 package plan9asm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/goabi"
+)
 
 // Private 386 TEXT storage begins at physical SP after frame allocation.
 // Offsets are retained separately from numerical and caller address values.
@@ -32,7 +37,7 @@ func x86Mode32FixedFrameCandidate(fn Func, arch string) bool {
 	return false
 }
 
-func x86CheckMode32FixedFrame(fn Func, layout FrameLayout) error {
+func x86CheckMode32FixedFrame(fn Func, layout FrameLayout, calls map[string]x86Mode32FrameCall) error {
 	fail := func(reason string, src string) error {
 		return fmt.Errorf("%w: 386 fixed TEXT frame: %s: %q", ErrProbeNeedsContext, reason, src)
 	}
@@ -56,8 +61,9 @@ func x86CheckMode32FixedFrame(fn Func, layout FrameLayout) error {
 		if !x86ResultNamedPredicateInstruction(ins) || x86LinuxSyscallCandidate(ins) {
 			return fail("requires original named effects and an ordinary return", ins.Raw)
 		}
+		_, boundCall := x86Mode32FrameCallAt(ins, calls)
 		if _, stack, _ := x86StackWidthProperties(ins, "386"); stack || models386SPWrite(ins) ||
-			ins.Op == "ADJSP" || ins.Op == "CALL" {
+			ins.Op == "ADJSP" || ins.Op == OpCALL && !boundCall {
 			return fail("changes or exposes physical SP", ins.Raw)
 		}
 		_, rest := splitOpcode(ins.Raw)
@@ -74,6 +80,106 @@ func x86CheckMode32FixedFrame(fn Func, layout FrameLayout) error {
 		}
 	}
 	return nil
+}
+
+type x86Mode32FrameCall struct {
+	name   string
+	sig    FuncSig
+	extent int
+}
+
+func x86Mode32FrameCallAt(ins Instr, calls map[string]x86Mode32FrameCall) (x86Mode32FrameCall, bool) {
+	if ins.Op != OpCALL || len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
+		return x86Mode32FrameCall{}, false
+	}
+	call, bound := calls[strings.TrimSpace(ins.Args[0].Sym)]
+	return call, bound
+}
+
+// Use the same symbol and typed outgoing layout as the LLVM call emitter.
+// Indirect calls, entry selectors and calls without stack slots cannot supply
+// a bounded SP effect. Bool bytes require the separate canonical-byte role.
+func (c *amd64Ctx) mode32FrameCalls(fn Func) map[string]x86Mode32FrameCall {
+	if c.resolve == nil || fn.FrameSize > 4096 || len(fn.Instrs) > 4096 ||
+		!x86Mode32FixedFrameCandidate(fn, c.goarch) {
+		return nil
+	}
+	var calls map[string]x86Mode32FrameCall
+	for _, ins := range fn.Instrs {
+		if ins.Op != OpCALL || len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
+			continue
+		}
+		target := strings.TrimSpace(ins.Args[0].Sym)
+		if _, known := calls[target]; known {
+			continue
+		}
+		name, offset, valid := parseSBRef(target)
+		if !valid || offset != 0 || target != name+"(SB)" ||
+			strings.HasPrefix(name, "*") || strings.Contains(strings.TrimSuffix(name, "<>"), "<") {
+			continue
+		}
+		resolved := c.resolve(name)
+		sig, found := c.sigs[resolved]
+		if !found || arm64ElidesSchedulerHook(resolved) || len(sig.Frame.Params)+len(sig.Frame.Results) == 0 ||
+			!x86ABI0FrameLayout(sig, fn.FrameSize, "386") {
+			continue
+		}
+		var end int64
+		for _, slots := range [][]FrameSlot{sig.Frame.Params, sig.Frame.Results} {
+			for _, slot := range slots {
+				if slot.Type == I1 {
+					valid = false
+				}
+				end = slot.Offset + x86FrameScalarBytes(slot.Type, "386")
+			}
+		}
+		extent, bounded := goabi.ABI0StackSize("386", end)
+		if !valid || !bounded || extent > fn.FrameSize {
+			continue
+		}
+		if calls == nil {
+			calls = make(map[string]x86Mode32FrameCall)
+		}
+		calls[target] = x86Mode32FrameCall{name: resolved, sig: sig, extent: int(extent)}
+	}
+	return calls
+}
+
+func (call x86Mode32FrameCall) transfer(state *x86ResultState) bool {
+	frame := state.mode32Frame
+	for _, slot := range call.sig.Frame.Params {
+		offset := int(slot.Offset)
+		width := int(x86FrameScalarBytes(slot.Type, "386"))
+		if slot.Type == Ptr && frame.spills[offset] != 0 {
+			continue // A complete caller-pointer spill can cross the call.
+		}
+		for _, initialized := range state.auto[offset : offset+width] {
+			if !initialized {
+				return false
+			}
+		}
+	}
+
+	// The callee may overwrite its whole outgoing area. Preserve disjoint
+	// local storage and revoke register, flags and frame-alias facts.
+	for i := range state.auto[:call.extent] {
+		state.auto[i] = false
+	}
+	frame.clearSpills(0, call.extent)
+	for _, slot := range call.sig.Frame.Results {
+		offset := int(slot.Offset)
+		if slot.Type == Ptr {
+			frame.spills[offset] = x86Mode32SpillUnknownOrigin
+			continue
+		}
+		width := int(x86FrameScalarBytes(slot.Type, "386"))
+		for i := offset; i < offset+width; i++ {
+			state.auto[i] = true
+		}
+	}
+	frame.addresses = [8]int16{}
+	state.revokeABICallRegisters()
+	return true
 }
 
 func (frame *x86Mode32FrameState) registerOffset(reg Reg) (int64, bool) {
@@ -120,6 +226,15 @@ func x86Mode32FrameEffect(ins Instr) (x86TypedByteEffect, bool) {
 			{operand: form.destination, width: width, write: true},
 		}}, err == nil
 	}
+	if form, known, err := amd64ScalarVectorMoveProperties(ins, "386"); known {
+		if err != nil || form.memory < 0 {
+			return x86TypedByteEffect{}, false
+		}
+		return x86TypedByteEffect{operands: []x86TypedByteOperand{{
+			operand: ins.Args[form.memory], width: int64(form.spec.bits / 8),
+			read: !form.memoryWrite, write: form.memoryWrite,
+		}}}, true
+	}
 	if form, known, err := x86ScalarCompareProperties(ins.Op, ins, "386"); known {
 		width := int64(form.bits / 8)
 		return x86TypedByteEffect{operands: []x86TypedByteOperand{
@@ -136,7 +251,7 @@ func x86Mode32FrameEffect(ins Instr) (x86TypedByteEffect, bool) {
 // It never passes an instruction with rewritten operands to a consumer.
 func x86Mode32FrameStep(ins Instr, state *x86ResultState, ordinary func() bool) (bool, int, uint16) {
 	frame := state.mode32Frame
-	if x86InertNOP(ins, "386") {
+	if x86InertNOP(ins, "386") || ins.Op == OpCALL {
 		return ordinary(), -1, 0
 	}
 	touches := false

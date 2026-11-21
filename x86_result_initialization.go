@@ -57,8 +57,9 @@ func checkX86ABI0ResultInitializationWithTrapOnly(fn Func, sig FuncSig, goarch s
 // The paired lowerer can supply ABI direction and its planned vector slots.
 // Source-only result queries start without those entry facts.
 type x86ABI0ResultEntry struct {
-	direction x86ResultDirection
-	vectors   map[int]int
+	direction   x86ResultDirection
+	vectors     map[int]int
+	mode32Calls map[string]x86Mode32FrameCall
 }
 
 func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch string,
@@ -202,11 +203,18 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 		autoExtent, scopedControl = x86X87ScopedControlScratchExtent(fn, goarch)
 	}
 	if scalarViews && x86Mode32FixedFrameCandidate(fn, goarch) {
-		if err := x86CheckMode32FixedFrame(fn, sig.Frame); err != nil {
+		if err := x86CheckMode32FixedFrame(fn, sig.Frame, entry.mode32Calls); err != nil {
 			return err
 		}
 		autoExtent = int(fn.FrameSize)
 		initial.mode32Frame = &x86Mode32FrameState{spills: make([]uint16, autoExtent)}
+		local := transfer
+		transfer = func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
+			if call, bound := x86Mode32FrameCallAt(ins, entry.mode32Calls); bound {
+				return call.transfer(state)
+			}
+			return local(ordinal, ins, state, owned, resultOffset, arch)
+		}
 	} else if !scopedControl {
 		var autoErr error
 		autoExtent, autoErr = x86ResultAUTOExtentWithPrivateStack(fn, goarch, initial.valueStack != nil)
@@ -868,6 +876,31 @@ type x86ResultState struct {
 	goReadOnlyRead       *goReadOnlyRead
 	literalMemoryOperand *Operand
 	literalMemoryBytes   int64
+}
+
+func (state *x86ResultState) revokeABICallRegisters() {
+	state.gp = [16]uint8{}
+	state.canonicalGP = [16]uint8{}
+	state.xmm = [32]uint16{}
+	state.vectorUpper = [32]uint64{}
+	state.nativeMMX = [8]uint8{}
+	state.masks = [8]bool{}
+	state.pointerGP = [16]bool{}
+	state.callerAddressGP = [16]bool{}
+	state.callerAddressOrigin = [16]uint16{}
+	state.bitScanPending = x86ResultBitScanPending{}
+	state.predicate = x86ResultPredicate{}
+	state.nativeLEAAddressBits = x86NativeLEAAddressBits{}
+	state.shiftBits = x86ResultShiftBits{}
+	state.resultAddressGP = [16]x86ResultSlotAddress{}
+	if state.boolFrameGP != nil {
+		*state.boolFrameGP = [16]x86ResultSlotAddress{}
+	}
+	state.flags = 0
+	state.direction = x86ResultDirectionUnknown
+	if state.x87 != nil {
+		state.x87.revoke()
+	}
 }
 
 func (state x86ResultState) clone() x86ResultState {

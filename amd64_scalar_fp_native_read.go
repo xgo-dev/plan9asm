@@ -931,13 +931,16 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		// accumulated envelope, including callers without an existing owner.
 		fn.x86ResultFlowBudget = new(x86ResultFlowBudget)
 	}
-	entry := x86ABI0ResultEntry{direction: c.abi0EntryDirection}
+	entry := x86ABI0ResultEntry{
+		direction: c.abi0EntryDirection, mode32Calls: c.mode32FrameCalls(fn),
+	}
 	if err := checkX86ABI0ResultInitializationWithEntry(fn, sig, arch, transfer, true, false, true, entry); err != nil {
 		if !vectorEntry || !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
 			return err
 		}
 		return c.checkLoweredVectorEntry(fn, sig, arch, transfer, err)
 	}
+	c.abi0Mode32Calls = entry.mode32Calls
 	c.nativeMMXRegion = nativeMMX
 	return nil
 }

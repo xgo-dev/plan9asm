@@ -19,25 +19,7 @@ func x86ABI0BoolCallStep(ordinal int, ins Instr, state *x86ResultState, owned []
 		// No caller GP, SIMD, mask, pointer, slot-address or FLAGS state is
 		// preserved by the original CALL, even if logical SSA happens to leave
 		// a register alloca untouched. Void supplies no result byte at all.
-		state.gp = [16]uint8{}
-		state.canonicalGP = [16]uint8{}
-		state.xmm = [32]uint16{}
-		state.vectorUpper = [32]uint64{}
-		state.masks = [8]bool{}
-		state.pointerGP = [16]bool{}
-		state.callerAddressGP = [16]bool{}
-		state.callerAddressOrigin = [16]uint16{}
-		state.bitScanPending = x86ResultBitScanPending{}
-		state.predicate = x86ResultPredicate{}
-		state.resultAddressGP = [16]x86ResultSlotAddress{}
-		if state.boolFrameGP != nil {
-			state.boolFrameGP = new([16]x86ResultSlotAddress)
-		}
-		state.flags = 0
-		state.direction = x86ResultDirectionUnknown
-		if state.x87 != nil {
-			state.x87.revoke()
-		}
+		state.revokeABICallRegisters()
 		if sig.Ret == Void {
 			return true, true // No numerical/canonical FP or outgoing byte is new.
 		}

@@ -98,6 +98,7 @@ type amd64Ctx struct {
 	fpFeatureAttrs    string                       // exact compiler-rendered feature reference, never supplied attributes
 	fixedLocalResult  *x86FixedLocalResultSnapshot // pure per-call source index; live module guards remain separate
 	fpBoolCallSource  *x86ABI0BoolCallSource       // complete custom-helper graph, not a standalone register entry
+	abi0Mode32Calls   map[string]x86Mode32FrameCall
 	fpScalarData      map[x86StaticSBAddress]int64 // exact effective SB address -> available emitted numerical bytes
 	fpShiftLiterals   map[x86StaticSBAddress]x86ShiftLiteral
 	goReadOnlyStorage *goReadOnlyStorage // declaration-only numerical reads, never emitted/writable DATA

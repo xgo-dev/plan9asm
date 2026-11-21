@@ -342,20 +342,22 @@ func (c *amd64Ctx) callSym(symOp Operand) error {
 	if !strings.HasSuffix(s, "(SB)") {
 		return fmt.Errorf("amd64 call expects (SB) symbol, got %q", s)
 	}
-	internalABI := strings.HasSuffix(strings.TrimSuffix(s, "(SB)"), "<ABIInternal>")
-	s = strings.TrimSuffix(s, "(SB)")
-	callee := c.resolve(s)
-	// Syscall stubs invoke runtime entersyscall/exitsyscall around SYSCALL.
-	// llgo runtime does not require these scheduler hooks at this layer.
-	if arm64ElidesSchedulerHook(callee) {
-		return nil
-	}
-
-	csig, ok := c.sigs[callee]
-	if !ok {
-		// Keep behavior explicit: cross-symbol CALL needs a signature unless it is
-		// a known no-op runtime scheduler hook above.
-		return fmt.Errorf("amd64 call missing signature for %q", callee)
+	symbol := strings.TrimSuffix(s, "(SB)")
+	internalABI := strings.HasSuffix(symbol, "<ABIInternal>")
+	call, bound := c.abi0Mode32Calls[s]
+	callee, csig := call.name, call.sig
+	if !bound {
+		callee = c.resolve(symbol)
+		// Syscall stubs invoke runtime entersyscall/exitsyscall around SYSCALL.
+		// llgo runtime does not require these scheduler hooks at this layer.
+		if arm64ElidesSchedulerHook(callee) {
+			return nil
+		}
+		var ok bool
+		csig, ok = c.sigs[callee]
+		if !ok {
+			return fmt.Errorf("amd64 call missing signature for %q", callee)
+		}
 	}
 	callee = funcSigSymbol(callee, csig)
 

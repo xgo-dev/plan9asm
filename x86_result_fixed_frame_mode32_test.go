@@ -88,3 +88,55 @@ func TestX86Mode32FixedFrameGuards(t *testing.T) {
 		}
 	}
 }
+
+func TestX86Mode32FixedFrameTypedCalls(t *testing.T) {
+	const triple = "i386-unknown-linux-gnu"
+	const declarations = "func callFrame(x uint32) uint32\nfunc callee(x uint32) uint32\n"
+	const source = `TEXT ·callFrame(SB),4,$24-8
+MOVL x+0(FP),AX
+MOVL AX,0(SP)
+MOVL $37,16(SP)
+CALL ·callee(SB)
+MOVL 4(SP),AX
+ADDL 16(SP),AX
+MOVL AX,ret+4(FP)
+RET
+
+TEXT ·callee(SB),4,$0-8
+MOVL x+0(FP),AX
+ADDL $3,AX
+MOVL AX,ret+4(FP)
+RET
+`
+	goAssemblerOracleOutput(t, "386", source, "", true)
+	for _, api := range []string{"text", "module", "Go"} {
+		t.Run(api, func(t *testing.T) {
+			ir, err := x86ScalarFPBitViewAPI(t, source, declarations, "386", triple, api)
+			if err != nil {
+				t.Fatal(err)
+			}
+			x86NumericNativeAddressObject(t, ir, triple)
+		})
+	}
+
+	for _, row := range []struct {
+		name, old, replacement string
+	}{
+		{"partially initialized argument", "MOVL AX,0(SP)", "MOVW AX,0(SP)"},
+		{"result read before call", "CALL ·callee(SB)\nMOVL 4(SP),AX", "MOVL 4(SP),AX\nCALL ·callee(SB)"},
+		{"old argument bytes", "MOVL 4(SP),AX", "MOVL 0(SP),AX"},
+		{"old register bytes", "MOVL 4(SP),AX", "NOP"},
+		{"old stack alias", "CALL ·callee(SB)\nMOVL 4(SP),AX", "LEAL 4(SP),BX\nCALL ·callee(SB)\nMOVL (BX),AX"},
+		{"indirect callee", "CALL ·callee(SB)", "CALL AX"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			for _, api := range []string{"text", "module", "Go"} {
+				bad := strings.Replace(source, row.old, row.replacement, 1)
+				ir, err := x86ScalarFPBitViewAPI(t, bad, declarations, "386", triple, api)
+				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatalf("%s: unbound CALL effect: %v", api, err)
+				}
+			}
+		})
+	}
+}
