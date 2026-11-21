@@ -37,7 +37,7 @@ func TestWASMV128CorePublicInferenceMatchesDeadControl(t *testing.T) {
 		{"ret", "RET\n"}, {"ret-unused-label", "RET\nunused:\n"},
 		{"undef", "UNDEF\n"}, {"unreachable", "Unreachable\n"},
 	} {
-		for _, scalar := range []string{"I32Const $1", "I64Const $1", "F64Const $1.0"} {
+		for _, scalar := range []string{"I32Const $1", "I64Const $1", "F32Const $1.0", "F64Const $1.0"} {
 			cases = append(cases, testCase{
 				name: prefix.name + "-dead-" + scalar, body: prefix.body + scalar + "\nRET\n", accept: true, result: Void,
 			})
@@ -52,7 +52,7 @@ func TestWASMV128CorePublicInferenceMatchesDeadControl(t *testing.T) {
 				testCase{name: "typed-malformed-dead/" + name, body: "RET\n" + name + " $1\nRET\n", result: Void})
 		}
 	}
-	if len(cases) != 91 {
+	if len(cases) != 99 {
 		t.Fatal("complete dead-control regression inventory changed", len(cases))
 	}
 	for _, row := range cases {

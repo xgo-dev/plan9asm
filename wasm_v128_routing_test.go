@@ -56,7 +56,12 @@ func wasmV128RoutingSource(rows []wasmV128RoutingCase) string {
 
 func TestWASMV128RoutingDifferential(t *testing.T) {
 	rows := wasmV128RoutingCases()
-	file, err := Parse(ArchWASM, wasmV128RoutingSource(rows))
+	checkWASMV128MemoryRuntime(t, wasmV128RoutingSource(rows), rows, wasmV128RoutingOracle)
+}
+
+func checkWASMV128MemoryRuntime(t *testing.T, source string, rows any, oracle string) {
+	t.Helper()
+	file, err := Parse(ArchWASM, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +77,7 @@ func TestWASMV128RoutingDifferential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	matrix := filepath.Join(t.TempDir(), "routing.json")
+	matrix := filepath.Join(t.TempDir(), "matrix.json")
 	if err := os.WriteFile(matrix, data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +88,11 @@ func TestWASMV128RoutingDifferential(t *testing.T) {
 				options.TargetTriple = triple
 				ir, err := wasmPackedTranslate(t, file, options, route)
 				if err != nil || ir == "" || strings.Contains(ir, "blockaddress") {
-					t.Fatal("SIMD routing translation failed", err)
+					t.Fatal("SIMD memory-kernel translation failed", err)
 				}
 				for _, level := range []string{"0", "2"} {
 					t.Run("O"+level, func(t *testing.T) {
-						runLLVMWASMObject(t, ir, level, wasmV128RoutingOracle, matrix)
+						runLLVMWASMObject(t, ir, level, oracle, matrix)
 					})
 				}
 			})
@@ -122,27 +127,33 @@ func TestWASMV128RoutingRejectsMalformedSource(t *testing.T) {
 	}
 }
 
-const wasmV128RoutingOracle = `
+const wasmV128MemoryKernelJS = `
 const fs = require('fs');
 const rows = JSON.parse(fs.readFileSync(process.argv[2]));
 const instantiate = bytes => new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
 const translated = instantiate(fs.readFileSync(process.argv[1]));
 ` + wasmTestSectionJS + `
-const names = rows.map(({Name}, i) => [...vector([...Buffer.from(Name)]), 0, ...uleb(i)]);
-names.push([...vector([...Buffer.from('memory')]), 2, 0]);
-const load = addr => [0x41, addr | 0x80, 0, 0xfd, 0x00, 0, 0];
-const native = instantiate(Uint8Array.from([
-  0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
-  ...section(1, [1, 0x60, 0, 0]),
-  ...section(3, vector(rows.map(() => 0))),
-  ...section(5, [1, 0, 1]),
-  ...section(7, vector(names)),
-  ...section(10, vector(rows.map(({Code, Mask, Lane}) => vector([
-    // These i32.const arguments use signed LEB128.
-    0, 0x41, 0x80, 0x01, ...load(32), ...load(64), ...(Lane ? load(96) : []),
-    0xfd, ...uleb(Code), ...(Mask || []), 0xfd, 0x0b, 0, 0, 0x0b,
-  ])))),
-]));
+function nativeMemory(arity) {
+  const names = rows.map(({Name}, i) => [...vector([...Buffer.from(Name)]), 0, ...uleb(i)]);
+  names.push([...vector([...Buffer.from('memory')]), 2, 0]);
+  const load = addr => [0x41, addr | 0x80, 0, 0xfd, 0x00, 0, 0];
+  return instantiate(Uint8Array.from([
+    0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
+    ...section(1, [1, 0x60, 0, 0]),
+    ...section(3, vector(rows.map(() => 0))),
+    ...section(5, [1, 0, 1]),
+    ...section(7, vector(names)),
+    ...section(10, vector(rows.map(row => vector([
+      // i32.const arguments use signed LEB128.
+      0, 0x41, 0x80, 0x01, ...[32,64,96].slice(0, arity(row)).flatMap(load),
+      0xfd, ...uleb(row.Code), ...(row.Mask || []), 0xfd, 0x0b, 0, 0, 0x0b,
+    ])))),
+  ]));
+}
+`
+
+const wasmV128RoutingOracle = wasmV128MemoryKernelJS + `
+const native = nativeMemory(row => row.Lane ? 3 : 2);
 const input = new Uint8Array(native.memory.buffer);
 const output = new Uint8Array(translated.memory.buffer);
 const indices = Array.from({length:16}, (_, i) => i);

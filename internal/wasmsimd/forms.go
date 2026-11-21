@@ -25,6 +25,10 @@ const (
 	Convert
 	ByteShuffle
 	ByteSwizzle
+	FloatMultiplyAdd
+	IntegerAverage
+	IntegerQ15
+	IntegerDot
 )
 
 type ValueType string
@@ -82,6 +86,15 @@ func (f Form) InputLaneType() string {
 		return f.inputLanes
 	}
 	return f.Shape.LaneType
+}
+
+var dotAddPairShape = integerShape(16)
+
+func (f Form) DotPairShape() Shape {
+	if f.Arity() == 3 {
+		return dotAddPairShape
+	}
+	return f.Shape
 }
 
 func (f Form) HasLaneIndex() bool {
@@ -153,6 +166,15 @@ func buildForms() map[string]Form {
 	add("I8X16", bytes, operation{"SWIZZLE", "", binary, ByteSwizzle})
 	// The deterministic profile uses zero for an out-of-range relaxed index.
 	add("I8X16", bytes, operation{"RELAXEDSWIZZLE", "", binary, ByteSwizzle})
+	addDot := func(name string, input, output int, stack stackSignature) {
+		result[name] = Form{
+			stack: stack, inputLanes: integerShape(input).LaneType,
+			Shape: integerShape(output), Emission: IntegerDot,
+		}
+	}
+	addDot("I32X4DOTI16X8S", 16, 32, binary)
+	addDot("I16X8RELAXEDDOTI8X16I7X16S", 8, 16, binary)
+	addDot("I32X4RELAXEDDOTI8X16I7X16ADDS", 8, 32, ternary)
 	addLaneOperations := func(prefix string, shape Shape, scalar ValueType) {
 		splat := stackSignature{[]ValueType{scalar}, V128}
 		replace := stackSignature{[]ValueType{V128, scalar}, V128}
@@ -226,10 +248,15 @@ func buildForms() map[string]Form {
 			addWideningOperations(lane.prefix, shape)
 		}
 		if lane.bits <= 16 {
+			add(lane.prefix, shape, operation{"AVGRU", "", binary, IntegerAverage})
 			add(lane.prefix, shape, operation{"ADDSATS", "sadd.sat", binary, Intrinsic})
 			add(lane.prefix, shape, operation{"ADDSATU", "uadd.sat", binary, Intrinsic})
 			add(lane.prefix, shape, operation{"SUBSATS", "ssub.sat", binary, Intrinsic})
 			add(lane.prefix, shape, operation{"SUBSATU", "usub.sat", binary, Intrinsic})
+		}
+		if lane.bits == 16 {
+			add(lane.prefix, shape, operation{"Q15MULRSATS", "", binary, IntegerQ15})
+			add(lane.prefix, shape, operation{"RELAXEDQ15MULRS", "", binary, IntegerQ15})
 		}
 		add(lane.prefix, shape, operation{"EQ", "eq", binary, Compare})
 		add(lane.prefix, shape, operation{"NE", "ne", binary, Compare})
@@ -283,6 +310,10 @@ func buildForms() map[string]Form {
 		{"DIV", "fdiv", binary, Instruction},
 		{"MIN", "minimum", binary, Intrinsic},
 		{"MAX", "maximum", binary, Intrinsic},
+		{"RELAXEDMIN", "minimum", binary, Intrinsic},
+		{"RELAXEDMAX", "maximum", binary, Intrinsic},
+		{"RELAXEDMADD", "", ternary, FloatMultiplyAdd},
+		{"RELAXEDNMADD", "fneg", ternary, FloatMultiplyAdd},
 	}
 	for _, lane := range []struct {
 		prefix  string

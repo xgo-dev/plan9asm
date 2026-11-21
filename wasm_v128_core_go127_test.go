@@ -17,6 +17,33 @@ import (
 	"testing"
 )
 
+func TestWASMV128ArithmeticActualGoEncoding(t *testing.T) {
+	rows := append(wasmV128RelaxedFloatCases(), wasmV128IntegerArithmeticCases()...)
+	for _, goos := range wasmPackedGoPlatforms {
+		t.Run(goos, func(t *testing.T) {
+			object := wasmV128ActualGoBytes(t, wasmV128ArithmeticSource(rows), goos)
+			for _, row := range rows {
+				store := []byte{0xfd, 0x0b, 0, 0}
+				encoding := binary.AppendUvarint([]byte{0xfd}, uint64(row.Code))
+				if bytes.Contains(object, append(encoding, store...)) {
+					continue
+				}
+				if row.Code >= 0x100 {
+					legacy := []byte{0xfd, byte(row.Code&0x7f) | 0x80, 0x01, 0x02}
+					if bytes.Contains(object, append(legacy, store...)) {
+						t.Logf("%s has the known extra ULEB byte in Go's relaxed SIMD encoding", row.Opcode)
+						continue
+					}
+				} else if row.Code >= 0x80 && bytes.Contains(object, append(append(encoding, 0x01), store...)) {
+					t.Logf("%s has the known trailing nop byte in Go's SIMD encoding", row.Opcode)
+					continue
+				}
+				t.Errorf("missing or unknown original Go object encoding of %s", row.Opcode)
+			}
+		})
+	}
+}
+
 func TestWASMV128RoutingActualGoEncoding(t *testing.T) {
 	rows := wasmV128RoutingCases()
 	for _, goos := range wasmPackedGoPlatforms {

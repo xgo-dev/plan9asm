@@ -111,7 +111,7 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		lhs = cast(lhs, wasmV128CoreType, inputType)
 	}
 	var rhs string
-	if len(inputs) == 2 && spec.InputType(1) == wasmsimd.V128 {
+	if len(inputs) >= 2 && spec.InputType(1) == wasmsimd.V128 {
 		rhs = cast(inputs[1].val, wasmV128CoreType, inputType)
 	}
 	resultType := LLVMType(typ)
@@ -130,6 +130,18 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 			result, typ, lhs, typ, rhs, mask.String())
 	case wasmsimd.ByteSwizzle:
 		result = emitWASMByteSwizzle(b, newTmp, typ, lhs, rhs)
+	case wasmsimd.FloatMultiplyAdd:
+		third := cast(inputs[2].val, wasmV128CoreType, inputType)
+		if spec.Operator == "fneg" {
+			negated := newTmp()
+			fmt.Fprintf(b, "  %%%s = fneg %s %s\n", negated, typ, lhs)
+			lhs = "%" + negated
+		}
+		// The deterministic profile rounds the product before the sum.
+		// Keep both operations free of LLVM's contract/fast math flags.
+		product := newTmp()
+		fmt.Fprintf(b, "  %%%s = fmul %s %s, %s\n", product, typ, lhs, rhs)
+		fmt.Fprintf(b, "  %%%s = fadd %s %%%s, %s\n", result, typ, product, third)
 	case wasmsimd.Instruction:
 		fmt.Fprintf(b, "  %%%s = %s %s %s", result, spec.Operator, typ, lhs)
 		if rhs != "" {
@@ -147,6 +159,17 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		fmt.Fprintf(b, "  %%%s = call %s @%s(%s %s, i1 false)\n", result, typ, spec.IntrinsicName(), typ, lhs)
 	case wasmsimd.IntegerNeg:
 		fmt.Fprintf(b, "  %%%s = sub %s zeroinitializer, %s\n", result, typ, lhs)
+	case wasmsimd.IntegerAverage:
+		emitWASMV128UnsignedAverage(b, newTmp, spec.Shape, result, lhs, rhs)
+	case wasmsimd.IntegerQ15:
+		emitWASMV128Q15(b, newTmp, spec.Shape, result, lhs, rhs)
+	case wasmsimd.IntegerDot:
+		dot := emitWASMV128IntegerDot(b, newTmp, spec, lhs, rhs)
+		if spec.Arity() == 3 {
+			fmt.Fprintf(b, "  %%%s = add %s %s, %s\n", result, typ, dot, inputs[2].val)
+		} else {
+			return wasmValue{typ: wasmV128CoreType, val: cast(dot, resultType, wasmV128CoreType)}
+		}
 	case wasmsimd.IntegerWiden:
 		wide := emitWASMV128IntegerWiden(b, newTmp, spec, lhs, rhs)
 		return wasmValue{typ: wasmV128CoreType, val: cast(wide, resultType, wasmV128CoreType)}
@@ -295,38 +318,29 @@ func emitWASMV128IntegerNarrow(b *strings.Builder, newTmp func() string, spec wa
 }
 
 func emitWASMV128IntegerWiden(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, lhs, rhs string) string {
-	lanes := 128 / spec.Shape.LaneBits
-	first, step := 0, 1
-	switch spec.Widening {
-	case wasmsimd.HighHalf:
-		first = lanes
-	case wasmsimd.AdjacentPairs:
-		step = 2
-	}
-	source, resultType := spec.InputLaneType(), spec.Shape.LaneType
-	half := fmt.Sprintf("<%d x i%d>", lanes, spec.Shape.LaneBits/2)
-	widen := func(input, mask string) string {
-		picked, extended := newTmp(), newTmp()
-		fmt.Fprintf(b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
-			picked, source, input, source, lanes, mask)
-		fmt.Fprintf(b, "  %%%s = %s %s %%%s to %s\n", extended, spec.Operator, half, picked, resultType)
-		return "%" + extended
-	}
-	mask := wasmV128ShuffleIndices(lanes, first, step)
-	left := widen(lhs, mask)
+	source := spec.InputLaneType()
 	if spec.Widening == wasmsimd.AdjacentPairs {
 		// Generic IR keeps this legal without a mandatory SIMD backend.
 		// LLVM selects extadd_pairwise when the target has SIMD128.
-		right, result := widen(lhs, wasmV128ShuffleIndices(lanes, 1, step)), newTmp()
-		fmt.Fprintf(b, "  %%%s = add %s %s, %s\n", result, resultType, left, right)
-		return "%" + result
+		return emitWASMV128WidenedPairSum(b, newTmp, source, lhs, spec.Shape, spec.Operator)
 	}
+	first := 0
+	if spec.Widening == wasmsimd.HighHalf {
+		first = 128 / spec.Shape.LaneBits
+	}
+	left := emitWASMV128WidenedLanes(b, newTmp, source, lhs, spec.Shape, first, 1, spec.Operator)
 	if rhs == "" {
 		return left
 	}
-	right, result := widen(rhs, mask), newTmp()
-	fmt.Fprintf(b, "  %%%s = mul %s %s, %s\n", result, resultType, left, right)
+	right := emitWASMV128WidenedLanes(b, newTmp, source, rhs, spec.Shape, first, 1, spec.Operator)
+	result := newTmp()
+	fmt.Fprintf(b, "  %%%s = mul %s %s, %s\n", result, spec.Shape.LaneType, left, right)
 	return "%" + result
+}
+
+func wasmV128IntegerLiteral(lanes, bits int, value uint64) string {
+	lane := fmt.Sprintf("i%d %d", bits, value)
+	return "<" + strings.Repeat(lane+", ", lanes-1) + lane + ">"
 }
 
 func emitWASMV128CanonicalNaN(b *strings.Builder, newTmp func() string, shape wasmsimd.Shape, value string) string {
@@ -336,8 +350,7 @@ func emitWASMV128CanonicalNaN(b *strings.Builder, newTmp func() string, shape wa
 	bits := shape.LaneBits
 	signless, infinity, canonical := wasmFloatNaNBits(bits)
 	splat := func(bitsValue uint64) string {
-		lane := fmt.Sprintf("i%d %d", bits, bitsValue)
-		return "<" + strings.Repeat(lane+", ", 128/bits-1) + lane + ">"
+		return wasmV128IntegerLiteral(128/bits, bits, bitsValue)
 	}
 	typ := shape.MaskType
 	magnitude, isNaN, result := newTmp(), newTmp(), newTmp()
