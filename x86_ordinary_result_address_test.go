@@ -94,28 +94,49 @@ func TestX86OrdinaryResultAddressScalarTransferWidths(t *testing.T) {
 			word, offset, triple = "L", 4, "i386-unknown-linux-gnu"
 		}
 		for _, test := range []struct {
-			typ, setup, store string
-			bytes             int
+			setup, store string
+			bits         int
 		}{
-			{"uint8", "NOP", "MOVB $7,(DI)", 1},
-			{"uint16", "NOP", "MOVW $7,(DI)", 2},
-			{"uint32", "MOVL $7,AX", "MOVL AX,(DI)", 4},
-			{"uint32", "PXOR X0,X0", "MOVL X0,(DI)", 4},
-			{"uint32", "PXOR X0,X0", "VMOVD X0,(DI)", 4},
-			{"uint64", "PXOR X0,X0", "MOVQ X0,(DI)", 8},
-			{"uint64", "PXOR X0,X0", "MOVD X0,(DI)", 8},
-			{"uint64", "PXOR X0,X0", "MOVDQ2Q X0,(DI)", 8},
-			{"uint64", "PXOR X0,X0", "VMOVQ X0,(DI)", 8},
+			{"NOP", "MOVB $7,(DI)", 8},
+			{"NOP", "MOVW $7,(DI)", 16},
+			{"MOVL $7,AX", "MOVL AX,(DI)", 32},
+			{"PXOR X0,X0", "MOVL X0,(DI)", 32},
+			{"PXOR X0,X0", "VMOVD X0,(DI)", 32},
+			{"PXOR X0,X0", "MOVQ X0,(DI)", 64},
+			{"PXOR X0,X0", "MOVD X0,(DI)", 64},
+			{"PXOR X0,X0", "MOVDQ2Q X0,(DI)", 64},
+			{"PXOR X0,X0", "VMOVQ X0,(DI)", 64},
 		} {
+			op, _, _ := strings.Cut(test.store, " ")
+			bits := x86NamedGPSIMDMemoryOracleBits(arch, op, test.bits)
+			typ := fmt.Sprintf("uint%d", bits)
 			for _, api := range []string{"text", "module", "Go"} {
-				t.Run(arch+"/"+test.typ+"/"+test.store+"/"+api, func(t *testing.T) {
-					source := fmt.Sprintf("TEXT ·First(SB),NOSPLIT,$0-%d\n LEA%s ret+%d(FP),DI\n %s\n %s\n RET\n", offset+test.bytes, word, offset, test.setup, test.store)
-					if _, err := x86ScalarFPBitViewAPI(t, source, "func First(a uint8) "+test.typ, arch, triple, api); err != nil {
+				t.Run(arch+"/"+typ+"/"+test.store+"/"+api, func(t *testing.T) {
+					source := fmt.Sprintf("TEXT ·First(SB),NOSPLIT,$0-%d\n LEA%s ret+%d(FP),DI\n %s\n %s\n RET\n", offset+bits/8, word, offset, test.setup, test.store)
+					if _, err := x86ScalarFPBitViewAPI(t, source, "func First(a uint8) "+typ, arch, triple, api); err != nil {
 						t.Fatal(err)
 					}
 				})
 			}
 		}
+	}
+}
+
+func TestX86OrdinaryResultAddress386VMOVQRequiresBothResultHalves(t *testing.T) {
+	const prefix = "TEXT ·First(SB),NOSPLIT,$0-8\n LEAL ret+0(FP),DI\n PXOR X0,X0\n VMOVQ X0,(DI)\n"
+	const declaration = "func First() uint64"
+	for _, api := range []string{"text", "module", "Go"} {
+		t.Run(api, func(t *testing.T) {
+			ir, err := x86ScalarFPBitViewAPI(t, prefix+" RET\n", declaration, "386", "i386-unknown-linux-gnu", api)
+			var incomplete *x86IncompleteResultError
+			if ir != "" || !errors.As(err, &incomplete) {
+				t.Fatal("a dword store acquired the unwritten high half of a quadword result", err)
+			}
+			ir, err = x86ScalarFPBitViewAPI(t, prefix+" MOVL $17,4(DI)\n RET\n", declaration, "386", "i386-unknown-linux-gnu", api)
+			if err != nil || ir == "" {
+				t.Fatal("both independently written halves did not initialize the result", err)
+			}
+		})
 	}
 }
 
@@ -128,7 +149,8 @@ func TestX86OrdinaryResultAddressPrivateProofNotPublicAuthority(t *testing.T) {
 		for _, move := range []string{"MOVQ", "MOVD", "MOVDQ2Q", "VMOVQ"} {
 			t.Run(arch+"/"+move, func(t *testing.T) {
 				body := fmt.Sprintf("LEA%s ret+0(FP),DI\n PXOR X0,X0\n %s X0,(DI)\n RET", word, move)
-				_, file, sig, _ := x86ResultInitializationFixture(t, arch, "func Value() uint64", body)
+				bits := x86NamedGPSIMDMemoryOracleBits(arch, move, 64)
+				_, file, sig, _ := x86ResultInitializationFixture(t, arch, fmt.Sprintf("func Value() uint%d", bits), body)
 				before, err := x86CallerSourceFingerprint(file)
 				if err != nil {
 					t.Fatal(err)

@@ -166,7 +166,7 @@ func x86ResultSlotMoveBytes(ins Instr, arch string) int64 {
 		if err != nil || form.mmx || form.spec.rawOnly || form.memory < 0 {
 			return 0
 		}
-		return int64(form.bits / 8) // Mode32 Q memory/X copies really are 8 bytes.
+		return int64(form.bits / 8) // The encoded transfer determines the storage width.
 	}
 	if form, known, err := amd64ScalarVectorMoveProperties(ins, arch); known {
 		if err != nil || !form.spec.legacy || form.mask >= 0 || form.memory < 0 {

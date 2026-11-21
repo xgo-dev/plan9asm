@@ -29,10 +29,11 @@ func TestX86ResultSlotMoveWidthKeepsScalarMode32Boundary(t *testing.T) {
 		}
 		for _, op := range []string{"MOVQ", "MOVD", "MOVDQ2Q", "VMOVQ"} {
 			for _, operands := range []string{"X0,(DI)", "(DI),X0"} {
-				t.Run(arch+"/legal_X_m64/"+op+"/"+operands, func(t *testing.T) {
+				t.Run(arch+"/X_memory/"+op+"/"+operands, func(t *testing.T) {
 					ins := x86GoMOVQSourceInstruction(x86YMMReadSource(t, op+" "+operands))
-					if got := x86ResultSlotMoveBytes(ins, arch); got != 8 {
-						t.Fatalf("actual legal X/m64 width=%d want8", got)
+					want := int64(x86NamedGPSIMDMemoryOracleBits(arch, op, 64) / 8)
+					if got := x86ResultSlotMoveBytes(ins, arch); got != want {
+						t.Fatalf("actual X/memory width=%d want=%d", got, want)
 					}
 				})
 			}
@@ -74,15 +75,17 @@ func TestX86ResultSlotMoveWidthWholeProofAndThreeAPIs(t *testing.T) {
 			}
 		}
 		for _, op := range []string{"MOVQ", "MOVD", "MOVDQ2Q", "VMOVQ"} {
-			t.Run(arch+"/legal_X_m64/"+op, func(t *testing.T) {
+			t.Run(arch+"/X_memory/"+op, func(t *testing.T) {
 				body := fmt.Sprintf("LEA%s ret+0(FP),DI\n PXOR X0,X0\n %s X0,(DI)\n %s (DI),X1\n %s X1,(DI)\n RET", word, op, op, op)
-				_, file, sig, source := x86ResultInitializationFixture(t, arch, "func Value() uint64", body)
+				bits := x86NamedGPSIMDMemoryOracleBits(arch, op, 64)
+				declaration := fmt.Sprintf("func Value() uint%d", bits)
+				_, file, sig, source := x86ResultInitializationFixture(t, arch, declaration, body)
 				if err := checkX86ScalarFPResultInitialization(file.Funcs[0], sig, arch); err != nil {
 					t.Fatal(err)
 				}
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(api, func(t *testing.T) {
-						if _, err := x86ScalarFPBitViewAPI(t, source, "func Value() uint64", arch, triple, api); err != nil {
+						if _, err := x86ScalarFPBitViewAPI(t, source, declaration, arch, triple, api); err != nil {
 							t.Fatal(err)
 						}
 					})

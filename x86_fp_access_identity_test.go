@@ -66,10 +66,11 @@ func TestX86FPAccessBytesCompleteGPSIMDMemoryRows(t *testing.T) {
 					if !known || write != row.write || width != int64(form.bits/8) {
 						t.Fatalf("FP access differs from GP/X row: width=%d write=%t known=%t form=%+v", width, write, known, form)
 					}
-					wantWidth := int64(8)
+					bits := 64
 					if op == "MOVL" || op == "VMOVD" {
-						wantWidth = 4
+						bits = 32
 					}
+					wantWidth := int64(x86NamedGPSIMDMemoryOracleBits(arch, op, bits) / 8)
 					if width != wantWidth {
 						t.Fatalf("native width=%d, want independently selected %d", width, wantWidth)
 					}

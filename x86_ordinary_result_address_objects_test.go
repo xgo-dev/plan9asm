@@ -30,7 +30,7 @@ func x86OrdinaryResultAddressObjectFixture(arch string) (string, string, int) {
 		cases = append(cases, struct {
 			bits int
 			body string
-		}{64,
+		}{x86NamedGPSIMDMemoryOracleBits(arch, op, 64),
 			"PXOR X0,X0\n " + op + " X0,(DI)\n " + op + " (DI),X1\n " + op + " X1,(DI)"})
 	}
 	if arch == "amd64" {
