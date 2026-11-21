@@ -113,6 +113,9 @@ func parseWASMMemory(ins Instr, name string) (wasmMemoryForm, bool, error) {
 		args = args[1:]
 	}
 	if strings.ToUpper(string(ins.Op)) != name || len(args) > 1 || len(args) == 0 && !spec.store {
+		if spec.vector == nil && spec.access != wasmV128CoreType {
+			return form, true, fmt.Errorf("%s requires a scalar memory operand without suffixes", ins.Op)
+		}
 		return form, true, fmt.Errorf("%s requires a memory operand without suffixes", ins.Op)
 	}
 	// The Go encoder uses zero when the store offset is omitted.
@@ -153,15 +156,37 @@ func parseWASMMemory(ins Instr, name string) (wasmMemoryForm, bool, error) {
 // Check the whole access before LLVM can scalarize a vector memory operation.
 // An out-of-bounds vector store must trap before writing any of its bytes.
 func emitWASMVectorMemoryBounds(b *strings.Builder, base string, span int64, newTmp func() string, newLabel func(string) string) {
-	address, end := newTmp(), newTmp()
-	pages, widePages, size, valid := newTmp(), newTmp(), newTmp(), newTmp()
+	size := emitWASMMemoryByteSize(b, newTmp)
+	address, end, valid := newTmp(), newTmp(), newTmp()
 	fmt.Fprintf(b, "  %%%s = zext i32 %s to i64\n", address, base)
 	fmt.Fprintf(b, "  %%%s = add i64 %%%s, %d\n", end, address, span)
+	fmt.Fprintf(b, "  %%%s = icmp ule i64 %%%s, %s\n", valid, end, size)
+	emitWASMTrapUnless(b, valid, newLabel)
+}
+
+func emitWASMMemoryByteSize(b *strings.Builder, newTmp func() string) string {
+	pages, widePages, size := newTmp(), newTmp(), newTmp()
 	fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.memory.size.i32(i32 0)\n", pages)
 	fmt.Fprintf(b, "  %%%s = zext i32 %%%s to i64\n", widePages, pages)
 	fmt.Fprintf(b, "  %%%s = shl i64 %%%s, 16\n", size, widePages)
-	fmt.Fprintf(b, "  %%%s = icmp ule i64 %%%s, %%%s\n", valid, end, size)
-	emitWASMTrapUnless(b, valid, newLabel)
+	return "%" + size
+}
+
+// LLVM can elide an empty memmove/memset or split a fixed-size operation into
+// smaller writes. Check every range first to retain WebAssembly's trap even
+// when len is zero, and to leave memory untouched when any range is invalid.
+func emitWASMBulkMemoryBounds(b *strings.Builder, length string, newTmp func() string, newLabel func(string) string, pointers ...string) {
+	size := emitWASMMemoryByteSize(b, newTmp)
+	wideLength := newTmp()
+	fmt.Fprintf(b, "  %%%s = zext i32 %s to i64\n", wideLength, length)
+	for _, pointer := range pointers {
+		address, wideAddress, end, valid := newTmp(), newTmp(), newTmp(), newTmp()
+		fmt.Fprintf(b, "  %%%s = ptrtoint ptr %s to i32\n", address, pointer)
+		fmt.Fprintf(b, "  %%%s = zext i32 %%%s to i64\n", wideAddress, address)
+		fmt.Fprintf(b, "  %%%s = add i64 %%%s, %%%s\n", end, wideAddress, wideLength)
+		fmt.Fprintf(b, "  %%%s = icmp ule i64 %%%s, %s\n", valid, end, size)
+		emitWASMTrapUnless(b, valid, newLabel)
+	}
 }
 
 func emitWASMVectorMemoryLoad(b *strings.Builder, newTmp func() string, form wasmMemoryForm, loaded, input wasmValue) wasmValue {

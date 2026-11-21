@@ -35,8 +35,10 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	// Validate source format before dead-block removal. Pure dead operators may
 	// disappear, but malformed source must not acquire an apparent pass.
 	var memoryForms map[int]wasmMemoryForm
+	bulkMemory := false
 	for i, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
+		bulkMemory = bulkMemory || op == "MEMORYCOPY" || op == "MEMORYFILL"
 		form, found, err := parseWASMMemory(ins, op)
 		if err != nil {
 			return err
@@ -108,6 +110,11 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	b.WriteString(")")
 	if sig.Attrs != "" {
 		b.WriteString(" " + sig.Attrs)
+	}
+	if bulkMemory {
+		// Linear memory includes byte zero. LLVM otherwise treats a nonempty
+		// memmove or memset at that address as undefined and can remove it.
+		b.WriteString(" null_pointer_is_valid")
 	}
 	b.WriteString(" {\nentry:\n")
 
@@ -1564,12 +1571,12 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			name := newTmp()
 			fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.memory.grow.i32(i32 0, i32 %s)\n", name, pages.val)
 			push(wasmValue{typ: I32, val: "%" + name})
-		case "MEMORYCOPY":
+		case "MEMORYCOPY", "MEMORYFILL":
 			length, err := pop(op)
 			if err != nil {
 				return err
 			}
-			src, err := pop(op)
+			source, err := pop(op)
 			if err != nil {
 				return err
 			}
@@ -1581,7 +1588,11 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			if err != nil {
 				return err
 			}
-			src, err = cast(src, Ptr, false)
+			sourceType := Ptr
+			if op == "MEMORYFILL" {
+				sourceType = I8
+			}
+			source, err = cast(source, sourceType, false)
 			if err != nil {
 				return err
 			}
@@ -1589,33 +1600,13 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(b, "  call void @llvm.memmove.p0.p0.i32(ptr %s, ptr %s, i32 %s, i1 false)\n", dst.val, src.val, length.val)
-		case "MEMORYFILL":
-			length, err := pop(op)
-			if err != nil {
-				return err
+			if op == "MEMORYCOPY" {
+				emitWASMBulkMemoryBounds(b, length.val, newTmp, newLabel, dst.val, source.val)
+				fmt.Fprintf(b, "  call void @llvm.memmove.p0.p0.i32(ptr %s, ptr %s, i32 %s, i1 false)\n", dst.val, source.val, length.val)
+			} else {
+				emitWASMBulkMemoryBounds(b, length.val, newTmp, newLabel, dst.val)
+				fmt.Fprintf(b, "  call void @llvm.memset.p0.i32(ptr %s, i8 %s, i32 %s, i1 false)\n", dst.val, source.val, length.val)
 			}
-			fill, err := pop(op)
-			if err != nil {
-				return err
-			}
-			dst, err := pop(op)
-			if err != nil {
-				return err
-			}
-			length, err = cast(length, I32, false)
-			if err != nil {
-				return err
-			}
-			fill, err = cast(fill, I8, false)
-			if err != nil {
-				return err
-			}
-			dst, err = cast(dst, Ptr, false)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(b, "  call void @llvm.memset.p0.i32(ptr %s, i8 %s, i32 %s, i1 false)\n", dst.val, fill.val, length.val)
 		case "RET":
 			if len(ins.Args) == 1 {
 				if err := emitTailCall(ins.Args[0]); err != nil {
