@@ -352,6 +352,47 @@ func TestX86DirectTail386WholeSourceKeepsItsOwnTypedFrame(t *testing.T) {
 	}
 }
 
+const x86DirectTail386IndexedCarryGo = `func Accumulate(dst, src *uint32, factor uint32) (carry uint32)
+`
+
+const x86DirectTail386IndexedCarryASM = `TEXT ·Accumulate(SB),4,$0-16
+ MOVL $2,BX
+ JMP accumulate<>(SB)
+TEXT accumulate<>(SB),516,$0-0
+ MOVL dst+0(FP),DI
+ MOVL src+4(FP),SI
+ MOVL factor+8(FP),BP
+ LEAL (DI)(BX*4),DI
+ LEAL (SI)(BX*4),SI
+ MOVL $0,CX
+ NEGL BX
+loop:
+ MOVL (SI)(BX*4),AX
+ MULL BP
+ ADDL CX,AX
+ ADCL $0,DX
+ ADDL AX,(DI)(BX*4)
+ ADCL $0,DX
+ MOVL DX,CX
+ INCL BX
+ JLT loop
+ MOVL CX,carry+12(FP)
+ RET
+`
+
+func TestX86DirectTail386IndexedCarry(t *testing.T) {
+	goAssemblerOracleOutput(t, "386", x86DirectTail386IndexedCarryASM, "", true)
+	for _, api := range []string{"text", "module", "Go"} {
+		t.Run(api, func(t *testing.T) {
+			_, err := x86ScalarFPBitViewAPI(t, x86DirectTail386IndexedCarryASM,
+				x86DirectTail386IndexedCarryGo, "386", "i386-unknown-linux-gnu", api)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestX86DirectTailUnrelatedFunctionsRetainTheirOwnConsumers(t *testing.T) {
 	for _, row := range []struct{ name, declaration, source string }{
 		{"framed", "func Independent(a uint64) uint64", `TEXT ·Independent(SB),4,$8-16
