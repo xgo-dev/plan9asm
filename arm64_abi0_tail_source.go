@@ -12,6 +12,25 @@ type arm64ABI0TailSource struct {
 	prepared    Func
 }
 
+// A bare, frameless TEXT with FP operands can use its caller's ABI0 frame.
+// Passing those slots as LLVM values does not initialize the source registers.
+func arm64BareABI0Frame(fn Func, sig FuncSig, frame arm64GoFrame) bool {
+	if frame.present || fn.FrameSize != 0 || fn.ArgSize != 0 || strings.ContainsAny(fn.Sym, "·<>") ||
+		len(fn.Instrs) == 0 || fn.Instrs[0].Op != OpTEXT ||
+		len(sig.Frame.Params)+len(sig.Frame.Results) == 0 ||
+		len(sig.ArgRegs) != 0 || sig.ARM64GoRegisterABI != nil || sig.ARM64ClosureABI != nil {
+		return false
+	}
+	for _, ins := range fn.Instrs[1:] {
+		for _, arg := range ins.Args {
+			if arg.Kind == OpFP || arg.Kind == OpFPAddr {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func arm64ABI0TailRoot(fn Func, sig FuncSig) error {
 	d := sig.arm64ABI0TailDeclaration
 	if !d.matches(sig) || !reflect.DeepEqual(arm64PrivateTailSnapshot(fn), d.root) ||

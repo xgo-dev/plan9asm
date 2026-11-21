@@ -55,8 +55,10 @@ type arm64Ctx struct {
 	sourceGoFrame   arm64GoFrame
 	sourceFrameR20  bool // original + normalized typed Go large-frame producer
 	checkedR20Entry bool // all typed GP/FP reads need a genuine entry/CFG definition
-	checkedABI0Tail bool // declaration-backed result slots; no implicit GP argument bank
+	checkedABI0Tail bool // declaration-backed result slots
 	dynamicStack    *arm64DynamicStackPlan
+
+	sourceABI0Inputs bool // logical FP inputs do not initialize the GP argument bank
 
 	flagsNSlot   string
 	flagsZSlot   string
@@ -116,6 +118,7 @@ func newARM64CtxWithTarget(b *strings.Builder, fn Func, sig FuncSig, resolve fun
 	}
 	c.privateRegisterEntry = fn.arm64PrivateRegisterEntry
 	c.checkedABI0Tail = fn.arm64ABI0TailSource != nil
+	c.sourceABI0Inputs = c.checkedABI0Tail || arm64BareABI0Frame(fn, sig, c.sourceGoFrame)
 	transport := &arm64PrivateFrameTransport{entry: sig, resolve: resolve, sigs: sigs}
 	c.nanosleepInput, c.nanosleepRequired = arm64NanosleepInputForSource(fn, transport, target)
 	if c.nanosleepInput != nil {
@@ -1343,7 +1346,7 @@ func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 
 	// Map args -> the independent integer and floating-point ABIInternal banks,
 	// or to an explicit helper register assignment.
-	if c.checkedABI0Tail {
+	if c.sourceABI0Inputs {
 		return nil // ABI0 arguments exist only in their actually loaded FP slots.
 	}
 	if c.sig.ARM64ClosureABI != nil {
