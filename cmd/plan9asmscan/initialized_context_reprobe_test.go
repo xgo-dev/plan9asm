@@ -337,3 +337,45 @@ func TestInitializedContextReprobeDoesNotCreditBrokenLLVM(t *testing.T) {
 		})
 	}
 }
+
+func TestInitializedContextReprobeVectorRegistersAndImplicitMemory(t *testing.T) {
+	const arch = "amd64"
+	instructions := []string{
+		"ADDSUBPD X2, X2",
+		"VADDSUBPD Y2, Y15, Y2",
+		"VCVTPS2PH $2, Z21, K4, Y2",
+		"MASKMOVOU X0,X2",
+	}
+	forms := make(map[string]*formStat)
+	for i, line := range instructions {
+		ins := compactProbeInstructions(t, line)[0]
+		err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, arch, ins)
+		if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+			t.Fatalf("%s: expected missing inputs in the original probe, got %v", line, err)
+		}
+		form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, arch, ins).Form
+		forms[form] = &formStat{}
+		captureContextSource(forms, plan9asm.ArchAMD64, arch, ins,
+			initializedContextSource{File: "vectors.s", Function: "case", Line: i + 1}, err)
+	}
+	evidence, err := runInitializedContextReprobe(forms, "vector-register", arch, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Status != "pass" || evidence.EligibleCases != 3 || len(evidence.UnregisteredCases) != 1 ||
+		evidence.UnregisteredCases[0].OriginalInstruction.Op != "MASKMOVOU" {
+		t.Fatalf("register profile did not distinguish the implicit DI memory store: %+v", evidence)
+	}
+	if len(evidence.ObjectBatches) != 1 || !reflect.DeepEqual(evidence.ObjectBatches[0].CaseIndexes, []int{0, 1, 2}) ||
+		evidence.ObjectBatches[0].ObjectSize == 0 {
+		t.Fatalf("missing LLVM22 object: %+v", evidence.ObjectBatches)
+	}
+	for i, test := range evidence.Cases {
+		original := compactProbeInstructions(t, instructions[i])[0]
+		if !reflect.DeepEqual(test.OriginalInstruction, original) || len(test.Initialization) == 0 ||
+			test.IRTextGeneration.Status != "pass" || test.LLVMObjectCompilation.Status != "pass" ||
+			test.RuntimeExecution.Status != "not_run" {
+			t.Fatalf("wrong evidence for %s: %+v", instructions[i], test)
+		}
+	}
+}

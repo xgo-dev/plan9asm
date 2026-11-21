@@ -316,21 +316,23 @@ fingerprints. Inspect differences before changing
 `testdata/coverage/go-asm-baseline.json`. Opcode names, observed corpus forms,
 encoder rules, LLVM objects and runtime semantics are distinct coverage claims.
 
-To retry the complete x86 mask-logical family with explicit initialized inputs:
+To retry x86 vector-register forms with explicit initialized inputs:
 
 ```sh
 go run ./cmd/plan9asmscan -corpus=go-asm -goos=linux -goarch=amd64 \
-  -initialized-context-reprobe=mask-logical -llc="$llc_cmd" -format=json \
-  -out=_out/initialized-mask-logical.json
+  -initialized-context-reprobe=vector-register -llc="$llc_cmd" -format=json \
+  -out=_out/initialized-vector-register.json
 ```
 
 This opt-in report retains every actual instruction occurrence and its source,
 keeps the original classifications/fingerprint unchanged, and records separate
-IR and LLVM22 object outcomes in batches of at most32 functions. Missing/wrong
-LLVM, failed compilation or missing/wrong-target objects fail the command.
-Synthetic initialized inputs are not original-source or runtime evidence;
-unregistered families and runtime remain explicitly untested. The same profile
-accepts `-goarch=386`, but cannot invent forms absent from that SDK's corpus.
+IR and LLVM22 object outcomes in batches of at most 32 functions. A failed IR
+probe retains its exact source and diagnostics while the other cases proceed to
+object checks. Failed probes, missing/wrong LLVM and invalid objects fail the
+command. The profile covers typed vector-register forms without memory or input
+flags. Use `mask-logical` for the K-register logical family. Both profiles accept
+`-goarch=386` and only cover occurrences in the selected SDK corpus. Synthetic
+initialization provides no original-source or runtime evidence.
 
 The strict benchmark compiles standard-library assembly for
 `linux/{386,amd64,arm,arm64}` and `js/wasm`. Failures, skips and N/A fail the

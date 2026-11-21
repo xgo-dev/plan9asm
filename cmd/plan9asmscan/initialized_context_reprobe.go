@@ -35,6 +35,7 @@ type initializedContextCase struct {
 	IRTextGeneration      scanEvidenceStage        `json:"ir_text_generation"`
 	LLVMObjectCompilation scanEvidenceStage        `json:"llvm_object_compilation"`
 	RuntimeExecution      scanEvidenceStage        `json:"runtime_execution"`
+	Error                 string                   `json:"error,omitempty"`
 }
 
 type initializedContextObject struct {
@@ -55,6 +56,11 @@ type initializedContextReport struct {
 	Cases             []initializedContextCase   `json:"cases"`
 	UnregisteredCases []initializedContextCase   `json:"unregistered_cases"`
 	ObjectBatches     []initializedContextObject `json:"object_batches"`
+}
+
+var initializedContextProfiles = map[string]func(string, plan9asm.Instr) ([]plan9asm.Instr, bool, error){
+	"mask-logical":    plan9asm.InitializedMaskLogicalProbeSequence,
+	"vector-register": plan9asm.InitializedVectorRegisterProbeSequence,
 }
 
 // Retain occurrences, not the capped display Examples or form-level status.
@@ -85,8 +91,8 @@ func captureContextSource(
 	})
 }
 
-func runInitializedContextReprobe(forms map[string]*formStat, goarch, llc string) (result *initializedContextReport, resultErr error) {
-	result = &initializedContextReport{Profile: "mask-logical", Status: "failed",
+func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, llc string) (result *initializedContextReport, resultErr error) {
+	result = &initializedContextReport{Profile: profile, Status: "failed",
 		Cases: []initializedContextCase{}, UnregisteredCases: []initializedContextCase{}, ObjectBatches: []initializedContextObject{}}
 	defer func() {
 		if resultErr != nil {
@@ -97,6 +103,10 @@ func runInitializedContextReprobe(forms map[string]*formStat, goarch, llc string
 			result.Status = "pass"
 		}
 	}()
+	prepare := initializedContextProfiles[profile]
+	if prepare == nil {
+		return result, fmt.Errorf("unknown initialized-context profile %q", profile)
+	}
 	var sources []initializedContextCase
 	for _, form := range forms {
 		sources = append(sources, form.contextSources...)
@@ -115,7 +125,7 @@ func runInitializedContextReprobe(forms map[string]*formStat, goarch, llc string
 		return a.InstructionIndex < b.InstructionIndex
 	})
 	for _, source := range sources {
-		sequence, known, err := plan9asm.InitializedMaskLogicalProbeSequence(goarch, source.OriginalInstruction)
+		sequence, known, err := prepare(goarch, source.OriginalInstruction)
 		if !known {
 			result.UnregisteredCases = append(result.UnregisteredCases, source)
 			continue
@@ -140,32 +150,58 @@ func runInitializedContextReprobe(forms map[string]*formStat, goarch, llc string
 	if len(match) != 2 || match[1] != "22" {
 		return result, fmt.Errorf("LLVM22 required, %s reported %q", llc, result.LLVMVersion)
 	}
+	var firstProbeErr error
+	failedProbes := 0
+	for i := range result.Cases {
+		test := &result.Cases[i]
+		if err := plan9asm.ProbeInstructionSequence(plan9asm.ArchAMD64, goarch, test.sequence()); err != nil {
+			where := test.Source
+			if firstProbeErr == nil {
+				firstProbeErr = fmt.Errorf("%s:%d (%s instruction %d): %w", where.File, where.Line, where.Function, where.InstructionIndex, err)
+			}
+			test.Error = err.Error()
+			test.IRTextGeneration.Status = "failed"
+			failedProbes++
+			continue
+		}
+		one := 1
+		test.IRTextGeneration = scanEvidenceStage{Status: "pass", Forms: &one}
+	}
 	for start := 0; start < len(result.Cases); start += 32 {
 		end := start + 32
 		if end > len(result.Cases) {
 			end = len(result.Cases)
 		}
 		batch, err := compileInitializedContextBatch(result.Cases[start:end], goarch, llc, start)
+		if len(batch.CaseIndexes) == 0 {
+			continue
+		}
 		if err != nil {
 			batch.Status, batch.Error = "failed", err.Error()
 			result.ObjectBatches = append(result.ObjectBatches, batch)
-			for i := start; i < end; i++ {
-				if result.Cases[i].IRTextGeneration.Status == "pass" {
-					result.Cases[i].LLVMObjectCompilation = scanEvidenceStage{Status: "failed"}
-				} else {
-					result.Cases[i].IRTextGeneration = scanEvidenceStage{Status: "failed"}
+			if len(batch.Command) != 0 {
+				for _, i := range batch.CaseIndexes {
+					result.Cases[i].LLVMObjectCompilation.Status = "failed"
 				}
 			}
 			return result, err
 		}
 		result.ObjectBatches = append(result.ObjectBatches, batch)
-		for i := start; i < end; i++ {
+		for _, i := range batch.CaseIndexes {
 			one := 1
-			result.Cases[i].IRTextGeneration = scanEvidenceStage{Status: "pass", Forms: &one}
 			result.Cases[i].LLVMObjectCompilation = scanEvidenceStage{Status: "pass", Forms: &one}
 		}
 	}
+	if firstProbeErr != nil {
+		return result, fmt.Errorf("%d of %d initialized probes failed, first: %w", failedProbes, result.EligibleCases, firstProbeErr)
+	}
 	return result, nil
+}
+
+func (test initializedContextCase) sequence() []plan9asm.Instr {
+	sequence := make([]plan9asm.Instr, 0, len(test.Initialization)+2)
+	sequence = append(sequence, test.Initialization...)
+	return append(sequence, test.OriginalInstruction)
 }
 
 func initializedContextLLC(name string) (string, error) {
@@ -197,18 +233,18 @@ func initializedContextCommand(command string, args ...string) ([]byte, error) {
 func compileInitializedContextBatch(cases []initializedContextCase, goarch, llc string, start int) (batch initializedContextObject, resultErr error) {
 	file := &plan9asm.File{Arch: plan9asm.ArchAMD64}
 	sigs := make(map[string]plan9asm.FuncSig)
-	for index := range cases {
-		batch.CaseIndexes = append(batch.CaseIndexes, start+index)
-	}
 	for index, test := range cases {
-		sequence := append(append([]plan9asm.Instr(nil), test.Initialization...), test.OriginalInstruction)
-		if err := plan9asm.ProbeInstructionSequence(plan9asm.ArchAMD64, goarch, sequence); err != nil {
-			return batch, fmt.Errorf("initialized context %s/%s/%d: %w", test.Source.File, test.Source.Function, test.Source.InstructionIndex, err)
+		if test.IRTextGeneration.Status != "pass" {
+			continue
 		}
-		name := fmt.Sprintf("initialized.mask.%d", start+index)
-		sequence = append(sequence, plan9asm.Instr{Op: "RET", Raw: "RET"})
+		batch.CaseIndexes = append(batch.CaseIndexes, start+index)
+		name := fmt.Sprintf("initialized.%d", start+index)
+		sequence := append(test.sequence(), plan9asm.Instr{Op: "RET", Raw: "RET"})
 		file.Funcs = append(file.Funcs, plan9asm.Func{Sym: name, Instrs: sequence})
 		sigs[name] = plan9asm.FuncSig{Name: name, Ret: plan9asm.Void}
+	}
+	if len(batch.CaseIndexes) == 0 {
+		return batch, nil
 	}
 	triple, machine, class := "x86_64-unknown-linux-gnu", elf.EM_X86_64, elf.ELFCLASS64
 	if goarch == "386" {
@@ -220,10 +256,6 @@ func compileInitializedContextBatch(cases []initializedContextCase, goarch, llc 
 	}
 	if len(ir) == 0 || len(ir) > 4<<20 {
 		return batch, fmt.Errorf("initialized-context LLVM IR size %d exceeds nonempty 4 MiB bound", len(ir))
-	}
-	for i := range cases {
-		one := 1
-		cases[i].IRTextGeneration = scanEvidenceStage{Status: "pass", Forms: &one}
 	}
 	dir, err := os.MkdirTemp("", "plan9asmscan-initialized-context-")
 	if err != nil {

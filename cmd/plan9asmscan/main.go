@@ -198,12 +198,12 @@ func main() {
 		corpus   = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9")
 		goroot   = flag.String("goroot", "", "Go root containing official assembler testdata (default: active Go toolchain)")
 		input    = flag.String("input", "", "input file for corpora that require one")
-		reprobe  = flag.String("initialized-context-reprobe", "", "optional counterfactual input profile: mask-logical (not original-source or runtime evidence)")
+		reprobe  = flag.String("initialized-context-reprobe", "", "synthetic input profile for objects: mask-logical|vector-register")
 		llc      = flag.String("llc", "", "LLVM22 llc executable for an explicitly enabled initialized-context reprobe")
 	)
 	flag.Parse()
-	if *reprobe != "" && (*reprobe != "mask-logical" || (*goarch != "386" && *goarch != "amd64")) {
-		fatalf("initialized-context-reprobe requires profile mask-logical and target 386/amd64")
+	if *reprobe != "" && (initializedContextProfiles[*reprobe] == nil || (*goarch != "386" && *goarch != "amd64")) {
+		fatalf("initialized-context-reprobe requires mask-logical or vector-register and target 386/amd64")
 	}
 	if *reprobe != "" && *corpus != "std" && *corpus != "go-asm" {
 		fatalf("initialized-context-reprobe requires a std or go-asm corpus with exact x86 sources")
@@ -304,7 +304,7 @@ func main() {
 	rep.FrontendInventory = frontend
 	var reprobeErr error
 	if *reprobe != "" {
-		rep.InitializedContextReprobe, reprobeErr = runInitializedContextReprobe(forms, *goarch, *llc)
+		rep.InitializedContextReprobe, reprobeErr = runInitializedContextReprobe(forms, *reprobe, *goarch, *llc)
 	}
 
 	var content []byte
