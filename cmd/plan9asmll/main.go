@@ -2540,6 +2540,7 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 			return nil, fmt.Errorf("parse %s for supported instructions: %w", f, err)
 		}
 		extractionFiles = append(extractionFiles, parsed)
+		opcodeinventory.CollectGenerated(supported, parsed, goarch)
 		if strings.HasPrefix(filepath.Base(f), "x86_") {
 			sharedFiles = append(sharedFiles, parsed)
 			continue

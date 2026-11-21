@@ -6,7 +6,23 @@ import (
 	"go/token"
 	"strconv"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/arm64atomic"
 )
+
+// CollectGenerated reads names from the compiled grammar when the inspected
+// lowering source uses that grammar.
+func CollectGenerated(supported map[string]struct{}, file *ast.File, goarch string) {
+	if goarch != "arm64" {
+		return
+	}
+	for _, imported := range file.Imports {
+		if stringLiteral(imported.Path) == "github.com/xgo-dev/plan9asm/internal/arm64atomic" {
+			arm64atomic.AddNamed(supported)
+			return
+		}
+	}
+}
 
 // CollectMap adds the names declared by an opcode map or width family. Name
 // claims remain separate from the caller's operand and execution probes.

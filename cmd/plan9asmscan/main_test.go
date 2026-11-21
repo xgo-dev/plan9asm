@@ -610,6 +610,42 @@ func condition(op string) bool {
 	}
 }
 
+func TestExtractSupportedOpsFindsARM64ScalarAtomics(t *testing.T) {
+	supported, err := extractSupportedOps("../..", "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	official, err := loadOfficialOpcodeNames(runtime.GOROOT(), "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, name := range official {
+		if strings.HasPrefix(name, "CASP") {
+			continue // Pair atomics have separate operand and encoding rules.
+		}
+		for _, stem := range []string{"LDAR", "STLR", "LDXR", "LDAXR", "STXR", "STLXR", "CAS", "LDADD", "LDCLR", "LDEOR", "LDOR", "SWP"} {
+			if !strings.HasPrefix(name, stem) {
+				continue
+			}
+			count++
+			if _, found := supported[name]; !found {
+				t.Errorf("official ARM64 scalar atomic opcode %s missing from inventory", name)
+			}
+			break
+		}
+	}
+	if count < 40 {
+		t.Fatalf("Go assembler oracle supplied only %d scalar atomic names", count)
+	}
+	t.Logf("checked %d official scalar atomic names", count)
+	for _, name := range []string{"CASAB", "CASAH", "CASLB", "CASLH", "LDARD", "STLXRD"} {
+		if _, found := supported[name]; found {
+			t.Errorf("non-Go opcode %s advertised as named source", name)
+		}
+	}
+}
+
 func TestExtractSupportedOpsFindsSingleFamilyOpcodeComparison(t *testing.T) {
 	dir := t.TempDir()
 	src := `package sample
