@@ -2,6 +2,7 @@ package plan9asm
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -49,11 +50,19 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	wantFloatUnary := make(map[string]bool)
 	wantFloatBinary := make(map[string]bool)
 	wantIntegerCount := make(map[string]bool)
+	wantConversion := make(map[string]wasmConversionOp)
+	wantTrap := false
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
 			op := normalizeInstructionOpcode(ins.Op)
 			if spec, ok := wasmIntegerCountOps[op]; ok {
 				wantIntegerCount[spec.intrinsic+"."+string(spec.typ)] = true
+			}
+			if spec, ok := wasmConversionOps[op]; ok {
+				wantTrap = wantTrap || spec.traps
+				if spec.intrinsic != "" {
+					wantConversion[spec.intrinsic] = spec
+				}
 			}
 			if spec, ok := wasmFloatUnaryOps[op]; ok && spec.intrinsic != "" {
 				wantFloatUnary[string(spec.typ)+"|"+spec.intrinsic] = true
@@ -72,6 +81,18 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 				want["memory.grow"] = true
 			}
 		}
+	}
+	if wantTrap {
+		b.WriteString("declare void @llvm.trap()\n")
+	}
+	conversions := make([]string, 0, len(wantConversion))
+	for intrinsic := range wantConversion {
+		conversions = append(conversions, intrinsic)
+	}
+	sort.Strings(conversions)
+	for _, intrinsic := range conversions {
+		spec := wantConversion[intrinsic]
+		fmt.Fprintf(b, "declare %s @%s(%s)\n", spec.result, intrinsic, spec.source)
 	}
 	if want["memmove"] {
 		b.WriteString("declare void @llvm.memmove.p0.p0.i32(ptr, ptr, i32, i1 immarg)\n")
@@ -113,7 +134,7 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 			}
 		}
 	}
-	if len(want) != 0 || len(wantFloatUnary) != 0 || len(wantFloatBinary) != 0 {
+	if len(want) != 0 || len(wantFloatUnary) != 0 || len(wantFloatBinary) != 0 || len(conversions) != 0 || wantTrap {
 		b.WriteString("\n")
 	}
 }

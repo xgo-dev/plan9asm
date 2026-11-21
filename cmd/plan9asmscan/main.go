@@ -956,6 +956,17 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 				if !ok {
 					continue
 				}
+				if loweringArch == "wasm" {
+					for _, name := range spec.Names {
+						if name.Name == "wasmConversionOps" {
+							// The Cartesian width/signature grammar generates
+							// names that do not occur in a literal map.
+							for _, op := range plan9asm.WASMScalarConversionOpcodes() {
+								supported[op] = struct{}{}
+							}
+						}
+					}
+				}
 				for _, value := range spec.Values {
 					literal, ok := value.(*ast.CompositeLit)
 					if ok {

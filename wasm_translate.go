@@ -38,6 +38,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if _, _, err := parseWASMIntegerCount(ins); err != nil {
 			return err
 		}
+		if _, _, err := parseWASMConversion(ins); err != nil {
+			return err
+		}
 		if _, _, err := parseWASMV128Core(ins); err != nil {
 			return err
 		}
@@ -1128,6 +1131,17 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			push(wasmValue{typ: spec.typ, val: "%" + name})
 			continue
 		}
+		if spec, ok := wasmConversionOps[op]; ok {
+			value, err := pop(op)
+			if err != nil {
+				return err
+			}
+			if value.typ != spec.source || value.stackAddr {
+				return fmt.Errorf("%s expects one %s stack value, got %s", ins.Op, spec.source, value.typ)
+			}
+			push(spec.emit(b, value, newTmp, newLabel))
+			continue
+		}
 		if spec, ok := wasmIntegerBinaryOps[op]; ok {
 			if err := emitIntBinary(op, spec.typ, spec.op); err != nil {
 				return err
@@ -1458,46 +1472,11 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return fmt.Errorf("F64Const expects one floating immediate")
 			}
 			push(wasmValue{typ: LLVMType("double"), val: fmt.Sprintf("0x%016X", uint64(ins.Args[0].Imm))})
-		case "I64TRUNCF64S", "I64TRUNCF64U":
-			v, err := pop(op)
-			if err != nil {
-				return err
-			}
-			if v.typ != LLVMType("double") {
-				return fmt.Errorf("%s expects an f64 value", ins.Op)
-			}
-			llvmOp := "fptosi"
-			if op == "I64TRUNCF64U" {
-				llvmOp = "fptoui"
-			}
-			name := newTmp()
-			fmt.Fprintf(b, "  %%%s = %s double %s to i64\n", name, llvmOp, v.val)
-			push(wasmValue{typ: I64, val: "%" + name})
 		case "F64LOAD":
 			if len(ins.Args) != 1 || ins.Args[0].Kind != OpFP {
 				return fmt.Errorf("F64Load expects an FP slot")
 			}
 			v, err := loadOperand(ins.Args[0], LLVMType("double"))
-			if err != nil {
-				return err
-			}
-			push(v)
-		case "I32WRAPI64":
-			v, err := pop(op)
-			if err != nil {
-				return err
-			}
-			v, err = cast(v, I32, false)
-			if err != nil {
-				return err
-			}
-			push(v)
-		case "I64EXTENDI32U", "I64EXTENDI32S":
-			v, err := pop(op)
-			if err != nil {
-				return err
-			}
-			v, err = cast(v, I64, op == "I64EXTENDI32S")
 			if err != nil {
 				return err
 			}

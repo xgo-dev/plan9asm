@@ -32,6 +32,19 @@ func TestToPlan9Arch(t *testing.T) {
 	}
 }
 
+func TestExtractSupportedWASMScalarConversions(t *testing.T) {
+	supported, err := extractSupportedOps(filepath.Join("..", ".."), "wasm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The scanner must see generated names as well as names in literal maps.
+	for _, name := range []string{"I32WRAPI64", "I64EXTENDI32U", "I32TRUNCF32S", "I64TRUNCSATF64U", "F64CONVERTI32S"} {
+		if _, ok := supported[name]; !ok {
+			t.Errorf("wasm scalar conversion %s missing from the lowerer inventory", name)
+		}
+	}
+}
+
 func TestValidateCorpusTarget(t *testing.T) {
 	for _, test := range []struct {
 		corpus string

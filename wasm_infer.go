@@ -92,11 +92,31 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err != nil {
 			return FuncSig{}, err
 		}
+		conversion, conversionKnown, err := parseWASMConversion(ins)
+		if err != nil {
+			return FuncSig{}, err
+		}
 		if terminated && op != "ELSE" && op != "END" && op != "LABEL" {
 			continue
 		}
 		if op == "ELSE" || op == "END" {
 			terminated = false
+		}
+		if conversionKnown {
+			if len(stack) == 0 {
+				return FuncSig{}, fmt.Errorf("%s: %s requires one stack operand", name, op)
+			}
+			for reg := range stack[len(stack)-1].regs {
+				typ := wasmDefaultRegisterType(reg)
+				source := conversion.source
+				if typ != source && !(typ == I64 && source == I32 || typ == I32 && source == I64) {
+					return FuncSig{}, fmt.Errorf("%s: %s register %s does not carry %s", name, op, reg, source)
+				}
+			}
+			if err := typedUnary(op, conversion.source, conversion.result); err != nil {
+				return FuncSig{}, err
+			}
+			continue
 		}
 		if vectorKnown {
 			spec := vector
@@ -180,14 +200,6 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			push(wasmInferValue{typ: I32})
 		case "I64CONST":
 			push(wasmInferValue{typ: I64})
-		case "I32WRAPI64":
-			if err := typedUnary(op, I64, I32); err != nil {
-				return FuncSig{}, err
-			}
-		case "I64EXTENDI32S", "I64EXTENDI32U":
-			if err := typedUnary(op, I32, I64); err != nil {
-				return FuncSig{}, err
-			}
 		case "I32ADD", "I32SUB", "I32MUL", "I32AND", "I32OR", "I32XOR",
 			"I32DIVS", "I32DIVU", "I32REMS", "I32REMU", "I32SHL", "I32SHRS", "I32SHRU":
 			if err := typedBinary(op, I32, I32); err != nil {
