@@ -3,6 +3,8 @@
 package plan9asm
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,44 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestWASMV128RelaxedTruncActualGoEncoding(t *testing.T) {
+	var source strings.Builder
+	mnemonics := []string{
+		"I32x4RelaxedTruncF32x4S", "I32x4RelaxedTruncF32x4U",
+		"I32x4RelaxedTruncF64x2S", "I32x4RelaxedTruncF64x2U",
+	}
+	for index, name := range mnemonics {
+		fmt.Fprintf(&source, "TEXT relax%d(SB),4,$0-0\nGet V0\n%s\nReturn\n", index, name)
+	}
+	dir := t.TempDir()
+	input, output := filepath.Join(dir, "relax.s"), filepath.Join(dir, "relax.o")
+	if err := os.WriteFile(input, []byte(source.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := runtimeOracleStageContext(t)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "tool", "asm", "-o", output, input)
+	command.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm", "GOTOOLCHAIN=local")
+	if log, err := runtimeOracleCombinedOutput(ctx, command); err != nil {
+		t.Fatalf("original Go relaxed truncation assembly: %v\n%s", err, log)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, name := range mnemonics {
+		op := byte(0x81 + index)
+		switch {
+		case bytes.Contains(data, []byte{0xfd, op, 0x02, 0x0f}):
+			t.Logf("%s has the standard encoding", name)
+		case bytes.Contains(data, []byte{0xfd, op, 0x01, 0x02, 0x0f}):
+			t.Logf("%s has the known extra ULEB byte in Go's relaxed SIMD encoding", name)
+		default:
+			t.Errorf("unrecognized original Go encoding for %s", name)
+		}
+	}
+}
 
 // Go's assembler gained the SIMD namespace in Go 1.27. Its independent
 // original-object/runtime checks must not hide minimum-Go LLVM coverage.
@@ -27,6 +67,7 @@ func TestWASMV128CoreActualGoNamespaceAndObjects(t *testing.T) {
 		`|I(?:16x8|32x4|64x2)(?:Extend(?:Low|High)|Extmul(?:Low|High)|ExtaddPairwise)I(?:8x16|16x8|32x4)[SU]` +
 		`|I(?:8x16|16x8)NarrowI(?:16x8|32x4)[SU]` +
 		`|I32x4(?:TruncSatF32x4[SU]|TruncSatF64x2[SU]Zero)` +
+		`|I32x4RelaxedTrunc(?:F32x4|F64x2)[SU]` +
 		`|F32x4(?:ConvertI32x4[SU]|DemoteF64x2Zero)|F64x2(?:ConvertLowI32x4[SU]|PromoteLowF32x4)` +
 		`|F(?:32x4|64x2)(?:Abs|Neg|Sqrt|Ceil|Floor|Trunc|Nearest|Add|Sub|Mul|Div|Min|Max|Pmin|Pmax|Eq|Ne|Lt|Gt|Le|Ge))"`
 	for _, match := range regexp.MustCompile(pattern).FindAllSubmatch(data, -1) {

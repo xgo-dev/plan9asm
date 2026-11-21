@@ -31,8 +31,14 @@ func addConversions(forms map[string]Form, unary stackSignature) {
 	} {
 		add("F32X4CONVERTI32X4"+sign.suffix, sign.toFloat, i32, f32, 4, "", false)
 		add("F64X2CONVERTLOWI32X4"+sign.suffix, sign.toFloat, i32, f64, 2, "", false)
-		add("I32X4TRUNCSATF32X4"+sign.suffix, "", f32, i32, 4, sign.toInteger, false)
-		add("I32X4TRUNCSATF64X2"+sign.suffix+"ZERO", "", f64, i32, 2, sign.toInteger, false)
+		trunc32 := "I32X4TRUNCSATF32X4" + sign.suffix
+		trunc64 := "I32X4TRUNCSATF64X2" + sign.suffix + "ZERO"
+		add(trunc32, "", f32, i32, 4, sign.toInteger, false)
+		add(trunc64, "", f64, i32, 2, sign.toInteger, false)
+		// Relaxed truncation's deterministic profile saturates. The double
+		// forms retain the same mandatory upper-lane zeroing.
+		forms["I32X4RELAXEDTRUNCF32X4"+sign.suffix] = forms[trunc32]
+		forms["I32X4RELAXEDTRUNCF64X2"+sign.suffix] = forms[trunc64]
 	}
 	add("F32X4DEMOTEF64X2ZERO", "fptrunc", f64, f32, 2, "", true)
 	add("F64X2PROMOTELOWF32X4", "fpext", f32, f64, 2, "", true)

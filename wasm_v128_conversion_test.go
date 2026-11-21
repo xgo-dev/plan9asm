@@ -23,6 +23,10 @@ var wasmV128ConversionTestForms = [...]wasmV128ConversionTestForm{
 	{"I32x4TruncSatF32x4U", 32, 32, 4, true, false},
 	{"I32x4TruncSatF64x2SZero", 64, 32, 2, true, false},
 	{"I32x4TruncSatF64x2UZero", 64, 32, 2, true, false},
+	{"I32x4RelaxedTruncF32x4S", 32, 32, 4, true, false},
+	{"I32x4RelaxedTruncF32x4U", 32, 32, 4, true, false},
+	{"I32x4RelaxedTruncF64x2S", 64, 32, 2, true, false},
+	{"I32x4RelaxedTruncF64x2U", 64, 32, 2, true, false},
 }
 
 func wasmV128ConversionTestLookup(name string) (wasmV128ConversionTestForm, bool) {
@@ -67,10 +71,11 @@ func (form wasmV128ConversionTestForm) inputs() [][2]uint64 {
 	return inputs
 }
 
-func (form wasmV128ConversionTestForm) reference(input [2]uint64) (want, mask [2]uint64) {
+func (form wasmV128ConversionTestForm) reference(input [2]uint64, original bool) (want, mask [2]uint64) {
 	mask = [2]uint64{^uint64(0), ^uint64(0)}
 	inputMask := uint64(1)<<form.inputBits - 1
 	signed := strings.HasSuffix(form.name, "S") || strings.HasSuffix(form.name, "SZero")
+	allowRelaxed := original && strings.Contains(form.name, "RelaxedTrunc")
 	for lane := 0; lane < form.lanes; lane++ {
 		inputOffset := lane * form.inputBits
 		raw := (input[inputOffset/64] >> (inputOffset % 64)) & inputMask
@@ -90,6 +95,10 @@ func (form wasmV128ConversionTestForm) reference(input [2]uint64) (want, mask [2
 		}
 		switch {
 		case !form.outputFloat:
+			if allowRelaxed && wasmV128RelaxedTruncUnspecified(number, signed) {
+				mask[half] &^= uint64(0xffffffff) << shift
+				continue
+			}
 			want[half] |= uint64(wasmV128SaturatingI32Reference(number, signed)) << shift
 		case math.IsNaN(number):
 			exponent, quiet := uint64(0x7ff0000000000000), uint64(1)<<51
@@ -114,6 +123,21 @@ func (form wasmV128ConversionTestForm) reference(input [2]uint64) (want, mask [2
 		}
 	}
 	return want, mask
+}
+
+func (form wasmV128ConversionTestForm) comparisonBody(input [2]uint64) string {
+	expected, mask := form.reference(input, false)
+	return wasmV128CoreConstant(input) + form.name + "\n" +
+		wasmV128CoreConstant(mask) + "V128And\n" +
+		wasmV128CoreConstant(expected) + "V128Xor\nV128AnyTrue\n"
+}
+
+func wasmV128RelaxedTruncUnspecified(number float64, signed bool) bool {
+	result := math.Trunc(number)
+	if signed {
+		return !(result >= -2147483648 && result < 2147483648)
+	}
+	return !(result >= 0 && result < 4294967296)
 }
 
 func wasmV128SaturatingI32Reference(number float64, signed bool) uint32 {

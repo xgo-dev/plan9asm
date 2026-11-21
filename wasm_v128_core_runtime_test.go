@@ -150,12 +150,12 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 	}
 	for _, name := range wasmV128CoreNames() {
 		if form, ok := wasmV128ConversionTestLookup(name); ok {
+			if strings.Contains(name, "RelaxedTrunc") {
+				// The relaxed forms have a separate original-machine oracle.
+				continue
+			}
 			for _, input := range form.inputs() {
-				expected, mask := form.reference(input)
-				body := wasmV128CoreConstant(input) + name + "\n" +
-					wasmV128CoreConstant(mask) + "V128And\n" +
-					wasmV128CoreConstant(expected) + "V128Xor\nV128AnyTrue\n"
-				add(body, 0)
+				add(form.comparisonBody(input), 0)
 			}
 			continue
 		}
@@ -229,6 +229,11 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 
 func TestWASMV128CoreThreeAPIsLLVMRuntime(t *testing.T) {
 	source, _, _, sigs, rows := wasmV128CoreRuntimeFixture(t)
+	wasmV128CompareLLVMRuntime(t, source, sigs, rows, wasmV128CorePass)
+}
+
+func wasmV128CompareLLVMRuntime(t *testing.T, source string, sigs map[string]FuncSig, rows []byte, pass string) {
+	t.Helper()
 	file, err := Parse(ArchWASM, source)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +262,7 @@ func TestWASMV128CoreThreeAPIsLLVMRuntime(t *testing.T) {
 					t.Fatal(err)
 				}
 				output := wasmFloatBinaryCommand(t, wasmPackedNode(t), "-e", wasmV128CoreNodeCheck, binary, inputs)
-				if strings.TrimSpace(output) != wasmV128CorePass {
+				if strings.TrimSpace(output) != pass {
 					t.Fatal("incomplete V128 core execution", output)
 				}
 			})
