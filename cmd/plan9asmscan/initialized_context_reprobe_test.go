@@ -643,7 +643,28 @@ func TestInitializedContextReprobeScalarMemory(t *testing.T) {
 			for _, row := range rows {
 				instructions = append(instructions, fmt.Sprintf(row, mode.size))
 			}
-			instructions = append(instructions, "SETCC 2(BX)(AX*1)", "ADC"+mode.size+" BX, (BX)", "PUSH"+mode.size+" (BX)")
+			instructions = append(instructions, "SETCC 2(BX)(AX*1)")
+			// Scalar float conversions with memory sources have no SIMD
+			// operand. The GP result may overwrite the base or index after
+			// the source read; its old bits are not a numerical input.
+			for _, precision := range []string{"SS", "SD"} {
+				for _, operation := range []string{"CVT", "CVTT"} {
+					stem := operation + precision + "2"
+					names := []string{"V" + stem + "SI", "V" + stem + "SIQ",
+						"V" + stem + "USIL", "V" + stem + "USIQ", stem + "SL"}
+					if mode.arch == "amd64" {
+						names = append(names, stem+"SQ")
+					}
+					for _, name := range names {
+						instructions = append(instructions, name+" 5(BX),BX", name+" 7(BX)(CX*2),CX")
+					}
+				}
+			}
+			wantEligible := 56
+			if mode.arch == "386" {
+				wantEligible = 48
+			}
+			instructions = append(instructions, "ADC"+mode.size+" BX, (BX)", "PUSH"+mode.size+" (BX)")
 			forms := make(map[string]*formStat)
 			for i, line := range instructions {
 				ins := compactProbeInstructions(t, line)[0]
@@ -662,7 +683,7 @@ func TestInitializedContextReprobeScalarMemory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if evidence.Status != "pass" || evidence.EligibleCases != 8 || len(evidence.UnregisteredCases) != 2 {
+			if evidence.Status != "pass" || evidence.EligibleCases != wantEligible || len(evidence.UnregisteredCases) != 2 {
 				t.Fatalf("unexpected scalar-memory partition: %s, eligible=%d, unregistered=%d",
 					evidence.Status, evidence.EligibleCases, len(evidence.UnregisteredCases))
 			}

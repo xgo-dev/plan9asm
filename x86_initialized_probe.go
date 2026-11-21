@@ -490,6 +490,8 @@ func InitializedScalarMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 			valid = true
 		} else if multiply, known, err := x86TypedImplicitMultiplyByteEffect(ins.Op, ins, goarch); known && err == nil {
 			effect, valid = multiply, true
+		} else if conversion, known, err := x86TypedScalarFloatIntegerByteEffect(ins.Op, ins, goarch); known && err == nil {
+			effect, valid = conversion, true
 		}
 	}
 	division, divides, err := x86ImplicitDivideProperties(ins.Op, ins, goarch)
