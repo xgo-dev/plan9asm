@@ -2563,7 +2563,7 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 					if !ok {
 						continue
 					}
-					collectSupportedOpcodeMap(supported, literal)
+					collectSupportedOpcodeMap(supported, literal, goarch)
 				}
 			}
 		}
@@ -2695,10 +2695,12 @@ func opcodeComparedWithOp(left, right ast.Expr) (string, bool) {
 	return "", false
 }
 
-func collectSupportedOpcodeMap(supported map[string]struct{}, literal *ast.CompositeLit) {
+func collectSupportedOpcodeMap(supported map[string]struct{}, literal *ast.CompositeLit, goarch string) {
+	name, named := literal.Type.(*ast.Ident)
+	widthFamilies := named && name.Name == "x86OpcodeWidths" && (goarch == "386" || goarch == "amd64")
 	mapType, isMap := literal.Type.(*ast.MapType)
 	keyType, supportedKey := mapTypeKeyIdent(mapType)
-	if !isMap || !supportedKey || keyType != "string" && keyType != "Op" {
+	if !widthFamilies && (!isMap || !supportedKey || keyType != "string" && keyType != "Op") {
 		return
 	}
 	for _, elt := range literal.Elts {
@@ -2711,6 +2713,22 @@ func collectSupportedOpcodeMap(supported map[string]struct{}, literal *ast.Compo
 			continue
 		}
 		candidate, _ := strconv.Unquote(key.Value)
+		if widthFamilies {
+			value, ok := pair.Value.(*ast.BasicLit)
+			if !ok || value.Kind != token.STRING {
+				continue
+			}
+			widths, _ := strconv.Unquote(value.Value)
+			for _, width := range widths {
+				if !strings.ContainsRune("BWLQ", width) || width == 'Q' && goarch == "386" {
+					continue
+				}
+				if op := normalizeOp(candidate + string(width)); op != "" {
+					supported[op] = struct{}{}
+				}
+			}
+			continue
+		}
 		if nop := normalizeOp(candidate); nop != "" {
 			supported[nop] = struct{}{}
 		}

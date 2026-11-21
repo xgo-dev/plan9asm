@@ -6,14 +6,6 @@ import "fmt"
 // aliases and carry roles. This query selects only its memory-to-register
 // arithmetic/logical rows; it supplies no memory or entry capability.
 func x86ScalarArithmeticNativeReadProperties(ins Instr, arch string) (x86LockScalarRMWForm, bool, error) {
-	form, known, err := x86ScalarArithmeticReadProperties(ins, arch)
-	if !known || err != nil {
-		return form, known, err
-	}
-	return form, x86OrdinaryNativeMemoryOperand(form.source, arch), nil
-}
-
-func x86ScalarArithmeticReadProperties(ins Instr, arch string) (x86LockScalarRMWForm, bool, error) {
 	form, known, err := x86LockScalarRMWProperties(ins.Op, ins, arch)
 	if !known {
 		return form, false, nil
@@ -26,35 +18,25 @@ func x86ScalarArithmeticReadProperties(ins Instr, arch string) (x86LockScalarRMW
 	default:
 		return form, false, nil
 	}
-	if form.source.Kind != OpMem || form.source.Mem.Sym != "" ||
-		form.destination.Kind != OpReg {
-		return form, false, nil
-	}
-	return form, true, nil
+	return form, form.destination.Kind == OpReg && x86RegisterAddressedNativeMemoryOperand(form.source, arch), nil
 }
 
-func (c *amd64Ctx) evalScalarArithmeticSource(ins Instr, typ LLVMType) (string, Operand, error) {
-	form, known, err := x86ScalarArithmeticReadProperties(ins, c.goarch)
+func (c *amd64Ctx) evalScalarArithmeticSource(ins Instr, source Operand, typ LLVMType) (string, error) {
+	if source.Kind != OpMem || source.Mem.Sym != "" || !c.nativeMemoryOperand(ins, 0) {
+		return c.evalIntSized(source, typ)
+	}
+	if ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride {
+		return "", fmt.Errorf("%w: scalar arithmetic needs its original native address size", ErrProbeNeedsContext)
+	}
+	pointer, pointerType, _, err := c.packedVectorMemoryPointer(source)
 	if err != nil {
-		return "", Operand{}, err
-	}
-	if !known || !c.nativeMemoryOperand(ins, 0) {
-		value, err := c.evalIntSized(ins.Args[0], typ)
-		return value, ins.Args[1], err
-	}
-	if ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride ||
-		form.destination.Reg != ins.Args[1].Reg && (form.destination.Reg == SP || form.destination.Reg == BP) {
-		return "", Operand{}, fmt.Errorf("%w: scalar arithmetic needs its original native address/register contract", ErrProbeNeedsContext)
-	}
-	pointer, pointerType, _, err := c.packedVectorMemoryPointer(form.source)
-	if err != nil {
-		return "", Operand{}, err
+		return "", err
 	}
 	value := c.newTmp()
 	// Preserve the fault and exact read even when all numerical results and
 	// flags are discarded. Do not assert alignment, bounds or pointee validity.
 	fmt.Fprintf(c.b, "  %%%s = load volatile %s, %s %s, align 1\n", value, typ, pointerType, pointer)
-	return "%" + value, form.destination, nil
+	return "%" + value, nil
 }
 
 // Only the lowering paired with the exact volatile source load may consume

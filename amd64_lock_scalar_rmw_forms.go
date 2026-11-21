@@ -42,10 +42,34 @@ func (s x86LockScalarRMWSpec) numericalByteInputs(output int) (mask uint8, carry
 	}
 }
 
+// x86OpcodeWidths declares opcode families and their legal operand widths.
+// The CLI diagnostic inventory reads the same declaration.
+type x86OpcodeWidths map[string]string
+
+var x86ScalarRMWWidths = x86OpcodeWidths{
+	"ADC": "BWLQ",
+	"ADD": "BWLQ",
+	"AND": "BWLQ",
+	"OR":  "BWLQ",
+	"SBB": "BWLQ",
+	"SUB": "BWLQ",
+	"XOR": "BWLQ",
+	"INC": "BWLQ",
+	"DEC": "BWLQ",
+	"NEG": "BWLQ",
+	"NOT": "BWLQ",
+	"BTC": "WLQ",
+	"BTR": "WLQ",
+	"BTS": "WLQ",
+}
+
 var x86LockScalarRMWSpecs = func() map[Op]x86LockScalarRMWSpec {
 	result := make(map[Op]x86LockScalarRMWSpec)
-	for _, stem := range []string{"ADC", "ADD", "AND", "OR", "SBB", "SUB", "XOR", "INC", "DEC", "NEG", "NOT", "BTC", "BTR", "BTS"} {
+	for stem, widths := range x86ScalarRMWWidths {
 		for index, suffix := range "BWLQ" {
+			if !strings.ContainsRune(widths, suffix) {
+				continue
+			}
 			spec := x86LockScalarRMWSpec{stem: stem, bits: []int{8, 16, 32, 64}[index], flagsDefined: x86ByteFlagsAll}
 			switch stem {
 			case "ADC", "SBB":
@@ -61,9 +85,6 @@ var x86LockScalarRMWSpecs = func() map[Op]x86LockScalarRMWSpec {
 			case "NOT":
 				spec.unary, spec.flagsDefined = true, 0
 			case "BTC", "BTR", "BTS":
-				if suffix == 'B' {
-					continue
-				}
 				spec.bitString = true
 				spec.flagsDefined = x86ByteFlagCF
 				spec.flagsKilled = x86ByteFlagOF | x86ByteFlagSF | x86ByteFlagAF | x86ByteFlagPF

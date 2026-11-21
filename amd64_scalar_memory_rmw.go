@@ -20,21 +20,27 @@ func (c *amd64Ctx) loadScalarRMWDestination(op Op, ins Instr, destination Operan
 	if err != nil {
 		return "", nil, err
 	}
-	if !known || !c.nativeMemoryOperand(ins, len(ins.Args)-1) {
-		if form.spec.stem == "INC" || form.spec.stem == "DEC" {
-			// Preserve the existing logical GP/FP/AUTO byte-view consumer;
-			// only actual native memory gets the new paired access above it.
-			value, err := c.evalIntSized(destination, typ)
-			return value, func(value string) error {
-				return c.storeScalarIntegerOperand(destination, typ, value)
-			}, err
-		}
+	if known && c.nativeMemoryOperand(ins, len(ins.Args)-1) {
+		return c.loadTypedScalarRMWDestination(ins, form.destination, typ)
+	}
+	if form.spec.stem == "INC" || form.spec.stem == "DEC" {
+		// INC/DEC retains its logical GP/FP/AUTO byte-view consumer.
+		value, err := c.evalIntSized(destination, typ)
+		return value, func(value string) error {
+			return c.storeScalarIntegerOperand(destination, typ, value)
+		}, err
+	}
+	return c.loadIntDestination(destination, typ)
+}
+
+func (c *amd64Ctx) loadTypedScalarRMWDestination(ins Instr, destination Operand, typ LLVMType) (string, func(string) error, error) {
+	if !isAMD64MemoryOperand(destination) || !c.nativeMemoryOperand(ins, len(ins.Args)-1) {
 		return c.loadIntDestination(destination, typ)
 	}
 	if ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride {
 		return "", nil, fmt.Errorf("%w: scalar RMW needs its original native address size", ErrProbeNeedsContext)
 	}
-	pointer, pointerType, _, err := c.packedVectorMemoryPointer(form.destination)
+	pointer, pointerType, _, err := c.packedVectorMemoryPointer(destination)
 	if err != nil {
 		return "", nil, err
 	}
@@ -44,65 +50,6 @@ func (c *amd64Ctx) loadScalarRMWDestination(op Op, ins Instr, destination Operan
 		fmt.Fprintf(c.b, "  store volatile %s %s, %s %s, align 1\n", typ, value, pointerType, pointer)
 		return nil
 	}, nil
-}
-
-func (c *amd64Ctx) lowerScalarMemoryRMW(op Op, ins Instr) (bool, bool, error) {
-	if c.namedAtomicLock {
-		return false, false, nil
-	}
-	form, known, err := x86ScalarMemoryRMWProperties(op, ins, c.goarch)
-	if !known || err != nil {
-		return known, false, err
-	}
-	local := ins
-	local.Op = op
-	local.Args = append([]Operand(nil), ins.Args...)
-	if !form.spec.unary {
-		if form.source.Kind == OpReg && form.source.Reg != ins.Args[0].Reg &&
-			x86LogicalSourceFrameRegister(form.source.Reg, c.goarch) {
-			return true, false, fmt.Errorf("%w: RMW byte source needs its physical SP/BP role", ErrProbeNeedsContext)
-		}
-		local.Args[0] = form.source // Only local dispatch, never rewrite either source snapshot.
-	}
-	switch form.spec.stem {
-	case "ADD", "SUB":
-		return c.lowerScalarAddSub(op, local)
-	case "ADC", "SBB":
-		return c.lowerScalarADCSBB(op, local)
-	case "INC", "DEC":
-		return c.lowerScalarIncDec(op, local)
-	case "NEG", "NOT":
-		return c.lowerScalarUnaryYmb(op, local)
-	}
-
-	// The remaining shared rows are AND/OR/XOR, not implicitly locked atomics.
-	typ := amd64IntegerTypeForBits(form.spec.bits)
-	source, err := c.evalIntSized(form.source, typ)
-	if err != nil {
-		return true, false, err
-	}
-	old, store, err := c.loadScalarRMWDestination(op, local, form.destination, typ)
-	if err != nil {
-		return true, false, err
-	}
-	operation := map[string]string{"AND": "and", "OR": "or", "XOR": "xor"}[form.spec.stem]
-	if operation == "" {
-		return true, false, fmt.Errorf("unregistered scalar memory RMW effect %s", op)
-	}
-	result := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", result, operation, typ, old, source)
-	value := "%" + result
-	if err := store(value); err != nil {
-		return true, false, err
-	}
-	c.clearX86StatusFlags(x86StatusCF | x86StatusOF)
-	zero, sign := c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zero, typ, value)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zero, c.flagsZSlot)
-	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", sign, typ, value)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sign, c.flagsSltSlot)
-	c.setParityFlagSized(typ, value)
-	return true, false, nil // AF remains architecturally undefined, not an input fact.
 }
 
 func x86LoweredScalarMemoryRMW(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {

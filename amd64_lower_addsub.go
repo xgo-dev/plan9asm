@@ -5,47 +5,50 @@ import (
 	"strings"
 )
 
-// lowerScalarAddSub implements all operand rows in Go 1.27's yxorb (B) and
-// yaddl (W/L/Q) tables for ADD and SUB.
-func (c *amd64Ctx) lowerScalarAddSub(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	rawOp := strings.ToUpper(string(op))
-	baseOp := rawOp
-	if dot := strings.IndexByte(rawOp, '.'); dot >= 0 {
-		baseOp = rawOp[:dot]
-	}
-	add, bits, recognized := amd64ScalarAddSubProperties(baseOp)
-	if !recognized {
+// The register, logical frame and native memory rows share one parsed form.
+func (c *amd64Ctx) lowerScalarBinaryRMW(op Op, ins Instr) (bool, bool, error) {
+	base, _, _ := strings.Cut(string(op), ".")
+	spec, registered := x86LockScalarRMWSpecs[Op(base)]
+	if !registered || spec.unary || spec.bitString {
 		return false, false, nil
 	}
-	if err := validateAMD64ScalarAddSubInstruction(c.goarch, ins); err != nil {
-		return true, false, err
-	}
-	source, destination := ins.Args[0], ins.Args[1]
-	typ := amd64IntegerTypeForBits(bits)
-	var sourceValue string
-	if source.Kind == OpImm {
-		sourceValue = amd64ScalarAddSubImmediate(source.Imm, bits)
-	} else {
-		sourceValue, destination, err = c.evalScalarArithmeticSource(ins, typ)
-		if err != nil {
-			return true, false, err
-		}
-	}
-	destinationValue, store, err := c.loadScalarRMWDestination(op, ins, destination, typ)
+	form, _, err := x86LockScalarRMWProperties(op, ins, c.goarch)
 	if err != nil {
 		return true, false, err
 	}
-	result := c.newTmp()
-	llvmOp := "sub"
-	if add {
-		llvmOp = "add"
+	for index, operand := range [...]Operand{form.source, form.destination} {
+		if operand.Kind == OpReg && operand.Reg != ins.Args[index].Reg &&
+			x86LogicalSourceFrameRegister(operand.Reg, c.goarch) {
+			return true, false, fmt.Errorf("%w: arithmetic byte alias needs its physical SP/BP role", ErrProbeNeedsContext)
+		}
 	}
-	fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", result, llvmOp, typ, destinationValue, sourceValue)
-	resultValue := "%" + result
-	if err := store(resultValue); err != nil {
+
+	typ := amd64IntegerTypeForBits(form.spec.bits)
+	source, err := c.evalScalarArithmeticSource(ins, form.source, typ)
+	if err != nil {
 		return true, false, err
 	}
-	c.setScalarAddSubFlags(typ, add, destinationValue, sourceValue, resultValue)
+	destination, store, err := c.loadTypedScalarRMWDestination(ins, form.destination, typ)
+	if err != nil {
+		return true, false, err
+	}
+	if form.spec.carryInput {
+		return true, false, c.emitScalarADCSBB(form.spec, typ, destination, source, store)
+	}
+
+	stem := form.spec.stem
+	result := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", result, strings.ToLower(stem), typ, destination, source)
+	value := "%" + result
+	if err := store(value); err != nil {
+		return true, false, err
+	}
+	if stem == "ADD" || stem == "SUB" {
+		c.setScalarAddSubFlags(typ, stem == "ADD", destination, source, value)
+	} else {
+		c.clearX86StatusFlags(x86StatusCF | x86StatusOF)
+		c.setScalarResultFlags(typ, value)
+	}
 	return true, false, nil
 }
 
@@ -144,10 +147,6 @@ func validateAMD64ScalarAddSubOperands(goarch, baseOp string, bits int, source, 
 
 // The assembler emits only the low operand-width bits. Q-width immediates are
 // encoded as imm32 and sign-extended by the CPU.
-func amd64ScalarAddSubImmediate(immediate int64, bits int) string {
-	return fmt.Sprintf("%d", amd64ScalarAddSubImmediateInt64(immediate, bits))
-}
-
 func amd64ScalarAddSubImmediateInt64(immediate int64, bits int) int64 {
 	var normalized int64
 	switch bits {
@@ -162,15 +161,18 @@ func amd64ScalarAddSubImmediateInt64(immediate int64, bits int) int64 {
 }
 
 func (c *amd64Ctx) setScalarAddSubFlags(typ LLVMType, add bool, destination, source, result string) {
-	c.setAuxiliaryCarryFlag(typ, destination, source, result)
 	carry := c.newTmp()
 	if add {
 		fmt.Fprintf(c.b, "  %%%s = icmp ult %s %s, %s\n", carry, typ, result, destination)
 	} else {
 		fmt.Fprintf(c.b, "  %%%s = icmp ult %s %s, %s\n", carry, typ, destination, source)
 	}
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", carry, c.flagsCFSlot)
+	c.setScalarAddSubCarryFlags(typ, add, destination, source, result, "%"+carry)
+}
 
+func (c *amd64Ctx) setScalarAddSubCarryFlags(typ LLVMType, add bool, destination, source, result, carry string) {
+	c.setAuxiliaryCarryFlag(typ, destination, source, result)
+	fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", carry, c.flagsCFSlot)
 	xorOperands := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", xorOperands, typ, destination, source)
 	overflowInput := "%" + xorOperands
@@ -186,7 +188,10 @@ func (c *amd64Ctx) setScalarAddSubFlags(typ LLVMType, add bool, destination, sou
 	fmt.Fprintf(c.b, "  %%%s = and %s %s, %%%s\n", overflowBits, typ, overflowInput, xorResult)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", overflow, typ, overflowBits)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", overflow, c.flagsOFSlot)
+	c.setScalarResultFlags(typ, result)
+}
 
+func (c *amd64Ctx) setScalarResultFlags(typ LLVMType, result string) {
 	zero := c.newTmp()
 	sign := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zero, typ, result)

@@ -417,14 +417,14 @@ func TestAMD64AtomicAndBranchEdges(t *testing.T) {
 	}); !ok || err != nil {
 		t.Fatalf("lowerAtomic(XCHGQ sym) = (%v, %v)", ok, err)
 	}
-	if ok, _, err := c.lowerScalarMemoryRMW("ANDB", Instr{
+	if ok, _, err := c.lowerScalarBinaryRMW("ANDB", Instr{
 		Raw: "ANDB $1, 4(BX)",
 		Args: []Operand{
 			{Kind: OpImm, Imm: 1},
 			{Kind: OpMem, Mem: MemRef{Base: BX, Off: 4}},
 		},
 	}); !ok || err != nil {
-		t.Fatalf("lowerScalarMemoryRMW(ANDB) = (%v, %v)", ok, err)
+		t.Fatalf("lowerScalarBinaryRMW(ANDB) = (%v, %v)", ok, err)
 	}
 	if ok, term, err := c.lowerAtomic("ORQ", Instr{
 		Raw: "ORQ AX, BX",
@@ -915,7 +915,7 @@ func TestAMD64ADCBUsesCarryFlag(t *testing.T) {
 		{Raw: "ADCB $1, AL", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AL}}},
 		{Raw: "ADCB $1, AH", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AH}}},
 	} {
-		if ok, term, err := c.lowerArith("ADCB", ins); !ok || term || err != nil {
+		if ok, term, err := c.lowerScalarBinaryRMW("ADCB", ins); !ok || term || err != nil {
 			t.Fatalf("lowerArith(%s) = (%v, %v, %v)", ins.Raw, ok, term, err)
 		}
 	}

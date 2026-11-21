@@ -851,13 +851,7 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 	if ok, term, err := c.lowerLockScalarRMW(Op(op), ins); ok {
 		return term, err
 	}
-	if ok, term, err := c.lowerScalarMemoryRMW(Op(op), ins); ok {
-		return term, err
-	}
-	// Scalar ADD/SUB spellings overlap with vector and generic arithmetic
-	// lowerers. Validate the complete Go assembler operand table before those
-	// broader handlers get a chance to accept an illegal form.
-	if ok, term, err := c.lowerScalarAddSub(Op(op), ins); ok {
+	if ok, term, err := c.lowerScalarBinaryRMW(Op(op), ins); ok {
 		return term, err
 	}
 	if ok, term, err := c.lowerRTM(bi, ii, Op(op), ins, emitCondBr); ok {

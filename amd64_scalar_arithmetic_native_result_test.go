@@ -114,7 +114,7 @@ func TestX86ScalarArithmeticNativeOriginalREXByteAliases(t *testing.T) {
 				if address != "(DX)" && ordinal < 2 {
 					c, output := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.Value", Ret: Void}, nil)
 					before := output.String()
-					if _, _, err := c.evalScalarArithmeticSource(ins, I8); !errors.Is(err, ErrProbeNeedsContext) || output.String() != before {
+					if _, _, err := c.lowerScalarBinaryRMW(ins.Op, ins); !errors.Is(err, ErrProbeNeedsContext) || output.String() != before {
 						t.Fatal("arithmetic manufactured a physical SP/BP alias", err)
 					}
 				}
