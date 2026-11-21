@@ -307,6 +307,12 @@ func initializedExplicitSIMDOperands(goarch string, ins Instr) ([]Operand, int64
 	if f, known, err := x86NonTemporalVectorProperties(ins.Op, ins, goarch); known {
 		return ins.Args, int64(f.move.byteWidth), err == nil && !f.trap
 	}
+	if _, known, err := x86MaskValueProperties(ins.Op, ins, goarch); known {
+		return ins.Args, 0, err == nil
+	}
+	if _, known, err := x86MaskVectorProperties(ins, goarch); known {
+		return ins.Args, 0, err == nil
+	}
 	return nil, 0, false
 }
 

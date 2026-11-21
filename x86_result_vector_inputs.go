@@ -68,9 +68,13 @@ func x86OtherFixedVectorValueProperties(ins Instr, arch string) (x86PackedBinary
 		return form.x86PackedBinaryForm, true, true, err
 	}
 	if parsed, known, err := x86HorizontalIntegerProperties(ins, arch); known {
+		memoryBytes := 0
+		if parsed.memory >= 0 {
+			memoryBytes = parsed.byteWidth
+		}
 		return x86PackedBinaryForm{
 			first: parsed.first, second: parsed.second, destination: parsed.destination,
-			memory: parsed.memory, memoryBytes: parsed.byteWidth, byteWidth: parsed.byteWidth,
+			memory: parsed.memory, memoryBytes: memoryBytes, byteWidth: parsed.byteWidth,
 			mask: -1, legacy: !parsed.spec.vector, mmx: parsed.mmx,
 		}, false, true, err
 	}

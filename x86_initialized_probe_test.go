@@ -136,6 +136,13 @@ func TestInitializedX86SharedVectorFamilyRegisters(t *testing.T) {
 		"VSQRTPD X16, K4, X0",
 		"VPERMB X26, X20, K1, X23",
 		"VDBPSADBW $127, Z3, Z5, K2, Z19",
+		"VPHADDD X2, X9, X2",
+		"VPHADDD Y2, Y15, Y2",
+		"KADDQ K4, K5, K0",
+		"KSHIFTLB $0, K7, K0",
+		"KUNPCKWD K7, K5, K3",
+		"VPMOVB2M X0, K5",
+		"VPMOVM2D K3, Z7",
 	}, InitializedVectorRegisterProbeSequence)
 }
 
