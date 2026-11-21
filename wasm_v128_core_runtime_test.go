@@ -15,7 +15,7 @@ type wasmV128CoreObservation struct {
 	Want uint32
 }
 
-const wasmV128CorePass = "V128 core PASS 1808"
+const wasmV128CorePass = "V128 core PASS 2420"
 
 func wasmV128CoreScalarResult(name string) bool {
 	_, op := wasmV128IntegerParts(name)
@@ -132,6 +132,14 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 	program.WriteString("package main\nimport \"fmt\"\n")
 	sigs := make(map[string]FuncSig)
 	var rows []wasmV128CoreObservation
+	add := func(body string, want uint32) {
+		function := fmt.Sprintf("core%d", len(rows))
+		fmt.Fprintf(&source, "TEXT %s(SB),4,$0-0\n%sReturn\n", function, body)
+		fmt.Fprintf(&original, "TEXT ·%s(SB),4,$0-4\nGet SP\n%sI32Store ret+0(FP)\nRET\n", function, body)
+		fmt.Fprintf(&program, "func %s() uint32\n", function)
+		sigs[function] = FuncSig{Name: function, Ret: I32}
+		rows = append(rows, wasmV128CoreObservation{Name: function, Want: want})
+	}
 	for _, name := range wasmV128CoreNames() {
 		inputs := patterns
 		if bits, _ := wasmV128FloatParts(name); bits != 0 {
@@ -148,7 +156,6 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 				a = [2]uint64{0x80ff00bd017e42f1, 0x7fff80000001ea42}
 				b[0] = counts[index]
 			}
-			function := fmt.Sprintf("core%d", len(rows))
 			body, want := wasmV128CoreBody(name, a, b, mask), uint32(0)
 			if name == "V128AnyTrue" {
 				if a[0] != 0 || a[1] != 0 {
@@ -162,14 +169,25 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 			} else {
 				body += wasmV128CoreConstant(wasmV128CoreReference(name, a, b, mask)) + "V128Xor\nV128AnyTrue\n"
 			}
-			fmt.Fprintf(&source, "TEXT %s(SB),4,$0-0\n%sReturn\n", function, body)
-			fmt.Fprintf(&original, "TEXT ·%s(SB),4,$0-4\nGet SP\n%sI32Store ret+0(FP)\nRET\n", function, body)
-			fmt.Fprintf(&program, "func %s() uint32\n", function)
-			sigs[function] = FuncSig{Name: function, Ret: I32}
-			rows = append(rows, wasmV128CoreObservation{Name: function, Want: want})
+			add(body, want)
 		}
 	}
-	if len(rows) != 1808 {
+	for _, form := range wasmV128LaneTestForms() {
+		for _, datum := range []struct {
+			vector [2]uint64
+			scalar uint64
+		}{
+			{[2]uint64{0, 0}, 0},
+			{[2]uint64{0xffffffffffffffff, 0xffffffffffffffff}, 0xffffffffffffffff},
+			{[2]uint64{0x80007f80ff018001, 0x807ff1e0d0c0b0a0}, 0x80c4ff7fbb00f981},
+			{[2]uint64{0x8000000080000000, 0x8000000000000000}, 0x8000000080000000},
+			{[2]uint64{0x7fa543217fc54321, 0x7ff0000000000021}, 0x7ff000017fa54321},
+			{[2]uint64{0xfff8123456789abc, 0x7ff01234ffa12345}, 0xfff81234ffc12345},
+		} {
+			add(form.numericRuntimeBody(datum.vector, datum.scalar), 0)
+		}
+	}
+	if len(rows) != 2420 {
 		t.Fatal("complete vector observation inventory changed", len(rows))
 	}
 	program.WriteString("func main() {\n")

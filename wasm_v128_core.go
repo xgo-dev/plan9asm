@@ -16,7 +16,12 @@ func parseWASMV128Core(ins Instr, name string) (wasmsimd.Form, bool, error) {
 		return spec, false, nil
 	}
 	operands := 0
-	if spec.Operator == "const" {
+	switch {
+	case spec.HasLaneIndex():
+		// Go writes the selector from the destination operand. Its unary
+		// syntax leaves that field zero, regardless of the written literal.
+		operands = 2
+	case spec.Operator == "const":
 		operands = 2
 	}
 	if strings.ToUpper(string(ins.Op)) != name || len(ins.Args) != operands {
@@ -24,7 +29,14 @@ func parseWASMV128Core(ins Instr, name string) (wasmsimd.Form, bool, error) {
 	}
 	for _, operand := range ins.Args {
 		if operand.Kind != OpImm || operand.ImmIsFloat || operand.ImmRaw != "" {
-			return spec, true, fmt.Errorf("%s requires two resolved 64-bit integer literals: %q", name, ins.Raw)
+			return spec, true, fmt.Errorf("%s requires resolved integer literals: %q", name, ins.Raw)
+		}
+	}
+	if spec.HasLaneIndex() {
+		lane := ins.Args[1].Imm
+		lanes := int64(128 / spec.Shape.LaneBits)
+		if lane < 0 || lane >= lanes {
+			return spec, true, fmt.Errorf("%s lane index %d outside 0..%d: %q", name, lane, lanes-1, ins.Raw)
 		}
 	}
 	return spec, true, nil
@@ -34,7 +46,7 @@ func parseWASMV128Core(ins Instr, name string) (wasmsimd.Form, bool, error) {
 // is the mask, and Andnot complements only the second input.
 func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, ins Instr, inputs []wasmValue) wasmValue {
 	if spec.Emission != wasmsimd.Core {
-		return emitWASMV128Lanes(b, newTmp, spec, inputs)
+		return emitWASMV128Lanes(b, newTmp, spec, ins, inputs)
 	}
 	if spec.Operator == "const" {
 		low, high := uint64(ins.Args[0].Imm), uint64(ins.Args[1].Imm)
@@ -73,7 +85,7 @@ func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmsimd.Fo
 	return wasmValue{typ: LLVMType(spec.ResultType()), val: result}
 }
 
-func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, inputs []wasmValue) wasmValue {
+func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, ins Instr, inputs []wasmValue) wasmValue {
 	typ := spec.Shape.LaneType
 	cast := func(value string, from, to LLVMType) string {
 		if from == to {
@@ -84,7 +96,10 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		return "%" + result
 	}
 
-	lhs := cast(inputs[0].val, wasmV128CoreType, LLVMType(typ))
+	lhs := inputs[0].val
+	if spec.InputType(0) == wasmsimd.V128 {
+		lhs = cast(lhs, wasmV128CoreType, LLVMType(typ))
+	}
 	var rhs string
 	if len(inputs) == 2 && spec.InputType(1) == wasmsimd.V128 {
 		rhs = cast(inputs[1].val, wasmV128CoreType, LLVMType(typ))
@@ -114,6 +129,31 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", result, spec.Operator, typ, lhs, amount)
 	case wasmsimd.AllTrue, wasmsimd.Bitmask:
 		return emitWASMV128Reduction(b, newTmp, spec, lhs)
+	case wasmsimd.Splat, wasmsimd.ReplaceLane:
+		scalar := inputs[len(inputs)-1]
+		value := scalar.val
+		element := spec.Shape.Element
+		if scalar.typ != LLVMType(element) {
+			narrowed := newTmp()
+			fmt.Fprintf(b, "  %%%s = trunc %s %s to %s\n", narrowed, scalar.typ, value, element)
+			value = "%" + narrowed
+		}
+		if spec.Emission == wasmsimd.Splat {
+			vector := emitWASMV128Splat(b, newTmp, spec.Shape, value)
+			return wasmValue{typ: wasmV128CoreType, val: cast(vector, resultType, wasmV128CoreType)}
+		}
+		fmt.Fprintf(b, "  %%%s = insertelement %s %s, %s %s, i32 %d\n",
+			result, typ, lhs, element, value, ins.Args[1].Imm)
+	case wasmsimd.ExtractLane:
+		element := spec.Shape.Element
+		fmt.Fprintf(b, "  %%%s = extractelement %s %s, i32 %d\n", result, typ, lhs, ins.Args[1].Imm)
+		value := "%" + result
+		if spec.Operator != "" {
+			extended := newTmp()
+			fmt.Fprintf(b, "  %%%s = %s %s %s to %s\n", extended, spec.Operator, element, value, spec.ResultType())
+			value = "%" + extended
+		}
+		return wasmValue{typ: LLVMType(spec.ResultType()), val: value}
 	case wasmsimd.Compare, wasmsimd.FloatSelect:
 		predicate := newTmp()
 		fmt.Fprintf(b, "  %%%s = %s %s %s %s, %s\n", predicate, spec.Shape.Comparator, spec.Operator, typ, lhs, rhs)
@@ -170,10 +210,14 @@ func emitWASMV128ShiftCount(b *strings.Builder, newTmp func() string, shape wasm
 		fmt.Fprintf(b, "  %%%s = %s i32 %s to i%d\n", converted, operation, count, bits)
 		count = "%" + converted
 	}
+	return emitWASMV128Splat(b, newTmp, shape, count)
+}
+
+func emitWASMV128Splat(b *strings.Builder, newTmp func() string, shape wasmsimd.Shape, element string) string {
 	seed, splat := newTmp(), newTmp()
-	fmt.Fprintf(b, "  %%%s = insertelement %s poison, i%d %s, i32 0\n", seed, shape.LaneType, bits, count)
+	fmt.Fprintf(b, "  %%%s = insertelement %s poison, %s %s, i32 0\n", seed, shape.LaneType, shape.Element, element)
 	fmt.Fprintf(b, "  %%%s = shufflevector %s %%%s, %s poison, <%d x i32> zeroinitializer\n",
-		splat, shape.LaneType, seed, shape.LaneType, 128/bits)
+		splat, shape.LaneType, seed, shape.LaneType, 128/shape.LaneBits)
 	return "%" + splat
 }
 

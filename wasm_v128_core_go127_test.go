@@ -65,3 +65,26 @@ func TestWASMV128CoreOriginalGoRuntime(t *testing.T) {
 		t.Fatalf("original Go V128 core execution: %v\n%s", err, output)
 	}
 }
+
+func TestWASMV128LaneActualGoNamespaceAndObjects(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src/cmd/internal/obj/wasm/anames.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pattern := regexp.MustCompile(`"((?:I8x16|I16x8|I32x4|I64x2|F32x4|F64x2)(?:Splat|ExtractLane[SU]?|ReplaceLane))"`)
+	names := make(map[string]bool)
+	for _, match := range pattern.FindAllSubmatch(data, -1) {
+		names[string(match[1])] = true
+	}
+	want := make(map[string]bool)
+	for _, form := range wasmV128LaneTestForms() {
+		want[form.name] = true
+	}
+	if len(names) != 20 || !reflect.DeepEqual(names, want) {
+		t.Fatal("SIMD lane encoder namespace changed", names)
+	}
+	source, _ := wasmV128LaneObjectFixture(t)
+	for _, goos := range wasmPackedGoPlatforms {
+		wasmDataGoObject(t, source, goos)
+	}
+}

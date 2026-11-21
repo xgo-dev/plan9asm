@@ -17,6 +17,9 @@ const (
 	Shift
 	AllTrue
 	Bitmask
+	Splat
+	ExtractLane
+	ReplaceLane
 )
 
 type ValueType string
@@ -24,6 +27,9 @@ type ValueType string
 const (
 	V128 ValueType = "<4 x i32>"
 	I32  ValueType = "i32"
+	I64  ValueType = "i64"
+	F32  ValueType = "float"
+	F64  ValueType = "double"
 )
 
 type stackSignature struct {
@@ -33,6 +39,7 @@ type stackSignature struct {
 
 type Shape struct {
 	LaneType      string
+	Element       ValueType
 	LaneBits      int
 	PredicateType string
 	MaskType      string
@@ -53,6 +60,10 @@ func (f Form) Arity() int { return len(f.stack.inputs) }
 func (f Form) InputType(index int) ValueType { return f.stack.inputs[index] }
 
 func (f Form) ResultType() ValueType { return f.stack.result }
+
+func (f Form) HasLaneIndex() bool {
+	return f.Emission == ExtractLane || f.Emission == ReplaceLane
+}
 
 func (f Form) HasIntrinsic() bool {
 	return f.Emission == Intrinsic || f.Emission == IntegerAbs
@@ -100,21 +111,41 @@ func buildForms() map[string]Form {
 	add := func(prefix string, shape Shape, op operation) {
 		result[prefix+op.suffix] = Form{stack: op.stack, Emission: op.emission, Operator: op.operator, Shape: shape}
 	}
+	addLaneOperations := func(prefix string, shape Shape, scalar ValueType) {
+		splat := stackSignature{[]ValueType{scalar}, V128}
+		replace := stackSignature{[]ValueType{V128, scalar}, V128}
+		extract := stackSignature{[]ValueType{V128}, scalar}
+		add(prefix, shape, operation{"SPLAT", "", splat, Splat})
+		add(prefix, shape, operation{"REPLACELANE", "", replace, ReplaceLane})
+		if shape.LaneBits < 32 {
+			add(prefix, shape, operation{"EXTRACTLANES", "sext", extract, ExtractLane})
+			add(prefix, shape, operation{"EXTRACTLANEU", "zext", extract, ExtractLane})
+		} else {
+			add(prefix, shape, operation{"EXTRACTLANE", "", extract, ExtractLane})
+		}
+	}
 
 	for _, lane := range []struct {
 		prefix string
 		bits   int
 	}{{"I8X16", 8}, {"I16X8", 16}, {"I32X4", 32}, {"I64X2", 64}} {
 		count := 128 / lane.bits
-		laneType := fmt.Sprintf("<%d x i%d>", count, lane.bits)
+		element := ValueType(fmt.Sprintf("i%d", lane.bits))
+		laneType := fmt.Sprintf("<%d x %s>", count, element)
 		shape := Shape{
 			LaneType:      laneType,
+			Element:       element,
 			LaneBits:      lane.bits,
 			PredicateType: fmt.Sprintf("<%d x i1>", count),
 			MaskType:      laneType,
 			Comparator:    "icmp",
 			overload:      fmt.Sprintf("v%di%d", count, lane.bits),
 		}
+		scalar := I32
+		if lane.bits == 64 {
+			scalar = I64
+		}
+		addLaneOperations(lane.prefix, shape, scalar)
 		add(lane.prefix, shape, operation{"ADD", "add", binary, Instruction})
 		add(lane.prefix, shape, operation{"SUB", "sub", binary, Instruction})
 		if lane.bits >= 16 {
@@ -180,18 +211,21 @@ func buildForms() map[string]Form {
 		{"MAX", "maximum", binary, Intrinsic},
 	}
 	for _, lane := range []struct {
-		prefix, element string
-		bits            int
-	}{{"F32X4", "float", 32}, {"F64X2", "double", 64}} {
+		prefix  string
+		element ValueType
+		bits    int
+	}{{"F32X4", F32, 32}, {"F64X2", F64, 64}} {
 		count := 128 / lane.bits
 		shape := Shape{
 			LaneType:      fmt.Sprintf("<%d x %s>", count, lane.element),
+			Element:       lane.element,
 			LaneBits:      lane.bits,
 			PredicateType: fmt.Sprintf("<%d x i1>", count),
 			MaskType:      fmt.Sprintf("<%d x i%d>", count, lane.bits),
 			Comparator:    "fcmp",
 			overload:      fmt.Sprintf("v%df%d", count, lane.bits),
 		}
+		addLaneOperations(lane.prefix, shape, lane.element)
 		for _, op := range floatOperations {
 			add(lane.prefix, shape, op)
 		}
