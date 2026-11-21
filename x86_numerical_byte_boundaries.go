@@ -143,6 +143,9 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		decodedX86FloatingUnpackInstructionWithMemory,
 		decodedX86EVEXPackedUnpackInstructionWithMemory,
 		decodedX86VEXPackedUnpackBoundary,
+		decodedX86PackedExtendInstructionWithMemory,
+		decodedX86SingleSourceNarrowInstructionWithMemory,
+		decodedX86VectorPackedSaturatingNarrowInstructionWithMemory,
 	}
 	if ins, length, known, err := decodedX86VEXMoveMaskInstruction(code, mode); known || err != nil {
 		if err == nil && mode == 32 {

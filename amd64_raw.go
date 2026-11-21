@@ -7576,12 +7576,16 @@ func decodedX86PackedExtendOpcode(opcode byte) (decodedX86PackedExtendProperties
 // writemasks, zeroing, and compressed displacements. EVEX.b is deliberately
 // rejected because no broadcast form exists in the Go operand tables.
 func decodedX86PackedExtendInstruction(code []byte, mode int) (instruction Instr, length int, ok bool, err error) {
+	return decodedX86PackedExtendInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86PackedExtendInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
 	i, segment, addressOverride := x86RawSegmentPrefixes(code)
 	if mode != 32 && mode != 64 {
 		return Instr{}, 0, false, nil
 	}
 	if len(code) > i && code[i] == 0x62 {
-		return decodedX86EVEXPackedExtendInstruction(code, i, mode, segment, addressOverride)
+		return decodedX86EVEXPackedExtendInstruction(code, i, mode, segment, addressOverride, memory)
 	}
 	if len(code) < i+4 || code[i] != 0xc4 || code[i+1]&0x1f != 2 {
 		return Instr{}, 0, false, nil
@@ -7615,7 +7619,7 @@ func decodedX86PackedExtendInstruction(code []byte, mode int) (instruction Instr
 	if vex1&0x04 != 0 {
 		destinationName = "Y"
 	}
-	source, consumed, decodeErr := decodedX86VEXVectorRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, "X")
+	source, consumed, decodeErr := memory.vex(code[modRMIndex:], mode, bExt, xExt, segment, "X")
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}
@@ -7628,7 +7632,7 @@ func decodedX86PackedExtendInstruction(code []byte, mode int) (instruction Instr
 	return instruction, modRMIndex + consumed, true, nil
 }
 
-func decodedX86EVEXPackedExtendInstruction(code []byte, i, mode int, segment Reg, addressOverride bool) (instruction Instr, length int, ok bool, err error) {
+func decodedX86EVEXPackedExtendInstruction(code []byte, i, mode int, segment Reg, addressOverride bool, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
 	if len(code) < i+5 {
 		return Instr{}, 0, false, nil
 	}
@@ -7686,7 +7690,7 @@ func decodedX86EVEXPackedExtendInstruction(code []byte, i, mode int, segment Reg
 	if mode == 32 && (destinationNumber >= 8 || modRM>>6 == 3 && sourceNumber >= 8) {
 		return Instr{}, 0, true, fmt.Errorf("extended vector register in 32-bit mode")
 	}
-	source, consumed, decodeErr := decodedX86EVEXRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, sourceName, sourceBytes)
+	source, consumed, decodeErr := memory.evex(code[modRMIndex:], mode, bExt, xExt, segment, sourceName, sourceBytes)
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}

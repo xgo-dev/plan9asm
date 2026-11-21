@@ -148,6 +148,9 @@ func x86TypedPackedExtendByteEffect(op Op, ins Instr, arch string) (x86TypedByte
 		{index: form.destination, operand: ins.Args[form.destination], width: int64(form.byteWidth),
 			read: form.mask >= 0 && !form.zeroing, write: true},
 	}}
+	if form.spec.vector {
+		effect.vector = x86TypedVectorEffect{x86TypedVectorUpperZero, 1}
+	}
 	if form.mask >= 0 {
 		effect.operands = append(effect.operands, x86TypedByteOperand{
 			index: form.mask, operand: ins.Args[form.mask], width: 8, read: true,

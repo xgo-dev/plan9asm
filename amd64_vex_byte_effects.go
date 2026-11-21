@@ -123,11 +123,19 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		}
 		return x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
 	}
+	if form, known, err := x86PackedNarrowProperties(local, arch); known {
+		if ins.Op != "" && !strings.EqualFold(string(ins.Op), string(op)) {
+			return x86TypedByteEffect{}, true, goAMD64FrameContext("packed narrow dispatch/source mismatch: %s/%s", op, ins.Op)
+		}
+		return x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
+	}
 	for _, project := range [...]func(Op, Instr, string) (x86TypedByteEffect, bool, error){
 		x86TypedPackedRotateByteEffect,
 		x86TypedElementPermuteByteEffect,
 		x86TypedShuffle128BitBlocksByteEffect,
 		x86TypedMaskBlendByteEffect,
+		x86TypedPackedExtendByteEffect,
+		x86TypedSingleSourceNarrowByteEffect,
 	} {
 		if effect, known, err := project(op, ins, arch); known {
 			return effect, true, err

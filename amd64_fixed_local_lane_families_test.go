@@ -10,7 +10,7 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
 
-func fixedLocalLaneFamilyAssembly(t *testing.T, name, operation, setup string, omit Reg) string {
+func fixedLocalVectorStackAssembly(t *testing.T, name, operation, setup string, omit Reg) string {
 	t.Helper()
 	ins := x86ScalarLaneInstruction(t, operation)
 	var source strings.Builder
@@ -36,8 +36,14 @@ func fixedLocalLaneFamilyAssembly(t *testing.T, name, operation, setup string, o
 			}
 		}
 	}
-	destination := ins.Args[len(ins.Args)-1].Reg
-	fmt.Fprintf(&source, "%s\nVMOVUPS %s,128(SP)\nMOVQ 128(SP),AX\nMOVQ AX,ret+8(FP)\nRET\n", operation, destination)
+	destination := ins.Args[len(ins.Args)-1]
+	fmt.Fprintln(&source, operation)
+	if destination.Kind == OpReg {
+		fmt.Fprintf(&source, "VMOVUPS %s,128(SP)\nMOVQ 128(SP),AX\n", destination.Reg)
+	} else {
+		fmt.Fprintf(&source, "MOVB %s,AL\n", destination.String())
+	}
+	source.WriteString("MOVQ AX,ret+8(FP)\nRET\n")
 	return source.String()
 }
 
@@ -52,7 +58,7 @@ func TestGoAMD64FixedLocalLaneFamiliesOriginalObjects(t *testing.T) {
 	}
 	for index, row := range rows {
 		name := fmt.Sprintf("Value%d", index)
-		assembly.WriteString(fixedLocalLaneFamilyAssembly(t, name, row.operation, row.setup, ""))
+		assembly.WriteString(fixedLocalVectorStackAssembly(t, name, row.operation, row.setup, ""))
 		fmt.Fprintf(&declarations, "func %s(a uint64) uint64\n", name)
 	}
 	fixedLocalCompleteVectorObjects(t, assembly.String(), declarations.String(), len(rows))
@@ -92,7 +98,7 @@ func TestGoAMD64FixedLocalLaneFamiliesOfficialRows(t *testing.T) {
 				if seen[operation] {
 					continue
 				}
-				assembly.WriteString(fixedLocalLaneFamilyAssembly(t, fmt.Sprintf("Value%d", len(operations)), operation, "", ""))
+				assembly.WriteString(fixedLocalVectorStackAssembly(t, fmt.Sprintf("Value%d", len(operations)), operation, "", ""))
 				operations = append(operations, operation)
 				seen[operation] = true
 			}
@@ -142,7 +148,7 @@ func TestGoAMD64FixedLocalLaneFamiliesInputs(t *testing.T) {
 		{"VPUNPCKLBW.Z 113(SP),X11,K7,X1", "", false},
 	} {
 		t.Run(row.operation+"/"+string(row.omit), func(t *testing.T) {
-			file, err := Parse(ArchAMD64, fixedLocalLaneFamilyAssembly(t, "Value", row.operation, "", row.omit))
+			file, err := Parse(ArchAMD64, fixedLocalVectorStackAssembly(t, "Value", row.operation, "", row.omit))
 			if err != nil {
 				t.Fatal(err)
 			}

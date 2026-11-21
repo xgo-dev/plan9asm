@@ -360,6 +360,11 @@ The compact/expand frame checks cover the full possible memory span. A
 masked compression preserves any previously initialized bytes and revokes
 overlapping pointer spills without declaring the rest of the span initialized.
 Original Go EVEX.z memory stores remain terminal illegal-instruction forms.
+The integer width checks cover signed and unsigned widening, single-source
+narrowing and two-source saturating packs. The frame proof requires only the
+active low bytes of a widening input and bounds each narrowing store by its
+actual output width. A masked narrowing store preserves the initialization
+state of bytes it might leave unwritten.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies

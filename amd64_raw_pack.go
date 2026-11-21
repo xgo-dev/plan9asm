@@ -16,6 +16,10 @@ var x86RawPackedNarrowOps = map[[2]int]struct {
 }
 
 func decodedX86VectorPackedSaturatingNarrowInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86VectorPackedSaturatingNarrowInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86VectorPackedSaturatingNarrowInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched {
 		return Instr{}, 0, false, nil
@@ -34,5 +38,5 @@ func decodedX86VectorPackedSaturatingNarrowInstruction(code []byte, mode int) (I
 	if spec.broadcast {
 		bits = 32
 	}
-	return decodedX86BinaryVectorOperands(code, p, mode, spec.op, bits)
+	return decodedX86BinaryVectorOperandsWithMemory(code, p, mode, spec.op, bits, memory)
 }

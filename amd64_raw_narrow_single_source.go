@@ -15,6 +15,10 @@ var x86RawSingleSourceNarrowOps = [3][6]Op{
 }
 
 func decodedX86SingleSourceNarrowInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86SingleSourceNarrowInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86SingleSourceNarrowInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, recognized := decodeX86RawVectorEncoding(code)
 	if !recognized || !p.evex || p.mapNumber != 2 || p.pp != 2 {
 		return Instr{}, 0, false, nil
@@ -60,7 +64,7 @@ func decodedX86SingleSourceNarrowInstruction(code []byte, mode int) (Instr, int,
 	if mode == 32 && modRM>>6 != 3 && (p.b != 0 || p.x != 0) {
 		return fail("extended memory address in 32-bit mode")
 	}
-	destination, consumed, err := decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, destinationPrefix, outputBytes)
+	destination, consumed, err := memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, destinationPrefix, outputBytes)
 	if err != nil {
 		return Instr{}, 0, true, err
 	}

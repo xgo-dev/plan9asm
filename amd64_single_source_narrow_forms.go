@@ -82,7 +82,7 @@ func x86TypedSingleSourceNarrowByteEffect(op Op, ins Instr, arch string) (x86Typ
 		operands: []x86TypedByteOperand{
 			{index: 0, operand: ins.Args[0], width: int64(f.inputBytes), read: true},
 			{index: f.destination, operand: ins.Args[f.destination], width: int64(width), write: true,
-				read: f.memory < 0 && f.mask >= 0 && !f.zeroing},
+				read: f.memory < 0 && f.mask >= 0 && !f.zeroing, partialWrite: f.memory >= 0 && f.mask >= 0},
 		}}
 	if effect.operands[1].read {
 		effect.operands[1].requiredBytes = x86CallerVectorByteMask(int64(f.outputBytes))

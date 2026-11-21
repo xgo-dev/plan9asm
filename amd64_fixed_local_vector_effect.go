@@ -39,8 +39,11 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 			}
 			width := amd64VectorByteWidth(operand.operand.Reg)
 			index, vector := amd64VectorRegisterIndex(operand.operand.Reg, width)
+			// A widening source can consume only the low bytes of its
+			// physical register. A write still describes the whole view.
 			valid = valid && vector && (index < 16 || effect.vector.upperWrite == x86TypedVectorUpperZero) &&
-				operand.width == int64(width)
+				operand.width > 0 && operand.width <= int64(width) &&
+				(!operand.write || operand.width == int64(width))
 		case OpMem, OpSym:
 			valid = valid && operand.width > 0
 		case OpImm:
