@@ -21,6 +21,15 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("amd64 CALL expects 1 operand: %q", ins.Raw)
 		}
+		if target := c.blocks[bi].panicTarget; target != "" && ii+1 == len(c.blocks[bi].instrs) {
+			symbol, offset, valid := parseSBRef(ins.Args[0].Sym)
+			if c.goarch != "386" || ins.Args[0].Kind != OpSym || !valid || offset != 0 ||
+				c.resolve(symbol) != target || !x86ABI0NoArgumentVoidCallRole(c.sigs[target]) {
+				return true, false, x86ABI0BoolCallContext("proved Go panic CALL lost its selected no-argument target")
+			}
+			fmt.Fprintf(c.b, "  call void %s() noreturn\n  unreachable\n", llvmGlobal(target))
+			return true, true, nil
+		}
 		switch ins.Args[0].Kind {
 		case OpReg:
 			addr, err := c.loadReg(ins.Args[0].Reg)

@@ -307,8 +307,10 @@ func (plan *x86ABI0BoolCallPlan) replay() error {
 		literal.WriteByte('\n')
 	}
 	parsed, err := Parse(ArchAMD64, literal.String())
+	original := plan.function
+	original.x86PanicCalls = nil // Bound separately to the same original instructions.
 	if err != nil || len(parsed.Funcs) != 1 || len(parsed.Data) != 0 || len(parsed.Globl) != 0 || len(parsed.UnlinkedPrelude) != 0 ||
-		!reflect.DeepEqual(parsed.Funcs[0], plan.function) {
+		!reflect.DeepEqual(parsed.Funcs[0], original) {
 		return x86ABI0BoolCallContext("caller original TEXT/operand tuple cannot be replayed")
 	}
 	return nil

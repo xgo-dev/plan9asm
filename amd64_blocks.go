@@ -6,9 +6,10 @@ import (
 )
 
 type amd64Block struct {
-	name      string
-	instrs    []Instr
-	synthetic bool
+	name        string
+	instrs      []Instr
+	synthetic   bool
+	panicTarget string
 }
 
 func isAMD64ConditionalBranch(op Op) bool {
@@ -146,7 +147,11 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 		}
 		blocks[cur].instrs = append(blocks[cur].instrs, ins)
 		li++
-		if isTerminator(ins) {
+		panicTarget := fn.x86PanicTarget(ins)
+		if panicTarget != "" {
+			blocks[cur].panicTarget = panicTarget
+		}
+		if panicTarget != "" || isTerminator(ins) {
 			startAnon()
 		}
 	}

@@ -79,6 +79,8 @@ type GoModuleOptions struct {
 	// ARM64ClosureABIs supplies producer-proven hidden carriers after binding
 	// actual Go declarations. It neither invents Go args nor infers R26 input.
 	ARM64ClosureABIs map[string]ARM64ClosureABI
+
+	x86PanicCalls *x86GoPanicTerminalSourceObservation
 }
 
 // GoFunction records the original TEXT symbol and its resolved LLVM symbol.
@@ -262,6 +264,11 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
+	}
+	if opt.x86PanicCalls != nil {
+		if err := opt.x86PanicCalls.bindMember(file, asmName); err != nil {
+			return nil, err
+		}
 	}
 	virtualPackage := pkg
 	virtualPackage.Path = pkgPath

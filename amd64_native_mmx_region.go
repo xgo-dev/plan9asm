@@ -8,12 +8,17 @@ import (
 var x86NativeMMXGPRegisters = [...]Reg{AX, CX, DX, BX, SP, BP, SI, DI,
 	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"}
 
-func (c *amd64Ctx) lowerNativeMMXRegionAt(block, ordinal int, ins Instr) (bool, error) {
+func (c *amd64Ctx) lowerNativeMMXRegionAt(block, index int, ins Instr) (bool, error) {
 	plan := c.nativeMMXRegion
-	if plan == nil || ordinal < plan.begin || ordinal > plan.end {
+	if plan == nil {
 		return false, nil
 	}
-	if block != 0 || len(c.blocks) != 1 || !plan.matchesInstruction(ordinal, ins) {
+	ordinal := c.blockBase[block] + index
+	if ordinal < plan.begin || ordinal > plan.end {
+		return false, nil
+	}
+	if plan.begin < c.blockBase[block] || plan.end >= c.blockBase[block]+len(c.blocks[block].instrs) ||
+		!plan.matchesInstruction(ordinal, ins) {
 		return true, fmt.Errorf("%w: native MMX source position changed", ErrProbeNeedsContext)
 	}
 	if ordinal != plan.begin {

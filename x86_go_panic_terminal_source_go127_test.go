@@ -11,7 +11,39 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/xgo-dev/llvm"
 )
+
+func TestX86GoPanicTerminalSelectedSDKAtomicObjects(t *testing.T) {
+	ctx, request := sdkASMDataRequest(t, "386", "internal/runtime/atomic")
+	llvmCtx := llvm.NewContext()
+	defer llvmCtx.Dispose()
+	const triple = "i386-unknown-linux-gnu"
+	selected := map[string]bool{"·Cas64": true, "·Xadd64": true, "·Xchg64": true, "·Load64": true}
+	opt := GoModuleOptions{
+		FileName: filepath.Join(request.Directory, "atomic_386.s"),
+		GOARCH:   "386", GOOS: "linux", TargetTriple: triple,
+		KeepFunc: func(symbol, _ string) bool { return selected[symbol] },
+	}
+	result, err := TranslateGoX86SDKPanicTerminalModuleInContext(ctx, llvmCtx, request, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Module.Dispose()
+	ir := result.Module.String()
+	if len(result.Functions) != len(selected) ||
+		strings.Count(ir, "call void "+llvmGlobal("internal/runtime/atomic.panicUnaligned")+"()") != len(selected) ||
+		strings.Count(ir, "unreachable") != len(selected) || !strings.Contains(ir, "noreturn") ||
+		!strings.Contains(ir, "cmpxchg") || !strings.Contains(ir, "emms") {
+		t.Fatal("atomic entries must each retain their panic call and normal path:\n" + ir)
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
+	}
+	compileLLVMToObject(t, llc, triple, "atomic386.ll", "atomic386.o", ir)
+}
 
 // Pure file reads only: this root executes no Go, LLVM, object or SDK command.
 func TestX86GoPanicTerminalActualSelected386CompilerSchema(t *testing.T) {

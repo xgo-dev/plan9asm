@@ -5,13 +5,17 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 
+	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/gostaticstorage"
+	"github.com/xgo-dev/plan9asm/internal/gosym"
 )
 
-// These observations are private inputs for a future terminal capability.
-// They neither bind Options nor change a CALL's normal or unwind successors.
+// The capture is retained through translation. Only its exact original CALLs
+// can lose the normal successor; the call's side effects and unwind remain.
 type x86GoPanicTerminalSourceObservation struct {
+	pkg    GoPackage
 	bodies []x86GoPanicTerminalCompilerBody
 	calls  []x86GoPanicTerminalAssemblyCall
 }
@@ -101,7 +105,96 @@ func (source *GoX86SDKASMDataSource) panicTerminalObservation(ctx context.Contex
 	if err != nil {
 		return nil, err
 	}
-	return &x86GoPanicTerminalSourceObservation{bodies: bodies, calls: calls}, errors.Join(private.Err(), source.guard.verifyInputs())
+	return &x86GoPanicTerminalSourceObservation{pkg: pkg, bodies: bodies, calls: calls}, errors.Join(private.Err(), source.guard.verifyInputs())
+}
+
+// TranslateGoX86SDKPanicTerminalModuleInContext translates an actual selected
+// linux/386 SDK member with its original non-returning Go CALLs. The original
+// capture remains live until translation and symbol resolution finish.
+func TranslateGoX86SDKPanicTerminalModuleInContext(ctx context.Context, irCtx llvm.Context,
+	request GoX86SDKASMDataCaptureRequest, opt GoModuleOptions,
+) (result *GoModuleTranslation, resultErr error) {
+	if request.Target != "linux/386" || opt.GOOS != "linux" || opt.GOARCH != "386" ||
+		!strings.Contains(opt.TargetTriple, "-linux-") || !x86ScalarFloatIntegerNativeTarget("386", opt.TargetTriple) ||
+		opt.ManualSig != nil || opt.Sizes != nil || opt.FrameSizes != nil ||
+		opt.NumericalReads != nil || opt.X86TLSMoves != nil || opt.ARM64ByteCarrierSource != nil ||
+		len(opt.ARM64ClosureABIs) != 0 {
+		return nil, sdkASMDataContext("panic CALL translation needs the original linux/386 Go transport")
+	}
+	source, err := captureGoX86SDKASMDataSourceRole(ctx, request, sdkASMDataOriginalSourceRole)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := source.Close(); err != nil {
+			if result != nil {
+				result.Module.Dispose()
+			}
+			result, resultErr = nil, errors.Join(resultErr, err)
+		}
+	}()
+	observation, err := source.panicTerminalObservation(ctx, new(x86ResultFlowBudget))
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := source.Verify(ctx); err != nil {
+			if result != nil {
+				result.Module.Dispose()
+			}
+			result, resultErr = nil, errors.Join(resultErr, err)
+		}
+	}()
+	if opt.ResolveSym == nil {
+		prefix := gosym.PackagePrefix(request.PackagePath)
+		opt.ResolveSym = func(symbol string) string {
+			return numericalNativeName(goStripABISuffix(symbol), prefix)
+		}
+	}
+	for index, filename := range observation.pkg.SourceSelection.SelectedAssemblyFiles {
+		if filename != opt.FileName {
+			continue
+		}
+		opt.SourcePreprocessed, opt.x86PanicCalls = true, observation
+		src := source.observation.CPP[index].Output
+		return translateGoModuleInContext(irCtx, observation.pkg, []byte(src), opt)
+	}
+	return nil, sdkASMDataContext("panic CALL member differs from the selected SDK input")
+}
+
+func (observation *x86GoPanicTerminalSourceObservation) bindMember(file *File, member string) error {
+	if !reflect.DeepEqual(file, observation.pkg.SourceSelection.Assembly[member]) {
+		return sdkASMDataContext("panic CALL member lost its original complete instruction inventory")
+	}
+	functions := make(map[string]*Func, len(file.Funcs))
+	for i := range file.Funcs {
+		fn := &file.Funcs[i]
+		functions[fn.Sym] = fn
+	}
+	for _, call := range observation.calls {
+		if call.file != member {
+			continue
+		}
+		fn := functions[call.function]
+		if fn == nil || call.ordinal < 0 || call.ordinal >= len(fn.Instrs) ||
+			!reflect.DeepEqual(fn.Instrs[call.ordinal], call.instruction) {
+			return sdkASMDataContext("original panic CALL moved or changed")
+		}
+		if fn.x86PanicCalls == nil {
+			fn.x86PanicCalls = make(map[string]x86GoPanicTerminalAssemblyCall)
+		}
+		fn.x86PanicCalls[call.instruction.Raw] = call
+	}
+	return nil
+}
+
+func (fn Func) x86PanicTarget(ins Instr) string {
+	if ins.Op == OpCALL {
+		if call, ok := fn.x86PanicCalls[ins.Raw]; ok && reflect.DeepEqual(ins, call.instruction) {
+			return call.target
+		}
+	}
+	return ""
 }
 
 func x86GoPanicTerminalGeneratedBodies(bodies []x86GoPanicTerminalCompilerBody, generated []gostaticstorage.TextRecord, root string) error {

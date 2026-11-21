@@ -74,6 +74,7 @@ type Func struct {
 	x86ResultFlowBudget        *x86ResultFlowBudget // request-local combined proof accounting only
 	x86BoolCalls               *x86ABI0BoolCallPlan // private complete-source logical CALL plan only
 	x86BoolReadonlyInputs      bool                 // private callee replay; never entry/native authority
+	x86PanicCalls              map[string]x86GoPanicTerminalAssemblyCall
 }
 
 // Parse parses a subset of Go/Plan 9 assembly syntax.

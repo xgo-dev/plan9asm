@@ -93,6 +93,25 @@ func newX86NativeMMXRegion(fn Func, sig FuncSig, arch, triple string) (*x86Nativ
 		return fail("needs its complete ordinary bounded native leaf, not another entry/storage owner")
 	}
 	for ordinal, ins := range fn.Instrs {
+		if ordinal < plan.begin && arch == "386" && len(fn.x86PanicCalls) != 0 &&
+			x86ResultNamedPredicateInstruction(ins) {
+			if fn.x86PanicTarget(ins) != "" {
+				continue
+			}
+			// A conditional branch in the checked prefix can enter the
+			// region at its first instruction. Entry into its interior
+			// would bypass MMX producers and split the native emission.
+			if isAMD64ConditionalBranch(ins.Op) {
+				args := x86DirectTailBranchArgs(ins)
+				if len(args) == 1 && args[0].Kind == OpMem {
+					mem := args[0].Mem
+					if mem == (MemRef{Base: "PC", Off: mem.Off}) &&
+						mem.Off >= -int64(ordinal) && mem.Off <= int64(plan.begin-ordinal) {
+						continue
+					}
+				}
+			}
+		}
 		if !x86ResultNamedPredicateInstruction(ins) || ins.Op == OpCALL || ins.Op == OpJMP ||
 			ins.Op == OpLABEL || isAMD64ConditionalBranch(ins.Op) || ins.x86NumericalRead != nil ||
 			len(ins.x86SourceStackFP) != 0 || len(ins.x86CallerMemory) != 0 || len(ins.x86FixedLocalMemory) != 0 {

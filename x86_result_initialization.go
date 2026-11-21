@@ -618,6 +618,10 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			terminals[pc] = true
 			continue // A complete architectural trap has no input effects or normal successor.
 		}
+		if !control && goarch == "386" && fn.x86PanicTarget(ins) != "" {
+			terminals[pc] = true
+			continue // A proved no-argument Go call cannot reach the next instruction.
+		}
 		shape := top.clone()
 		if !control && !transfer(ordinals[pc], ins, &shape, owned, resultOffset, goarch) {
 			return &x86UnclosedSourceEffectError{
