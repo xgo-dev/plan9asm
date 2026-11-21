@@ -101,7 +101,10 @@ func x86ResultIncomingPointerTransfer(ins Instr, state *x86ResultState, owned []
 	if ins.Op == lea && first.Kind == OpMem {
 		base, _, valid := x86ResultGP(first.Mem.Base, word, arch)
 		if valid && (state.shapeOnly || state.pointerGP[base]) {
-			address := x86ResultIncomingPointerAddressIdentity(first, state, arch)
+			// LEA propagates a pointer identity. The unsigned mode32
+			// spelling is accepted for effective accesses and NUM LEA.
+			offset := first.Mem.Off
+			address := offset == int64(int32(offset)) && x86ResultIncomingPointerAddressIdentity(first, state, arch)
 			if state.shapeOnly && !address {
 				// The source-wide top also represents numerical inputs. A
 				// legal NUM-only LEA can have a displacement outside this

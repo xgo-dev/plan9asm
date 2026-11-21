@@ -76,7 +76,7 @@ func TestDecodedX86RawSegmentMoveMemoryAndInvalidForms(t *testing.T) {
 			name: "386 absolute memory",
 			mode: 32,
 			code: []byte{0x66, 0x8e, 0x1d, 0x78, 0x56, 0x34, 0x12},
-			want: "MOVW 305419896(), DS",
+			want: "MOVW 305419896, DS",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

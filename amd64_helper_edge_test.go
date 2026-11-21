@@ -1357,7 +1357,7 @@ func TestAMD64FPMovCoverage(t *testing.T) {
 		{Op: "MOVL", Args: []Operand{{Kind: OpSym, Sym: "example.i32(SB)"}, {Kind: OpReg, Reg: Reg("R9")}}, Raw: "MOVL example.i32(SB), R9"},
 		{Op: "MOVL", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpFP, FPOffset: 48}}, Raw: "MOVL AX, ret+48(FP)"},
 		{Op: "MOVL", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpMem, Mem: MemRef{Base: DI, Off: 8}}}, Raw: "MOVL AX, 8(DI)"},
-		{Op: "MOVL", Args: []Operand{{Kind: OpImm, Imm: 0xf1}, {Kind: OpImm, Imm: 0xf1}}, Raw: "MOVL $0xf1, 0xf1"},
+		{Op: "MOVL", Args: []Operand{{Kind: OpImm, Imm: 0xf1}, {Kind: OpMem, Mem: MemRef{Off: 0xf1}}}, Raw: "MOVL $0xf1, 0xf1"},
 		{Op: "MOVL", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpSym, Sym: "example.i32(SB)"}}, Raw: "MOVL AX, example.i32(SB)"},
 		{Op: "MOVLQZX", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX, Off: 12}}, {Kind: OpReg, Reg: Reg("R10")}}, Raw: "MOVLQZX 12(AX), R10"},
 		{Op: "MOVBQZX", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX, Off: 13}}, {Kind: OpReg, Reg: Reg("R11")}}, Raw: "MOVBQZX 13(AX), R11"},
@@ -1595,7 +1595,7 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 	checkMov("MOVL", Instr{Raw: "MOVL BX, ret+8(FP)", Args: []Operand{{Kind: OpReg, Reg: BX}, {Kind: OpFP, FPOffset: 8}}})
 	checkMov("MOVL", Instr{Raw: "MOVL arg+0(FP), 20(BX)", Args: []Operand{{Kind: OpFP, FPOffset: 0}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 20}}}})
 	checkMov("MOVL", Instr{Raw: "MOVL 24(BX), example.dest(SB)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 24}}, {Kind: OpSym, Sym: "example.dest(SB)"}}})
-	checkMov("MOVL", Instr{Raw: "MOVL $0xf1, 0xf1", Args: []Operand{{Kind: OpImm, Imm: 0xf1}, {Kind: OpImm, Imm: 0xf1}}})
+	checkMov("MOVL", Instr{Raw: "MOVL $0xf1, 0xf1", Args: []Operand{{Kind: OpImm, Imm: 0xf1}, {Kind: OpMem, Mem: MemRef{Off: 0xf1}}}})
 
 	if ok, term, err := c.lowerMov("MOVQ", Instr{Raw: "MOVQ X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}); ok || term || err != nil {
 		t.Fatalf("lowerMov(vector) = (%v, %v, %v)", ok, term, err)
