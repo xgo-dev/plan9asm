@@ -560,6 +560,9 @@ func translateFuncX86(b *strings.Builder, fn Func, sig FuncSig, resolve func(str
 		}
 	}
 	c.x87Mode = x87Mode // The proof must use the same mode as its paired emitter.
+	if err := c.bindMode32StackFence(); err != nil {
+		return err
+	}
 	if err := c.validateScalarFPSourceViews(); err != nil {
 		return err
 	}
@@ -637,6 +640,13 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 	c.namedAtomicLock = bi >= 0 && bi < len(c.blocks) && ii > 0 && ii <= len(c.blocks[bi].instrs) &&
 		strings.EqualFold(string(c.blocks[bi].instrs[ii-1].Op), "LOCK")
 	defer func() { c.namedAtomicLock = false }()
+	if c.fpScalarSource.x86StackFenceAt(ins) {
+		if err := c.scalarFPResultInitialized(); err != nil {
+			return false, err
+		}
+		c.b.WriteString("  fence seq_cst\n")
+		return false, nil
+	}
 	if ins.x86UnboundAddressOverride {
 		return false, fmt.Errorf("%w: %s physical address-size %d memory override has no bound ordinary consumer: %q", ErrProbeNeedsContext, c.goarch, ins.x86AddressBits, ins.Raw)
 	}

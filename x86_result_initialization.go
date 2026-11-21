@@ -327,6 +327,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	trackCallerOrigins := len(initial.callerAddressFP) != 0 || initial.callerAddressOrigin != [16]uint16{}
 	var repeatEmptyBranch func(int, Instr, *x86ResultState) bool
 	transfer = func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
+		if fn.x86StackFenceAt(ins) {
+			return true // The checked zero-add changes no live data at the following void RET.
+		}
 		if !x86ResultValueStackContinuation(ins, state, arch) {
 			return false
 		}

@@ -143,6 +143,7 @@ type compileConfig struct {
 	numericalOptions     *plan9asm.Options
 	ordinaryDeclarations *ordinaryDeclarationSource
 	acquireSDKNumerical  bool
+	sdkPanicTerminal     func(llvm.Context) (llvm.Module, error)
 	diagnostics          *instructionDiagnostics
 }
 
@@ -1029,6 +1030,12 @@ func compileOneAttempt(pkg *packages.Package, arch plan9asm.Arch, goos, goarch, 
 	if err != nil {
 		return err
 	}
+	if goos == "linux" && goarch == "386" && ccfg.Feature == nil && ccfg.Context != nil &&
+		originalReads != nil && ccfg.numericalOptions == nil && ccfg.ordinaryDeclarations == nil &&
+		callerSource == nil && continuationSource == nil && fixedLocalSource == nil &&
+		len(ccfg.X86TailGroups) == 0 && sdkPanicTerminalCandidate(pkg, file) {
+		ccfg.sdkPanicTerminal = sdkPanicTerminalFallback(pkg, compileTask, originalReads, triple, annotate, resolve, ccfg)
+	}
 	err = translateAndCompileModule(file, triple, goarch, compileTask, annotate, ccfg, resolve, sigs)
 	if err == nil {
 		err = outputStage.seal()
@@ -1083,6 +1090,14 @@ func translateAndCompileModule(file *plan9asm.File, triple, goarch string, t asm
 			options = *ccfg.numericalOptions
 		}
 		mod, err = plan9asm.TranslateModuleInContext(ctx, file, options)
+	}
+	if ccfg.sdkPanicTerminal != nil && errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+		retry, retryErr := ccfg.sdkPanicTerminal(ctx)
+		if retryErr == nil {
+			mod, err = retry, nil
+		} else {
+			err = errors.Join(err, retryErr)
+		}
 	}
 	if err != nil {
 		ctx.Dispose()

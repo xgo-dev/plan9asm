@@ -75,6 +75,7 @@ type Func struct {
 	x86BoolCalls               *x86ABI0BoolCallPlan // private complete-source logical CALL plan only
 	x86BoolReadonlyInputs      bool                 // private callee replay; never entry/native authority
 	x86PanicCalls              map[string]x86GoPanicTerminalAssemblyCall
+	x86StackFence              *Instr // paired lowering of a proved zero-add epilogue
 }
 
 // Parse parses a subset of Go/Plan 9 assembly syntax.

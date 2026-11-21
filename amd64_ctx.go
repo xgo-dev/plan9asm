@@ -312,7 +312,7 @@ func (c *amd64Ctx) scanUsedRegs() {
 
 	for _, blk := range c.blocks {
 		for _, ins := range blk.instrs {
-			if x86InertNOP(ins, c.goarch) {
+			if x86InertNOP(ins, c.goarch) || c.fpScalarSource.x86StackFenceAt(ins) {
 				continue
 			}
 			if form, known, err := x86ScalarNativeLoadProperties(ins.Op, ins, c.goarch); known && err == nil {

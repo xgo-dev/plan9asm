@@ -20,11 +20,9 @@ func TestX86GoPanicTerminalSelectedSDKAtomicObjects(t *testing.T) {
 	llvmCtx := llvm.NewContext()
 	defer llvmCtx.Dispose()
 	const triple = "i386-unknown-linux-gnu"
-	selected := map[string]bool{"·Cas64": true, "·Xadd64": true, "·Xchg64": true, "·Load64": true}
 	opt := GoModuleOptions{
 		FileName: filepath.Join(request.Directory, "atomic_386.s"),
 		GOARCH:   "386", GOOS: "linux", TargetTriple: triple,
-		KeepFunc: func(symbol, _ string) bool { return selected[symbol] },
 	}
 	result, err := TranslateGoX86SDKPanicTerminalModuleInContext(ctx, llvmCtx, request, opt)
 	if err != nil {
@@ -32,11 +30,12 @@ func TestX86GoPanicTerminalSelectedSDKAtomicObjects(t *testing.T) {
 	}
 	defer result.Module.Dispose()
 	ir := result.Module.String()
-	if len(result.Functions) != len(selected) ||
-		strings.Count(ir, "call void "+llvmGlobal("internal/runtime/atomic.panicUnaligned")+"()") != len(selected) ||
-		strings.Count(ir, "unreachable") != len(selected) || !strings.Contains(ir, "noreturn") ||
-		!strings.Contains(ir, "cmpxchg") || !strings.Contains(ir, "emms") {
-		t.Fatal("atomic entries must each retain their panic call and normal path:\n" + ir)
+	if len(result.Functions) != 42 ||
+		strings.Count(ir, "call void "+llvmGlobal("internal/runtime/atomic.panicUnaligned")+"()") != 5 ||
+		strings.Count(ir, "unreachable") != 5 || !strings.Contains(ir, "noreturn") ||
+		!strings.Contains(ir, "cmpxchg") || !strings.Contains(ir, "emms") ||
+		strings.Count(ir, "fence seq_cst") != 1 {
+		t.Fatal("the complete member must retain its panic calls, atomics, and zero-frame fence")
 	}
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
