@@ -71,9 +71,13 @@ func TestX86ResultMode32BPActualAtomicWholeSourceRemainsContext(t *testing.T) {
 					defer module.Module.Dispose()
 				}
 			}
+			// Without the SDK binding, the CALL leaves the returning path
+			// without the machine state needed at the atomic operation.
+			// TestX86GoPanicTerminalSelectedSDKAtomicObjects checks the
+			// complete member with the verified nonreturning CALL edges.
 			if published || !errors.Is(failure, ErrProbeNeedsContext) ||
-				!strings.Contains(failure.Error(), "tail callee needs its independent CALL contract") {
-				t.Fatal("ordinary BP acquired terminal/native source authority", published, failure)
+				!strings.Contains(failure.Error(), "CMPXCHG8B 0(BP)") {
+				t.Fatalf("expected unbound CAS to require context without publishing IR: published=%t, err=%v", published, failure)
 			}
 			t.Log("complete original42TEXT source still Context, not a file/object/runtime pass:", failure)
 		})
