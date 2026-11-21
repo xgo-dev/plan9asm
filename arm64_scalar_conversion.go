@@ -30,6 +30,7 @@ type arm64ScalarConversionForm struct {
 	arm64ScalarConversionSpec
 	source, destination Reg
 	rounding            arm64FloatToIntegerRounding
+	fraction            int
 }
 
 func parseARM64ScalarConversion(op Op, instruction Instr) (arm64ScalarConversionForm, bool, error) {
@@ -55,7 +56,9 @@ func parseARM64ScalarConversion(op Op, instruction Instr) (arm64ScalarConversion
 	if !sourceOK || !destinationOK {
 		return arm64ScalarConversionForm{}, true, fmt.Errorf("arm64 %s has the wrong scalar register classes: %q", op, instruction.Raw)
 	}
-	return arm64ScalarConversionForm{spec, source, destination, arm64FloatRoundZero}, true, nil
+	return arm64ScalarConversionForm{
+		arm64ScalarConversionSpec: spec, source: source, destination: destination, rounding: arm64FloatRoundZero,
+	}, true, nil
 }
 
 // Only the written scalar bits become newly defined. FEAT_AFP permits the
@@ -101,16 +104,28 @@ func arm64ScalarConversionModifier(bits int, gp bool) string {
 	}
 }
 
+func arm64IntegerToFloatMnemonic(unsigned bool) string {
+	if unsigned {
+		return "ucvtf"
+	}
+	return "scvtf"
+}
+
+func arm64ConversionWithFraction(operation string, bits int) string {
+	if bits == 0 {
+		return operation
+	}
+	return fmt.Sprintf("%s, #%d", operation, bits)
+}
+
 func (c *arm64Ctx) lowerARM64ScalarConversion(form arm64ScalarConversionForm) error {
 	if _, _, valid := arm64ScalarFloatType(form.floatBits); !valid ||
 		form.integerBits != 32 && form.integerBits != 64 && !(form.simdInteger && form.integerBits == 16) {
 		return fmt.Errorf("arm64 invalid scalar conversion widths: %+v", form)
 	}
-	opcode := "scvtf"
+	var opcode string
 	if form.toFloat {
-		if form.unsigned {
-			opcode = "ucvtf"
-		}
+		opcode = arm64IntegerToFloatMnemonic(form.unsigned)
 	} else {
 		opcode = arm64FloatToIntegerMnemonic(form.rounding, form.unsigned)
 		if opcode == "" {
@@ -144,6 +159,7 @@ func (c *arm64Ctx) lowerARM64ScalarConversion(form arm64ScalarConversionForm) er
 	}
 	operation := fmt.Sprintf("%s ${0:%s}, ${1:%s}", opcode,
 		arm64ScalarConversionModifier(resultBits, resultGP), arm64ScalarConversionModifier(sourceBits, sourceGP))
+	operation = arm64ConversionWithFraction(operation, form.fraction)
 	result := c.newTmp()
 	if resultGP {
 		resultType := fmt.Sprintf("i%d", resultBits)

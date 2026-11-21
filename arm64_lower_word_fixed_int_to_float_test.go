@@ -1,107 +1,28 @@
 package plan9asm
 
 import (
-	"encoding/binary"
 	"fmt"
 	"runtime"
 	"strings"
 	"testing"
-
-	"golang.org/x/arch/arm64/arm64asm"
 )
 
-func TestARM64RawFixedIntToFloatDecoderCompleteFamily(t *testing.T) {
-	check := func(word uint32, want arm64RawFixedIntToFloat) {
-		t.Helper()
-		var code [4]byte
-		binary.LittleEndian.PutUint32(code[:], word)
-		if _, err := arm64asm.Decode(code[:]); err != nil {
-			t.Fatalf("Go's architecture decoder rejected %#08x: %v", word, err)
-		}
-		got, ok := decodeARM64RawFixedIntToFloat(word)
-		if !ok || got != want {
-			t.Fatalf("decode %#08x = %+v, %v; want %+v", word, got, ok, want)
-		}
-	}
-	for _, unsigned := range []bool{false, true} {
-		for _, integerBits := range []int{32, 64} {
-			for _, floatBits := range []int{32, 64} {
-				for _, fractionalBits := range []int{1, integerBits / 2, integerBits} {
-					for _, register := range []int{0, 31} {
-						word := uint32(0x1e020000 | (64-fractionalBits)<<10 | register<<5 | register)
-						if integerBits == 64 {
-							word |= 1 << 31
-						}
-						if floatBits == 64 {
-							word |= 1 << 22
-						}
-						if unsigned {
-							word |= 1 << 16
-						}
-						check(word, arm64RawFixedIntToFloat{
-							unsigned: unsigned, scalar: true, integerBits: integerBits,
-							fractionalBits: fractionalBits, vectorBits: floatBits,
-							source: register, destination: register,
-						})
-					}
-				}
-			}
-		}
-	}
-	for _, unsigned := range []bool{false, true} {
-		for _, integerBits := range []int{32, 64} {
-			for _, fractionalBits := range []int{1, integerBits / 2, integerBits} {
-				for _, register := range []int{0, 31} {
-					shift := uint32(2*integerBits-fractionalBits) << 16
-					word := uint32(0x5f00e400|register<<5|register) | shift
-					if unsigned {
-						word |= 1 << 29
-					}
-					check(word, arm64RawFixedIntToFloat{
-						unsigned: unsigned, scalar: true, vectorSource: true,
-						integerBits: integerBits, fractionalBits: fractionalBits,
-						vectorBits: integerBits, source: register, destination: register,
-					})
-				}
-			}
-		}
-	}
-	for _, unsigned := range []bool{false, true} {
-		for _, arrangement := range []struct{ integerBits, vectorBits int }{
-			{32, 64}, {32, 128}, {64, 128},
-		} {
-			for _, fractionalBits := range []int{1, arrangement.integerBits / 2, arrangement.integerBits} {
-				for _, register := range []int{0, 31} {
-					shift := uint32(2*arrangement.integerBits-fractionalBits) << 16
-					word := uint32(0x0f00e400|register<<5|register) | shift
-					if unsigned {
-						word |= 1 << 29
-					}
-					if arrangement.vectorBits == 128 {
-						word |= 1 << 30
-					}
-					check(word, arm64RawFixedIntToFloat{
-						unsigned: unsigned, vectorSource: true,
-						integerBits: arrangement.integerBits, fractionalBits: fractionalBits,
-						vectorBits: arrangement.vectorBits, source: register, destination: register,
-					})
-				}
-			}
-		}
-	}
-}
-
-func TestARM64RawFixedIntToFloatDecoderRejectsOtherForms(t *testing.T) {
+func TestARM64RawFixedConversionDecoderRejectsOtherForms(t *testing.T) {
 	for _, word := range []uint32{
-		0x1e220000, // Unscaled scalar SCVTF.
+		0x1e220000, // Unscaled general-purpose SCVTF.
 		0x4e21d800, // Unscaled vector SCVTF.
 		0x5e21d800, // Unscaled Advanced SIMD scalar SCVTF.
 		0x1e027c00, // W-source fractional width exceeds 32 bits.
+		0x1e187c00, // W-result fractional width exceeds 32 bits.
+		0x1e98fc00, // Reserved GP floating type.
 		0x0f00e400, // Missing element-width indicator.
+		0x0f08fc00, // Byte elements are not floating-point.
 		0x0f40e400, // A 64-bit vector cannot hold one 64-bit lane.
+		0x0f40fc00, // A 64-bit vector cannot hold one 64-bit lane.
+		0x1f1ffc00, // Advanced SIMD scalar with Q=0.
 		0x4f00e000, // Adjacent vector opcode.
 	} {
-		if _, ok := decodeARM64RawFixedIntToFloat(word); ok {
+		if _, ok := decodeARM64RawFixedConversion(word); ok {
 			t.Fatalf("decoder accepted invalid/adjacent encoding %#08x", word)
 		}
 	}
@@ -139,7 +60,7 @@ TEXT rawFixedIntToFloat(SB),$0-0
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"uitofp i32", "sitofp <4 x i32>", "fmul double", "fmul <4 x float>"} {
+			for _, want := range []string{"ucvtf ${0:d}, ${1:w}, #1", "scvtf $0.4s, $1.4s, #24"} {
 				if !strings.Contains(ir, want) {
 					t.Fatalf("fixed-point conversion omitted %q:\n%s", want, ir)
 				}

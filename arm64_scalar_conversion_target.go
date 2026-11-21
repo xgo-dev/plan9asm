@@ -20,6 +20,9 @@ func arm64RawNativeConversion(word uint32) bool {
 	if _, ok := decodeARM64RawSIMDFloatToInt(word); ok {
 		return true
 	}
+	if _, ok := decodeARM64RawFixedConversion(word); ok {
+		return true
+	}
 	return false
 }
 

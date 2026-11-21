@@ -137,17 +137,22 @@ func (c *arm64Ctx) lowerARM64SIMDFloatToInt(form arm64SIMDFloatToIntForm) error 
 		})
 	}
 
-	source, err := c.loadVRegWidth(Reg(fmt.Sprintf("V%d", form.source)), bits*lanes)
+	opcode := arm64FloatToIntegerMnemonic(form.rounding, form.unsigned)
+	return c.lowerARM64VectorConversion(opcode, form.arrangement, form.source, form.destination, 0)
+}
+
+func (c *arm64Ctx) lowerARM64VectorConversion(opcode string, arrangement arm64VectorArrangement, src, dst, fraction int) error {
+	bits, lanes := arrangement.elementBits, arrangement.lanes
+	source, err := c.loadVRegWidth(Reg(fmt.Sprintf("V%d", src)), bits*lanes)
 	if err != nil {
 		return err
 	}
-	op := arm64FloatToIntegerMnemonic(form.rounding, form.unsigned)
-	arrangement := fmt.Sprintf("%d%s", lanes, arm64ScalarConversionModifier(bits, false))
-	operation := fmt.Sprintf("%s $0.%s, $1.%s", op, arrangement, arrangement)
+	layout := fmt.Sprintf("%d%s", lanes, arm64ScalarConversionModifier(bits, false))
+	operation := arm64ConversionWithFraction(fmt.Sprintf("%s $0.%s, $1.%s", opcode, layout, layout), fraction)
 	result := c.newTmp()
 	// Native writes define the full V register, including the zeroed upper
-	// half after a 64-bit form. FPSR survives unused integer results.
+	// half after a 64-bit form. FPSR survives unused results.
 	c.emitMachineNeutralNativeIR("  %%%s = call <16 x i8> asm sideeffect %q, %q(<16 x i8> %s)\n",
 		result, operation, "=w,w,~{memory}", source)
-	return c.storeVReg(Reg(fmt.Sprintf("V%d", form.destination)), "%"+result)
+	return c.storeVReg(Reg(fmt.Sprintf("V%d", dst)), "%"+result)
 }

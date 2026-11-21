@@ -24,12 +24,15 @@ var arm64RawFloatFamilies = [...]arm64RawFamily{
 			}
 			return arm64RawContinuationEffects{gpReads: arm64RawGPBit(form.source)}
 		}),
-	arm64RawForm(decodeARM64RawFixedIntToFloat, (*arm64Ctx).lowerRawFixedIntToFloat,
-		func(form arm64RawFixedIntToFloat) arm64RawContinuationEffects {
-			if form.vectorSource {
+	arm64RawForm(decodeARM64RawFixedConversion, (*arm64Ctx).lowerRawFixedConversion,
+		func(form arm64FixedConversionForm) arm64RawContinuationEffects {
+			if !form.gp {
 				return arm64RawContinuationEffects{}
 			}
-			return arm64RawContinuationEffects{gpReads: arm64RawGPBit(form.source)}
+			if form.toFloat {
+				return arm64RawContinuationEffects{gpReads: arm64RawGPBit(form.source)}
+			}
+			return arm64RawContinuationEffects{gpWrites: arm64RawGPBit(form.destination)}
 		}),
 	arm64RawForm(decodeARM64RawFloatGPMove, (*arm64Ctx).lowerRawFloatGPMove,
 		func(form arm64RawFloatGPMove) arm64RawContinuationEffects {
