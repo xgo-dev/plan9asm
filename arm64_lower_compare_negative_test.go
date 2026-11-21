@@ -1,13 +1,14 @@
 package plan9asm
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestTranslateARM64CompareNegativeCompleteGo127Forms(t *testing.T) {
-	const source = `TEXT compareNegativeForms(SB), $0-0
+	const prefix = `TEXT compareNegativeForms(SB), $0-0
 	CMNW R21.UXTB<<4, R15
 	CMN R0.UXTW<<4, R16
 	CMNW R13>>8, R9
@@ -23,8 +24,18 @@ func TestTranslateARM64CompareNegativeCompleteGo127Forms(t *testing.T) {
 	CMNW R1.SXTB, R9
 	CMN R1<<3, RSP
 	CMNW $0x3fffffc0, R2
-	RET
 `
+	var assembly strings.Builder
+	assembly.WriteString(prefix)
+	for _, opcode := range []string{"CMN", "CMNW"} {
+		for _, extension := range []string{"UXTB", "UXTH", "UXTW", "UXTX", "SXTB", "SXTH", "SXTW", "SXTX"} {
+			for shift := 0; shift <= 4; shift++ {
+				fmt.Fprintf(&assembly, "\t%s R5.%s<<%d, R7\n", opcode, extension, shift)
+			}
+		}
+	}
+	assembly.WriteString("\tRET\n")
+	source := assembly.String()
 	requireARM64GoAssemblerResult(t, source, true)
 	file, err := Parse(ArchARM64, source)
 	if err != nil {
@@ -101,8 +112,17 @@ func TestARM64CompareNegativeRuntimeSemantics(t *testing.T) {
 	ORR $1, R1
 notWordMinusOne:
 	CMN $1, R0
-	BNE done
+	BNE notDoublewordMinusOne
 	ORR $2, R1
+notDoublewordMinusOne:
+	MOVD $16, R2
+	CMNW R0.UXTX<<4, R2
+	BNE nonzeroUnsigned
+	ORR $4, R1
+nonzeroUnsigned:
+	CMNW R0.SXTX<<4, R2
+	BNE done
+	ORR $8, R1
 done:
 	MOVD R1, ret+8(FP)
 	RET
@@ -133,9 +153,10 @@ done:
 #include <stdint.h>
 extern uint64_t compareNegativeRuntime(uint64_t);
 int main(void) {
-  if (compareNegativeRuntime(UINT64_C(0xffffffffffffffff)) != 3) return 1;
-  if (compareNegativeRuntime(UINT64_C(0x00000000ffffffff)) != 1) return 2;
+  if (compareNegativeRuntime(UINT64_C(0xffffffffffffffff)) != 15) return 1;
+  if (compareNegativeRuntime(UINT64_C(0x00000000ffffffff)) != 13) return 2;
   if (compareNegativeRuntime(7) != 0) return 3;
+  if (compareNegativeRuntime(UINT64_C(0x123456780fffffff)) != 12) return 4;
   return 0;
 }
 `

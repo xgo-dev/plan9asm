@@ -34,14 +34,12 @@ func validateARM64CompareNegativeOperands(source, destination Operand, word bool
 			return fmt.Errorf("extended source is outside Go 1.27's C_EXTREG class")
 		}
 		switch source.Ext {
-		case ExtendUXTB, ExtendUXTH, ExtendUXTW, ExtendSXTB, ExtendSXTH, ExtendSXTW:
+		case ExtendUXTB, ExtendUXTH, ExtendUXTW, ExtendUXTX,
+			ExtendSXTB, ExtendSXTH, ExtendSXTW, ExtendSXTX:
+			// CMNW uses the low 32 bits of the extended operand.
 			return nil
-		case ExtendUXTX, ExtendSXTX:
-			if !word {
-				return nil
-			}
 		}
-		return fmt.Errorf("extension %q is invalid for the %d-bit form", source.Ext, map[bool]int{true: 32, false: 64}[word])
+		return fmt.Errorf("extension %q is outside Go 1.27's C_EXTREG class", source.Ext)
 	default:
 		return fmt.Errorf("source is outside Go 1.27's immediate/C_ZREG/C_SHIFT/C_EXTREG classes")
 	}
