@@ -83,7 +83,7 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 			if spec, ok := wasmFloatBinaryOps[op]; ok && spec.intrinsic != "" {
 				wantFloatBinary[string(spec.typ)+"|"+spec.intrinsic] = true
 			}
-			if spec, ok := wasmsimd.Lookup(op); ok && spec.Emission == wasmsimd.Intrinsic {
+			if spec, ok := wasmsimd.Lookup(op); ok && spec.HasIntrinsic() {
 				if wantVectorIntrinsic == nil {
 					wantVectorIntrinsic = make(map[string]wasmsimd.Form)
 				}
@@ -121,7 +121,13 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	for _, intrinsic := range vectorIntrinsics {
 		spec := wantVectorIntrinsic[intrinsic]
 		typ := spec.Shape.LaneType
-		fmt.Fprintf(b, "declare %s @%s(%s%s)\n", typ, intrinsic, typ, strings.Repeat(", "+typ, spec.Inputs-1))
+		fmt.Fprintf(b, "declare %s @%s(%s", typ, intrinsic, typ)
+		if spec.Emission == wasmsimd.IntegerAbs {
+			b.WriteString(", i1 immarg")
+		} else {
+			b.WriteString(strings.Repeat(", "+typ, spec.Arity()-1))
+		}
+		b.WriteString(")\n")
 	}
 	if want["memmove"] {
 		b.WriteString("declare void @llvm.memmove.p0.p0.i32(ptr, ptr, i32, i1 immarg)\n")
@@ -166,7 +172,8 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 			}
 		}
 	}
-	if len(want) != 0 || len(wantIntegerIntrinsic) != 0 || len(wantFloatUnary) != 0 || len(wantFloatBinary) != 0 || len(conversions) != 0 || wantTrap {
+	if len(want) != 0 || len(wantIntegerIntrinsic) != 0 || len(wantFloatUnary) != 0 ||
+		len(wantFloatBinary) != 0 || len(conversions) != 0 || len(vectorIntrinsics) != 0 || wantTrap {
 		b.WriteString("\n")
 	}
 }

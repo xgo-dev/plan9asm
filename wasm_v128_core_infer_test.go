@@ -25,6 +25,13 @@ func TestWASMV128CorePublicInferenceMatchesDeadControl(t *testing.T) {
 		{"live-underflow", "V128Not\nRET\n", false, Void},
 		{"live-wrong-scalar", "I64Const $1\nV128Not\nRET\n", false, Void},
 		{"live-i64-return-ignores-dead-i32", "I64Const $9\nReturn\nI32Const $1\nReturn\n", true, I64},
+		{"live-simd-shift-i32", "V128Const $1,$2\nI32Const $-1\nI64x2Shl\nV128AnyTrue\nReturn\n", true, I32},
+		{"live-simd-shift-i64", "V128Const $1,$2\nI64Const $1\nI64x2Shl\nReturn\n", false, Void},
+		{"live-simd-shift-vector-count", "V128Const $1,$2\nV128Const $3,$4\nI16x8ShrS\nReturn\n", false, Void},
+		{"live-simd-shift-stack-address", "V128Const $1,$2\nGet SP\nI32x4ShrU\nReturn\n", false, Void},
+		{"live-simd-shift-reversed", "I32Const $1\nV128Const $1,$2\nI8x16Shl\nReturn\n", false, Void},
+		{"live-simd-reduction-scalar", "V128Const $1,$2\nI16x8AllTrue\nI32Const $7\nI32Add\nReturn\n", true, I32},
+		{"malformed-dead-simd-reduction", "RET\nI16x8AllTrue $1\nRET\n", false, Void},
 	}
 	for _, prefix := range []struct{ name, body string }{
 		{"ret", "RET\n"}, {"ret-unused-label", "RET\nunused:\n"},
@@ -45,7 +52,7 @@ func TestWASMV128CorePublicInferenceMatchesDeadControl(t *testing.T) {
 				testCase{name: "typed-malformed-dead/" + name, body: "RET\n" + name + " $1\nRET\n", result: Void})
 		}
 	}
-	if len(cases) != 84 {
+	if len(cases) != 91 {
 		t.Fatal("complete dead-control regression inventory changed", len(cases))
 	}
 	for _, row := range cases {

@@ -3,6 +3,7 @@ package plan9asm
 import (
 	"encoding/json"
 	"fmt"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,12 @@ type wasmV128CoreObservation struct {
 	Want uint32
 }
 
-const wasmV128CorePass = "V128 core PASS 1518"
+const wasmV128CorePass = "V128 core PASS 1808"
+
+func wasmV128CoreScalarResult(name string) bool {
+	_, op := wasmV128IntegerParts(name)
+	return name == "V128AnyTrue" || op == "AllTrue" || op == "Bitmask"
+}
 
 // Whole-bit Wasm relations, independent of the translator's representation.
 // Observation uses XOR/AnyTrue so it requires no vector store or extraction.
@@ -46,15 +52,31 @@ func wasmV128CoreReference(name string, a, b, mask [2]uint64) [2]uint64 {
 	return result
 }
 
-func wasmV128IntegerReference(op string, bits uint, a, b [2]uint64) [2]uint64 {
-	mask := uint64(1)<<bits - 1
-	signExtend := func(x uint64) int64 { return int64(x<<(64-bits)) >> (64 - bits) }
+func wasmV128IntegerReference(op string, width uint, a, b [2]uint64) [2]uint64 {
+	mask := uint64(1)<<width - 1
+	signExtend := func(x uint64) int64 { return int64(x<<(64-width)) >> (64 - width) }
+	shift := uint(b[0]) % width
 	var result [2]uint64
 	for half := range result {
-		for offset := uint(0); offset < 64; offset += bits {
+		for offset := uint(0); offset < 64; offset += width {
 			x, y := a[half]>>offset&mask, b[half]>>offset&mask
 			var lane uint64
 			switch op {
+			case "Abs":
+				lane = x
+				if signExtend(x) < 0 {
+					lane = -x
+				}
+			case "Neg":
+				lane = -x
+			case "Popcnt":
+				lane = uint64(bits.OnesCount64(x))
+			case "Shl":
+				lane = x << shift
+			case "ShrS":
+				lane = uint64(signExtend(x) >> shift)
+			case "ShrU":
+				lane = x >> shift
 			case "Add":
 				lane = x + y
 			case "Sub":
@@ -76,7 +98,7 @@ func wasmV128IntegerReference(op string, bits uint, a, b [2]uint64) [2]uint64 {
 					delta = -delta
 				}
 				value := signExtend(x) + delta
-				limit := int64(1) << (bits - 1)
+				limit := int64(1) << (width - 1)
 				if value < -limit {
 					value = -limit
 				} else if value >= limit {
@@ -84,7 +106,7 @@ func wasmV128IntegerReference(op string, bits uint, a, b [2]uint64) [2]uint64 {
 				}
 				lane = uint64(value)
 			default:
-				lane = wasmV128IntegerOrderingReference(op, bits, x, y)
+				lane = wasmV128IntegerOrderingReference(op, width, x, y)
 			}
 			result[half] |= (lane & mask) << offset
 		}
@@ -117,14 +139,23 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 		} else if bits, op := wasmV128IntegerParts(name); wasmV128IntegerOrdering(op) {
 			inputs = wasmV128IntegerOrderingPatterns(bits)
 		}
-		for _, pattern := range inputs {
+		for index, pattern := range inputs {
 			a, b, mask := pattern[0], pattern[1], pattern[2]
+			integerWidth, integerOp := wasmV128IntegerParts(name)
+			if wasmV128IntegerShift(integerOp) {
+				width := uint64(integerWidth)
+				counts := [...]uint64{0, 1, width - 1, width, width + 1, 2 * width, 2*width + 1, 1 << 31, 0xfffffffe, 0xffffffff}
+				a = [2]uint64{0x80ff00bd017e42f1, 0x7fff80000001ea42}
+				b[0] = counts[index]
+			}
 			function := fmt.Sprintf("core%d", len(rows))
 			body, want := wasmV128CoreBody(name, a, b, mask), uint32(0)
 			if name == "V128AnyTrue" {
 				if a[0] != 0 || a[1] != 0 {
 					want = 1
 				}
+			} else if wasmV128CoreScalarResult(name) {
+				want = wasmV128IntegerReductionReference(integerOp, integerWidth, a)
 			} else if bits, op := wasmV128FloatParts(name); op != "" {
 				expected, comparisonMask := wasmV128FloatReference(bits, op, a, b)
 				body += wasmV128CoreConstant(comparisonMask) + "V128And\n" + wasmV128CoreConstant(expected) + "V128Xor\nV128AnyTrue\n"
@@ -138,7 +169,7 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 			rows = append(rows, wasmV128CoreObservation{Name: function, Want: want})
 		}
 	}
-	if len(rows) != 1518 {
+	if len(rows) != 1808 {
 		t.Fatal("complete vector observation inventory changed", len(rows))
 	}
 	program.WriteString("func main() {\n")

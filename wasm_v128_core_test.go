@@ -32,6 +32,12 @@ func wasmV128CoreNames() []string {
 			names = append(names, shape+op)
 		}
 	}
+	for _, shape := range []string{"I8x16", "I16x8", "I32x4", "I64x2"} {
+		for _, op := range strings.Fields("Abs Neg AllTrue Bitmask Shl ShrS ShrU") {
+			names = append(names, shape+op)
+		}
+	}
+	names = append(names, "I8x16Popcnt")
 	return names
 }
 
@@ -47,6 +53,9 @@ func wasmV128CoreInputs(name string) int {
 		default:
 			return 2
 		}
+	}
+	if _, op := wasmV128IntegerParts(name); wasmV128IntegerUnary(op) {
+		return 1
 	}
 	switch name {
 	case "V128Const":
@@ -65,6 +74,9 @@ func wasmV128CoreBody(name string, a, b, mask [2]uint64) string {
 		return wasmV128CoreConstant(a)
 	}
 	body := wasmV128CoreConstant(a)
+	if _, op := wasmV128IntegerParts(name); wasmV128IntegerShift(op) {
+		return body + fmt.Sprintf("I32Const $%d\n%s\n", int32(b[0]), name)
+	}
 	if wasmV128CoreInputs(name) >= 2 {
 		body += wasmV128CoreConstant(b)
 	}
@@ -83,7 +95,12 @@ func wasmV128CoreObjectFixture() (string, map[string]FuncSig) {
 		body := wasmV128CoreBody(name, [2]uint64{1, 2}, [2]uint64{3, 4}, [2]uint64{5, 6})
 		floatBits, _ := wasmV128FloatParts(name)
 		_, integerOp := wasmV128IntegerParts(name)
-		if floatBits != 0 || wasmV128IntegerOrdering(integerOp) {
+		switch {
+		case wasmV128IntegerShift(integerOp):
+			body = "Get V0\nGet R0\nI32WrapI64\n" + name + "\n"
+			sig.Args = []LLVMType{I64, "<4 x i32>"}
+			sig.ArgRegs = []Reg{"R0", "V0"}
+		case floatBits != 0 || wasmV128IntegerOrdering(integerOp) || wasmV128IntegerUnary(integerOp):
 			body = ""
 			for arg := 0; arg < wasmV128CoreInputs(name); arg++ {
 				reg := Reg(fmt.Sprintf("V%d", arg))
@@ -93,7 +110,7 @@ func wasmV128CoreObjectFixture() (string, map[string]FuncSig) {
 			}
 			body += name + "\n"
 		}
-		if name != "V128AnyTrue" {
+		if !wasmV128CoreScalarResult(name) {
 			body += "V128AnyTrue\n"
 		}
 		fmt.Fprintf(&source, "TEXT %s(SB),4,$0-0\n%sReturn\n", function, body)
@@ -150,13 +167,21 @@ func TestWASMV128CoreFormatTypedStackAndDeadCode(t *testing.T) {
 			for _, operands := range []string{" $0", " R0", " R0,R1", " $1,$2", " 0(SP)", ".Z"} {
 				invalid = append(invalid, name+operands, "RET\n"+name+operands)
 			}
-			inputs := wasmV128CoreInputs(name)
-			for count := 0; count < inputs; count++ {
-				invalid = append(invalid, strings.Repeat(vector, count)+name)
+			inputs := make([]string, wasmV128CoreInputs(name))
+			for i := range inputs {
+				inputs[i] = vector
 			}
-			for index := 0; index < inputs; index++ {
-				for _, scalar := range []string{"I32Const $1\n", "I64Const $1\n", "F64Const $1.0\n", "Get SP\n"} {
-					invalid = append(invalid, strings.Repeat(vector, index)+scalar+strings.Repeat(vector, inputs-index-1)+name)
+			if _, op := wasmV128IntegerParts(name); wasmV128IntegerShift(op) {
+				inputs[1] = "I32Const $1\n"
+			}
+			for index, input := range inputs {
+				prefix := strings.Join(inputs[:index], "")
+				suffix := strings.Join(inputs[index+1:], "")
+				invalid = append(invalid, prefix+name)
+				for _, replacement := range []string{vector, "I32Const $1\n", "I64Const $1\n", "F64Const $1.0\n", "Get SP\n"} {
+					if replacement != input {
+						invalid = append(invalid, prefix+replacement+suffix+name)
+					}
 				}
 			}
 		}
@@ -195,7 +220,7 @@ func TestWASMV128CoreTypedGoEntryObjects(t *testing.T) {
 	declarations.WriteString("package v128core\n")
 	for index, name := range wasmV128CoreNames() {
 		body := wasmV128CoreBody(name, [2]uint64{1, 2}, [2]uint64{3, 4}, [2]uint64{5, 6})
-		if name != "V128AnyTrue" {
+		if !wasmV128CoreScalarResult(name) {
 			body += "V128AnyTrue\n"
 		}
 		fmt.Fprintf(&declarations, "func core%d() uint32\n", index)

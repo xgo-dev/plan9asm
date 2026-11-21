@@ -1147,17 +1147,18 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		}
 		if spec, ok := wasmsimd.Lookup(op); ok {
 			var inputs [3]wasmValue
-			for index := spec.Inputs - 1; index >= 0; index-- {
+			for index := spec.Arity() - 1; index >= 0; index-- {
 				value, err := pop(op)
 				if err != nil {
 					return err
 				}
-				if value.typ != wasmV128CoreType || value.stackAddr {
-					return fmt.Errorf("%s requires V128 stack values, got %s", ins.Op, value.typ)
+				want := LLVMType(spec.InputType(index))
+				if value.typ != want || value.stackAddr {
+					return fmt.Errorf("%s operand %d requires stack value %s, got %s", ins.Op, index+1, want, value.typ)
 				}
 				inputs[index] = value
 			}
-			push(emitWASMV128Core(b, newTmp, spec, ins, inputs[:spec.Inputs]))
+			push(emitWASMV128Core(b, newTmp, spec, ins, inputs[:spec.Arity()]))
 			continue
 		}
 		if spec, ok := wasmIntegerCountOps[op]; ok {

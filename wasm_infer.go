@@ -163,21 +163,12 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			continue
 		}
 		if vectorKnown {
-			if len(stack) < vector.Inputs {
-				return FuncSig{}, fmt.Errorf("%s: %s requires %d V128 stack operands", name, op, vector.Inputs)
-			}
-			for index := 0; index < vector.Inputs; index++ {
-				value := pop(op)
-				for reg := range value.regs {
-					if wasmDefaultRegisterType(reg) != wasmV128CoreType {
-						return FuncSig{}, fmt.Errorf("%s: %s register %s does not carry V128", name, op, reg)
-					}
-				}
-				if err := require(value, wasmV128CoreType); err != nil {
+			for index := vector.Arity() - 1; index >= 0; index-- {
+				if err := popTyped(op, LLVMType(vector.InputType(index))); err != nil {
 					return FuncSig{}, err
 				}
 			}
-			push(wasmInferValue{typ: wasmV128ResultType(vector)})
+			push(wasmInferValue{typ: LLVMType(vector.ResultType())})
 			continue
 		}
 		if countKnown {

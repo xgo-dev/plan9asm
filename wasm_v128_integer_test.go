@@ -14,6 +14,39 @@ func wasmV128IntegerParts(name string) (uint, string) {
 	return 0, ""
 }
 
+func wasmV128IntegerUnary(op string) bool {
+	switch op {
+	case "Abs", "Neg", "Popcnt", "AllTrue", "Bitmask":
+		return true
+	}
+	return false
+}
+
+func wasmV128IntegerShift(op string) bool {
+	return op == "Shl" || op == "ShrS" || op == "ShrU"
+}
+
+func wasmV128IntegerReductionReference(op string, width uint, a [2]uint64) uint32 {
+	var signs, nonzero uint32
+	mask := uint64(1)<<width - 1
+	count := 128 / width
+	for lane := uint(0); lane < count; lane++ {
+		bit := lane * width
+		value := (a[bit/64] >> (bit % 64)) & mask
+		signs |= uint32(value>>(width-1)) << lane
+		if value != 0 {
+			nonzero++
+		}
+	}
+	if op == "Bitmask" {
+		return signs
+	}
+	if nonzero == uint32(count) {
+		return 1
+	}
+	return 0
+}
+
 func wasmV128IntegerOrdering(op string) bool {
 	switch op {
 	case "Eq", "Ne", "LtS", "LtU", "GtS", "GtU", "LeS", "LeU", "GeS", "GeU", "MinS", "MinU", "MaxS", "MaxU":

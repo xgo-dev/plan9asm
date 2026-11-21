@@ -23,7 +23,7 @@ func TestWASMV128CoreActualGoNamespaceAndObjects(t *testing.T) {
 	}
 	var names []string
 	pattern := `"(V128(?:Const|Not|And|Andnot|Or|Xor|Bitselect|AnyTrue)` +
-		`|I(?:8x16|16x8|32x4|64x2)(?:Add(?:Sat[SU])?|Sub(?:Sat[SU])?|Mul|Eq|Ne|(?:Lt|Gt|Le|Ge|Min|Max)[SU])` +
+		`|I(?:8x16|16x8|32x4|64x2)(?:Add(?:Sat[SU])?|Sub(?:Sat[SU])?|Mul|Eq|Ne|(?:Lt|Gt|Le|Ge|Min|Max)[SU]|Abs|Neg|AllTrue|Bitmask|Shl|ShrS|ShrU|Popcnt)` +
 		`|F(?:32x4|64x2)(?:Abs|Neg|Sqrt|Ceil|Floor|Trunc|Nearest|Add|Sub|Mul|Div|Min|Max|Pmin|Pmax|Eq|Ne|Lt|Gt|Le|Ge))"`
 	for _, match := range regexp.MustCompile(pattern).FindAllSubmatch(data, -1) {
 		names = append(names, string(match[1]))

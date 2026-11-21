@@ -8,14 +8,7 @@ import (
 )
 
 // All SIMD lane formats share the same 128-bit register and stack carrier.
-const wasmV128CoreType LLVMType = "<4 x i32>"
-
-func wasmV128ResultType(op wasmsimd.Form) LLVMType {
-	if op.Operator == "anytrue" {
-		return I32
-	}
-	return wasmV128CoreType
-}
+const wasmV128CoreType = LLVMType(wasmsimd.V128)
 
 func parseWASMV128Core(ins Instr, name string) (wasmsimd.Form, bool, error) {
 	spec, found := wasmsimd.Lookup(name)
@@ -77,7 +70,7 @@ func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmsimd.Fo
 	default: // The descriptor's remaining three operations are LLVM bitwise ops.
 		result = binary(spec.Operator, inputs[0].val, inputs[1].val)
 	}
-	return wasmValue{typ: wasmV128ResultType(spec), val: result}
+	return wasmValue{typ: LLVMType(spec.ResultType()), val: result}
 }
 
 func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, inputs []wasmValue) wasmValue {
@@ -93,7 +86,7 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 
 	lhs := cast(inputs[0].val, wasmV128CoreType, LLVMType(typ))
 	var rhs string
-	if len(inputs) == 2 {
+	if len(inputs) == 2 && spec.InputType(1) == wasmsimd.V128 {
 		rhs = cast(inputs[1].val, wasmV128CoreType, LLVMType(typ))
 	}
 	resultType := LLVMType(typ)
@@ -111,6 +104,16 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 			fmt.Fprintf(b, ", %s %s", typ, rhs)
 		}
 		b.WriteString(")\n")
+	case wasmsimd.IntegerAbs:
+		// The minimum signed lane wraps to itself.
+		fmt.Fprintf(b, "  %%%s = call %s @%s(%s %s, i1 false)\n", result, typ, spec.IntrinsicName(), typ, lhs)
+	case wasmsimd.IntegerNeg:
+		fmt.Fprintf(b, "  %%%s = sub %s zeroinitializer, %s\n", result, typ, lhs)
+	case wasmsimd.Shift:
+		amount := emitWASMV128ShiftCount(b, newTmp, spec.Shape, inputs[1].val)
+		fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", result, spec.Operator, typ, lhs, amount)
+	case wasmsimd.AllTrue, wasmsimd.Bitmask:
+		return emitWASMV128Reduction(b, newTmp, spec, lhs)
 	case wasmsimd.Compare, wasmsimd.FloatSelect:
 		predicate := newTmp()
 		fmt.Fprintf(b, "  %%%s = %s %s %s %s, %s\n", predicate, spec.Shape.Comparator, spec.Operator, typ, lhs, rhs)
@@ -124,4 +127,43 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		}
 	}
 	return wasmValue{typ: wasmV128CoreType, val: cast("%"+result, resultType, wasmV128CoreType)}
+}
+
+func emitWASMV128ShiftCount(b *strings.Builder, newTmp func() string, shape wasmsimd.Shape, count string) string {
+	bits := shape.LaneBits
+	// LLVM shifts require bounded counts. Wasm takes the count modulo the
+	// lane width before applying it to each lane.
+	masked := newTmp()
+	fmt.Fprintf(b, "  %%%s = and i32 %s, %d\n", masked, count, bits-1)
+	count = "%" + masked
+	if bits != 32 {
+		operation := "trunc"
+		if bits > 32 {
+			operation = "zext"
+		}
+		converted := newTmp()
+		fmt.Fprintf(b, "  %%%s = %s i32 %s to i%d\n", converted, operation, count, bits)
+		count = "%" + converted
+	}
+	seed, splat := newTmp(), newTmp()
+	fmt.Fprintf(b, "  %%%s = insertelement %s poison, i%d %s, i32 0\n", seed, shape.LaneType, bits, count)
+	fmt.Fprintf(b, "  %%%s = shufflevector %s %%%s, %s poison, <%d x i32> zeroinitializer\n",
+		splat, shape.LaneType, seed, shape.LaneType, 128/bits)
+	return "%" + splat
+}
+
+func emitWASMV128Reduction(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, input string) wasmValue {
+	lanes := 128 / spec.Shape.LaneBits
+	predicate, bits, result := newTmp(), newTmp(), newTmp()
+	fmt.Fprintf(b, "  %%%s = icmp %s %s %s, zeroinitializer\n", predicate, spec.Operator, spec.Shape.LaneType, input)
+	fmt.Fprintf(b, "  %%%s = bitcast %s %%%s to i%d\n", bits, spec.Shape.PredicateType, predicate, lanes)
+	if spec.Emission == wasmsimd.AllTrue {
+		all := newTmp()
+		fmt.Fprintf(b, "  %%%s = icmp eq i%d %%%s, -1\n", all, lanes, bits)
+		fmt.Fprintf(b, "  %%%s = zext i1 %%%s to i32\n", result, all)
+	} else {
+		// The target's little-endian vector layout puts lane zero in bit zero.
+		fmt.Fprintf(b, "  %%%s = zext i%d %%%s to i32\n", result, lanes, bits)
+	}
+	return wasmValue{typ: LLVMType(spec.ResultType()), val: "%" + result}
 }
