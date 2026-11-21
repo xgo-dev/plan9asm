@@ -12,6 +12,12 @@ type x86DescriptorForm struct {
 
 const x86SystemAsmClobbers = "~{memory},~{dirflag},~{fpsr},~{flags}"
 
+var x86DescriptorWriteWidths = x86OpcodeWidths{
+	"SLDT": "WLQ",
+	"SMSW": "WLQ",
+	"STR":  "WLQ",
+}
+
 func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, bool, error) {
 	base, _, suffix := strings.Cut(strings.ToUpper(string(op)), ".")
 	if base == "" {
@@ -25,19 +31,18 @@ func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, 
 		width = 2 + x86ResultPointerWord(arch)
 	case "LLDT", "LTR", "LMSW":
 	default:
-		stem = base[:len(base)-1]
-		if stem != "SLDT" && stem != "SMSW" && stem != "STR" {
+		last := len(base) - 1
+		stem = base[:last]
+		widthSuffix := base[last]
+		if !strings.ContainsRune(x86DescriptorWriteWidths[stem], rune(widthSuffix)) {
 			return x86DescriptorForm{}, false, nil
 		}
 		write = true
-		switch base[len(base)-1] {
-		case 'W':
+		switch widthSuffix {
 		case 'L':
 			width = 4
 		case 'Q':
 			width = 8
-		default:
-			return x86DescriptorForm{}, false, nil
 		}
 	}
 	fail := func(reason string) (x86DescriptorForm, bool, error) {

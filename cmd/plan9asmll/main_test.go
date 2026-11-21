@@ -1457,6 +1457,15 @@ func TestExtractSupportedOpsFindsCompleteAddedInstructionFamilies(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, stem := range []string{"SLDT", "SMSW", "STR"} {
+		for _, width := range []string{"W", "L", "Q"} {
+			op := stem + width
+			_, advertised := supported386[op]
+			if want := width != "Q"; advertised != want {
+				t.Errorf("386 support inventory for %s = %v, want %v", op, advertised, want)
+			}
+		}
+	}
 	for _, op := range []string{"VADDPH", "VSUBPH", "VMULPH", "VDIVPH", "VMINPH", "VMAXPH"} {
 		if _, ok := supported386[op]; !ok {
 			t.Errorf("386 supported opcode extraction omitted raw FP16 %s", op)
