@@ -416,6 +416,16 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 				state.nativeLEAAddressBits = x86NativeLEAAddressBits{}
 			}
 		}()
+		if state.mode32Frame != nil {
+			for _, operand := range ins.Args {
+				if _, local := state.mode32Frame.offset(operand, 0); local {
+					// The fixed-frame observer checks the actual scalar width
+					// before this transfer. Use its initialized bytes instead
+					// of the conditional native caller-memory rules.
+					return x86ScalarFPResultTransfer(ins, state, owned, resultOffset, arch)
+				}
+			}
+		}
 		if accepted, known := goFuncvalReadTransfer(funcvalReads, ordinal, ins, state, arch); known {
 			return accepted
 		}

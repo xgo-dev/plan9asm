@@ -201,7 +201,13 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 	if scalarViews {
 		autoExtent, scopedControl = x86X87ScopedControlScratchExtent(fn, goarch)
 	}
-	if !scopedControl {
+	if scalarViews && x86Mode32FixedFrameCandidate(fn, goarch) {
+		if err := x86CheckMode32FixedFrame(fn); err != nil {
+			return err
+		}
+		autoExtent = int(fn.FrameSize)
+		initial.mode32Frame = &x86Mode32FrameState{spills: make([]uint16, autoExtent)}
+	} else if !scopedControl {
 		var autoErr error
 		autoExtent, autoErr = x86ResultAUTOExtentWithPrivateStack(fn, goarch, initial.valueStack != nil)
 		if autoErr != nil {
@@ -345,6 +351,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		cpuidRootLeaf := state.cpuidRootLeaf
 		ordinaryStep := false
 		keptPointer := -1
+		var spilledOrigin uint16
 		defer func() {
 			if !ordinaryStep {
 				state.shiftBits = x86ResultShiftBits{} // A private-stack/control transfer cannot preserve adjacency.
@@ -381,6 +388,15 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 				state.shiftBits = x86ResultShiftBits{}
 				return true
 			}
+			if state.mode32Frame != nil {
+				accepted, pointer, origin := x86Mode32FrameStep(ins, state, func() bool {
+					return originalTransfer(ordinal, ins, state, owned, resultOffset, arch)
+				})
+				if pointer >= 0 {
+					keptPointer, spilledOrigin = pointer, origin
+				}
+				return accepted
+			}
 			return originalTransfer(ordinal, ins, state, owned, resultOffset, arch)
 		}
 		step := ordinary
@@ -415,6 +431,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		state.updateLowMasks(ins, arch)
 		if trackCallerOrigins {
 			state.callerAddressOrigin = x86ResultCallerOriginsAfter(ins, origins, state.callerAddressGP, state.callerAddressFP, arch)
+			if spilledOrigin != 0 && spilledOrigin != x86Mode32SpillUnknownOrigin {
+				state.callerAddressOrigin[keptPointer] = spilledOrigin
+			}
 		}
 		state.predicate = x86ResultPredicateAfter(ins, predicate, arch)
 		state.stringCount = x86ResultStringCountAfter(ins, stringCount, state.stringCount, arch)
@@ -488,6 +507,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	byteState += 2 // One adjacent LEA register/byte-mask observation, never pointer/NUM bytes.
 	byteState += 2 // One adjacent address-derived GP view for FLAGS.
 	byteState += 2 // Bounded numerical low masks for the sixteen GP roots.
+	if initial.mode32Frame != nil {
+		byteState += 2*len(initial.mode32Frame.addresses) + 2*len(initial.mode32Frame.spills)
+	}
 	if trackCPUIDLeaf {
 		byteState++ // CPUID's EAX-only maximum-leaf must-fact.
 	}
@@ -786,9 +808,10 @@ func x86ResultScalarBytes(typ LLVMType, arch string) int64 {
 }
 
 type x86ResultState struct {
-	fp   []bool
-	auto []bool
-	gp   [16]uint8
+	fp          []bool
+	auto        []bool
+	gp          [16]uint8
+	mode32Frame *x86Mode32FrameState // Bounded original physical TEXT frame, if independently proved.
 	// Canonical FP is allocated only for the independent bounded ABI0 bool
 	// role. It neither replaces numerical initialization nor extends FP slots.
 	canonicalFP                         []bool
@@ -857,6 +880,11 @@ func (state x86ResultState) clone() x86ResultState {
 		state.boolFrameGP = &aliases
 	}
 	state.auto = append([]bool(nil), state.auto...)
+	if state.mode32Frame != nil {
+		frame := *state.mode32Frame
+		frame.spills = append([]uint16(nil), frame.spills...)
+		state.mode32Frame = &frame
+	}
 	if state.x87 != nil {
 		copy := *state.x87
 		state.x87 = &copy
@@ -981,6 +1009,21 @@ func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 	}
 	for index := range merged.auto {
 		merged.auto[index] = merged.auto[index] && other.auto[index]
+	}
+	if merged.mode32Frame != nil {
+		for i := range merged.mode32Frame.addresses {
+			if merged.mode32Frame.addresses[i] != other.mode32Frame.addresses[i] {
+				merged.mode32Frame.addresses[i] = 0
+			}
+		}
+		for i, origin := range merged.mode32Frame.spills {
+			switch otherOrigin := other.mode32Frame.spills[i]; {
+			case otherOrigin == 0:
+				merged.mode32Frame.spills[i] = 0
+			case origin != 0 && origin != otherOrigin:
+				merged.mode32Frame.spills[i] = x86Mode32SpillUnknownOrigin
+			}
+		}
 	}
 	for index := range merged.gp {
 		merged.gp[index] &= other.gp[index]
@@ -1118,7 +1161,7 @@ func x86ResultRead(arg Operand, width int64, state *x86ResultState, owned []bool
 		}
 		return true
 	case OpMem:
-		offset, valid := x86ResultAUTOOffset(arg, width, len(state.auto))
+		offset, valid := state.localOffset(arg, width)
 		if !valid {
 			return false // An initialized pointer does not initialize its pointee.
 		}
@@ -1134,9 +1177,12 @@ func x86ResultRead(arg Operand, width int64, state *x86ResultState, owned []bool
 
 func x86ResultStore(arg Operand, width int64, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 	if arg.Kind == OpMem {
-		offset, valid := x86ResultAUTOOffset(arg, width, len(state.auto))
+		offset, valid := state.localOffset(arg, width)
 		if !valid {
 			return false
+		}
+		if state.mode32Frame != nil {
+			state.mode32Frame.clearSpills(offset, int(width))
 		}
 		for index := offset; index < offset+int(width); index++ {
 			state.auto[index] = true

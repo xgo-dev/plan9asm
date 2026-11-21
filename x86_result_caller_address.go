@@ -13,6 +13,13 @@ func x86ResultCallerAddressTest(ins Instr, state *x86ResultState, owned []bool, 
 	}
 	address, valid := false, true
 	for _, operand := range form.args {
+		if state.mode32Frame != nil && !form.test && form.bits == 32 {
+			if offset, local := state.mode32Frame.offset(operand, 4); local &&
+				(state.shapeOnly || state.mode32Frame.spills[offset] != 0) {
+				address = true
+				continue
+			}
+		}
 		if operand.Kind == OpReg {
 			root, _, physical := x86ResultGP(operand.Reg, int64(form.bits/8), arch)
 			// Source-wide shape validation sees all registered numerical

@@ -50,26 +50,8 @@ func x86ResultAUTOExtentWithPrivateStack(fn Func, arch string, privateStack bool
 		return fail("requires complete bounded positive original TEXT")
 	}
 	if fn.x86RawReplay == nil {
-		var source strings.Builder
-		for _, ins := range fn.Instrs {
-			if ins.Raw == "" || len(ins.Raw) > (1<<20)-source.Len()-1 {
-				return fail("missing or oversized original literal")
-			}
-			source.WriteString(ins.Raw)
-			source.WriteByte('\n')
-		}
-		parsed, err := Parse(ArchAMD64, source.String())
-		if err != nil || len(parsed.Funcs) != 1 || len(parsed.UnlinkedPrelude) != 0 || len(parsed.Data) != 0 || len(parsed.Globl) != 0 {
-			return fail("original source cannot be replayed as one unchanged function")
-		}
-		original := parsed.Funcs[0]
-		instructions, err := x86ResultAUTOReplayInstructions(fn, arch)
-		if err != nil {
+		if err := x86ResultLocalSourceReplay(fn, arch, "AUTO"); err != nil {
 			return 0, err
-		}
-		if original.Sym != fn.Sym || original.FrameSize != fn.FrameSize || original.ArgSize != fn.ArgSize ||
-			!reflect.DeepEqual(original.Instrs, instructions) {
-			return fail("TEXT, operands or source roles changed after parsing")
 		}
 	}
 	for _, ins := range fn.Instrs {
@@ -119,6 +101,34 @@ func x86ResultAUTOExtentWithPrivateStack(fn Func, arch string, privateStack bool
 		}
 	}
 	return int(fn.FrameSize), nil
+}
+
+func x86ResultLocalSourceReplay(fn Func, arch, role string) error {
+	fail := func(reason string) error {
+		return fmt.Errorf("%w: result initialization %s: %s", ErrProbeNeedsContext, role, reason)
+	}
+	var source strings.Builder
+	for _, ins := range fn.Instrs {
+		if ins.Raw == "" || len(ins.Raw) > (1<<20)-source.Len()-1 {
+			return fail("missing or oversized original literal")
+		}
+		source.WriteString(ins.Raw)
+		source.WriteByte('\n')
+	}
+	parsed, err := Parse(ArchAMD64, source.String())
+	if err != nil || len(parsed.Funcs) != 1 || len(parsed.UnlinkedPrelude) != 0 || len(parsed.Data) != 0 || len(parsed.Globl) != 0 {
+		return fail("original source cannot be replayed as one unchanged function")
+	}
+	original := parsed.Funcs[0]
+	instructions, err := x86ResultAUTOReplayInstructions(fn, arch)
+	if err != nil {
+		return err
+	}
+	if original.Sym != fn.Sym || original.FrameSize != fn.FrameSize || original.ArgSize != fn.ArgSize ||
+		!reflect.DeepEqual(original.Instrs, instructions) {
+		return fail("TEXT, operands or source roles changed after parsing")
+	}
+	return nil
 }
 
 func x86ResultAUTOOffset(arg Operand, width int64, extent int) (int, bool) {

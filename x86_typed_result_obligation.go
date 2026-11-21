@@ -9,6 +9,9 @@ func x86TypedFPResultNeedsProof(fn Func, sig FuncSig, arch string) bool {
 	if arch != "386" && arch != "amd64" {
 		return false
 	}
+	if x86Mode32FixedFrameCandidate(fn, arch) {
+		return true // Even Void must preserve initialized and bounded physical frame accesses.
+	}
 	if amd64RegisterTupleResultNeedsProof(fn, sig, arch) {
 		return true // Plain MOV/RET and invalid layouts cannot bypass register-result initialization.
 	}

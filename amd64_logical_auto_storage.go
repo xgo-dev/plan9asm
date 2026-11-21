@@ -13,6 +13,14 @@ func (c *amd64Ctx) prepareLogicalAUTOStorage() error {
 		fn.x86ContinuationFlow != nil || fn.x86BoolCalls != nil {
 		return nil
 	}
+	if x86Mode32FixedFrameCandidate(fn, c.goarch) {
+		// The complete paired transfer verified physical SP accesses.
+		// addrFromPlainMem uses the existing real-offset shadow stack.
+		if !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) {
+			return fmt.Errorf("%w: 386 fixed TEXT frame requires a matching pointer width", ErrProbeNeedsContext)
+		}
+		return nil
+	}
 	if _, scopedControl := x86X87ScopedControlScratchExtent(fn, c.goarch); scopedControl {
 		if c.frameSize != 0 {
 			return fmt.Errorf("%w: scoped x87 scratch lost its original zero frame", ErrProbeNeedsContext)
