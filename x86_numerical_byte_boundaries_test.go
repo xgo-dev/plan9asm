@@ -291,6 +291,8 @@ func TestX86NumericalNativeBoundariesDefaultRawFamiliesRemainStrict(t *testing.T
 		{"VCMPPS $3,table(SB),Y1,Y2", decodedX86VectorFloatCompareInstruction},
 		{"VCMPSS $7,table(SB),X17,K1,K3", decodedX86VectorFloatCompareInstruction},
 		{"VCMPPD.BCST $13,table(SB),Y17,K1,K6", decodedX86VectorFloatCompareInstruction},
+		{"VCVTSD2SIQ table(SB),AX", decodedX86ScalarFloatToIntegerInstruction},
+		{"VCVTTSD2USIQ table(SB),AX", decodedX86ScalarFloatToIntegerInstruction},
 		{"VMOVD table(SB),X2", decodedX86VMOVQInstruction},
 		{"VMOVQ table(SB),X31", decodedX86VMOVQInstruction},
 		{"VPTEST table(SB),Y2", decodedX86VEXVectorTestInstruction},

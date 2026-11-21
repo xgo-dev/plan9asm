@@ -13,6 +13,9 @@ func fixedLocalGPByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if effect, known, err := x86TypedImplicitMultiplyByteEffect(ins.Op, ins, "amd64"); known {
 		return effect, true, err
 	}
+	if effect, known, err := x86TypedScalarFloatIntegerByteEffect(ins.Op, ins, "amd64"); known {
+		return effect, true, err
+	}
 	form, known, err := x86ScalarCompareProperties(ins.Op, ins, "amd64")
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err

@@ -7,6 +7,10 @@ import "fmt"
 // lowerer and this decoder share amd64ScalarFloatToIntSpecs so W, F2/F3,
 // truncation, and signedness cannot drift between the two entry points.
 func decodedX86ScalarFloatToIntegerInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86ScalarFloatToIntegerInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86ScalarFloatToIntegerInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || p.mapNumber != 1 || (p.pp != 2 && p.pp != 3) {
 		return Instr{}, 0, false, nil
@@ -80,9 +84,9 @@ func decodedX86ScalarFloatToIntegerInstruction(code []byte, mode int) (Instr, in
 	var consumed int
 	var err error
 	if p.evex {
-		source, consumed, err = decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, "X", inputBits/8)
+		source, consumed, err = memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, "X", inputBits/8)
 	} else {
-		source, consumed, err = decodedX86VEXVectorRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, "X")
+		source, consumed, err = memory.vex(code[p.modRM:], mode, p.b, p.x, p.segment, "X")
 	}
 	if err != nil {
 		return Instr{}, 0, true, err
@@ -103,6 +107,8 @@ func decodedX86ScalarFloatToIntegerInstruction(code []byte, mode int) (Instr, in
 	if mode == 32 {
 		arch = "386"
 	}
-	_, _, err = x86ScalarFloatIntegerProperties(instruction, arch)
+	if !memory.physicalPC || source.Mem.Base != "RIP" {
+		_, _, err = x86ScalarFloatIntegerProperties(instruction, arch)
+	}
 	return instruction, p.modRM + consumed, true, err
 }

@@ -387,6 +387,9 @@ the remaining X bytes and clear the alias above X.
 Floating exponent, scale, classification, immediate control and estimate
 families share the original EVEX boundary and fixed-frame checks. The boundary
 accounts for the immediate byte without granting raw-source access to storage.
+Scalar float-to-integer conversions share the fixed-frame GP proof with exact
+four- or eight-byte input widths. A conversion that writes SP requires a
+separate physical stack contract.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies

@@ -94,6 +94,7 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		decodedX86RORXInstructionWithMemory,
 		decodedX86BMI2ShiftInstructionWithMemory,
 		decodedX86NumericalConversionBoundary,
+		decodedX86ScalarFloatToIntegerInstructionWithMemory,
 		decodedX86VEXFMA3InstructionWithMemory,
 		decodedX86VEXBinaryFloatInstructionWithMemory,
 		decodedX86NumericalFloatingHelperBoundary,

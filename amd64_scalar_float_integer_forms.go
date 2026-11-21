@@ -92,10 +92,14 @@ func x86TypedScalarFloatIntegerByteEffect(op Op, ins Instr, arch string) (x86Typ
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	return x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: 0, operand: ins.Args[0], width: int64(f.spec.inputBits / 8), read: true},
-		{index: 1, operand: ins.Args[1], width: int64(f.outputBits / 8), write: true},
-	}}, true, nil // Integer FLAGS are unchanged, independently of MXCSR.
+	return x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{x86TypedVectorNoWrite, 1},
+		operands: []x86TypedByteOperand{
+			{index: 0, operand: ins.Args[0], width: int64(f.spec.inputBits / 8), read: true},
+			{index: 1, operand: ins.Args[1], width: int64(f.outputBits / 8), write: true},
+		},
+	}, true, nil // Integer FLAGS are unchanged, independently of MXCSR.
 }
 
 func x86ResultScalarFloatIntegerStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
