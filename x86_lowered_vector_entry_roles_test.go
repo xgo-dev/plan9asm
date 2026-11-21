@@ -33,6 +33,7 @@ func x86VectorRefinementRoleControls() []struct {
 		{"FuncSig", "arm64ABI0TailDeclaration", func(_ *Func, s *FuncSig) { s.arm64ABI0TailDeclaration = new(arm64ABI0TailDeclaration) }},
 		{"FuncSig", "arm64NativeScratch", func(_ *Func, s *FuncSig) { s.arm64NativeScratch = new(arm64ScratchBinding) }},
 		{"FuncSig", "x86BorrowedBoolTail", func(_ *Func, s *FuncSig) { s.x86BorrowedBoolTail = true }},
+		{"FuncSig", "x86ImportedBoolTail", func(_ *Func, s *FuncSig) { s.x86ImportedBoolTail = true }},
 		{"Func", "X86RawText", func(f *Func, _ *FuncSig) { f.X86RawText = []byte{0xc3} }},
 		{"Func", "X86RawAlign", func(f *Func, _ *FuncSig) { f.X86RawAlign = 16 }},
 		{"Func", "x86ContinuationAddresses", func(f *Func, _ *FuncSig) { f.x86ContinuationAddresses = map[string]x86Continuation{"label": {}} }},
@@ -49,6 +50,10 @@ func x86VectorRefinementRoleControls() []struct {
 		{"Func", "x86DirectTailRoot", func(f *Func, _ *FuncSig) { f.x86DirectTailRoot = new(x86DirectTailRoot) }},
 		{"Func", "x86BoolCalls", func(f *Func, _ *FuncSig) { f.x86BoolCalls = new(x86ABI0BoolCallPlan) }},
 		{"Func", "x86BoolReadonlyInputs", func(f *Func, _ *FuncSig) { f.x86BoolReadonlyInputs = true }},
+		{"Func", "x86PanicCalls", func(f *Func, _ *FuncSig) {
+			f.x86PanicCalls = map[string]x86GoPanicTerminalAssemblyCall{"CALL ·panic(SB)": {}}
+		}},
+		{"Func", "x86StackFence", func(f *Func, _ *FuncSig) { f.x86StackFence = &Instr{Op: "XADDL"} }},
 	}
 }
 

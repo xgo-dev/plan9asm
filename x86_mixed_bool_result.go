@@ -73,12 +73,14 @@ func x86OrdinaryScalarCodegenSource(fn Func, sig FuncSig, arch string) bool {
 	if arch != "amd64" && arch != "386" || fn.FrameSize != 0 || strings.Contains(fn.Sym, "<") ||
 		len(sig.ArgRegs) != 0 || sig.ARMEntry != nil || sig.ARM64GoRegisterABI != nil || sig.ARM64ClosureABI != nil ||
 		sig.arm64FPReadDeclaration != nil || sig.arm64ABI0Declaration != nil || sig.arm64ABI0TailDeclaration != nil || sig.arm64NativeScratch != nil ||
-		sig.WASMContext != "" || sig.WASMNative || sig.x86BorrowedBoolTail || sig.amd64GoArguments != nil ||
+		sig.WASMContext != "" || sig.WASMNative || sig.x86BorrowedBoolTail || sig.x86ImportedBoolTail ||
+		sig.amd64GoArguments != nil ||
 		sig.x86FixedLocal != nil || sig.x86CallerRegions != nil || len(fn.X86RawText) != 0 || fn.X86RawAlign != 0 || fn.x86SourceStack != nil ||
 		fn.arm64PrivateRegisterEntry || fn.arm64PrivateUnexposedFrame || fn.arm64PrivateTailSource != nil ||
 		fn.arm64PrivateCallSource != nil || fn.arm64ABI0TailSource != nil ||
 		fn.x86FixedLocal != nil || fn.x86DirectTailRoot != nil || fn.x86ContinuationFlow != nil || fn.x86RawReplay != nil ||
-		len(fn.x86ContinuationAddresses) != 0 || len(fn.x86IndirectLabels) != 0 || fn.x86BoolCalls != nil || fn.x86BoolReadonlyInputs {
+		len(fn.x86ContinuationAddresses) != 0 || len(fn.x86IndirectLabels) != 0 || fn.x86BoolCalls != nil ||
+		fn.x86BoolReadonlyInputs || len(fn.x86PanicCalls) != 0 || fn.x86StackFence != nil {
 		return false
 	}
 	for _, ins := range fn.Instrs {
