@@ -9,6 +9,9 @@ func x86ResultNativeNumericAddress(arg Operand, state *x86ResultState, arch stri
 		!x86OrdinaryNativeMemoryOperand(arg, arch) {
 		return false
 	}
+	if x86AbsoluteMemoryRef(arg.Mem) {
+		return x86MemoryDisplacementValid(arg.Mem.Off, arch)
+	}
 	word := x86ResultPointerWord(arch)
 	base, mask, valid := x86ResultGP(arg.Mem.Base, word, arch)
 	if !valid || state.gp[base]&mask != mask {

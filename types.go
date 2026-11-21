@@ -375,7 +375,7 @@ func (o Operand) String() string {
 			}
 			return fmt.Sprintf("%s(%s)(%s*%d)%s", offset, o.Mem.Base, o.Mem.Index, o.Mem.Scale, segment)
 		}
-		if o.Mem.Base == "" && o.Mem.Segment != "" {
+		if o.Mem.Base == "" {
 			return fmt.Sprintf("%s%s", offset, segment)
 		}
 		return fmt.Sprintf("%s(%s)%s", offset, o.Mem.Base, segment)

@@ -616,11 +616,19 @@ func parseOperandsCSV(arch Arch, op Op, s string) ([]Operand, error) {
 			legacy = splitLegacyColonOperand(part)
 		}
 		for _, item := range legacy {
-			op, err := parseOperandForArch(arch, item)
+			var operand Operand
+			var err error
+			if arch == ArchAMD64 && len(out) == 2 && x86FloatCompareSpecs[op].legacy {
+				// Legacy CMPP[S/D] and CMPS[S/D] spell the predicate last.
+				// Their bare integer predicate is not an absolute address.
+				operand, err = parseOperand(item)
+			} else {
+				operand, err = parseOperandForArch(arch, item)
+			}
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, op)
+			out = append(out, operand)
 		}
 	}
 	// ARM direct branches treat a bare token as a label even when the shared
@@ -714,6 +722,13 @@ func parseOperandForArch(arch Arch, s string) (Operand, error) {
 					return parseOperand(s)
 				}
 				return Operand{Kind: OpMem, Mem: memory}, nil
+			}
+			// Go's bare integer expressions are absolute TYPE_MEM operands.
+			// Retain their distinction from both $ constants and (SB) names.
+			if x86Operand != "" && strings.ContainsRune("0123456789+-~'(", rune(x86Operand[0])) {
+				if address, ok := parseImmExpr(x86Operand); ok {
+					return Operand{Kind: OpMem, Mem: MemRef{Off: int64(address)}}, nil
+				}
 			}
 		}
 		reg := Reg(strings.ToUpper(x86Operand))

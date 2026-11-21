@@ -2303,6 +2303,12 @@ func (c *amd64Ctx) addrFromPlainMem(mem MemRef) (addrI64 string, err error) {
 	if err := x86SymbolIndexedMemoryError(mem, c.goarch); err != nil {
 		return "", err
 	}
+	if x86AbsoluteMemoryRef(mem) {
+		if !x86MemoryDisplacementValid(mem.Off, c.goarch) {
+			return "", fmt.Errorf("invalid %s absolute memory displacement %d", c.goarch, mem.Off)
+		}
+		return fmt.Sprintf("%d", mem.Off), nil
+	}
 	var cur string
 	if mem.Sym != "" {
 		base, err := c.ptrFromSB(mem.Sym)

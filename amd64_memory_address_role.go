@@ -20,6 +20,10 @@ func x86MemoryRegisterEncodingValid(memory MemRef, arch string) bool {
 			(memory.Scale == 1 || memory.Scale == 2 || memory.Scale == 4 || memory.Scale == 8))
 }
 
+func x86AbsoluteMemoryRef(memory MemRef) bool {
+	return memory == (MemRef{Off: memory.Off})
+}
+
 // NAME_EXTERN/NAME_STATIC in the non-shared Go 386 encoder discards Reg,
 // including a nonscaled SP/BP annotation. Index remains an actual address
 // input. AMD64 uses RIP and rejects either annotation. This describes address

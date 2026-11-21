@@ -347,14 +347,9 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 			}
 			fmt.Fprintf(c.b, "  store i32 %s, %s %s, align 1\n", i32v, ptrType, p)
 			return true, false, nil
-		case OpImm:
-			// Some runtime stubs intentionally encode a crashing instruction as
-			// "MOVL $0xf1, 0xf1". Keep translation progressing.
-			return true, false, nil
 		case OpSym:
 			if !strings.HasSuffix(strings.TrimSpace(dst.Sym), "(SB)") {
-				// Crash marker form (e.g. MOVL $0xf1, 0xf1) in runtime stubs.
-				return true, false, nil
+				return true, false, fmt.Errorf("amd64 MOVL unsupported dst: %q", ins.Raw)
 			}
 			p, err := c.ptrFromSB(dst.Sym)
 			if err != nil {
