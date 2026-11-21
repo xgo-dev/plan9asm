@@ -81,6 +81,30 @@ func TestTranslate386BoundRequiresInitializedInputs(t *testing.T) {
 	}
 }
 
+func TestTranslate386BoundNamedFrameReadsBothEndpoints(t *testing.T) {
+	const source = `TEXT ·check(SB),4,$8-0
+MOVL $3, AX
+MOVL $0x00100000, short-4(SP)
+BOUNDW AX, short-4(SP)
+MOVL $0, bounds-8(SP)
+MOVL $16, bounds-4(SP)
+BOUNDL AX, bounds-8(SP)
+RET
+`
+	goAssemblerOracleOutput(t, "386", source, "", true)
+	for _, triple := range []string{"i386-unknown-linux-gnu", "i686-pc-windows-msvc"} {
+		for _, api := range []string{"text", "module", "Go"} {
+			t.Run(triple+"/"+api, func(t *testing.T) {
+				ir, err := x86ScalarFPBitViewAPI(t, source, "func check()", "386", triple, api)
+				if err != nil {
+					t.Fatal(err)
+				}
+				x86NumericNativeAddressObject(t, ir, triple)
+			})
+		}
+	}
+}
+
 func TestTranslateX86BoundRejectsFormsOutsideGoAssemblerTables(t *testing.T) {
 	tests := []struct {
 		goarch      string

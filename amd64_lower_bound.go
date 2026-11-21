@@ -44,8 +44,8 @@ func x86TypedBoundByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect,
 		return x86TypedByteEffect{}, known, err
 	}
 	return x86TypedByteEffect{operands: []x86TypedByteOperand{
-		{operand: ins.Args[0], width: width, read: true},
-		{operand: ins.Args[1], width: 2 * width, read: true},
+		{index: 0, operand: ins.Args[0], width: width, read: true},
+		{index: 1, operand: ins.Args[1], width: 2 * width, read: true},
 	}}, true, nil
 }
 
