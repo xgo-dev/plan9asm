@@ -21,7 +21,7 @@ func parseWASMV128Core(ins Instr, name string) (wasmsimd.Form, bool, error) {
 		// Go writes the selector from the destination operand. Its unary
 		// syntax leaves that field zero, regardless of the written literal.
 		operands = 2
-	case spec.Operator == "const":
+	case spec.Operator == "const", spec.Emission == wasmsimd.ByteShuffle:
 		operands = 2
 	}
 	if strings.ToUpper(string(ins.Op)) != name || len(ins.Args) != operands {
@@ -30,6 +30,11 @@ func parseWASMV128Core(ins Instr, name string) (wasmsimd.Form, bool, error) {
 	for _, operand := range ins.Args {
 		if operand.Kind != OpImm || operand.ImmIsFloat || operand.ImmRaw != "" {
 			return spec, true, fmt.Errorf("%s requires resolved integer literals: %q", name, ins.Raw)
+		}
+		// Like V128Const, Shuffle16 packs its bytes into two little-endian
+		// 64-bit immediates. Each selector names one byte of two 16-byte inputs.
+		if spec.Emission == wasmsimd.ByteShuffle && uint64(operand.Imm)&0xe0e0e0e0e0e0e0e0 != 0 {
+			return spec, true, fmt.Errorf("%s requires 16 packed byte selectors in 0..31: %q", name, ins.Raw)
 		}
 	}
 	if spec.HasLaneIndex() {
@@ -112,6 +117,19 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 	resultType := LLVMType(typ)
 	result := newTmp()
 	switch spec.Emission {
+	case wasmsimd.ByteShuffle:
+		var mask strings.Builder
+		for lane := 0; lane < 16; lane++ {
+			if lane != 0 {
+				mask.WriteString(", ")
+			}
+			index := byte(uint64(ins.Args[lane/8].Imm) >> (8 * (lane % 8)))
+			fmt.Fprintf(&mask, "i32 %d", index)
+		}
+		fmt.Fprintf(b, "  %%%s = shufflevector %s %s, %s %s, <16 x i32> <%s>\n",
+			result, typ, lhs, typ, rhs, mask.String())
+	case wasmsimd.ByteSwizzle:
+		result = emitWASMByteSwizzle(b, newTmp, typ, lhs, rhs)
 	case wasmsimd.Instruction:
 		fmt.Fprintf(b, "  %%%s = %s %s %s", result, spec.Operator, typ, lhs)
 		if rhs != "" {
@@ -185,6 +203,26 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		resultType = integerType
 	}
 	return wasmValue{typ: wasmV128CoreType, val: cast(value, resultType, wasmV128CoreType)}
+}
+
+func emitWASMByteSwizzle(b *strings.Builder, newTmp func() string, typ, source, indices string) string {
+	vector := "poison"
+	var result string
+	for lane := 0; lane < 16; lane++ {
+		index, fits, bounded := newTmp(), newTmp(), newTmp()
+		fromSource, selected := newTmp(), newTmp()
+		result = newTmp()
+		fmt.Fprintf(b, "  %%%s = extractelement %s %s, i32 %d\n", index, typ, indices, lane)
+		fmt.Fprintf(b, "  %%%s = icmp ult i8 %%%s, 16\n", fits, index)
+		// Keep even the speculative extraction in bounds. LLVM may lower
+		// dynamic vector indexing to a temporary stack read on baseline Wasm.
+		fmt.Fprintf(b, "  %%%s = and i8 %%%s, 15\n", bounded, index)
+		fmt.Fprintf(b, "  %%%s = extractelement %s %s, i8 %%%s\n", fromSource, typ, source, bounded)
+		fmt.Fprintf(b, "  %%%s = select i1 %%%s, i8 %%%s, i8 0\n", selected, fits, fromSource)
+		fmt.Fprintf(b, "  %%%s = insertelement %s %s, i8 %%%s, i32 %d\n", result, typ, vector, selected, lane)
+		vector = "%" + result
+	}
+	return result
 }
 
 func emitWASMV128Conversion(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, result, input string) string {

@@ -23,6 +23,8 @@ const (
 	IntegerWiden
 	IntegerNarrow
 	Convert
+	ByteShuffle
+	ByteSwizzle
 )
 
 type ValueType string
@@ -146,6 +148,11 @@ func buildForms() map[string]Form {
 	add := func(prefix string, shape Shape, op operation) {
 		result[prefix+op.suffix] = Form{stack: op.stack, Emission: op.emission, Operator: op.operator, Shape: shape}
 	}
+	bytes := integerShape(8)
+	add("I8X16", bytes, operation{"SHUFFLE16", "", binary, ByteShuffle})
+	add("I8X16", bytes, operation{"SWIZZLE", "", binary, ByteSwizzle})
+	// The deterministic profile uses zero for an out-of-range relaxed index.
+	add("I8X16", bytes, operation{"RELAXEDSWIZZLE", "", binary, ByteSwizzle})
 	addLaneOperations := func(prefix string, shape Shape, scalar ValueType) {
 		splat := stackSignature{[]ValueType{scalar}, V128}
 		replace := stackSignature{[]ValueType{V128, scalar}, V128}
@@ -193,6 +200,8 @@ func buildForms() map[string]Form {
 	}{{"I8X16", 8}, {"I16X8", 16}, {"I32X4", 32}, {"I64X2", 64}} {
 		count := 128 / lane.bits
 		shape := integerShape(lane.bits)
+		// The deterministic profile keeps every mask bit, even in wide lanes.
+		add(lane.prefix, shape, operation{"RELAXEDLANESELECT", "bitselect", ternary, Core})
 		scalar := I32
 		if lane.bits == 64 {
 			scalar = I64

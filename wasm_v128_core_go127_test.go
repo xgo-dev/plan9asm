@@ -4,6 +4,7 @@ package plan9asm
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,37 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestWASMV128RoutingActualGoEncoding(t *testing.T) {
+	rows := wasmV128RoutingCases()
+	for _, goos := range wasmPackedGoPlatforms {
+		t.Run(goos, func(t *testing.T) {
+			object := wasmV128ActualGoBytes(t, wasmV128RoutingSource(rows), goos)
+			for _, row := range rows {
+				encoding := binary.AppendUvarint([]byte{0xfd}, uint64(row.Code))
+				incomplete := []byte(nil)
+				switch {
+				case row.Mask != nil:
+					incomplete = append([]byte(nil), encoding...)
+					for _, index := range row.Mask {
+						encoding = append(encoding, byte(index))
+					}
+				case row.Code >= 0x100:
+					incomplete = []byte{0xfd, byte(row.Code&0x7f) | 0x80, 0x01, 0x02}
+				}
+				store := []byte{0xfd, 0x0b, 0, 0}
+				if bytes.Contains(object, append(encoding, store...)) {
+					continue
+				}
+				if len(incomplete) != 0 && bytes.Contains(object, append(incomplete, store...)) {
+					t.Logf("%s has a known immediate or ULEB encoding discrepancy in original Go", row.Opcode)
+					continue
+				}
+				t.Errorf("missing or unknown original Go object encoding of %s", row.Opcode)
+			}
+		})
+	}
+}
 
 func TestWASMV128RelaxedTruncActualGoEncoding(t *testing.T) {
 	var source strings.Builder
