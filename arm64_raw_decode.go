@@ -25,7 +25,7 @@ func decodeARM64RawWordInstructionTarget(ins Instr, target string) (Instr, error
 	if err != nil {
 		return Instr{}, err
 	}
-	if atomic, known := decodeARM64AtomicRMWWord(word, ins); known {
+	if atomic, known := decodeARM64LSEScalarWord(word, ins); known {
 		return atomic, nil
 	}
 	// A64 UDF has a fixed zero high half and the complete unsigned imm16
