@@ -62,7 +62,7 @@ func x86ResultGPSIMDTransferWithNativeMemory(ins Instr, form x86GPSIMDTransferFo
 	}
 	if nativeMemory && form.memoryWrite && x86ResultNamedPredicateInstruction(ins) &&
 		ins.x86NumericalRead == nil && x86OrdinaryNativeMemoryOperand(ins.Args[1], arch) &&
-		x86ResultIncomingPointerAddressIdentity(ins.Args[1], state, arch) {
+		x86ResultPairedNativeAddress(ins, ins.Args[1], state, arch, false) {
 		return true // The paired exact volatile store creates no reusable memory facts.
 	}
 	if form.memoryWrite && ins.Args[1].Kind == OpSym {

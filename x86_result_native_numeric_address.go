@@ -1,5 +1,15 @@
 package plan9asm
 
+// A paired native emitter can consume one numerical value in both SIB
+// fields. Other addresses retain their existing incoming-pointer proof.
+func x86ResultPairedNativeAddress(ins Instr, arg Operand, state *x86ResultState, arch string, commutedRead bool) bool {
+	return x86ResultIncomingPointerAddress(arg, state, arch, commutedRead) ||
+		arg.Kind == OpMem && arg.Mem.Index != "" && arg.Mem.Base == arg.Mem.Index &&
+			x86ResultNamedPredicateInstruction(ins) && ins.x86NumericalRead == nil &&
+			x86MemoryRegisterEncodingValid(arg.Mem, arch) &&
+			x86ResultNativeNumericAddress(arg, state, arch)
+}
+
 // Only an already selected native emitter may consume these numerical address
 // bits. A successful volatile access initializes its result, not its pointee,
 // and creates no logical pointer, extent, caller or reusable storage fact.

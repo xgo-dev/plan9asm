@@ -896,8 +896,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		if form, known, err := amd64PackedVectorMoveProperties(ins, arch); known && err == nil &&
 			form.ordinaryMemory(ins, arch) && x86ResultNamedPredicateInstruction(ins) &&
-			(form.memory == 0 && x86ResultIncomingPointerReadAddressIdentity(ins.Args[0], state, arch) ||
-				form.memoryWrite && x86ResultIncomingPointerAddressIdentity(ins.Args[form.memory], state, arch)) {
+			x86ResultPairedNativeAddress(ins, ins.Args[form.memory], state, arch, !form.memoryWrite) {
 			// The emitter preserves the original aligned opcode, or the
 			// unaligned full/guarded tuple with volatile accesses. If it continues,
 			// active bytes are numerical; inactive bytes still require the
@@ -910,10 +909,10 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 			x86OrdinaryNativeMemoryOperand(form.destination, arch) {
 			// All seven whole128 legacy names retain their exact native
 			// store opcode and its alignment/fault contract. This consumes
-			// numerical source bytes plus an incoming-pointer address only;
+			// numerical source bytes plus a complete native address;
 			// no logical storage, validity, extent or later-read fact follows.
 			return x86ResultRead(form.source, 16, state, owned, arch) &&
-				x86ResultIncomingPointerAddressIdentity(form.destination, state, arch)
+				x86ResultPairedNativeAddress(ins, form.destination, state, arch, false)
 		}
 		if accepted, known := x86LoweredLegacyPackedMoveRead(ins, state, owned, resultOffset, arch); known {
 			return accepted

@@ -26,13 +26,8 @@ func x86ResultCompactExpandMemoryStep(ins Instr, state *x86ResultState, owned []
 	if err != nil || form.undefinedOpcode() {
 		return false, true
 	}
-	if !x86ResultNamedPredicateInstruction(ins) {
-		if !pairedNative || !x86RawCompactSource(ins, arch) {
-			return false, true
-		}
-		// Consume only this instruction's exact original identity. Preserve
-		// the validated physical form; no standalone query gains this view.
-		ins.x86Encoded, ins.x86SourceRaw = false, nil
+	if !x86ResultNamedPredicateInstruction(ins) && (!pairedNative || !x86RawCompactSource(ins, arch)) {
+		return false, true
 	}
 	required := x86CallerVectorByteMask(int64(form.byteWidth))
 	for index, operand := range ins.Args {
@@ -58,7 +53,7 @@ func x86ResultCompactExpandMemoryStep(ins Instr, state *x86ResultState, owned []
 	if form.memory >= 0 {
 		memory := ins.Args[form.memory]
 		native := pairedNative && x86OrdinaryNativeMemoryOperand(memory, arch) &&
-			x86ResultIncomingPointerAddressIdentity(memory, state, arch)
+			x86ResultPairedNativeAddress(ins, memory, state, arch, false)
 		// Logical FP/AUTO bytes and bound DATA reads are not native backing
 		// or permission to dereference an incoming pointer.
 		if !native && (form.expand || form.mask >= 0) && !x86ResultRead(memory, int64(form.byteWidth), state, owned, arch) {

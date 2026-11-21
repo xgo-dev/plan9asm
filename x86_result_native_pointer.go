@@ -54,7 +54,7 @@ func x86ResultIncomingPointerAddress(arg Operand, state *x86ResultState, arch st
 		return false
 	}
 	index, mask, valid := x86ResultGP(memory.Index, word, arch)
-	if !valid {
+	if !valid || index == base {
 		return false
 	}
 	if (state.shapeOnly || state.pointerGP[base]) && state.gp[index]&mask == mask {

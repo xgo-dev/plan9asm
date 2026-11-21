@@ -343,7 +343,12 @@ the K-register logical family. Use `scalar-memory` for fixed-width GP
 memory effects with the same explicit pointer fixture. It also initializes
 reaching FLAGS and any implicit accumulator inputs required by the form.
 Dynamic bit strings and private stack effects require separate validation.
-All five profiles accept
+Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
+register in both address fields. Its machine-word integer parameter supplies
+the shared register value. The probe retains the original scale and displacement.
+Execution requires a parameter value whose computed address satisfies the
+original instruction's extent and alignment requirements.
+All profiles accept
 `-goarch=386` and cover occurrences in the selected SDK corpus. A synthetic
 input can still take an architectural fault. The report records object evidence
 without certifying the original function's inputs or runtime behavior.

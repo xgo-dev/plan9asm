@@ -39,6 +39,21 @@ func TestX86GPSIMDNativeStoreNumericalContinuation(t *testing.T) {
 				if x86ResultGPSIMDTransfer(ins, form, &state, nil, 0, arch) {
 					t.Fatal("standalone observer acquired native write permission")
 				}
+				aliased := x86YMMReadSource(t, row.op+" X0,8(BX)(BX*2)")
+				state = before.clone()
+				state.pointerGP[3] = false
+				numerical := state.clone()
+				if !x86ResultGPSIMDTransferWithNativeMemory(aliased, form, &state, nil, 0, arch, true) ||
+					!reflect.DeepEqual(state, numerical) {
+					t.Fatal("paired store lost the numerical base/index or changed reaching facts")
+				}
+				state = before.clone()
+				state.gp[3] = 0
+				pointer := state.clone()
+				if x86ResultGPSIMDTransferWithNativeMemory(aliased, form, &state, nil, 0, arch, true) ||
+					!reflect.DeepEqual(state, pointer) {
+					t.Fatal("opaque pointer supplied a numerical index or changed reaching facts")
+				}
 				state = before.clone()
 				state.writeVector(0, 64, uint64(1)<<uint(width)-1, false)
 				minimal := state.clone()

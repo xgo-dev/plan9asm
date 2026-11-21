@@ -112,7 +112,7 @@ func x86ResultSingleSourceNarrowStep(ins Instr, state *x86ResultState, owned []b
 	}
 	destination := ins.Args[f.destination]
 	if f.memory >= 0 {
-		if native && x86ResultIncomingPointerAddressIdentity(destination, state, arch) {
+		if native && x86ResultPairedNativeAddress(ins, destination, state, arch, false) {
 			return true, true // Paired store preserves faults, never establishes future NUM bytes.
 		}
 		if f.mask >= 0 && !x86ResultRead(destination, int64(f.outputBytes), state, owned, arch) {

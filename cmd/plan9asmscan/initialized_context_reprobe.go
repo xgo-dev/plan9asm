@@ -28,15 +28,16 @@ type initializedContextSource struct {
 }
 
 type initializedContextCase struct {
-	OriginalInstruction   plan9asm.Instr           `json:"original_instruction"`
-	OriginalStatus        string                   `json:"original_status"`
-	Source                initializedContextSource `json:"source"`
-	Initialization        []plan9asm.Instr         `json:"initialization"`
-	MemoryPointerArgument bool                     `json:"memory_pointer_argument,omitempty"`
-	IRTextGeneration      scanEvidenceStage        `json:"ir_text_generation"`
-	LLVMObjectCompilation scanEvidenceStage        `json:"llvm_object_compilation"`
-	RuntimeExecution      scanEvidenceStage        `json:"runtime_execution"`
-	Error                 string                   `json:"error,omitempty"`
+	OriginalInstruction    plan9asm.Instr           `json:"original_instruction"`
+	OriginalStatus         string                   `json:"original_status"`
+	Source                 initializedContextSource `json:"source"`
+	Initialization         []plan9asm.Instr         `json:"initialization"`
+	MemoryPointerArgument  bool                     `json:"memory_pointer_argument,omitempty"`
+	NumericAddressArgument bool                     `json:"numeric_address_argument,omitempty"`
+	IRTextGeneration       scanEvidenceStage        `json:"ir_text_generation"`
+	LLVMObjectCompilation  scanEvidenceStage        `json:"llvm_object_compilation"`
+	RuntimeExecution       scanEvidenceStage        `json:"runtime_execution"`
+	Error                  string                   `json:"error,omitempty"`
 }
 
 type initializedContextObject struct {
@@ -60,11 +61,12 @@ type initializedContextReport struct {
 }
 
 var initializedContextProfiles = map[string]func(string, plan9asm.Instr) ([]plan9asm.Instr, bool, error){
-	"mask-logical":    plan9asm.InitializedMaskLogicalProbeSequence,
-	"scalar-register": plan9asm.InitializedScalarRegisterProbeSequence,
-	"scalar-memory":   plan9asm.InitializedScalarMemoryProbeSequence,
-	"vector-memory":   plan9asm.InitializedVectorMemoryProbeSequence,
-	"vector-register": plan9asm.InitializedVectorRegisterProbeSequence,
+	"mask-logical":          plan9asm.InitializedMaskLogicalProbeSequence,
+	"scalar-register":       plan9asm.InitializedScalarRegisterProbeSequence,
+	"scalar-memory":         plan9asm.InitializedScalarMemoryProbeSequence,
+	"vector-memory":         plan9asm.InitializedVectorMemoryProbeSequence,
+	"vector-numeric-memory": plan9asm.InitializedVectorNumericMemoryProbeSequence,
+	"vector-register":       plan9asm.InitializedVectorRegisterProbeSequence,
 }
 
 // Retain occurrences, not the capped display Examples or form-level status.
@@ -139,6 +141,7 @@ func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, l
 		}
 		source.Initialization = sequence[:len(sequence)-1]
 		source.MemoryPointerArgument = profile == "vector-memory" || profile == "scalar-memory"
+		source.NumericAddressArgument = profile == "vector-numeric-memory"
 		result.Cases = append(result.Cases, source)
 	}
 	result.EligibleCases = len(result.Cases)
@@ -210,7 +213,7 @@ func (test initializedContextCase) sequence() []plan9asm.Instr {
 }
 
 func (test initializedContextCase) probe(goarch string) error {
-	if !test.MemoryPointerArgument {
+	if !test.MemoryPointerArgument && !test.NumericAddressArgument {
 		return plan9asm.ProbeInstructionSequence(plan9asm.ArchAMD64, goarch, test.sequence())
 	}
 	fn, sig := test.function("initialized.memory", goarch)
@@ -225,13 +228,20 @@ func (test initializedContextCase) function(name, goarch string) (plan9asm.Func,
 	sequence := append(test.sequence(), plan9asm.Instr{Op: "RET", Raw: "RET"})
 	fn := plan9asm.Func{Sym: name, Instrs: sequence}
 	sig := plan9asm.FuncSig{Name: name, Ret: plan9asm.Void}
-	if test.MemoryPointerArgument {
+	if test.MemoryPointerArgument || test.NumericAddressArgument {
 		fn.ArgSize = 8
 		if goarch == "386" {
 			fn.ArgSize = 4
 		}
-		sig.Args = []plan9asm.LLVMType{plan9asm.Ptr}
-		sig.Frame.Params = []plan9asm.FrameSlot{{Name: "memory", Type: plan9asm.Ptr, Field: -1}}
+		argType := plan9asm.Ptr
+		if test.NumericAddressArgument {
+			argType = plan9asm.I64
+			if goarch == "386" {
+				argType = plan9asm.I32
+			}
+		}
+		sig.Args = []plan9asm.LLVMType{argType}
+		sig.Frame.Params = []plan9asm.FrameSlot{{Name: "memory", Type: argType, Field: -1}}
 	}
 	return fn, sig
 }

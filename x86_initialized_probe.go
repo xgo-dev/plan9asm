@@ -62,12 +62,24 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 // The sequence keeps the exact original addressing expression. Its caller
 // must supply the extent and alignment if the resulting function is executed.
 func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
+	return initializedVectorMemoryProbeSequence(goarch, ins, false)
+}
+
+// InitializedVectorNumericMemoryProbeSequence uses a machine-word integer
+// argument named memory at 0(FP). The exact same value supplies both address
+// fields. The caller must choose a value with a valid effective address to run
+// this object probe.
+func InitializedVectorNumericMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
+	return initializedVectorMemoryProbeSequence(goarch, ins, true)
+}
+
+func initializedVectorMemoryProbeSequence(goarch string, ins Instr, numericAddress bool) ([]Instr, bool, error) {
 	if goarch != "386" && goarch != "amd64" || !x86ResultNamedPredicateInstruction(ins) ||
 		x86Mode32VectorRegisterContext(ins, goarch) != nil {
 		return nil, false, nil
 	}
 	if form, known, err := x86VSIBProperties(ins, goarch); known {
-		if err != nil || form.prefetch {
+		if numericAddress || err != nil || form.prefetch {
 			return nil, false, nil
 		}
 		memory := form.memory.Mem
@@ -83,7 +95,7 @@ func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 		return initializedVectorMemorySequence(goarch, ins, memory.Base, registers, activeMask)
 	}
 	memory, memoryIndex := initializedOrdinaryProbeMemory(goarch, ins)
-	if memoryIndex < 0 {
+	if memoryIndex < 0 || numericAddress != (memory.Base == memory.Index) {
 		return nil, false, nil
 	}
 	inputs, memoryBytes, valid := initializedVectorOperands(goarch, ins)
@@ -92,11 +104,17 @@ func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 	}
 	registers := make([]Operand, 0, len(inputs)+1)
 	for _, input := range inputs {
-		if input.Kind != OpMem {
-			registers = append(registers, input)
+		if input.Kind == OpMem {
+			continue
 		}
+		if numericAddress {
+			if root, valid := initializedX86GPRegister(goarch, input); valid && root == memory.Base {
+				continue // The argument also supplies this explicit register view.
+			}
+		}
+		registers = append(registers, input)
 	}
-	if memory.Index != "" {
+	if memory.Index != "" && !numericAddress {
 		registers = append(registers, Operand{Kind: OpReg, Reg: memory.Index})
 	}
 	return initializedVectorMemorySequence(goarch, ins, memory.Base, registers, "")

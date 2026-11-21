@@ -100,7 +100,7 @@ func x86ResultScalarLaneStepWithRead(ins Instr, state *x86ResultState, owned []b
 func x86ResultScalarLaneNativeStore(ins Instr, destination Operand, state *x86ResultState, arch string, paired bool) bool {
 	return paired && x86ResultNamedPredicateInstruction(ins) && ins.x86NumericalRead == nil &&
 		x86OrdinaryNativeMemoryOperand(destination, arch) &&
-		x86ResultIncomingPointerAddressIdentity(destination, state, arch)
+		x86ResultPairedNativeAddress(ins, destination, state, arch, false)
 }
 
 func x86ResultScalarPSLaneStep(ins Instr, f x86InsertExtractForm, state *x86ResultState, owned []bool, resultOffset int64, arch string, conditionalNativeRead bool) bool {

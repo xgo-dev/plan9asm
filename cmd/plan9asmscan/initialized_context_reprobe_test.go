@@ -522,6 +522,70 @@ func TestInitializedContextReprobeVectorMemory386(t *testing.T) {
 	}
 }
 
+func TestInitializedContextReprobeVectorNumericMemory(t *testing.T) {
+	for _, mode := range []struct {
+		arch         string
+		argSize      int64
+		argType      plan9asm.LLVMType
+		instructions []string
+	}{
+		{"amd64", 8, plan9asm.I64, []string{
+			"VPMINUD 99(R15)(R15*4), Z9, K5, Z0",
+			"VEXPANDPS 99(R15)(R15*2), K6, Z7",
+			"VCOMPRESSPS Z17, K1, 99(R15)(R15*4)",
+			"VEXTRACTF32X4 $3, Z14, K7, 99(R15)(R15*1)",
+			"VMOVDQU32 99(R15)(R15*2), K3, Z20",
+			"VMOVDQU32 Z20, K3, 99(R15)(R15*2)",
+			"VPMOVQD Z2, K4, 99(R15)(R15*1)",
+			"VPMOVSDB Y26, K7, 99(R15)(R15*1)",
+			"VPMOVUSWB X6, K1, 99(R15)(R15*2)",
+		}},
+		{"386", 4, plan9asm.I32, []string{
+			"VPADDQ 8(BX)(BX*2), Y2, Y3",
+			"VMOVUPS Y2, 8(BX)(BX*2)",
+			"VPEXTRW $7, X2, 8(BX)(BX*2)",
+			"VMOVQ X2, 8(BX)(BX*2)",
+		}},
+	} {
+		t.Run(mode.arch, func(t *testing.T) {
+			forms := make(map[string]*formStat)
+			for i, source := range mode.instructions {
+				ins := compactProbeInstructions(t, source)[0]
+				err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, mode.arch, ins)
+				if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+					t.Fatalf("%s: original form requires inputs, got %v", source, err)
+				}
+				form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, mode.arch, ins).Form
+				forms[form] = &formStat{}
+				captureContextSource(forms, plan9asm.ArchAMD64, mode.arch, ins,
+					initializedContextSource{File: "alias.s", Function: "case", Line: i + 1}, err)
+			}
+			evidence, err := runInitializedContextReprobe(forms, "vector-numeric-memory", mode.arch, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.Status != "pass" || evidence.EligibleCases != len(mode.instructions) {
+				t.Fatalf("typed numerical address probe lost rows: %s, %d/%d",
+					evidence.Status, evidence.EligibleCases, len(mode.instructions))
+			}
+			for i, row := range evidence.Cases {
+				fn, sig := row.function("aliased.memory", mode.arch)
+				original := compactProbeInstructions(t, mode.instructions[i])[0]
+				if !row.NumericAddressArgument || row.MemoryPointerArgument || fn.ArgSize != mode.argSize ||
+					!reflect.DeepEqual(sig.Args, []plan9asm.LLVMType{mode.argType}) ||
+					!reflect.DeepEqual(row.OriginalInstruction, original) ||
+					row.LLVMObjectCompilation.Status != "pass" || row.RuntimeExecution.Status != "not_run" {
+					t.Fatalf("wrong numerical address or object evidence: %+v, %+v", sig, row)
+				}
+				row.NumericAddressArgument, row.MemoryPointerArgument = false, true
+				if err := row.probe(mode.arch); !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+					t.Fatalf("opaque base was reused as a numerical index: %s: %v", original.Raw, err)
+				}
+			}
+		})
+	}
+}
+
 func TestInitializedContextReprobeVectorMemoryCompactExpand(t *testing.T) {
 	for _, arch := range []string{"amd64", "386"} {
 		t.Run(arch, func(t *testing.T) {

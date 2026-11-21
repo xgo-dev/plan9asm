@@ -198,7 +198,7 @@ func main() {
 		corpus   = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9")
 		goroot   = flag.String("goroot", "", "Go root containing official assembler testdata (default: active Go toolchain)")
 		input    = flag.String("input", "", "input file for corpora that require one")
-		reprobe  = flag.String("initialized-context-reprobe", "", "synthetic input profile for objects: mask-logical|scalar-register|scalar-memory|vector-register|vector-memory")
+		reprobe  = flag.String("initialized-context-reprobe", "", "synthetic input profile for objects: mask-logical|scalar-register|scalar-memory|vector-register|vector-memory|vector-numeric-memory")
 		llc      = flag.String("llc", "", "LLVM22 llc executable for an explicitly enabled initialized-context reprobe")
 	)
 	flag.Parse()

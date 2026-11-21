@@ -20,11 +20,7 @@ func x86LoweredBlockNativeMemory(ins Instr, state *x86ResultState, owned []bool,
 	if memory.Kind != OpMem || memory.Mem.Sym != "" || !x86OrdinaryNativeMemoryOperand(memory, arch) {
 		return false, false
 	}
-	address := x86ResultIncomingPointerReadAddressIdentity(memory, state, arch)
-	if form.memoryWrite {
-		address = x86ResultIncomingPointerAddressIdentity(memory, state, arch)
-	}
-	if !address {
+	if !x86ResultPairedNativeAddress(ins, memory, state, arch, !form.memoryWrite) {
 		return false, true
 	}
 	return x86ResultBlockTransferWithNativeMemory(ins, form, state, owned, resultOffset, arch, true), true
@@ -72,7 +68,7 @@ func x86ResultBlockTransferWithNativeMemory(ins Instr, form x86InsertExtractForm
 		}
 		if nativeMemory && x86ResultNamedPredicateInstruction(ins) && ins.x86NumericalRead == nil &&
 			x86OrdinaryNativeMemoryOperand(destination, arch) &&
-			x86ResultIncomingPointerAddressIdentity(destination, state, arch) {
+			x86ResultPairedNativeAddress(ins, destination, state, arch, false) {
 			return true // A native masked store neither reads nor initializes inactive bytes.
 		}
 		if form.mask >= 0 {
