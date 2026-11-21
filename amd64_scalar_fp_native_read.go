@@ -425,6 +425,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultNumericalReadStep(ins, state, owned, resultOffset, arch); known {
 			return accepted // A checked mutable SB source keeps its own lifetime and byte effects.
 		}
+		if accepted, known := x86LoweredBoundStep(ins, state, owned, arch, c.targetTriple); known {
+			return accepted
+		}
 		if state.mode32Frame != nil {
 			for _, operand := range ins.Args {
 				if _, local := state.mode32Frame.offset(operand, 0); local {

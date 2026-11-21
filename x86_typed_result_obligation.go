@@ -41,6 +41,9 @@ func x86TypedFPResultNeedsProof(fn Func, sig FuncSig, arch string) bool {
 		if x86LinuxSyscallCandidate(ins) {
 			return true // Every source argument and the target-aware raw transition remain obligations, including Void.
 		}
+		if _, known, err := x86BoundProperties(ins.Op, ins, arch); known && err == nil {
+			return true // The value and both bounds are consumed by a native check, including in Void functions.
+		}
 		if form, known, err := x86ScalarCompareProperties(ins.Op, ins, arch); known && err == nil && form.memory >= 0 {
 			return true // Dead compare/test FLAGS do not remove the original faulting read or its inputs.
 		}
