@@ -28,6 +28,7 @@ func TestX86StaticIntegerSIMDSBStoresCompleteMoveFamily(t *testing.T) {
 	for _, target := range x86RawReturnTargets {
 		for _, row := range x86StaticSIMDStoreRows {
 			t.Run(target.triple+"/"+row.op, func(t *testing.T) {
+				bits := x86NamedGPSIMDMemoryOracleBits(target.arch, row.op, row.width*8)
 				source := x86StaticSIMDStoreSource(row.op)
 				x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
 				file, err := Parse(ArchAMD64, source)
@@ -42,7 +43,7 @@ func TestX86StaticIntegerSIMDSBStoresCompleteMoveFamily(t *testing.T) {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(api, func(t *testing.T) {
 						ir, err := x86ScalarFPBitViewAPI(t, source, "func view() uint32\n", target.arch, target.triple, api)
-						if err != nil || !strings.Contains(ir, fmt.Sprintf("store volatile i%d", row.width*8)) {
+						if err != nil || !strings.Contains(ir, fmt.Sprintf("store volatile i%d", bits)) {
 							t.Fatal("complete initialized X source lost its exact static store", err)
 						}
 						for _, backend := range []string{"-O0", "-O2"} {
@@ -59,10 +60,11 @@ func TestX86StaticIntegerSIMDSBStoresRetainInputResultAndExtentBoundaries(t *tes
 	for _, target := range x86RawReturnTargets {
 		for _, row := range x86StaticSIMDStoreRows {
 			original := x86StaticSIMDStoreSource(row.op)
+			width := x86NamedGPSIMDMemoryOracleBits(target.arch, row.op, row.width*8) / 8
 			for name, source := range map[string]string{
 				"unknown-source": strings.Replace(original, "PXOR X0,X0\n", "", 1),
 				"missing-result": strings.Replace(original, "MOVL AX,ret+0(FP)\n", "", 1),
-				"short-extent":   strings.Replace(original, "$16\n", fmt.Sprintf("$%d\n", row.width+3), 1),
+				"short-extent":   strings.Replace(original, "$16\n", fmt.Sprintf("$%d\n", width+3), 1),
 				"unknown-symbol": strings.Replace(original, "X0,slot<>+4(SB)", "X0,externalSlot(SB)", 1),
 			} {
 				t.Run(target.triple+"/"+row.op+"/"+name, func(t *testing.T) {

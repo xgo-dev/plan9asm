@@ -441,6 +441,28 @@ func TestInitializedContextReprobeVectorMemoryUsesDeclaredPointer(t *testing.T) 
 		"VPERMB (DI), Z8, K1, Z3",
 		"VDBPSADBW $65, 7(AX)(CX*4), X17, K3, X5",
 		"VMOVNTDQ Y26, 15(DX)(BX*4)",
+		"VEXTRACTF128 $7, Y2, (BX)",
+		"VEXTRACTI128 $7, Y2, (BX)",
+		"VEXTRACTF32X4 $1, Y5, K3, 7(AX)",
+		"VEXTRACTF64X2 $0, Z21, K7, 7(SI)(DI*8)",
+		"VEXTRACTI32X4 $0, Y9, K5, 7(SI)(DI*1)",
+		"VEXTRACTI64X2 $0, Y31, K2, 15(DX)(BX*4)",
+		"VEXTRACTF32X8 $0, Z12, K4, 15(R8)",
+		"VEXTRACTF64X4 $0, Z2, K2, 15(R8)(R14*8)",
+		"VEXTRACTI32X8 $1, Z23, K4, -15(BX)",
+		"VEXTRACTI64X4 $1, Z3, K3, 7(AX)(CX*4)",
+		"VEXTRACTPS $7, X2, (BX)",
+		"VPEXTRB $79, X26, 7(SI)(DI*1)",
+		"VPEXTRW $17, X20, -15(R11)(CX*1)",
+		"VPEXTRD $64, X22, -7(DI)",
+		"VPEXTRQ $27, X30, -15(R14)(R15*1)",
+		"VMOVQ X20, -15(R11)(CX*1)",
+		"VMOVSD -7(CX)(DX*1), K3, X11",
+		"VMOVSD X0, K2, 15(DX)(BX*1)",
+		"VMOVSS -7(CX)(DX*8), K7, X27",
+		"VMOVSS X2, (BX)",
+		"MOVSS X2, (BX)",
+		"MOVSD X2, (BX)",
 		"VPMINUD 99(R15)(R15*4), Z9, K5, Z0",
 		"VSHUFPS $67, (SP), Z9, K7, Z9",
 		"MASKMOVOU X0,X2",
@@ -462,7 +484,7 @@ func TestInitializedContextReprobeVectorMemoryUsesDeclaredPointer(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if evidence.Status != "pass" || evidence.EligibleCases != 20 || len(evidence.UnregisteredCases) != 4 {
+	if evidence.Status != "pass" || evidence.EligibleCases != 42 || len(evidence.UnregisteredCases) != 4 {
 		t.Fatalf("unexpected fixed-span selection: status=%s eligible=%d unregistered=%d",
 			evidence.Status, evidence.EligibleCases, len(evidence.UnregisteredCases))
 	}

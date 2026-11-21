@@ -138,7 +138,7 @@ func TestX86GPSIMDNativeResultBytesAndOrigins(t *testing.T) {
 			t.Run(arch+"/"+row.op, func(t *testing.T) {
 				ins := x86ScalarLaneInstruction(t, row.op+" -1(DX)(BX*1),X1")
 				form, known, err := x86GPSIMDTransferProperties(ins, arch)
-				if !known || err != nil || form.bits != row.width*8 {
+				if !known || err != nil || form.bits != x86NamedGPSIMDMemoryOracleBits(arch, row.op, row.width*8) {
 					t.Fatal("native memory width changed", form, err)
 				}
 				state := x86ResultState{flags: x86ByteFlagsAll}

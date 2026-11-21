@@ -143,7 +143,40 @@ func TestInitializedX86SharedVectorFamilyRegisters(t *testing.T) {
 		"KUNPCKWD K7, K5, K3",
 		"VPMOVB2M X0, K5",
 		"VPMOVM2D K3, Z7",
+		"VEXTRACTF32X4 $1, Z14, K7, X2",
+		"VINSERTPS $7, X2, X9, X2",
+		"VPEXTRQ $7, X2, AX",
+		"VPINSRD $1, AX, X2, X3",
+		"VMOVSD X2, X9, X2",
+		"VMOVQ X2, X7",
 	}, InitializedVectorRegisterProbeSequence)
+}
+
+func TestInitializedX86VectorTransferMemoryWidths(t *testing.T) {
+	for _, test := range []struct {
+		arch, source string
+		width        int64
+	}{
+		{"386", "VPEXTRQ $1, X2, (BX)", 4}, // WIG lane extraction writes a dword.
+		{"386", "VMOVQ X2, (BX)", 4},       // Go selects W1 66 7E, whose W is ignored.
+		{"386", "INSERTPS $7, (BX), X2", 4},
+		{"amd64", "VPEXTRQ $1, X2, (BX)", 8},
+		{"amd64", "VPINSRW $7, (BX), X2, X3", 2},
+		{"amd64", "VINSERTF32X4 $1, (BX), Z14, K7, Z2", 16},
+		{"amd64", "VINSERTF64X4.Z $1, (BX), Z14, K7, Z2", 32},
+		{"amd64", "VEXTRACTF32X4 $1, Z14, K7, (BX)", 16},
+		{"amd64", "VEXTRACTF64X4.Z $1, Z14, K7, (BX)", 0},
+		{"amd64", "VMOVSD.Z (BX), K7, X2", 8},
+		{"amd64", "VMOVSS X2, K7, (BX)", 4},
+	} {
+		t.Run(test.arch+"/"+test.source, func(t *testing.T) {
+			ins := x86ScalarLaneInstruction(t, test.source)
+			_, width, valid := initializedVectorOperands(test.arch, ins)
+			if valid != (test.width > 0) || valid && width != test.width {
+				t.Fatalf("initialized memory span = (%d, %v), want %d bytes", width, valid, test.width)
+			}
+		})
+	}
 }
 
 func checkInitializedRegisterFamily(t *testing.T, arch string, sources []string, profile func(string, Instr) ([]Instr, bool, error)) {

@@ -42,7 +42,9 @@ func (f x86GPSIMDTransferForm) definedVectorBytes(source, previous uint64) uint6
 }
 
 // Encoding/width selection grants neither initialized data nor memory backing.
-// In mode32 VEX.W is ignored for GP transfers, but Q memory/X copies stay 64-bit.
+// Go selects the W1 66 6E/7E rows for named VMOVQ with a GP or memory
+// operand. Those rows ignore W in mode32. The decoded D6/F3 7E vector
+// rows and named X-to-X copies retain their quadword width.
 func x86GPSIMDTransferProperties(ins Instr, arch string) (x86GPSIMDTransferForm, bool, error) {
 	base, _, dotted := strings.Cut(strings.ToUpper(string(ins.Op)), ".")
 	spec, known := x86GPSIMDTransferSpecs[Op(base)]
@@ -68,6 +70,10 @@ func x86GPSIMDTransferProperties(ins Instr, arch string) (x86GPSIMDTransferForm,
 	}
 	src, dst := ins.Args[0], ins.Args[1]
 	f.sourceX, f.destinationX = isAMD64GoXRegister(src), isAMD64GoXRegister(dst)
+	if arch == "386" && base == "VMOVQ" && f.sourceX != f.destinationX &&
+		!ins.x86Encoded && ins.x86SourceRaw == nil {
+		f.bits = 32
+	}
 	for _, arg := range ins.Args {
 		if isAMD64GoXRegister(arg) {
 			index, _ := amd64ParseXReg(arg.Reg)

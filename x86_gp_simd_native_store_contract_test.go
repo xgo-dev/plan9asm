@@ -10,11 +10,10 @@ import (
 	"testing"
 )
 
-// Independent named store inventory: Go's MOVD and MOVDQ2Q alias MOVQ,
-// while VMOVQ's memory width stays eight bytes even in mode32.
+// Independent named store inventory for amd64. Go's MOVD and MOVDQ2Q alias MOVQ.
 var x86GPSIMDNativeStoreRows = []struct {
 	op    string
-	bytes int64
+	bytes int
 }{
 	{"MOVL", 4}, {"MOVQ", 8}, {"MOVD", 8}, {"MOVDQ2Q", 8},
 	{"VMOVD", 4}, {"VMOVQ", 8},
@@ -24,9 +23,10 @@ func TestX86GPSIMDNativeStoreNumericalContinuation(t *testing.T) {
 	for _, arch := range []string{"amd64", "386"} {
 		for _, row := range x86GPSIMDNativeStoreRows {
 			t.Run(arch+"/"+row.op, func(t *testing.T) {
+				width := x86NamedGPSIMDMemoryOracleBits(arch, row.op, row.bytes*8) / 8
 				ins := x86YMMReadSource(t, row.op+" X0,(BX)")
 				form, known, err := x86GPSIMDTransferProperties(ins, arch)
-				if !known || err != nil || !form.memoryWrite || int64(form.bits/8) != row.bytes {
+				if !known || err != nil || !form.memoryWrite || form.bits/8 != width {
 					t.Fatal("complete named store grammar changed", form, err)
 				}
 				state := x86ResultState{flags: x86ByteFlagsAll, direction: x86ResultDirectionBackward}
@@ -40,7 +40,7 @@ func TestX86GPSIMDNativeStoreNumericalContinuation(t *testing.T) {
 					t.Fatal("standalone observer acquired native write permission")
 				}
 				state = before.clone()
-				state.writeVector(0, 64, uint64(1)<<uint(row.bytes)-1, false)
+				state.writeVector(0, 64, uint64(1)<<uint(width)-1, false)
 				minimal := state.clone()
 				if !x86ResultGPSIMDTransferWithNativeMemory(ins, form, &state, nil, 0, arch, true) || !reflect.DeepEqual(state, minimal) {
 					t.Fatal("native store required or invented bytes above its exact scalar width")
@@ -60,7 +60,7 @@ func TestX86GPSIMDNativeStoreNumericalContinuation(t *testing.T) {
 						t.Fatal("named store granted an unbound physical access", mutation)
 					}
 				}
-				for missing := int64(-1); missing < row.bytes; missing++ {
+				for missing := -1; missing < width; missing++ {
 					state = before.clone()
 					if missing < 0 {
 						state.pointerGP[3] = false
@@ -160,7 +160,7 @@ func TestX86GPSIMDNativeStorePortableBytes(t *testing.T) {
 		fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-%d\n%s p+0(FP),BX\nMOVQ value+%d(FP),X0\n%s X0,1(BX)\nRET\n",
 			name, word+8, move, word, row.op)
 		fmt.Fprintf(&prototypes, "extern void %s(void*,uint64_t);\n", name)
-		fmt.Fprintf(&rows, "{%s,%d},\n", name, row.bytes)
+		fmt.Fprintf(&rows, "{%s,%d},\n", name, x86NamedGPSIMDMemoryOracleBits(arch, row.op, row.bytes*8)/8)
 	}
 	x86LEAActualTargetGoObject(t, arch, originalTriple, source.String())
 	driver := "#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n" + prototypes.String() + `

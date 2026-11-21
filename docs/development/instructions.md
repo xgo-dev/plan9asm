@@ -1383,8 +1383,9 @@ X128-clearing, native eight-byte read and address effects.
 The grammar feeds original-source validation,
 CFG routing, lowering, private FP-result initialization and caller byte effects;
 the direct scalar module prototype cannot bypass it. Legacy writes preserve
-upper vector aliases, while VEX/EVEX writes clear them. Mode32 VEX GP transfers
-use 32 bits even for VMOVQ; its memory/X copies remain 64-bit. Raw-only VMOVW
+upper vector aliases, while VEX/EVEX writes clear them. In mode32 the 66 6E/7E
+encodings transfer 32 bits, including Go's named VMOVQ GP and memory forms.
+The D6 and F3 7E vector encodings retain 64 bits. Raw-only VMOVW
 keeps its decoder-bound 16-bit role and does not authorize named instructions
 or caller state. Bind both complete current and historical legacy tables,
 including the historical signed-imm32 MOVQ row. Keep every-byte FP holes,

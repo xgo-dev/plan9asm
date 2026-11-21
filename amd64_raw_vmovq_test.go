@@ -173,7 +173,6 @@ func TestDecodedX86VMOVQInstructionRejectsInvalidVEXForms(t *testing.T) {
 		{name: "truncated_modrm", code: []byte{0xc5, 0xfa, 0x7e}, mode: 64},
 		{name: "vex_l_one", code: []byte{0xc5, 0xfe, 0x7e, 0xc8}, mode: 64},
 		{name: "used_vvvv", code: []byte{0xc5, 0xf2, 0x7e, 0xc8}, mode: 64},
-		{name: "w_one_in_386", code: []byte{0xc4, 0xe1, 0xf9, 0x6e, 0xc8}, mode: 32},
 		{name: "extended_register_in_386", code: []byte{0xc5, 0x7a, 0x7e, 0xc0}, mode: 32},
 		{name: "rip_relative", code: []byte{0xc5, 0xfa, 0x7e, 0x05, 0, 0, 0, 0}, mode: 64},
 	}

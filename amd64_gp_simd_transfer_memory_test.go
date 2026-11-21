@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+// Go's named VMOVQ memory rows use 66 6E/7E, which transfer 32 bits in IA-32.
+func x86NamedGPSIMDMemoryOracleBits(arch, op string, bits int) int {
+	if arch == "386" && op == "VMOVQ" {
+		return 32
+	}
+	return bits
+}
+
 func TestX86GPSIMDTransferFPSpansRejectEveryMissingByteBeforeIR(t *testing.T) {
 	for _, op := range []string{"MOVL", "MOVQ", "MOVD", "VMOVD", "VMOVQ"} {
 		width := 4
@@ -48,6 +56,7 @@ func TestX86GPSIMDTransferDeadMemoryRetainsNativeWidth(t *testing.T) {
 				bits = 64
 			}
 			for _, arch := range []string{"amd64", "386"} {
+				bits := x86NamedGPSIMDMemoryOracleBits(arch, op, bits)
 				source := "TEXT f(SB),4,$0-0\n" + op + " (AX),X0\nRET\n"
 				goAssemblerOracleOutput(t, arch, source, "", true)
 				file, err := Parse(ArchAMD64, source)

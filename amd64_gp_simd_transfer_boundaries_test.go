@@ -101,11 +101,12 @@ func TestX86GPSIMDTransferFPCompleteFieldsThreeAPIsFiveTargets(t *testing.T) {
 		if op == "MOVQ" || op == "MOVD" || op == "VMOVQ" {
 			bits = 64
 		}
-		for _, input := range []string{"uint64", fmt.Sprintf("[%d]byte", bits/8)} {
-			fixture := x86ScalarFPBitFixture{name: op + "/" + input,
-				declaration: fmt.Sprintf("func view(x %s) uint%d\n", input, bits),
-				body:        op + " x+0(FP),X1\n" + op + " X1,ret+8(FP)"}
-			for _, target := range x86RawReturnTargets {
+		for _, target := range x86RawReturnTargets {
+			width := x86NamedGPSIMDMemoryOracleBits(target.arch, op, bits)
+			for _, input := range []string{"uint64", fmt.Sprintf("[%d]byte", width/8)} {
+				fixture := x86ScalarFPBitFixture{name: op + "/" + input,
+					declaration: fmt.Sprintf("func view(x %s) uint%d\n", input, width),
+					body:        op + " x+0(FP),X1\n" + op + " X1,ret+8(FP)"}
 				t.Run(fixture.name+"/"+target.triple, func(t *testing.T) {
 					source := x86ScalarFPBitAssembly(t, fixture, target.arch)
 					x86LEAActualTargetGoObject(t, target.arch, target.triple, source)

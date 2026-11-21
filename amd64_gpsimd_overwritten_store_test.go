@@ -98,10 +98,11 @@ func TestX86GPSIMDOverwrittenNativeStoresThreeAPIsFiveTargets(t *testing.T) {
 								ir = x86MulDivRoundOptimize(t, ir)
 							}
 							for index, form := range forms {
+								bits := x86NamedGPSIMDMemoryOracleBits(target.arch, form.op, form.bits)
 								for _, memory := range []bool{true, false} {
 									name := fmt.Sprintf("Store%d_%t", index, memory)
 									t.Run(form.op+fmt.Sprintf("/OpMem=%t", memory), func(t *testing.T) {
-										x86GPSIMDCheckNativeStoreEffects(t, ir, name, form.bits)
+										x86GPSIMDCheckNativeStoreEffects(t, ir, name, bits)
 									})
 								}
 							}

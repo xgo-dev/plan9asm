@@ -279,11 +279,19 @@ func initializedExplicitSIMDOperands(goarch string, ins Instr) ([]Operand, int64
 		return ins.Args, int64(f.memoryBytes), err == nil
 	}
 	if f, known, err := amd64PackedVectorMoveProperties(ins, goarch); known {
-		width := int64(0)
-		if f.memory >= 0 {
-			width = int64(f.byteWidth)
-		}
-		return ins.Args, width, err == nil && !f.undefinedOpcode()
+		return ins.Args, initializedSIMDMemoryWidth(f.memory, f.byteWidth), err == nil && !f.undefinedOpcode()
+	}
+	if f, known, err := x86InsertExtractProperties(ins, goarch); known {
+		return ins.Args, initializedSIMDMemoryWidth(f.memory, f.spec.chunk), err == nil && !f.undefinedOpcode()
+	}
+	if f, known, err := x86ScalarLaneProperties(ins, goarch); known {
+		return ins.Args, initializedSIMDMemoryWidth(f.memory, f.bits/8), err == nil
+	}
+	if f, known, err := amd64ScalarVectorMoveProperties(ins, goarch); known {
+		return ins.Args, initializedSIMDMemoryWidth(f.memory, f.spec.bits/8), err == nil
+	}
+	if f, known, err := x86GPSIMDTransferProperties(ins, goarch); known {
+		return ins.Args, initializedSIMDMemoryWidth(f.memory, f.bits/8), err == nil && !f.mmx
 	}
 	const packedFamilies = x86PackedArithmeticAdd | x86PackedArithmeticSubtract | x86PackedArithmeticLowMultiply
 	if f, known, err := x86PackedArithmeticProperties(ins.Op, ins, goarch, packedFamilies); known {
@@ -323,6 +331,13 @@ func initializedExplicitSIMDOperands(goarch string, ins Instr) ([]Operand, int64
 		return ins.Args, 0, err == nil
 	}
 	return nil, 0, false
+}
+
+func initializedSIMDMemoryWidth(memory, bytes int) int64 {
+	if memory < 0 {
+		return 0
+	}
+	return int64(bytes)
 }
 
 // InitializedScalarRegisterProbeSequence constructs an object-only probe for

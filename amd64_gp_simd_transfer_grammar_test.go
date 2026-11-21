@@ -73,6 +73,70 @@ func TestX86GPSIMDTransferCompleteLegacyOriginalTables(t *testing.T) {
 	}
 }
 
+func TestX86GPSIMDTransferOriginalEncodingWidths(t *testing.T) {
+	// The assembler uses the 66-prefix GP/memory rows before the vector
+	// rows. In IA-32 the 66 6E/7E rows ignore W1, while D6 and F3 7E
+	// remain quadword vector transfers.
+	rows := []struct {
+		source string
+		code   []byte
+		bits32 int
+	}{
+		{"VMOVQ X2,4(BX)", []byte{0xc4, 0xe1, 0xf9, 0x7e, 0x53, 4}, 32},
+		{"VMOVQ 4(BX),X2", []byte{0xc4, 0xe1, 0xf9, 0x6e, 0x53, 4}, 32},
+		{"VMOVQ X2,AX", []byte{0xc4, 0xe1, 0xf9, 0x7e, 0xd0}, 32},
+		{"VMOVQ AX,X2", []byte{0xc4, 0xe1, 0xf9, 0x6e, 0xd0}, 32},
+		{"VMOVQ X2,X3", []byte{0xc5, 0xf9, 0xd6, 0xd3}, 64},
+		{"", []byte{0xc5, 0xf9, 0xd6, 0x53, 4}, 64},
+		{"", []byte{0xc5, 0xfa, 0x7e, 0x53, 4}, 64},
+		{"", []byte{0xc4, 0xe1, 0xf9, 0xd6, 0x53, 4}, 64}, // VEX.WIG.
+		{"", []byte{0xc4, 0xe1, 0xfa, 0x7e, 0x53, 4}, 64}, // VEX.WIG.
+		{"", []byte{0x62, 0xf1, 0xfd, 0x08, 0x7e, 0x53, 1}, 32},
+		{"", []byte{0x62, 0xf1, 0xfd, 0x08, 0x6e, 0x53, 1}, 32},
+		{"", []byte{0x62, 0xf1, 0xfd, 0x08, 0xd6, 0x53, 1}, 64},
+		{"", []byte{0x62, 0xf1, 0xfe, 0x08, 0x7e, 0x53, 1}, 64},
+	}
+	for _, target := range []struct {
+		arch string
+		mode int
+	}{{"386", 32}, {"amd64", 64}} {
+		for _, row := range rows {
+			t.Run(fmt.Sprintf("%s/%x", target.arch, row.code), func(t *testing.T) {
+				bits := 64
+				if target.mode == 32 {
+					bits = row.bits32
+				}
+				check := func(ins Instr) {
+					t.Helper()
+					form, known, err := x86GPSIMDTransferProperties(ins, target.arch)
+					if !known || err != nil || form.bits != bits {
+						t.Fatalf("%s width = %d, want %d (%v)", ins.Raw, form.bits, bits, err)
+					}
+				}
+				if row.source != "" {
+					code, pcs := x86NumericalBoundaryGoBytes(t, target.arch, row.source+"\nRET")
+					if len(pcs) != 2 || !reflect.DeepEqual(code[pcs[0]:pcs[1]], row.code) {
+						t.Fatalf("%s selected unexpected Go bytes: %x", row.source, code)
+					}
+					check(x86ScalarLaneInstruction(t, row.source))
+				}
+				ins, size, known, err := decodedX86VMOVQInstruction(row.code, target.mode)
+				if !known || err != nil || size != len(row.code) {
+					t.Fatalf("decode = %v, %d, %t, %v", ins, size, known, err)
+				}
+				check(ins)
+				if row.code[0] == 0x62 {
+					for _, arg := range ins.Args {
+						if arg.Kind == OpMem && arg.Mem.Off != int64(bits/8) {
+							t.Fatalf("EVEX disp8 scale = %d, want %d", arg.Mem.Off, bits/8)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestX86GPSIMDTransferAllRegisterAndAddressAxes(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	if llc == "" {

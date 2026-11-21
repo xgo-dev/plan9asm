@@ -3369,22 +3369,18 @@ func decodedX86VMOVQInstructionWithMemory(code []byte, mode int, memory x86RawMe
 	op := Op("")
 	direction := xToGeneral
 	switch {
-	case opcode == 0x7e && pp == 1 && !width64:
+	case pp == 1 && (opcode == 0x6e || opcode == 0x7e):
 		op = "VMOVD"
-		direction = xToGeneral
-	case opcode == 0x6e && pp == 1 && !width64:
-		op = "VMOVD"
-		direction = generalToX
-	case opcode == 0x7e && pp == 1 && width64:
-		op = "VMOVQ"
-		direction = xToGeneral
-	case opcode == 0xd6 && pp == 1 && !width64:
+		if width64 && mode == 64 {
+			op = "VMOVQ"
+		}
+		if opcode == 0x6e {
+			direction = generalToX
+		}
+	case opcode == 0xd6 && pp == 1:
 		op = "VMOVQ"
 		direction = xToVector
-	case opcode == 0x6e && pp == 1 && width64:
-		op = "VMOVQ"
-		direction = generalToX
-	case opcode == 0x7e && pp == 2 && !width64:
+	case opcode == 0x7e && pp == 2:
 		op = "VMOVQ"
 		direction = vectorToX
 	default:
@@ -3412,18 +3408,16 @@ func decodedX86VMOVQInstructionWithMemory(code []byte, mode int, memory x86RawMe
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}
-	if mode == 32 && width64 && rm.Kind == OpReg {
-		return Instr{}, 0, true, fmt.Errorf("64-bit general register is unavailable in 32-bit mode")
-	}
 
 	args := []Operand{vector, rm}
 	if direction == generalToX || direction == vectorToX {
 		args[0], args[1] = rm, vector
 	}
 	instruction = Instr{
-		Op:   op,
-		Args: args,
-		Raw:  fmt.Sprintf("%s %s, %s", op, args[0].String(), args[1].String()),
+		Op:         op,
+		Args:       args,
+		Raw:        fmt.Sprintf("%s %s, %s", op, args[0].String(), args[1].String()),
+		x86Encoded: true,
 	}
 	return instruction, modRMIndex + consumed, true, nil
 }
@@ -3465,21 +3459,17 @@ func decodedX86EVEXVMOVDQInstructionWithMemory(code []byte, i, mode int, segment
 		if opcode == 0x6e {
 			direction = generalToX
 		}
-	case opcode == 0x7e && pp == 1 && !width64:
+	case pp == 1 && (opcode == 0x6e || opcode == 0x7e):
 		op = "VMOVD"
-		direction = xToGeneral
-	case opcode == 0x6e && pp == 1 && !width64:
-		op = "VMOVD"
-		direction = generalToX
-	case opcode == 0x7e && pp == 1 && width64:
-		op = "VMOVQ"
-		direction = xToGeneral
+		if width64 && mode == 64 {
+			op = "VMOVQ"
+		}
+		if opcode == 0x6e {
+			direction = generalToX
+		}
 	case opcode == 0xd6 && pp == 1 && width64:
 		op = "VMOVQ"
 		direction = xToVector
-	case opcode == 0x6e && pp == 1 && width64:
-		op = "VMOVQ"
-		direction = generalToX
 	case opcode == 0x7e && pp == 2 && width64:
 		op = "VMOVQ"
 		direction = vectorToX
@@ -3525,9 +3515,6 @@ func decodedX86EVEXVMOVDQInstructionWithMemory(code []byte, i, mode int, segment
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}
-	if mode == 32 && op == "VMOVQ" && rm.Kind == OpReg && !rmVector {
-		return Instr{}, 0, true, fmt.Errorf("64-bit general register is unavailable in 32-bit mode")
-	}
 	args := []Operand{vector, rm}
 	if direction == generalToX || direction == vectorToX {
 		args[0], args[1] = rm, vector
@@ -3536,7 +3523,7 @@ func decodedX86EVEXVMOVDQInstructionWithMemory(code []byte, i, mode int, segment
 		Op:         op,
 		Args:       args,
 		Raw:        fmt.Sprintf("%s %s, %s", op, args[0].String(), args[1].String()),
-		x86Encoded: wordMove,
+		x86Encoded: true,
 	}
 	return instruction, modRMIndex + consumed, true, nil
 }
