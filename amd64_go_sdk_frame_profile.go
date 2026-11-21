@@ -61,6 +61,10 @@ func sdkX86OriginalSourceEnvironment(request GoX86SDKASMDataCaptureRequest) (map
 	if !gostaticstorage.X86SDKTarget(request.Target) {
 		return nil, sdkASMDataContext("SDK-primary source profile requires an original x86 target")
 	}
+	return sdkOriginalSourceEnvironment(request)
+}
+
+func sdkOriginalSourceEnvironment(request GoSDKAssemblyCaptureRequest) (map[string]string, error) {
 	provided := make(map[string]string)
 	for _, pair := range request.Environment {
 		key, value, valid := strings.Cut(pair, "=")

@@ -209,11 +209,15 @@ func (source *GoX86SDKASMDataSource) typedPackage(language string) (GoPackage, e
 		return GoPackage{}, err
 	}
 	selected.Fset, selected.Sizes = fset, types.SizesFor("gc", source.guard.env["GOARCH"])
+	arch := ArchAMD64
+	if source.captureRole == sdkASMDataARM64TailRole {
+		arch = ArchARM64
+	}
 	for ordinal, cpp := range source.observation.CPP {
 		if ordinal >= len(source.guard.selection.SFiles) {
 			return GoPackage{}, sdkASMDataContext("observed assembly exceeds its exact selected inventory")
 		}
-		file, err := ParseWithDefines(ArchAMD64, cpp.Output, nil)
+		file, err := ParseWithDefines(arch, cpp.Output, nil)
 		if err != nil {
 			return GoPackage{}, sdkASMDataContext("complete observed SDK assembly lost its parsed source: %v", err)
 		}

@@ -143,7 +143,7 @@ type compileConfig struct {
 	numericalOptions     *plan9asm.Options
 	ordinaryDeclarations *ordinaryDeclarationSource
 	acquireSDKNumerical  bool
-	sdkOriginal386       func(llvm.Context) (llvm.Module, error)
+	sdkOriginal          func(llvm.Context) (llvm.Module, error)
 	buildTags            []string
 	diagnostics          *instructionDiagnostics
 }
@@ -985,19 +985,29 @@ func compileOneAttempt(pkg *packages.Package, arch plan9asm.Arch, goos, goarch, 
 	if err := outputStage.protectInputs(pkg, originalInputs, originalSearchMisses); err != nil {
 		return err
 	}
-	if goos == "linux" && goarch == "386" && pkg.Module == nil && ccfg.Feature == nil && ccfg.Context != nil &&
-		originalReads != nil && ccfg.numericalOptions == nil && ccfg.ordinaryDeclarations == nil &&
-		callerSource == nil && continuationSource == nil && fixedLocalSource == nil &&
+	if goos == "linux" && pkg.Module == nil && ccfg.Feature == nil && ccfg.Context != nil &&
+		originalReads != nil && ccfg.numericalOptions == nil &&
+		callerSource == nil && continuationSource == nil && fixedLocalSource == nil && tailSource == nil && scratchSource == nil &&
 		len(ccfg.X86TailGroups) == 0 {
-		tail := plan9asm.GoX86SDKABI0TailCandidate(file)
-		if tail || sdkPanicTerminalCandidate(pkg, file) {
-			ccfg.sdkOriginal386 = sdk386SourceFallback(pkg, t, originalReads, triple, annotate, resolve, ccfg, tail)
+		var translate sdkSourceTranslator
+		switch {
+		case goarch == "386" && ccfg.ordinaryDeclarations == nil:
+			if plan9asm.GoX86SDKABI0TailCandidate(file) {
+				translate = plan9asm.TranslateGoX86SDKABI0TailModuleInContext
+			} else if sdkPanicTerminalCandidate(pkg, file) {
+				translate = plan9asm.TranslateGoX86SDKPanicTerminalModuleInContext
+			}
+		case goarch == "arm64" && plan9asm.GoARM64SDKABI0TailCandidate(file):
+			translate = plan9asm.TranslateGoARM64SDKABI0TailModuleInContext
+		}
+		if translate != nil {
+			ccfg.sdkOriginal = sdkOriginalSourceFallback(pkg, t, originalReads, goarch, triple, annotate, resolve, ccfg, translate)
 		}
 	}
 	// A continuation and the initializer taking its block address must remain
 	// in one LLVM module, just as an oversized ordinary function stays intact.
 	if ccfg.Enabled && !ccfg.KeepObj && len(ccfg.X86TailGroups) == 0 && fixedLocalSource == nil && scratchSource == nil && numericalSource == nil && ccfg.ordinaryDeclarations == nil &&
-		ccfg.sdkOriginal386 == nil &&
+		ccfg.sdkOriginal == nil &&
 		(len(file.Funcs) > maxFunctions || instructionCount > maxInstructions) {
 		// A complete pass is necessary before splitting: an x86 function may
 		// take the byte-exact address of raw TEXT in a different chunk.
@@ -1097,8 +1107,8 @@ func translateAndCompileModule(file *plan9asm.File, triple, goarch string, t asm
 		}
 		mod, err = plan9asm.TranslateModuleInContext(ctx, file, options)
 	}
-	if ccfg.sdkOriginal386 != nil && errors.Is(err, plan9asm.ErrProbeNeedsContext) {
-		retry, retryErr := ccfg.sdkOriginal386(ctx)
+	if ccfg.sdkOriginal != nil && errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+		retry, retryErr := ccfg.sdkOriginal(ctx)
 		if retryErr == nil {
 			mod, err = retry, nil
 		} else {

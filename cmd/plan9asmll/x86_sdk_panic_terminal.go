@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"go/types"
 	"os/exec"
@@ -45,11 +46,13 @@ func sdkPanicTerminalCandidate(pkg *packages.Package, file *plan9asm.File) bool 
 	return false
 }
 
-func sdk386SourceFallback(pkg *packages.Package, task asmTask, reads *plan9asm.GoAssemblySourceReadReport,
-	triple string, annotate bool, resolve func(string) string, config compileConfig, tail bool,
+type sdkSourceTranslator func(context.Context, llvm.Context, plan9asm.GoSDKAssemblyCaptureRequest, plan9asm.GoModuleOptions) (*plan9asm.GoModuleTranslation, error)
+
+func sdkOriginalSourceFallback(pkg *packages.Package, task asmTask, reads *plan9asm.GoAssemblySourceReadReport,
+	goarch, triple string, annotate bool, resolve func(string) string, config compileConfig, translate sdkSourceTranslator,
 ) func(llvm.Context) (llvm.Module, error) {
 	return func(irCtx llvm.Context) (llvm.Module, error) {
-		const target = "linux/386"
+		target := "linux/" + goarch
 		selected := config.x86CallerSelections[pkg]
 		if err := verifyAMD64FixedLocalSelection(pkg, selected, target); err != nil {
 			return llvm.Module{}, err
@@ -66,17 +69,13 @@ func sdk386SourceFallback(pkg *packages.Package, task asmTask, reads *plan9asm.G
 		if err != nil {
 			return llvm.Module{}, err
 		}
-		request := plan9asm.GoX86SDKASMDataCaptureRequest{
+		request := plan9asm.GoSDKAssemblyCaptureRequest{
 			GoBinary: binary, Directory: filepath.Dir(member), PackagePath: pkg.PkgPath,
 			Target: target, Environment: selected.env,
 		}
-		translate := plan9asm.TranslateGoX86SDKPanicTerminalModuleInContext
-		if tail {
-			translate = plan9asm.TranslateGoX86SDKABI0TailModuleInContext
-		}
 		result, err := translate(config.Context, irCtx, request,
 			plan9asm.GoModuleOptions{
-				FileName: member, GOOS: "linux", GOARCH: "386", TargetTriple: triple,
+				FileName: member, GOOS: "linux", GOARCH: goarch, TargetTriple: triple,
 				ResolveSym: resolve, AnnotateSource: annotate,
 			})
 		if err != nil {

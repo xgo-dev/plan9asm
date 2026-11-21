@@ -38,11 +38,11 @@ TEXT shared(SB),516,$0
 				t.Fatal(err)
 			}
 			before := x86DirectTailSnapshot(original)
-			helpers := x86SDKABI0TailHelpers(original)
+			helpers := sdkABI0TailHelpers(original)
 			if !helpers["shared"] || len(helpers) != 1 {
 				t.Fatalf("same-file caller/helper discovery changed: %v", helpers)
 			}
-			projected, err := projectSDK386ABI0Tail(original, helpers)
+			projected, err := projectSDKABI0Tail(original, helpers)
 			if !reflect.DeepEqual(original, before) {
 				t.Fatal("projection altered the original file")
 			}

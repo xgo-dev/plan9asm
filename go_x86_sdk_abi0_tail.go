@@ -3,6 +3,7 @@ package plan9asm
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,38 +17,29 @@ import (
 // GoX86SDKABI0TailCandidate only routes a context failure to the SDK observer.
 // The source, callers and original assembler object still need verification.
 func GoX86SDKABI0TailCandidate(file *File) bool {
-	return len(x86SDKABI0TailHelpers(file)) != 0
+	return file != nil && file.Arch == ArchAMD64 && len(sdkABI0TailHelpers(file)) != 0
 }
 
-func x86SDKABI0TailHelpers(file *File) map[string]bool {
-	if file == nil || file.Arch != ArchAMD64 {
-		return nil
-	}
+// GoARM64SDKABI0TailCandidate selects the same-file continuation observer.
+func GoARM64SDKABI0TailCandidate(file *File) bool {
+	return file != nil && file.Arch == ArchARM64 && len(sdkABI0TailHelpers(file)) != 0
+}
+
+func sdkABI0TailEdge(arch Arch, ins Instr) bool {
+	return (ins.Op == OpJMP || arch == ArchARM64 && (ins.Op == "B" || ins.Op == OpRET)) &&
+		len(ins.Args) == 1 && ins.Args[0].Kind == OpSym
+}
+
+func sdkABI0TailHelpers(file *File) map[string]bool {
 	var possible map[string]bool
 	for _, fn := range file.Funcs {
-		if fn.FrameSize != 0 || fn.ArgSize != 0 || !nativeName.MatchString(fn.Sym) ||
-			len(fn.Instrs) < 2 || fn.Instrs[0].Op != OpTEXT {
+		if !nativeName.MatchString(fn.Sym) || !abi0FramelessHelper(fn) || !arm64TailUsesFrame(fn) {
 			continue
 		}
-		_, operands := splitOpcode(fn.Instrs[0].Raw)
-		fields := strings.Split(operands, ",")
-		if len(fields) != 3 {
-			continue
+		if possible == nil {
+			possible = make(map[string]bool)
 		}
-		flags, ok := parseImmExpr(strings.TrimSpace(fields[1]))
-		if !ok || flags != 4|512 { // Go objabi NOSPLIT | NOFRAME.
-			continue
-		}
-		for _, ins := range fn.Instrs[1:] {
-			for _, arg := range ins.Args {
-				if arg.Kind == OpFP {
-					if possible == nil {
-						possible = make(map[string]bool)
-					}
-					possible[fn.Sym] = true
-				}
-			}
-		}
+		possible[fn.Sym] = true
 	}
 	if len(possible) == 0 {
 		return nil
@@ -58,7 +50,7 @@ func x86SDKABI0TailHelpers(file *File) map[string]bool {
 			continue
 		}
 		for _, ins := range fn.Instrs {
-			if ins.Op != OpJMP || len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
+			if !sdkABI0TailEdge(file.Arch, ins) {
 				continue
 			}
 			name, offset, valid := parseSBRef(ins.Args[0].Sym)
@@ -76,16 +68,37 @@ func x86SDKABI0TailHelpers(file *File) map[string]bool {
 // The caller owns the returned module and its LLVM context.
 func TranslateGoX86SDKABI0TailModuleInContext(ctx context.Context, irCtx llvm.Context,
 	request GoX86SDKASMDataCaptureRequest, opt GoModuleOptions,
-) (result *GoModuleTranslation, resultErr error) {
+) (*GoModuleTranslation, error) {
 	triple := llvmNormalizedTargetTriple(opt.TargetTriple)
 	if request.Target != "linux/386" || opt.GOOS != "linux" || opt.GOARCH != "386" ||
-		!strings.Contains(triple, "-linux-") || !x86ScalarFloatIntegerNativeTarget("386", triple) ||
-		opt.KeepFunc != nil || opt.ManualSig != nil || opt.Sizes != nil || opt.FrameSizes != nil ||
+		!strings.Contains(triple, "-linux-") || !x86ScalarFloatIntegerNativeTarget("386", triple) {
+		return nil, sdkASMDataContext("global ABI0 tail needs the original Linux i386 target")
+	}
+	return translateGoSDKABI0TailModule(ctx, irCtx, request, opt, sdkASMDataOriginalSourceRole)
+}
+
+// TranslateGoARM64SDKABI0TailModuleInContext translates the typed caller
+// entries and retains the actual relocation-free native ARM64 entry.
+func TranslateGoARM64SDKABI0TailModuleInContext(ctx context.Context, irCtx llvm.Context,
+	request GoSDKAssemblyCaptureRequest, opt GoModuleOptions,
+) (*GoModuleTranslation, error) {
+	triple := llvmNormalizedTargetTriple(opt.TargetTriple)
+	if request.Target != "linux/arm64" || opt.GOOS != "linux" || opt.GOARCH != "arm64" ||
+		!strings.HasPrefix(triple, "aarch64-") || !strings.Contains(triple, "-linux-") {
+		return nil, sdkASMDataContext("global ABI0 tail needs the original little-endian Linux ARM64 target")
+	}
+	return translateGoSDKABI0TailModule(ctx, irCtx, request, opt, sdkASMDataARM64TailRole)
+}
+
+func translateGoSDKABI0TailModule(ctx context.Context, irCtx llvm.Context,
+	request GoSDKAssemblyCaptureRequest, opt GoModuleOptions, role sdkASMDataCaptureRole,
+) (result *GoModuleTranslation, resultErr error) {
+	if opt.KeepFunc != nil || opt.ManualSig != nil || opt.Sizes != nil || opt.FrameSizes != nil ||
 		opt.NumericalReads != nil || opt.X86TLSMoves != nil || opt.ARM64ByteCarrierSource != nil ||
 		len(opt.ARM64ClosureABIs) != 0 || opt.SourcePreprocessed {
-		return nil, sdkASMDataContext("global ABI0 tail needs the complete original Linux i386 member")
+		return nil, sdkASMDataContext("global ABI0 tail needs the complete original SDK member")
 	}
-	source, err := captureGoX86SDKASMDataSourceRole(ctx, request, sdkASMDataOriginalSourceRole)
+	source, err := captureGoX86SDKASMDataSourceRole(ctx, request, role)
 	if err != nil {
 		return nil, err
 	}
@@ -110,16 +123,16 @@ func TranslateGoX86SDKABI0TailModuleInContext(ctx context.Context, irCtx llvm.Co
 					return numericalNativeName(goStripABISuffix(symbol), prefix)
 				}
 			}
-			return translateSDK386ABI0Tail(irCtx, pkg, pkg.SourceSelection.Assembly[name], objects.Sources[ordinal], opt)
+			return translateSDKABI0Tail(irCtx, pkg, pkg.SourceSelection.Assembly[name], objects.Sources[ordinal], opt)
 		}
 	}
 	return nil, sdkASMDataContext("global ABI0 tail has no matching original SDK member")
 }
 
-func translateSDK386ABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
+func translateSDKABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 	object gostaticstorage.ASMDataSourceObservation, opt GoModuleOptions,
 ) (*GoModuleTranslation, error) {
-	helpers := x86SDKABI0TailHelpers(original)
+	helpers := sdkABI0TailHelpers(original)
 	if len(helpers) == 0 || len(object.TextOrder) != len(original.Funcs) {
 		return nil, sdkASMDataContext("original source has no complete global ABI0 tail inventory")
 	}
@@ -141,33 +154,61 @@ func translateSDK386ABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 			len(second.Relocations) != 0 || !bytes.Equal(first.Code, second.Code) {
 			return nil, sdkASMDataContext("global ABI0 helper %s needs its exact relocation-free native code", fn.Sym)
 		}
-		fmt.Fprintf(&native, ".text\n.p2align 4\n.globl %[1]s\n.type %[1]s,@function\n%[1]s:\n.byte ", fn.Sym)
-		for i, value := range first.Code {
-			if i != 0 {
-				native.WriteByte(',')
+		fmt.Fprintf(&native, ".text\n.p2align 4\n.globl %[1]s\n.type %[1]s,%%function\n%[1]s:\n", fn.Sym)
+		if original.Arch == ArchARM64 {
+			if len(first.Code)%4 != 0 {
+				return nil, sdkASMDataContext("global ARM64 helper %s does not have complete instruction words", fn.Sym)
 			}
-			fmt.Fprint(&native, value)
+			for code := first.Code; len(code) != 0; code = code[4:] {
+				fmt.Fprintf(&native, ".inst 0x%08x\n", binary.LittleEndian.Uint32(code))
+			}
+		} else {
+			native.WriteString(".byte ")
+			for i, value := range first.Code {
+				if i != 0 {
+					native.WriteByte(',')
+				}
+				fmt.Fprint(&native, value)
+			}
+			native.WriteByte('\n')
 		}
-		fmt.Fprintf(&native, "\n.size %[1]s,.-%[1]s\n", fn.Sym)
+		fmt.Fprintf(&native, ".size %[1]s,.-%[1]s\n", fn.Sym)
 	}
 
-	projected, err := projectSDK386ABI0Tail(original, helpers)
+	projected, err := projectSDKABI0Tail(original, helpers)
 	if err != nil {
 		return nil, err
 	}
-	sigs, err := goSigsForAsmFile(pkg, projected, opt.ResolveSym, "386", nil, nil, nil)
+	var tailSigs map[string]FuncSig
+	if original.Arch == ArchARM64 {
+		tailSigs, err = goBindARM64ABI0TailDeclarations(pkg, projected, opt.ResolveSym, opt)
+		if err != nil {
+			return nil, err
+		}
+		if len(tailSigs) == 0 {
+			return nil, sdkASMDataContext("global ARM64 tails need the original ABI0 caller declarations")
+		}
+		projected, err = PrepareGoARM64ABI0TailContinuations(projected, tailSigs, opt.ResolveSym)
+		if err != nil {
+			return nil, err
+		}
+	}
+	sigs, err := goSigsForAsmFile(pkg, projected, opt.ResolveSym, opt.GOARCH, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	options := Options{Goarch: "386", TargetTriple: opt.TargetTriple, ResolveSym: opt.ResolveSym,
+	if err := rebindARM64ABI0TailDeclarations(sigs, tailSigs); err != nil {
+		return nil, err
+	}
+	options := Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple, ResolveSym: opt.ResolveSym,
 		Sigs: sigs, AnnotateSource: opt.AnnotateSource, X87Mode: opt.X87Mode, goPackage: &pkg}
 	module, err := TranslateModuleInContext(ctx, projected, options)
 	if err != nil {
 		return nil, err
 	}
-	if err := promoteSDK386TailFrame(module); err != nil {
+	if err := promoteSDKTailFrame(module); err != nil {
 		module.Dispose()
-		return nil, fmt.Errorf("promote SDK i386 tail registers and frame slots: %w", err)
+		return nil, fmt.Errorf("promote SDK %s tail registers and frame slots: %w", opt.GOARCH, err)
 	}
 	var functions []GoFunction
 	for _, fn := range original.Funcs {
@@ -197,9 +238,9 @@ func translateSDK386ABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 
 var sdkTailLLVMTargets sync.Once
 
-// Frame slots contain target-sized pointers. Give LLVM its actual i386 layout
+// Frame slots contain target-sized pointers. Give LLVM its actual target layout
 // before scalarizing the frame and promoting virtual registers into SSA.
-func promoteSDK386TailFrame(module llvm.Module) error {
+func promoteSDKTailFrame(module llvm.Module) error {
 	sdkTailLLVMTargets.Do(func() {
 		llvm.InitializeAllTargetInfos()
 		llvm.InitializeAllTargets()
@@ -225,11 +266,12 @@ func promoteSDK386TailFrame(module llvm.Module) error {
 
 // Private aliases are an IR projection only. Native names are retained in the
 // module assembly. Only direct same-file tail branches can see the aliases.
-func projectSDK386ABI0Tail(original *File, helpers map[string]bool) (*File, error) {
+func projectSDKABI0Tail(original *File, helpers map[string]bool) (*File, error) {
 	file := x86DirectTailSnapshot(original)
 	for i := range file.Funcs {
 		fn := &file.Funcs[i]
 		if helpers[fn.Sym] {
+			fn.Instrs[0].Raw = strings.Replace(fn.Instrs[0].Raw, fn.Sym+"(SB)", fn.Sym+"<>(SB)", 1)
 			fn.Sym += "<>"
 		}
 		for ordinal := range fn.Instrs {
@@ -243,7 +285,7 @@ func projectSDK386ABI0Tail(original *File, helpers map[string]bool) (*File, erro
 				if !valid || !helpers[name] {
 					continue
 				}
-				if ins.Op != OpJMP || len(ins.Args) != 1 || arg.Kind != OpSym || offset != 0 ||
+				if !sdkABI0TailEdge(file.Arch, *ins) || offset != 0 ||
 					strings.HasPrefix(symbol, "$") {
 					return nil, sdkASMDataContext("global ABI0 helper is used outside a direct tail: %s", ins.Raw)
 				}

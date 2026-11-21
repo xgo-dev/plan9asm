@@ -297,14 +297,20 @@ func arm64TailUsesFrame(fn Func) bool {
 }
 
 func arm64ABI0UnboundBorrowedHelper(fn Func, resolve func(string) string, sigs map[string]FuncSig) bool {
-	if !strings.HasSuffix(fn.Sym, "<>") || fn.FrameSize != 0 || fn.ArgSize != 0 ||
-		len(fn.Instrs) == 0 || fn.Instrs[0].Op != OpTEXT {
+	if !strings.HasSuffix(fn.Sym, "<>") || !abi0FramelessHelper(fn) {
 		return false
 	}
 	if resolve != nil {
 		if _, declared := sigs[resolve(goTextSymbolForResolution(fn.Sym))]; declared {
 			return false
 		}
+	}
+	return true
+}
+
+func abi0FramelessHelper(fn Func) bool {
+	if fn.FrameSize != 0 || fn.ArgSize != 0 || len(fn.Instrs) < 2 || fn.Instrs[0].Op != OpTEXT {
+		return false
 	}
 	_, text := splitOpcode(fn.Instrs[0].Raw)
 	fields := strings.Split(text, ",")
@@ -317,6 +323,23 @@ func arm64ABI0UnboundBorrowedHelper(fn Func, resolve func(string) string, sigs m
 	}
 	named, err := nativeFlags(fields[1], "NOSPLIT", "NOFRAME")
 	return err == nil && named["NOSPLIT"] && named["NOFRAME"]
+}
+
+func rebindARM64ABI0TailDeclarations(sigs, tailSigs map[string]FuncSig) error {
+	for name, sourceSig := range tailSigs {
+		if sourceSig.arm64ABI0TailDeclaration == nil {
+			continue
+		}
+		sig, present := sigs[name]
+		if !present {
+			continue // The whole-file audit runs before dropping unused roots.
+		}
+		if !reflect.DeepEqual(arm64ABI0SignatureSnapshot(sig), arm64ABI0SignatureSnapshot(sourceSig)) {
+			return arm64GoABIContext("ABI0 tail changed its declaration during signature inference")
+		}
+		sigs[name] = sourceSig
+	}
+	return nil
 }
 
 func goBindARM64ABI0TailDeclarations(pkg GoPackage, file *File, resolve func(string) string, opt GoModuleOptions) (map[string]FuncSig, error) {

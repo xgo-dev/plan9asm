@@ -18,12 +18,14 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/sourcepath"
 )
 
-// GoX86SDKASMDataCaptureRequest selects one physical package in the invoked
+// GoSDKAssemblyCaptureRequest selects one physical package in the invoked
 // stock-Go SDK. It accepts no caller AST, Types, header, object or owner token.
-type GoX86SDKASMDataCaptureRequest struct {
+type GoSDKAssemblyCaptureRequest struct {
 	GoBinary, Directory, PackagePath, Target string
 	Environment                              []string
 }
+
+type GoX86SDKASMDataCaptureRequest = GoSDKAssemblyCaptureRequest
 
 type sdkASMDataCaptureRole uint8
 
@@ -31,6 +33,7 @@ const (
 	sdkASMDataStrictRole sdkASMDataCaptureRole = iota
 	sdkASMDataOriginalFrameRole
 	sdkASMDataOriginalSourceRole
+	sdkASMDataARM64TailRole
 )
 
 // GoX86SDKASMDataSource authenticates source/header/CPP/object observations
@@ -102,14 +105,18 @@ func captureGoX86SDKASMDataSource(ctx context.Context, request GoX86SDKASMDataCa
 // A distinct private source-only role observes the same original profile but
 // never captures AMD64 native frames or constructs their observation owner.
 func captureGoX86SDKASMDataSourceRole(ctx context.Context, request GoX86SDKASMDataCaptureRequest, role sdkASMDataCaptureRole) (_ *GoX86SDKASMDataSource, result error) {
-	if role > sdkASMDataOriginalSourceRole {
+	if role > sdkASMDataARM64TailRole {
 		return nil, sdkASMDataContext("unknown private SDK source observation role")
 	}
 	originalProfile := role != sdkASMDataStrictRole
 	if ctx != nil && ctx.Err() != nil {
 		return nil, fmt.Errorf("capture SDK ASM DATA: %w", ctx.Err())
 	}
-	if ctx == nil || !gostaticstorage.X86SDKTarget(request.Target) ||
+	targetOK := gostaticstorage.X86SDKTarget(request.Target)
+	if role == sdkASMDataARM64TailRole {
+		targetOK = request.Target == "linux/arm64"
+	}
+	if ctx == nil || !targetOK ||
 		!filepath.IsAbs(request.GoBinary) || !filepath.IsAbs(request.Directory) ||
 		!filepath.IsLocal(filepath.FromSlash(request.PackagePath)) ||
 		filepath.ToSlash(filepath.Clean(filepath.FromSlash(request.PackagePath))) != request.PackagePath {
@@ -126,6 +133,8 @@ func captureGoX86SDKASMDataSourceRole(ctx context.Context, request GoX86SDKASMDa
 		provided, err = sdkAMD64FrameEnvironment(request)
 	} else if role == sdkASMDataOriginalSourceRole {
 		provided, err = sdkX86OriginalSourceEnvironment(request)
+	} else if role == sdkASMDataARM64TailRole {
+		provided, err = sdkOriginalSourceEnvironment(request)
 	} else {
 		provided, err = sdkASMDataEnvironment(request)
 	}

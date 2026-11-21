@@ -36,22 +36,26 @@ func (source *GoX86SDKASMDataSource) validateObservedEnvironment(raw []byte, pro
 	if json.Unmarshal(raw, &env) != nil {
 		return nil, sdkASMDataContext("actual SDK/compiler environment is not a complete string observation")
 	}
-	amd64Profile := env["GOAMD64"] == "v1"
+	cpuProfile := env["GOAMD64"] == "v1"
 	if source.captureRole == sdkASMDataOriginalFrameRole && env["GOARCH"] == "amd64" {
 		// Preserve the actual CPU level and its assembly macros. An explicit
 		// input must match the observed level; an unset input may use GOENV.
 		_, err := GoAssemblerDefinesForEnvironment(env["GOOS"], "amd64", env)
 		requested := provided["GOAMD64"]
-		amd64Profile = err == nil && (requested == "" || requested == env["GOAMD64"])
+		cpuProfile = err == nil && (requested == "" || requested == env["GOAMD64"])
 	} else if source.captureRole == sdkASMDataOriginalSourceRole && env["GOARCH"] == "386" {
 		// cmd/go reports this inactive setting verbatim (including empty).
 		// Retain it in the sealed observation, never invent a v1 environment.
-		_, amd64Profile = env["GOAMD64"]
+		_, cpuProfile = env["GOAMD64"]
+	} else if source.captureRole == sdkASMDataARM64TailRole && env["GOARCH"] == "arm64" {
+		_, err := GoAssemblerDefinesForEnvironment(env["GOOS"], "arm64", env)
+		requested := provided["GOARM64"]
+		cpuProfile = err == nil && env["GOARM64"] != "" && (requested == "" || requested == env["GOARM64"])
 	}
 	if !strings.HasPrefix(env["GOVERSION"], "go1.27.") ||
 		env["GOOS"]+"/"+env["GOARCH"] != source.request.Target ||
 		filepath.Join(env["GOROOT"], "bin", gotoolchain.HostExecutable("go")) != source.request.GoBinary ||
-		!amd64Profile || env["GOARCH"] == "386" && env["GO386"] != "sse2" ||
+		!cpuProfile || env["GOARCH"] == "386" && env["GO386"] != "sse2" ||
 		env["GOFLAGS"] != "" || env["GOEXPERIMENT"] != "" ||
 		env["GOCACHE"] != provided["GOCACHE"] || env["GOMODCACHE"] != provided["GOMODCACHE"] ||
 		env["CGO_ENABLED"] != provided["CGO_ENABLED"] {
@@ -83,6 +87,10 @@ func (source *GoX86SDKASMDataSource) capture(ctx context.Context, provided map[s
 		if source.captureRole == sdkASMDataOriginalSourceRole {
 			source.observation.Protocol = "actual_go_sdk_original_source_observation_v1"
 		}
+	}
+	if source.captureRole == sdkASMDataARM64TailRole {
+		arguments = append(arguments, "GOARM64")
+		source.observation.Protocol = "actual_go_sdk_arm64_tail_source_observation_v1"
 	}
 	raw, err := source.run(ctx, arguments...)
 	if err != nil {
@@ -122,12 +130,17 @@ func (source *GoX86SDKASMDataSource) capture(ctx context.Context, provided map[s
 			return err
 		}
 	}
-	for _, role := range []string{"src/cmd/internal/goobj/builtinlist.go", "src/cmd/internal/obj/x86/asm6.go",
-		"src/cmd/internal/obj/x86/obj6.go", "src/cmd/go/internal/work/gc.go", "src/cmd/go/internal/load/pkg.go",
+	sourceRoles := []string{"src/cmd/internal/goobj/builtinlist.go", "src/cmd/go/internal/work/gc.go", "src/cmd/go/internal/load/pkg.go",
 		"src/cmd/go/internal/work/init.go", "src/internal/platform/supported.go",
 		"src/cmd/compile/internal/gc/obj.go", "src/cmd/link/internal/ld/go.go",
 		"src/cmd/asm/main.go", "src/cmd/asm/internal/lex/input.go", "src/cmd/asm/internal/lex/stack.go",
-		"src/cmd/asm/internal/lex/tokenizer.go", "src/cmd/compile/internal/typecheck/subr.go"} {
+		"src/cmd/asm/internal/lex/tokenizer.go", "src/cmd/compile/internal/typecheck/subr.go"}
+	if source.captureRole == sdkASMDataARM64TailRole {
+		sourceRoles = append(sourceRoles, "src/cmd/internal/obj/arm64/asm7.go", "src/cmd/internal/obj/arm64/obj7.go")
+	} else {
+		sourceRoles = append(sourceRoles, "src/cmd/internal/obj/x86/asm6.go", "src/cmd/internal/obj/x86/obj6.go")
+	}
+	for _, role := range sourceRoles {
 		if _, err := source.guard.read(filepath.Join(env["GOROOT"], filepath.FromSlash(role))); err != nil {
 			return err
 		}
@@ -224,7 +237,11 @@ func (source *GoX86SDKASMDataSource) capture(ctx context.Context, provided map[s
 		source.observation.CPP = append(source.observation.CPP, cpp)
 	}
 	source.observation.ObjectInputs = objectInputs
-	objects, err := gostaticstorage.ObserveX86SDKCPPASMData(objectInputs)
+	observe := gostaticstorage.ObserveX86SDKCPPASMData
+	if source.captureRole == sdkASMDataARM64TailRole {
+		observe = gostaticstorage.ObserveARM64SDKCPPASMData
+	}
+	objects, err := observe(objectInputs)
 	if err != nil {
 		return sdkASMDataContext("complete original/expanded/compiler DATA/TEXT join differs: %v", err)
 	}

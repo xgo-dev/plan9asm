@@ -73,11 +73,20 @@ func TestCompileOneSelectedSDK386AtomicWholeFile(t *testing.T) {
 }
 
 func TestCompileOneSelectedSDK386ABI0TailPreservesGlobalEntry(t *testing.T) {
+	testCompileOneSelectedSDKABI0Tail(t, "386", plan9asm.ArchAMD64, "i386-unknown-linux-gnu", elf.EM_386)
+}
+
+func TestCompileOneSelectedSDKARM64ABI0TailPreservesGlobalEntry(t *testing.T) {
+	testCompileOneSelectedSDKABI0Tail(t, "arm64", plan9asm.ArchARM64, "aarch64-unknown-linux-gnu", elf.EM_AARCH64)
+}
+
+func testCompileOneSelectedSDKABI0Tail(t *testing.T, goarch string, arch plan9asm.Arch, triple string, machine elf.Machine) {
+	t.Helper()
 	const packagePath = "crypto/internal/fips140/bigmod"
 	setX86SDKNumericalCLIProfile(t, "explicit")
 	t.Setenv("GOROOT", runtime.GOROOT())
 	t.Chdir(filepath.Join(runtime.GOROOT(), "src", filepath.FromSlash(packagePath)))
-	packages, environment, err := loadPkgsInEnvironment("linux", "386", []string{"."}, nil, "", true, false, nil)
+	packages, environment, err := loadPkgsInEnvironment("linux", goarch, []string{"."}, nil, "", true, false, nil)
 	if err != nil || len(packages) != 1 || packages[0].PkgPath != packagePath {
 		t.Fatal("could not load the original SDK package", err)
 	}
@@ -87,10 +96,10 @@ func TestCompileOneSelectedSDK386ABI0TailPreservesGlobalEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	config.Context = arm64PrivateCLIContext(t)
-	config.x86CallerSelections = captureX86CallerSelectionsInEnvironment(packages, "linux/386", environment)
+	config.x86CallerSelections = captureX86CallerSelectionsInEnvironment(packages, "linux/"+goarch, environment)
 	output := filepath.Join(t.TempDir(), "nat.ll")
-	task := asmTask{PkgPath: pkg.PkgPath, AsmFile: filepath.Join(pkg.Dir, "nat_386.s"), OutLL: output}
-	if err := compileOne(pkg, plan9asm.ArchAMD64, "linux", "386", "i386-unknown-linux-gnu", task, false, config); err != nil {
+	task := asmTask{PkgPath: pkg.PkgPath, AsmFile: filepath.Join(pkg.Dir, "nat_"+goarch+".s"), OutLL: output}
+	if err := compileOne(pkg, arch, "linux", goarch, triple, task, false, config); err != nil {
 		t.Fatal(err)
 	}
 	ir, err := os.ReadFile(output)
@@ -105,8 +114,8 @@ func TestCompileOneSelectedSDK386ABI0TailPreservesGlobalEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer object.Close()
-	if object.Machine != elf.EM_386 {
-		t.Fatal("expected i386 native object", object.Machine)
+	if object.Machine != machine {
+		t.Fatalf("expected %v native object, got %v", machine, object.Machine)
 	}
 	symbols, err := object.Symbols()
 	if err != nil {

@@ -181,7 +181,24 @@ func ObserveX86SDKASMDataListingObjects(request SDKASMDataObservationRequest, or
 }
 
 func observeX86SDKASMData(request SDKASMDataObservationRequest, cpp bool) (*SDKASMDataObservation, error) {
-	if !X86SDKTarget(request.Target) || request.PackagePath == "" ||
+	if !X86SDKTarget(request.Target) {
+		return nil, contextError("unobserved SDK DATA target or package identity")
+	}
+	return observeSDKASMData(request, cpp)
+}
+
+// ObserveARM64SDKCPPASMData joins the original and expanded Linux ARM64
+// objects to the selected archive. The x86 float-pool grammar cannot account
+// for ARM64-generated DATA. Unexpected definitions fail the ordinary join.
+func ObserveARM64SDKCPPASMData(request SDKASMDataObservationRequest) (*SDKASMDataObservation, error) {
+	if request.Target != "linux/arm64" {
+		return nil, contextError("unobserved ARM64 SDK ASM target")
+	}
+	return observeSDKASMData(request, true)
+}
+
+func observeSDKASMData(request SDKASMDataObservationRequest, cpp bool) (*SDKASMDataObservation, error) {
+	if request.PackagePath == "" ||
 		strings.ContainsAny(request.PackagePath, "\x00\r\n") || len(request.PackagePath) > 4096 {
 		return nil, contextError("unobserved SDK DATA target or package identity")
 	}
@@ -308,13 +325,16 @@ func observeX86SDKASMData(request SDKASMDataObservationRequest, cpp bool) (*SDKA
 		if err != nil || !sameGeneratedFuncdata(generated, expandedGenerated) {
 			return nil, contextError("original/expanded generated FUNCDATA roles differ")
 		}
-		pools, err := generatedASMFloatPools(originalGrammar, request.Target, original, textOrder)
-		if err != nil {
-			return nil, err
-		}
-		expandedPools, err := generatedASMFloatPools(expandedGrammar, request.Target, expanded, expandedOrder)
-		if err != nil || !sameGeneratedFloatPools(pools, expandedPools) {
-			return nil, contextError("original/expanded generated float-pool roles differ")
+		var pools, expandedPools []ASMGeneratedFloatPool
+		if X86SDKTarget(request.Target) {
+			pools, err = generatedASMFloatPools(originalGrammar, request.Target, original, textOrder)
+			if err != nil {
+				return nil, err
+			}
+			expandedPools, err = generatedASMFloatPools(expandedGrammar, request.Target, expanded, expandedOrder)
+			if err != nil || !sameGeneratedFloatPools(pools, expandedPools) {
+				return nil, contextError("original/expanded generated float-pool roles differ")
+			}
 		}
 		ordinary := asmDataWithoutGeneratedFloatPools(asmDataWithoutGeneratedFuncdata(original, generated), pools)
 		layouts, err := joinASMDataLayouts(originalStates, ordinary)

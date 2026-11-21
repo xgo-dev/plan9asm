@@ -454,17 +454,8 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 			}
 		}()
 	}
-	for name, sourceSig := range tailSigs {
-		if sourceSig.arm64ABI0TailDeclaration != nil {
-			sig, present := sigs[name]
-			if !present {
-				continue // Whole-file audit ran before dropping this unused root.
-			}
-			if !reflect.DeepEqual(arm64ABI0SignatureSnapshot(sig), arm64ABI0SignatureSnapshot(sourceSig)) {
-				return nil, arm64GoABIContext("ABI0 tail changed its declaration during signature inference")
-			}
-			sigs[name] = sourceSig
-		}
+	if err := rebindARM64ABI0TailDeclarations(sigs, tailSigs); err != nil {
+		return nil, err
 	}
 	if err := bindGoARM64ClosureABIs(pkg, &closureSource, sigs, opt, resolve); err != nil {
 		return nil, err
