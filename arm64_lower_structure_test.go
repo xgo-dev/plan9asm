@@ -49,6 +49,18 @@ func TestTranslateARM64StructureLoadStoreCompleteGoAssemblerForms(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
+			for count := 2; count <= 4; count++ {
+				for _, name := range arrangements {
+					arrangement, ok := parseARM64VectorArrangement(Reg("V0." + name))
+					if !ok {
+						t.Fatalf("invalid fixture arrangement %s", name)
+					}
+					vector := fmt.Sprintf("<%d x i%d>", count*arrangement.lanes, arrangement.elementBits)
+					if !strings.Contains(ll, "load "+vector+",") || !strings.Contains(ll, "store "+vector+" ") {
+						t.Errorf("VLD%d/VST%d %s must transfer the exact interleaved vector %s", count, count, name, vector)
+					}
+				}
+			}
 			llc := findLLVM22Tool("llc")
 			if llc == "" {
 				t.Fatal("LLVM 22 llc not found")

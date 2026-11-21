@@ -55,7 +55,6 @@ func (c *arm64Ctx) lowerARM64StructureLoadStore(op Op, postInc bool, ins Instr) 
 		return true, false, c.lowerStructureLane(form)
 	}
 	registers, arrangement := form.registers, form.arrangement
-	registerCount := len(registers)
 	addr, increment, err := c.structureAddress(form)
 	if err != nil {
 		return true, false, err
@@ -76,41 +75,9 @@ func (c *arm64Ctx) lowerARM64StructureLoadStore(op Op, postInc bool, ins Instr) 
 		if err := c.lowerContiguousStructureTransfer(form, addr); err != nil {
 			return true, false, err
 		}
-	} else if form.load {
-		for registerIndex, reg := range registers {
-			value := "poison"
-			for lane := 0; lane < arrangement.lanes; lane++ {
-				elementOffset := arm64StructureElementOffset(form.op, arrangement, registerCount, registerIndex, lane)
-				element, err := c.arm64LoadStructureElement(addr, elementOffset, arrangement.elementBits)
-				if err != nil {
-					return true, false, err
-				}
-				inserted := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = insertelement <%d x i%d> %s, i%d %s, i32 %d\n",
-					inserted, arrangement.lanes, arrangement.elementBits, value, arrangement.elementBits, element, lane)
-				value = "%" + inserted
-			}
-			if err := c.storeARM64VectorInteger(reg, arrangement, value); err != nil {
-				return true, false, err
-			}
-		}
 	} else {
-		values := make([]string, registerCount)
-		for i, reg := range registers {
-			values[i], err = c.loadARM64VectorInteger(reg, arrangement)
-			if err != nil {
-				return true, false, err
-			}
-		}
-		for lane := 0; lane < arrangement.lanes; lane++ {
-			for registerIndex := range registers {
-				element := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = extractelement <%d x i%d> %s, i32 %d\n", element, arrangement.lanes, arrangement.elementBits, values[registerIndex], lane)
-				elementOffset := arm64StructureElementOffset(form.op, arrangement, registerCount, registerIndex, lane)
-				if err := c.arm64StoreStructureElement(addr, elementOffset, arrangement.elementBits, "%"+element); err != nil {
-					return true, false, err
-				}
-			}
+		if err := c.lowerInterleavedStructureTransfer(form, addr); err != nil {
+			return true, false, err
 		}
 	}
 	if postInc {
@@ -157,12 +124,66 @@ func (c *arm64Ctx) lowerContiguousStructureTransfer(form arm64StructureMemoryFor
 	return nil
 }
 
-func arm64StructureElementOffset(op Op, arrangement arm64VectorArrangement, registerCount, registerIndex, lane int) int64 {
-	elementBytes := arrangement.elementBits / 8
-	if op == "VLD1" || op == "VST1" {
-		return int64(registerIndex*arrangement.lanes*elementBytes + lane*elementBytes)
+// LD/ST2-4 transfer exactly one interleaved memory span. Regular strided
+// shuffles let LLVM select the native structure operations where available.
+func (c *arm64Ctx) lowerInterleavedStructureTransfer(form arm64StructureMemoryForm, addr string) error {
+	arrangement := form.arrangement
+	count, lanes := len(form.registers), arrangement.lanes
+	wideType := fmt.Sprintf("<%d x i%d>", count*lanes, arrangement.elementBits)
+	pointer := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pointer, addr)
+	if form.load {
+		wide := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", wide, wideType, pointer)
+		indices := make([]int, lanes)
+		for i, reg := range form.registers {
+			for lane := range indices {
+				indices[lane] = lane*count + i
+			}
+			value := c.arm64StructureShuffle(wideType, "%"+wide, "poison", indices)
+			if err := c.storeARM64VectorInteger(reg, arrangement, value); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	return int64((lane*registerCount + registerIndex) * elementBytes)
+
+	var values [4]string
+	for i, reg := range form.registers {
+		value, err := c.loadARM64VectorInteger(reg, arrangement)
+		if err != nil {
+			return err
+		}
+		values[i] = value
+	}
+	vectorType := fmt.Sprintf("<%d x i%d>", lanes, arrangement.elementBits)
+	left, right := values[0], values[1]
+	if count > 2 {
+		concat := make([]int, 2*lanes)
+		for i := range concat {
+			concat[i] = i
+		}
+		if count == 3 {
+			values[3] = "poison" // No lane of the absent register is selected.
+		}
+		left = c.arm64StructureShuffle(vectorType, left, right, concat)
+		right = c.arm64StructureShuffle(vectorType, values[2], values[3], concat)
+		vectorType = fmt.Sprintf("<%d x i%d>", 2*lanes, arrangement.elementBits)
+	}
+	indices := make([]int, count*lanes)
+	for i := range indices {
+		indices[i] = (i%count)*lanes + i/count
+	}
+	value := c.arm64StructureShuffle(vectorType, left, right, indices)
+	fmt.Fprintf(c.b, "  store %s %s, ptr %%%s, align 1\n", wideType, value, pointer)
+	return nil
+}
+
+func (c *arm64Ctx) arm64StructureShuffle(vectorType, left, right string, indices []int) string {
+	name := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = shufflevector %s %s, %s %s, %s\n",
+		name, vectorType, left, vectorType, right, arm64LLVMShuffleMask(indices))
+	return "%" + name
 }
 
 func arm64VectorArrangementName(arrangement arm64VectorArrangement) string {
