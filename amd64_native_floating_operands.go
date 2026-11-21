@@ -21,8 +21,10 @@ type x86NativeFloatingOperands struct {
 func (c *amd64Ctx) emitNativeFloatingOperands(ins Instr, f x86NativeFloatingOperands) error {
 	source := ins.Args[0]
 	logicalFP := source.Kind == OpFP && (f.logicalFPBits == 32 || f.logicalFPBits == 64)
+	// VEX/EVEX floating arithmetic can read the proved private span without
+	// assuming stronger alignment than the source stack supplied.
 	if source.Kind == OpFP && !logicalFP || ins.x86AddressBits != 0 || source.Kind == OpMem &&
-		!c.nativeMemoryOperand(ins, 0) {
+		!c.nativeMemoryOperand(ins, 0) && (f.legacy || !c.fixedLocalMemoryCertified(ins, 0)) {
 		return fmt.Errorf("%w: %s needs original native backing", ErrProbeNeedsContext, ins.Op)
 	}
 	typ := fmt.Sprintf("<%d x float>", f.byteWidth/4) // Bit carrier, never arithmetic precision.

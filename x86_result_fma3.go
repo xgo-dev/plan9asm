@@ -30,11 +30,7 @@ func x86ResultFMA3Inputs(ins Instr, form amd64FMA3Form, state *x86ResultState, o
 			return false
 		}
 	}
-	active := form.byteWidth
-	if form.spec.scalar {
-		active = form.spec.laneBits / 8
-	}
-	required := x86CallerVectorByteMask(int64(active))
+	required := x86CallerVectorByteMask(form.inputByteWidth())
 	for _, index := range []int{0, 1, form.destination} {
 		if index == form.memory {
 			if !x86ResultReadWithNativeContinuation(ins, ins.Args[index], int64(form.memoryBytes), state, owned, arch, nativeRead) {
@@ -48,12 +44,7 @@ func x86ResultFMA3Inputs(ins Instr, form amd64FMA3Form, state *x86ResultState, o
 		}
 	}
 	destination, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
-	knownBytes := ^uint64(0)
-	if form.spec.scalar {
-		// Unlike scalar binary arithmetic, FMA's upper-X passthrough comes
-		// from the old destructive destination, not either explicit source.
-		knownBytes = required | state.vectorBytes(destination)&(0xffff&^required)
-	}
+	knownBytes := required | state.vectorBytes(destination)&form.preservedDestinationBytes()
 	state.writeVector(destination, form.byteWidth, knownBytes, false)
 	return true
 }

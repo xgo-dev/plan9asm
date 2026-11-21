@@ -140,6 +140,7 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		x86TypedIFMAByteEffect,
 		x86TypedPackedTestMaskByteEffect,
 		x86TypedFloatCompareMaskByteEffect,
+		x86TypedFMA3ByteEffect,
 	} {
 		if effect, known, err := project(op, ins, arch); known {
 			return effect, true, err

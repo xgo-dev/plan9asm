@@ -15,6 +15,18 @@ type amd64FMA3Form struct {
 	memory      int // -1 for a register first source
 }
 
+func (form amd64FMA3Form) inputByteWidth() int64 {
+	if form.spec.scalar {
+		return int64(form.spec.laneBits / 8)
+	}
+	return int64(form.byteWidth)
+}
+
+func (form amd64FMA3Form) preservedDestinationBytes() uint64 {
+	// Scalar upper-X passthrough comes from the old destructive destination.
+	return x86CallerVectorByteMask(int64(form.byteWidth)) &^ x86CallerVectorByteMask(form.inputByteWidth())
+}
+
 // Original physical generation wins over an indistinguishable named spelling.
 // Named controls/register banks remain the fallback only when that observation
 // is absent. Neither this selector nor CPU features admit raw numerical inputs.
@@ -52,11 +64,12 @@ func x86TypedFMA3ByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, 
 	if err != nil {
 		return x86TypedByteEffect{}, true, err
 	}
-	active := int64(form.byteWidth)
-	if form.spec.scalar {
-		active = int64(form.spec.laneBits / 8)
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		operands:            make([]x86TypedByteOperand, 0, len(ins.Args)+1),
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true}
+	active := form.inputByteWidth()
 	for index, operand := range ins.Args {
 		width := active
 		if index == form.memory {
@@ -68,10 +81,9 @@ func x86TypedFMA3ByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, 
 			index: index, operand: operand, width: width, read: true,
 		})
 	}
-	// Scalar active inputs and the full destination write are distinct axes.
-	// Numerical upper-X passthrough is handled by the shared result transfer.
 	effect.operands = append(effect.operands, x86TypedByteOperand{
 		index: form.destination, operand: ins.Args[form.destination], width: int64(form.byteWidth), write: true,
+		preservedBytes: form.preservedDestinationBytes(),
 	})
 	return effect, true, nil
 }

@@ -381,6 +381,9 @@ identity. A bit test reads the numerical intersection of its operands.
 Floating K-result comparisons use the same frame proof with separate scalar,
 broadcast and packed source widths. The original comparison remains a single
 native operation with its MXCSR exception behavior and explicit SAE forms.
+FMA3 uses the same exact scalar, broadcast and packed memory widths. Its old
+destination supplies arithmetic input even under zeroing. Scalar forms retain
+the remaining X bytes and clear the alias above X.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies

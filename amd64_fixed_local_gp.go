@@ -134,16 +134,18 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 	// Read all inputs before any write, including aliased outputs. RMW receives
 	// one write-capable access certificate only after its old bytes are proved.
 	for _, operand := range effect.operands {
-		if operand.requiredBytes != 0 && (!operand.read || operand.operand.Kind != OpReg ||
-			amd64VectorByteWidth(operand.operand.Reg) == 0 ||
-			operand.requiredBytes&^x86CallerVectorByteMask(operand.width) != 0) {
+		vector := operand.operand.Kind == OpReg && amd64VectorByteWidth(operand.operand.Reg) != 0
+		if operand.requiredBytes != 0 && (!operand.read || !vector ||
+			operand.requiredBytes&^x86CallerVectorByteMask(operand.width) != 0) ||
+			operand.preservedBytes != 0 && (!operand.write || !vector ||
+				operand.preservedBytes&^x86CallerVectorByteMask(operand.width) != 0) {
 			return fail()
 		}
 		if !operand.read {
 			continue
 		}
 		if operand.operand.Kind != OpMem && operand.operand.Kind != OpSym {
-			if operand.operand.Kind == OpReg && amd64VectorByteWidth(operand.operand.Reg) != 0 {
+			if vector {
 				mask := x86CallerVectorByteMask(operand.width)
 				if operand.requiredBytes != 0 {
 					mask = operand.requiredBytes
@@ -205,11 +207,11 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 					return fail()
 				}
 				root := x86CallerVectorRoot(operand.operand.Reg)
+				known := state.vectors[root] | (mask &^ operand.preservedBytes)
 				if upper == x86TypedVectorUpperZero {
-					state.vectors[root] = ^uint64(0)
-				} else {
-					state.vectors[root] |= mask
+					known |= ^mask
 				}
+				state.vectors[root] = known
 				continue
 			}
 			root, valid := x86CallerGP(operand.operand.Reg)
