@@ -365,6 +365,10 @@ narrowing and two-source saturating packs. The frame proof requires only the
 active low bytes of a widening input and bounds each narrowing store by its
 actual output width. A masked narrowing store preserves the initialization
 state of bytes it might leave unwritten.
+Conflict, bit count, funnel shifts and vector align share the same initialized
+frame mechanism. A variable funnel shift always reads its old destination
+as input, including with zeroing. Conflict and align still read their complete
+memory tuple with a zero output mask, or the original scalar for broadcast.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies

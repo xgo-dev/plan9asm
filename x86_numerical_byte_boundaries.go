@@ -146,6 +146,10 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		decodedX86PackedExtendInstructionWithMemory,
 		decodedX86SingleSourceNarrowInstructionWithMemory,
 		decodedX86VectorPackedSaturatingNarrowInstructionWithMemory,
+		decodedX86VectorAlignInstructionWithMemory,
+		decodedX86FunnelShiftInstructionWithMemory,
+		decodedX86RawVectorBitCountInstructionWithMemory,
+		decodedX86NumericalConflictBoundary,
 	}
 	if ins, length, known, err := decodedX86VEXMoveMaskInstruction(code, mode); known || err != nil {
 		if err == nil && mode == 32 {
@@ -174,6 +178,18 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		return length, err
 	}
 	return 0, numericalSBContext("unregistered or truncated whole native VEX/EVEX encoding")
+}
+
+func decodedX86NumericalConflictBoundary(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
+	p, matched := decodeX86RawVectorEncoding(code)
+	if !matched || !p.evex || p.mapNumber != 2 || p.pp != 1 || p.opcode != 0xc4 {
+		return Instr{}, 0, false, nil
+	}
+	op, laneBytes := Op("VPCONFLICTD"), 4
+	if p.w {
+		op, laneBytes = "VPCONFLICTQ", 8
+	}
+	return decodedX86EVEXUnaryVectorWithMemory(code, mode, p, op, laneBytes, memory)
 }
 
 func decodedX86VEXPackedUnpackBoundary(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {

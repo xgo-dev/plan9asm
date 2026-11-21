@@ -24,6 +24,10 @@ var x86RawVectorBitCountForms = [...]x86RawVectorBitCountForm{
 }
 
 func decodedX86RawVectorBitCountInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawVectorBitCountInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawVectorBitCountInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, recognized := decodeX86RawVectorEncoding(code)
 	if !recognized || !p.evex || p.mapNumber != 2 || p.pp != 1 {
 		return Instr{}, 0, false, nil
@@ -38,8 +42,20 @@ func decodedX86RawVectorBitCountInstruction(code []byte, mode int) (Instr, int, 
 	if form.op == "" {
 		return Instr{}, 0, false, nil
 	}
+	spec := amd64PackedBitCountSpecs[form.op]
+	broadcastBytes := 0
+	if spec.broadcast {
+		broadcastBytes = spec.laneBits / 8
+	}
+	return decodedX86EVEXUnaryVectorWithMemory(code, mode, p, form.op, broadcastBytes, memory)
+}
+
+// The Go _yvexpandpd unary transport retains its reserved prefix fields,
+// destination bank and exact broadcast scale for both source and boundaries.
+func decodedX86EVEXUnaryVectorWithMemory(code []byte, mode int, p x86RawVectorEncoding, op Op,
+	broadcastBytes int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	fail := func(message string) (Instr, int, bool, error) {
-		return Instr{}, 0, true, fmt.Errorf("vector bit count: %s", message)
+		return Instr{}, 0, true, fmt.Errorf("%s: %s", op, message)
 	}
 	if mode != 32 && mode != 64 {
 		return fail("unsupported x86 mode")
@@ -56,10 +72,9 @@ func decodedX86RawVectorBitCountInstruction(code []byte, mode int) (Instr, int, 
 	if len(code) <= p.modRM {
 		return fail("missing ModRM byte")
 	}
-	spec := amd64PackedBitCountSpecs[form.op]
 	modRM := code[p.modRM]
 	registerSource := modRM>>6 == 3
-	if p.broadcast && (registerSource || !spec.broadcast) {
+	if p.broadcast && (registerSource || broadcastBytes == 0) {
 		return fail("broadcast requires a supported scalar-memory source")
 	}
 	if mode == 32 && !registerSource && (p.b != 0 || p.x != 0) {
@@ -75,13 +90,12 @@ func decodedX86RawVectorBitCountInstruction(code []byte, mode int) (Instr, int, 
 	destination := Operand{Kind: OpReg, Reg: Reg(fmt.Sprintf("%s%d", vectorPrefix, registerNumber))}
 	accessBytes := vectorBytes
 	if p.broadcast {
-		accessBytes = spec.laneBits / 8
+		accessBytes = broadcastBytes
 	}
-	source, consumed, err := decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, vectorPrefix, accessBytes)
+	source, consumed, err := memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, vectorPrefix, accessBytes)
 	if err != nil {
 		return Instr{}, 0, true, err
 	}
-	op := form.op
 	if p.broadcast {
 		op += ".BCST"
 	}

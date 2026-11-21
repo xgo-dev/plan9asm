@@ -8012,13 +8012,21 @@ func decodedX86TernaryLogicInstructionWithMemory(code []byte, mode int, memory x
 // decodedX86VectorAlignInstruction recognizes VALIGND/Q across the complete
 // Go 1.27 _yvalignd table.
 func decodedX86VectorAlignInstruction(code []byte, mode int) (instruction Instr, length int, ok bool, err error) {
-	return decodedX86EVEXImmediateThreeVectorInstruction(code, mode, 0x03, "VALIGND", "VALIGNQ", "VALIGN")
+	return decodedX86VectorAlignInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86VectorAlignInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
+	return decodedX86EVEXImmediateThreeVectorPhysical(code, mode, 0x03, "VALIGND", "VALIGNQ", "VALIGN", memory, false)
 }
 
 // decodedX86FunnelShiftInstruction recognizes the complete Go 1.27 VBMI2
 // funnel-shift family: immediate/variable, left/right, and W/D/Q lanes.
 // x/arch v0.14 rejects all of these EVEX encodings.
 func decodedX86FunnelShiftInstruction(code []byte, mode int) (instruction Instr, length int, ok bool, err error) {
+	return decodedX86FunnelShiftInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86FunnelShiftInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
 	i, segment, addressOverride := x86RawSegmentPrefixes(code)
 	if mode != 32 && mode != 64 {
 		return Instr{}, 0, false, nil
@@ -8107,7 +8115,7 @@ func decodedX86FunnelShiftInstruction(code []byte, mode int) (instruction Instr,
 	if broadcast {
 		disp8Scale = laneBits / 8
 	}
-	firstSource, consumed, decodeErr := decodedX86EVEXRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, vectorName, disp8Scale)
+	firstSource, consumed, decodeErr := memory.evex(code[modRMIndex:], mode, bExt, xExt, segment, vectorName, disp8Scale)
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}
@@ -8150,16 +8158,8 @@ func decodedX86FunnelShiftInstruction(code []byte, mode int) (instruction Instr,
 	return Instr{Op: op, Args: args, Raw: fmt.Sprintf("%s %s", op, strings.Join(rawArgs, ", "))}, end, true, nil
 }
 
-// decodedX86EVEXImmediateThreeVectorInstruction implements the EVEX immediate,
-// r/m, vvvv, destination shape shared by Go 1.27's _yvalignd families.
-func decodedX86EVEXImmediateThreeVectorInstruction(code []byte, mode int, opcode byte, dwordOp, qwordOp Op, family string) (instruction Instr, length int, ok bool, err error) {
-	return decodedX86EVEXImmediateThreeVectorInstructionWithMemory(code, mode, opcode, dwordOp, qwordOp, family, x86RawMemoryDecoder{})
-}
-
-func decodedX86EVEXImmediateThreeVectorInstructionWithMemory(code []byte, mode int, opcode byte, dwordOp, qwordOp Op, family string, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
-	return decodedX86EVEXImmediateThreeVectorPhysical(code, mode, opcode, dwordOp, qwordOp, family, memory, false)
-}
-
+// The EVEX immediate, r/m, vvvv, destination shape is shared by Go's
+// _yvalignd families, with different mode32 admission at their entry points.
 func decodedX86EVEXImmediateThreeVectorPhysical(code []byte, mode int, opcode byte, dwordOp, qwordOp Op, family string, memory x86RawMemoryDecoder, physicalMode32 bool) (instruction Instr, length int, ok bool, err error) {
 	i, segment, addressOverride := x86RawSegmentPrefixes(code)
 	if mode != 32 && mode != 64 {

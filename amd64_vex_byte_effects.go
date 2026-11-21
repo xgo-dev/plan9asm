@@ -64,10 +64,6 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		}
 		return x86ImmediateShuffleDependencyEffect(ins, form), true, nil
 	}
-	if form, known, err := x86PackedAlignProperties(op, ins, arch); known {
-		return x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm,
-			form.spec.encoding != x86PackedLogicalEVEX, err)
-	}
 	if form, known, err := x86ImmediateBlendProperties(op, ins, arch); known {
 		binary := x86PackedBinaryForm{
 			byteWidth: form.byteWidth, first: form.source, second: form.base, destination: form.destination,
@@ -136,6 +132,9 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		x86TypedMaskBlendByteEffect,
 		x86TypedPackedExtendByteEffect,
 		x86TypedSingleSourceNarrowByteEffect,
+		x86TypedPackedAlignByteEffect,
+		x86TypedConflictFunnelByteEffect,
+		x86TypedPackedBitCountByteEffect,
 	} {
 		if effect, known, err := project(op, ins, arch); known {
 			return effect, true, err
