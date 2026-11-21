@@ -149,10 +149,14 @@ func x86TypedElementPermuteByteEffect(op Op, ins Instr, arch string) (x86TypedBy
 	if f.memory >= 0 {
 		width = f.memoryBytes
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: f.source, operand: ins.Args[f.source], width: int64(width), read: true},
-		{index: f.destination, operand: ins.Args[f.destination], width: int64(f.byteWidth), write: true},
-	}}
+	effect := x86TypedByteEffect{
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		requiresResultProof: true,
+		operands: []x86TypedByteOperand{
+			{index: f.source, operand: ins.Args[f.source], width: int64(width), read: true},
+			{index: f.destination, operand: ins.Args[f.destination], width: int64(f.byteWidth), write: true},
+		},
+	}
 	if f.data >= 0 {
 		effect.operands = append(effect.operands, x86TypedByteOperand{
 			index: f.data, operand: ins.Args[f.data], width: int64(f.byteWidth), read: true})

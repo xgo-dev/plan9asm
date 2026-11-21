@@ -92,9 +92,12 @@ func (c *amd64Ctx) lowerPackedUnpack(op Op, ins Instr) (bool, bool, error) {
 		if err != nil {
 			return true, false, err
 		}
-		old, err := c.loadPackedCompareLanes(destination, form.byteWidth, laneBits, false)
-		if err != nil {
-			return true, false, err
+		old := "zeroinitializer"
+		if !form.zeroing {
+			old, err = c.loadPackedCompareLanes(destination, form.byteWidth, laneBits, false)
+			if err != nil {
+				return true, false, err
+			}
 		}
 		result = amd64ApplyIntegerLaneMask(c, lanes, laneBits, result, old, mask, form.zeroing)
 	}

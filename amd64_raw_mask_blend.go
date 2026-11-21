@@ -6,6 +6,10 @@ import "fmt"
 // operations across EVEX X/Y/Z, optional K mask and zeroing, and permitted
 // D/Q scalar broadcasts. The shared typed operand decoder handles ModRM/SIB.
 func decodedX86RawMaskBlendInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawMaskBlendInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawMaskBlendInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || !p.evex || p.mapNumber != 2 || p.pp != 1 {
 		return Instr{}, 0, false, nil
@@ -37,5 +41,5 @@ func decodedX86RawMaskBlendInstruction(code []byte, mode int) (Instr, int, bool,
 	if mode == 32 && p.mask != 0 {
 		return Instr{}, 0, true, fmt.Errorf("386 masked %s exceeds Go's three-operand frontend", op)
 	}
-	return decodedX86BinaryVectorOperands(code, p, mode, op, laneBits)
+	return decodedX86BinaryVectorOperandsWithMemory(code, p, mode, op, laneBits, memory)
 }

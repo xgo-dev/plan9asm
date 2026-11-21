@@ -25,6 +25,10 @@ var x86RawEVEXUnpackForms = map[int]x86RawEVEXUnpackForm{
 }
 
 func decodedX86EVEXPackedUnpackInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86EVEXPackedUnpackInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86EVEXPackedUnpackInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || !p.evex || p.mapNumber != 1 || p.pp != 1 {
 		return Instr{}, 0, false, nil
@@ -66,7 +70,7 @@ func decodedX86EVEXPackedUnpackInstruction(code []byte, mode int) (Instr, int, b
 	if p.broadcast {
 		disp8Scale = form.broadcastBytes
 	}
-	first, consumed, err := decodedX86EVEXRMOperand(
+	first, consumed, err := memory.evex(
 		code[p.modRM:], mode, p.b, p.x, p.segment, vector, disp8Scale,
 	)
 	if err != nil {

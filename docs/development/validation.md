@@ -351,6 +351,11 @@ Windows targets. The frame proof requires a defined mask and all potentially
 accessed bytes. Broadcast uses its scalar tuple, and only merging forms
 require the previous destination. These checks provide object evidence for
 the exact source fixtures and track execution separately.
+The lane-family checks use the same proof for VEX/EVEX rotates, element and
+block permutations, mask blends and unpacks. Mask blends take the alternate
+input from their second source, while merging rotates and permutations take
+it from the old destination. Unpack retains its complete memory read even
+with a zero mask.
 The compact/expand frame checks cover the full possible memory span. A
 masked compression preserves any previously initialized bytes and revokes
 overlapping pointer spills without declaring the rest of the span initialized.

@@ -16,6 +16,10 @@ var x86RawQwordPermutes = map[[2]int]Op{
 }
 
 func decodedX86RawQwordPermuteInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawQwordPermuteInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawQwordPermuteInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || p.pp != 1 || !p.w {
 		return Instr{}, 0, false, nil
@@ -71,9 +75,9 @@ func decodedX86RawQwordPermuteInstruction(code []byte, mode int) (Instr, int, bo
 	var consumed int
 	var err error
 	if p.evex {
-		source, consumed, err = decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, width, scale)
+		source, consumed, err = memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, width, scale)
 	} else {
-		source, consumed, err = decodedX86VEXVectorRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, width)
+		source, consumed, err = memory.vex(code[p.modRM:], mode, p.b, p.x, p.segment, width)
 	}
 	if err != nil {
 		return Instr{}, 0, true, err

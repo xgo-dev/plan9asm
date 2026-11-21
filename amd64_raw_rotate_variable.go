@@ -9,6 +9,10 @@ import (
 // variable rotates in Go's _yvblendmpd table: left/right, D/Q, X/Y/Z,
 // optional mask, zeroing, and scalar-memory broadcast.
 func decodedX86RawVariableRotateInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawVariableRotateInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawVariableRotateInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || !p.evex || p.mapNumber != 2 || p.pp != 1 ||
 		(p.opcode != 0x14 && p.opcode != 0x15) {
@@ -51,7 +55,7 @@ func decodedX86RawVariableRotateInstruction(code []byte, mode int) (Instr, int, 
 	if p.broadcast {
 		disp8Scale = laneBytes
 	}
-	first, consumed, err := decodedX86EVEXRMOperand(
+	first, consumed, err := memory.evex(
 		code[p.modRM:], mode, p.b, p.x, p.segment, vector, disp8Scale,
 	)
 	if err != nil {

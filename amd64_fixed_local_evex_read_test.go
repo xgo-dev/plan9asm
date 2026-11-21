@@ -26,11 +26,6 @@ func fixedLocalEVEXReadAssembly(name, operation string, destination Reg) string 
 }
 
 func TestGoAMD64FixedLocalEVEXReadOriginalObjects(t *testing.T) {
-	goAMD64FramePrepareOwnedToolCache(t)
-	llc := findLLVM22Tool("llc")
-	if llc == "" {
-		t.Fatal("LLVM 22 llc required")
-	}
 	var assembly, declarations strings.Builder
 	rows := []struct {
 		operation   string
@@ -45,26 +40,7 @@ func TestGoAMD64FixedLocalEVEXReadOriginalObjects(t *testing.T) {
 		assembly.WriteString(fixedLocalEVEXReadAssembly(name, row.operation, row.destination))
 		fmt.Fprintf(&declarations, "func %s(a uint64) uint64\n", name)
 	}
-	for _, target := range []struct{ goos, triple string }{
-		{"linux", "x86_64-unknown-linux-gnu"},
-		{"darwin", "x86_64-apple-darwin"},
-		{"windows", "x86_64-pc-windows-msvc"},
-	} {
-		t.Run(target.goos, func(t *testing.T) {
-			pkg, request, _, options := fixedLocalTransportFixture(t, assembly.String(), declarations.String(),
-				target.goos+"/amd64", target.triple)
-			fixedLocalFreshAPIs(t, pkg, request, options, []string{"Translate", "Module", "GoModule"},
-				func(t *testing.T, ir string, err error) {
-					if err != nil {
-						t.Fatal(err)
-					}
-					x86CompactExpandRequireAllDefinitions(t, ir,
-						[]string{pkg.Path + ".Value0", pkg.Path + ".Value1", pkg.Path + ".Value2"})
-					compileLLVMToObject(t, llc, target.triple, "evex-frame.ll", "evex-frame.o", ir)
-					compileLLVMToObject(t, llc, target.triple, "evex-frame-opt.ll", "evex-frame-opt.o", x86MulDivRoundOptimize(t, ir))
-				})
-		})
-	}
+	fixedLocalCompleteVectorObjects(t, assembly.String(), declarations.String(), len(rows))
 }
 
 func TestGoAMD64FixedLocalEVEXReadOfficialRows(t *testing.T) {

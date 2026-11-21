@@ -44,10 +44,14 @@ func x86TypedMaskBlendByteEffect(op Op, ins Instr, arch string) (x86TypedByteEff
 	if form.memory >= 0 {
 		firstWidth = int64(form.memoryBytes)
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
-		{index: form.destination, operand: ins.Args[form.destination], width: width, write: true},
-	}}
+	effect := x86TypedByteEffect{
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		requiresResultProof: true,
+		operands: []x86TypedByteOperand{
+			{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
+			{index: form.destination, operand: ins.Args[form.destination], width: width, write: true},
+		},
+	}
 	if form.mask >= 0 {
 		effect.operands = append(effect.operands,
 			x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true})

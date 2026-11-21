@@ -160,11 +160,15 @@ func x86TypedFixedVectorInputs(ins Instr, form x86PackedBinaryForm, old bool) x8
 	if form.memory >= 0 {
 		firstWidth = int64(form.memoryBytes)
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
-		{index: form.destination, operand: ins.Args[form.destination], width: width,
-			read: old || form.mask >= 0 && !form.zeroing, write: true},
-	}}
+	effect := x86TypedByteEffect{
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		requiresResultProof: true,
+		operands: []x86TypedByteOperand{
+			{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
+			{index: form.destination, operand: ins.Args[form.destination], width: width,
+				read: old || form.mask >= 0 && !form.zeroing, write: true},
+		},
+	}
 	if form.second >= 0 {
 		effect.operands = append(effect.operands,
 			x86TypedByteOperand{index: form.second, operand: ins.Args[form.second], width: width, read: true})

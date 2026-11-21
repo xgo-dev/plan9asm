@@ -132,6 +132,17 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		decodedX86PackedCompactInstruction,
 		decodedX86VMOVQInstructionWithMemory,
 		decodedX86VEXVectorTestInstructionWithMemory,
+		decodedX86InLaneFloatingPermuteInstructionWithMemory,
+		decodedX86RawQwordPermuteInstructionWithMemory,
+		decodedX86VariableDwordPermuteInstructionWithMemory,
+		decodedX86EVEXVariableDwordPermuteInstructionWithMemory,
+		decodedX86PackedImmediateRotateInstructionWithMemory,
+		decodedX86RawVariableRotateInstructionWithMemory,
+		decodedX86Shuffle128BitBlocksInstructionWithMemory,
+		decodedX86RawMaskBlendInstructionWithMemory,
+		decodedX86FloatingUnpackInstructionWithMemory,
+		decodedX86EVEXPackedUnpackInstructionWithMemory,
+		decodedX86VEXPackedUnpackBoundary,
 	}
 	if ins, length, known, err := decodedX86VEXMoveMaskInstruction(code, mode); known || err != nil {
 		if err == nil && mode == 32 {
@@ -160,6 +171,20 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		return length, err
 	}
 	return 0, numericalSBContext("unregistered or truncated whole native VEX/EVEX encoding")
+}
+
+func decodedX86VEXPackedUnpackBoundary(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
+	p, known := decodeX86RawVectorEncoding(code)
+	if !known || p.evex || p.mapNumber != 1 || p.pp != 1 {
+		return Instr{}, 0, false, nil
+	}
+	form, known := x86RawEVEXUnpackForms[p.opcode]
+	if !known {
+		return Instr{}, 0, false, nil
+	}
+	// VEX always reads the full vector tuple. The EVEX lane width only
+	// affects broadcast scaling, which cannot occur in this encoding.
+	return decodedX86BinaryVectorOperandsWithMemory(code, p, mode, form.op, 0, memory)
 }
 
 // Only observe complete Go-emitted instruction boundaries. This does not

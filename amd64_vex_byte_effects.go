@@ -117,6 +117,22 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		effect.dynamicMemory = false
 		return effect, true, err
 	}
+	if form, known, err := x86PackedUnpackProperties(local, arch); known {
+		if ins.Op != "" && !strings.EqualFold(string(ins.Op), string(op)) {
+			return x86TypedByteEffect{}, true, goAMD64FrameContext("packed unpack dispatch/source mismatch: %s/%s", op, ins.Op)
+		}
+		return x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
+	}
+	for _, project := range [...]func(Op, Instr, string) (x86TypedByteEffect, bool, error){
+		x86TypedPackedRotateByteEffect,
+		x86TypedElementPermuteByteEffect,
+		x86TypedShuffle128BitBlocksByteEffect,
+		x86TypedMaskBlendByteEffect,
+	} {
+		if effect, known, err := project(op, ins, arch); known {
+			return effect, true, err
+		}
+	}
 	return x86TypedByteEffect{}, false, nil
 }
 

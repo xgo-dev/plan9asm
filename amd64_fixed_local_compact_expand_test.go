@@ -27,40 +27,18 @@ func fixedLocalCompactAssembly(name, body string) string {
 }
 
 func TestGoAMD64FixedLocalCompactExpandOriginalObjects(t *testing.T) {
-	goAMD64FramePrepareOwnedToolCache(t)
-	llc := findLLVM22Tool("llc")
-	if llc == "" {
-		t.Fatal("LLVM 22 llc required")
-	}
 	var assembly, declarations strings.Builder
-	for index, body := range []string{
+	bodies := []string{
 		"VEXPANDPS 17(SP)(BP*2), K7, Y11\nVMOVUPS Y11,128(SP)\nMOVQ 128(SP),AX",
 		"VEXPANDPS 17(SP), K7, X20\nVMOVUPS X20,128(SP)\nMOVQ 128(SP),AX",
 		"VCOMPRESSPS X16, K7, 17(SP)(BP*8)\nMOVQ 25(SP),AX",
-	} {
+	}
+	for index, body := range bodies {
 		name := fmt.Sprintf("Value%d", index)
 		assembly.WriteString(fixedLocalCompactAssembly(name, body))
 		fmt.Fprintf(&declarations, "func %s(a uint64) uint64\n", name)
 	}
-	for _, target := range []struct{ goos, triple string }{
-		{"linux", "x86_64-unknown-linux-gnu"},
-		{"darwin", "x86_64-apple-darwin"},
-		{"windows", "x86_64-pc-windows-msvc"},
-	} {
-		t.Run(target.goos, func(t *testing.T) {
-			pkg, request, _, options := fixedLocalTransportFixture(t, assembly.String(), declarations.String(), target.goos+"/amd64", target.triple)
-			fixedLocalFreshAPIs(t, pkg, request, options, []string{"Translate", "Module", "GoModule"},
-				func(t *testing.T, ir string, err error) {
-					if err != nil {
-						t.Fatal(err)
-					}
-					x86CompactExpandRequireAllDefinitions(t, ir,
-						[]string{pkg.Path + ".Value0", pkg.Path + ".Value1", pkg.Path + ".Value2"})
-					compileLLVMToObject(t, llc, target.triple, "compact-frame.ll", "compact-frame.o", ir)
-					compileLLVMToObject(t, llc, target.triple, "compact-frame-opt.ll", "compact-frame-opt.o", x86MulDivRoundOptimize(t, ir))
-				})
-		})
-	}
+	fixedLocalCompleteVectorObjects(t, assembly.String(), declarations.String(), len(bodies))
 }
 
 func TestGoAMD64FixedLocalCompactExpandOfficialRows(t *testing.T) {
