@@ -9,6 +9,10 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/gostaticstorage"
 )
 
+func goAMD64FrameDeclarationName(symbol string) string {
+	return strings.TrimPrefix(strings.TrimSuffix(symbol, "<ABIInternal>"), "·")
+}
+
 // This classifies original source nodes, not callable ABIs or initialized
 // inputs. A leaf cannot observe its physical frame or CALL's stack change.
 // A nonzero frame's automatic BP/FLAGS effects are checked independently.
@@ -18,7 +22,7 @@ func goAMD64FramePrivateLeaves(file *File, pkg GoPackage) (map[string]bool, erro
 	}
 	leaves := make(map[string]bool)
 	for _, fn := range file.Funcs {
-		if _, declared := pkg.Types.Scope().Lookup(strings.TrimPrefix(fn.Sym, "·")).(*types.Func); declared {
+		if _, declared := pkg.Types.Scope().Lookup(goAMD64FrameDeclarationName(fn.Sym)).(*types.Func); declared {
 			continue
 		}
 		name := strings.TrimSuffix(fn.Sym, "<>")

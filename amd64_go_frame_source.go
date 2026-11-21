@@ -1535,7 +1535,7 @@ func goAMD64FrameListingWithObservations(listing []byte, file *File, pkg GoPacka
 	if texts != nil && unwind != nil {
 		return nil, goAMD64FrameContext("mixed target-specific object observation roles")
 	}
-	return goAMD64FrameListingRecords(listing, file, pkg, origins, texts, unwind, nil, "", "", "")
+	return goAMD64FrameListingRecords(listing, file, pkg, origins, texts, unwind, nil, "", "", "", nil)
 }
 
 func goAMD64FrameListingWithDataObject(listing []byte, file *File, pkg GoPackage, origins map[string]int,
@@ -1548,11 +1548,14 @@ func goAMD64FrameListingWithDataObject(listing []byte, file *File, pkg GoPackage
 	if err != nil {
 		return nil, err
 	}
-	return goAMD64FrameListingRecords(listing, file, pkg, origins, texts, unwind, data, target, directory, root, callees...)
+	return goAMD64FrameListingRecords(listing, file, pkg, origins, texts, unwind, data, target, directory, root, nil, callees...)
 }
 
-func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origins map[string]int, texts []gostaticstorage.TextRecord, unwind *gostaticstorage.WindowsAMD64AssemblyUnwind, data *gostaticstorage.AMD64AssemblyData, splitTarget, splitDirectory, splitRoot string,
-	callees ...map[string]goAMD64FrameDeclaration) (map[string]goAMD64FrameFunction, error) {
+func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origins map[string]int,
+	texts []gostaticstorage.TextRecord, unwind *gostaticstorage.WindowsAMD64AssemblyUnwind, data *gostaticstorage.AMD64AssemblyData,
+	splitTarget, splitDirectory, splitRoot string, registerEntries map[string]bool,
+	callees ...map[string]goAMD64FrameDeclaration,
+) (map[string]goAMD64FrameFunction, error) {
 	if len(callees) > 1 {
 		return nil, goAMD64FrameContext("ambiguous ordinary Go call declarations")
 	}
@@ -1627,6 +1630,8 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 				abi := uint16(0)
 				if header.Static {
 					abi = 65535
+				} else if registerEntries[header.Symbol] {
+					abi = 1
 				}
 				if texts[textIndex].Kind != header.Kind || texts[textIndex].ABI != abi ||
 					header.objectFlags() != texts[textIndex].Flags&0x19 {
@@ -1737,7 +1742,8 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 	}
 	bound := make(map[string]goAMD64FrameFunction)
 	for _, original := range file.Funcs {
-		symbol := pkg.Path + "." + strings.TrimPrefix(original.Sym, "·")
+		local := goAMD64FrameDeclarationName(original.Sym)
+		symbol := pkg.Path + "." + local
 		if leaves[original.Sym] {
 			symbol = names[original.Sym]
 		}
@@ -1750,7 +1756,7 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 			observed = `"".` + strings.TrimPrefix(original.Sym, "·")
 			fn, exists = functions[observed]
 		}
-		declaration, declared := pkg.Types.Scope().Lookup(strings.TrimPrefix(original.Sym, "·")).(*types.Func)
+		declaration, declared := pkg.Types.Scope().Lookup(local).(*types.Func)
 		fn.sourceSymbol, fn.privateLeaf = original.Sym, leaves[original.Sym]
 		if text, found := objects[observed]; found {
 			fn.nativeABI = text.ABI
@@ -1760,8 +1766,14 @@ func goAMD64FrameListingRecords(listing []byte, file *File, pkg GoPackage, origi
 				fn.args != 0 && fn.args != -0x80000000 {
 				return nil, goAMD64FrameContext("original private leaf/native frame identity differs")
 			}
-		} else if !exists || !declared || original.FrameSize < 0 || original.FrameSize%8 != 0 || fn.locals != goAMD64FrameNativeLocals(original.FrameSize) || !goAMD64FrameArgumentsMatch(original, fn.args) || strings.Contains(original.Sym, "<") {
-			return nil, goAMD64FrameContext("original ABI0 TEXT/declaration/frame identity mismatch")
+		} else {
+			hasSelector := strings.Contains(original.Sym, "<")
+			registerEntry := registerEntries[symbol] && fn.nativeABI == 1 && strings.HasSuffix(original.Sym, "<ABIInternal>")
+			if !exists || !declared || original.FrameSize < 0 || original.FrameSize%8 != 0 ||
+				fn.locals != goAMD64FrameNativeLocals(original.FrameSize) || !goAMD64FrameArgumentsMatch(original, fn.args) ||
+				hasSelector != registerEntry {
+				return nil, goAMD64FrameContext("original TEXT/declaration/frame identity mismatch")
+			}
 		}
 		var err error
 		if !fn.privateLeaf {

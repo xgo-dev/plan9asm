@@ -28,7 +28,8 @@ type goAMD64SDKFrameOrigin struct {
 // Nonzero frames also require automatic BP/SP shapes;
 // zero-frame siblings retain their ordinary ABI0 path without local backing.
 // Generated split checks are observed separately from the source body.
-// Native callers and ABI selectors require separate contracts. BindFixedLocal
+// Register entries require an exact ABIInternal object and symbol declaration.
+// Capturing such a frame does not supply native arguments. BindFixedLocal
 // also accounts for the observed private leaf's automatic BP/FLAGS effects and
 // proves every full-source access/initialization/CFG requirement before granting
 // local bytes.
@@ -124,9 +125,10 @@ func (source *GoAMD64FrameSource) sdkFrameRecords() (map[string]goAMD64FrameFunc
 		if err != nil {
 			return nil, nil, err
 		}
+		var registerEntries map[string]bool
 		for index, fn := range file.Funcs {
-			name := source.selection.ImportPath + "." + strings.TrimPrefix(fn.Sym, "·")
-			_, declared := declarations[name]
+			name := source.selection.ImportPath + "." + goAMD64FrameDeclarationName(fn.Sym)
+			declaration, declared := declarations[name]
 			if index >= len(object.TextOrder) || object.TextOrder[index].SourceOrdinal != index ||
 				object.TextOrder[index].ObjectOrdinal < 0 || object.TextOrder[index].ObjectOrdinal >= len(texts) {
 				return nil, nil, goAMD64FrameContext("SDK-primary complete source/TEXT association differs")
@@ -146,12 +148,23 @@ func (source *GoAMD64FrameSource) sdkFrameRecords() (map[string]goAMD64FrameFunc
 			// in the non-package definition block. Its role is authenticated by
 			// the complete same-source/compiler archive join, not by the name.
 			defined := text.Namespace == gostaticstorage.TextSymbolSelf || text.Namespace == gostaticstorage.TextSymbolNonpkgDefinition
-			if !declared || strings.Contains(fn.Sym, "<") || record.Static || !record.ArgsKnown ||
-				!defined || text.ABI != 0 || name != record.Symbol || name != text.Name {
-				return nil, nil, goAMD64FrameContext("SDK-primary frame requires an exact Go-declared logical ABI0 entry; private/native helper has no role: %s (declared=%t native=%s namespace=%d ABI=%d static=%t args-known=%t)", fn.Sym, declared, record.Symbol, text.Namespace, text.ABI, record.Static, record.ArgsKnown)
+			abi0 := !strings.Contains(fn.Sym, "<") && record.ArgsKnown && text.ABI == 0
+			registerEntry := strings.HasSuffix(fn.Sym, "<ABIInternal>") && !record.ArgsKnown && record.NoSplit &&
+				fn.FrameSize > 0 && x86TEXTArgumentsUnspecified(fn) && declaration.signature.Ret == Void &&
+				text.ABI == 1 && amd64GoArgumentDefinition(data.observation.Header.SymABI, name)
+			if !declared || record.Static || !defined || name != record.Symbol || name != text.Name ||
+				!abi0 && !registerEntry {
+				return nil, nil, goAMD64FrameContext("SDK-primary frame lacks an exact Go-declared ABI entry: %s (declared=%t native=%s namespace=%d ABI=%d static=%t args-known=%t)", fn.Sym, declared, record.Symbol, text.Namespace, text.ABI, record.Static, record.ArgsKnown)
 			}
-			if fn.FrameSize < 0 || fn.FrameSize > 64<<10 || fn.FrameSize%8 != 0 || record.Locals != uint64(goAMD64FrameNativeLocals(fn.FrameSize)) || record.Args != fn.ArgSize {
+			if fn.FrameSize < 0 || fn.FrameSize > 64<<10 || fn.FrameSize%8 != 0 ||
+				record.Locals != uint64(goAMD64FrameNativeLocals(fn.FrameSize)) || !goAMD64FrameArgumentsMatch(fn, record.Args) {
 				return nil, nil, goAMD64FrameContext("SDK-primary original declaration/native fixed-frame layout differs: %s", fn.Sym)
+			}
+			if registerEntry {
+				if registerEntries == nil {
+					registerEntries = make(map[string]bool)
+				}
+				registerEntries[name] = true
 			}
 			withFrame = withFrame || fn.FrameSize > 0
 		}
@@ -176,16 +189,20 @@ func (source *GoAMD64FrameSource) sdkFrameRecords() (map[string]goAMD64FrameFunc
 					return nil, nil, readErr
 				}
 			}
-			observed, err = goAMD64FrameListingWithDataObject(listing, file, origin.pkg, source.origins, data, nil,
-				source.request.Target, source.request.Directory, source.env["GOROOT"])
+			texts, err = goAMD64FrameSourceTexts(listing, data)
+			if err == nil {
+				observed, err = goAMD64FrameListingRecords(listing, file, origin.pkg, source.origins, texts, nil, data,
+					source.request.Target, source.request.Directory, source.env["GOROOT"], registerEntries)
+			}
 			if err == nil {
 				err = goAMD64FrameDataTextJoin(observed, data, source.request.Directory, source.origins, source.env["GOROOT"])
 			}
 		} else if goAMD64FrameSplitListing(native.OriginalListing) {
-			observed, err = goAMD64FrameListingWithSplitObject(native.OriginalListing, file, origin.pkg, source.origins, texts, nil,
-				source.request.Target, source.request.Directory, source.env["GOROOT"])
+			observed, err = goAMD64FrameListingRecords(native.OriginalListing, file, origin.pkg, source.origins, texts, nil, nil,
+				source.request.Target, source.request.Directory, source.env["GOROOT"], registerEntries)
 		} else {
-			observed, err = goAMD64FrameListingWithNumericalObject(native.OriginalListing, file, origin.pkg, source.origins, texts)
+			observed, err = goAMD64FrameListingRecords(native.OriginalListing, file, origin.pkg, source.origins,
+				texts, nil, nil, "", "", "", registerEntries)
 		}
 		if err != nil {
 			return nil, nil, err

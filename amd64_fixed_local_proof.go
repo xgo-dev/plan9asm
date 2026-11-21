@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 )
 
 var errFixedLocalLayoutJoin = goAMD64FrameContext("fixed local CFG address identity disagrees")
@@ -108,6 +109,11 @@ func proveX86FixedLocalBody(fn Func, sig FuncSig) (Func, error) {
 		len(fn.X86RawText) != 0 || len(sig.ArgRegs) != 0 || sig.ARMEntry != nil ||
 		sig.ARM64GoRegisterABI != nil || sig.x86CallerRegions != nil || !voidReturn && !valueReturn {
 		return fn, goAMD64FrameContext("fixed local source has an unbound frame or entry contract")
+	}
+	if strings.HasSuffix(fn.Sym, "<ABIInternal>") {
+		if sig.x86FixedLocal == nil || sig.x86FixedLocal.registerArgs[sig.Name] == nil {
+			return fn, goAMD64FrameContext("fixed local register arguments lack their original entry proof")
+		}
 	}
 	budget := x86FixedLocalBudget{steps: 1 << 18, bytes: 64 << 20}
 	proven, err := proveX86FixedLocalAttempt(fn, sig, &budget, false)
@@ -575,6 +581,19 @@ func replayX86FixedLocalCFG(fn *Func, sig FuncSig, proof *x86FixedLocalProof, re
 	// does not supply an initialized R14/g value; the observed nonzero-frame
 	// prologue/epilogue independently preserves BP. Explicit definitions may
 	// use either register without importing its entry value or native role.
+	if proof.binding != nil {
+		for _, carrier := range proof.binding.registerArgs[sig.Name] {
+			if carrier.Kind == amd64GoArgumentPointer {
+				state.opaque[carrier.Register] = x86FixedLocalOrigins{roles: fixedLocalNativeAddress}
+				continue
+			}
+			mask := x86CallerByteMask(carrier.Register, carrier.Width)
+			state.known[carrier.Register] = mask
+			if carrier.Kind == amd64GoArgumentBoolean {
+				state.booleans[carrier.Register] = mask
+			}
+		}
+	}
 	states := map[int]x86FixedLocalState{0: state}
 	work := []int{0}
 	queued := map[int]bool{0: true}

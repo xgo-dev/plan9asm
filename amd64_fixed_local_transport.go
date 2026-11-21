@@ -1,5 +1,47 @@
 package plan9asm
 
+import "go/types"
+
+// The original compiler and assembler identify the entry independently.
+// Here the typed parameters supply exactly the scalar values that LLVM will
+// place in Go's entry registers. An FP operand would instead name an ABI0
+// slot and must retain its own transport contract.
+func fixedLocalRegisterCarriers(pkg GoPackage, fn Func, sig FuncSig) ([]amd64GoArgumentCarrier, error) {
+	fail := func() ([]amd64GoArgumentCarrier, error) {
+		return nil, goAMD64FrameContext("fixed local register entry needs a void leaf with scalar GP arguments")
+	}
+	declaration, declared := pkg.Types.Scope().Lookup(goAMD64FrameDeclarationName(fn.Sym)).(*types.Func)
+	if !declared || sig.Ret != Void || len(sig.Frame.Results) != 0 || fn.FrameSize <= 0 {
+		return fail()
+	}
+	plan, err := planAMD64GoArguments(declaration.Type().(*types.Signature))
+	if err != nil || plan.requireRegisters() != nil || plan.FPUsed != 0 || len(plan.Arguments) != len(sig.Args) {
+		return fail()
+	}
+	carriers := make([]amd64GoArgumentCarrier, 0, len(plan.Arguments))
+	for index, argument := range plan.Arguments {
+		if len(argument.Carriers) != 1 {
+			return fail()
+		}
+		carrier := argument.Carriers[0]
+		if len(carrier.Path) != 0 || carrier.Type != sig.Args[index] {
+			return fail()
+		}
+		carriers = append(carriers, carrier)
+	}
+	for _, ins := range fn.Instrs {
+		if ins.Op == OpCALL {
+			return fail()
+		}
+		for _, operand := range ins.Args {
+			if operand.Kind == OpFP || operand.Kind == OpFPAddr {
+				return fail()
+			}
+		}
+	}
+	return carriers, nil
+}
+
 // Opaque inputs identify ABI0 pointer components, not pointee allocations.
 // They may be copied through full-width GP/local cells and pointer results.
 // They never enter the private-SP address map or numerical initialized bytes.

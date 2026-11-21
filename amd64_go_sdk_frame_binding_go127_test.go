@@ -145,6 +145,96 @@ func TestGoAMD64SDKFrameRejectsChangedProfile(t *testing.T) {
 	}
 }
 
+func TestGoAMD64SDKFrameOriginalRegisterEntry(t *testing.T) {
+	for _, level := range []string{"v1", "v2"} {
+		t.Run(level, func(t *testing.T) {
+			ctx, request := sdkASMDataRequest(t, "amd64", "internal/chacha8rand")
+			for index, pair := range request.Environment {
+				if strings.HasPrefix(pair, "GOAMD64=") {
+					request.Environment[index] = "GOAMD64=" + level
+				}
+			}
+			observed, err := CaptureGoAMD64SDKFrameObservation(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { observed.Close() })
+			pkg := sdkAMD64FrameActualPackage(t, observed.source)
+			source, err := CaptureGoAMD64SDKFrameSource(ctx, pkg, GoAMD64FrameCaptureRequest{
+				GoBinary: request.GoBinary, Directory: request.Directory, AssemblyFile: "chacha8_amd64.s",
+				Target: request.Target, Environment: request.Environment,
+			})
+			if err != nil {
+				t.Fatal("could not join the original register entry to its fixed frame", err)
+			}
+			defer source.Close()
+			name := request.PackagePath + ".block"
+			fn, found := source.functions[name]
+			if !found || len(source.functions) != 1 || fn.nativeABI != 1 || fn.privateLeaf ||
+				fn.sourceSymbol != "·block<ABIInternal>" || fn.locals != 24 || fn.split ||
+				fn.signature.Name != name || fn.signature.Ret != Void || len(fn.signature.Args) != 3 ||
+				fn.signature.Args[0] != Ptr || fn.signature.Args[1] != Ptr || fn.signature.Args[2] != I32 ||
+				fn.signature.x86FixedLocal != nil {
+				t.Fatalf("wrong original register entry, frame or typed declaration: name=%s found=%t ABI=%d locals=%d signature=%+v",
+					name, found, fn.nativeABI, fn.locals, fn.signature)
+			}
+			if err := source.Verify(ctx); err != nil {
+				t.Fatal("could not verify the original register entry", err)
+			}
+			assembly := observed.source.observation.CPP[0].Output
+			file, err := Parse(ArchAMD64, assembly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolve := testResolveSym(pkg.Path)
+			options := Options{
+				Goarch: "amd64", TargetTriple: "x86_64-unknown-linux-gnu",
+				ResolveSym: func(symbol string) string {
+					name := resolve(symbol)
+					if strings.HasSuffix(symbol, "<>") {
+						name += "$local"
+					}
+					return name
+				},
+				Sigs: map[string]FuncSig{name: fn.signature},
+			}
+			if ir, err := Translate(file, options); ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("an unbound register signature acquired private stack storage", err)
+			}
+			if level == "v1" {
+				changed := options
+				changed.ResolveSym = func(symbol string) string {
+					if symbol == "·block" {
+						return pkg.Path + ".other"
+					}
+					return options.ResolveSym(symbol)
+				}
+				if bound, err := source.BindFixedLocal(ctx, pkg, file, changed); bound.Sigs != nil || !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("conflicting raw and logical symbol resolution acquired the original entry", err)
+				}
+			}
+			options, err = source.BindFixedLocal(ctx, pkg, file, options)
+			if err != nil {
+				t.Fatal("could not prove the complete Go register entry and its local accesses", err)
+			}
+			llc := findLLVM22Tool("llc")
+			if llc == "" {
+				t.Fatal("required LLVM 22 llc")
+			}
+			for _, api := range []string{"Translate", "Module", "GoModule"} {
+				t.Run(api, func(t *testing.T) {
+					fixedLocalAPI(t, pkg, file, options, api, func(t *testing.T, ir string, err error) {
+						if err != nil || ir == "" {
+							t.Fatal("original register entry translation failed", err)
+						}
+						compileLLVMToObject(t, llc, options.TargetTriple, "register-frame.ll", "register-frame.o", ir)
+					}, assembly)
+				})
+			}
+		})
+	}
+}
+
 func TestGoAMD64SDKFrameRejectsChangedNativeWitness(t *testing.T) {
 	ctx, request := sdkASMDataRequest(t, "amd64", "crypto/md5")
 	observed, err := CaptureGoAMD64SDKFrameObservation(ctx, request)

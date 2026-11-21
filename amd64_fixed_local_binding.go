@@ -24,6 +24,7 @@ type x86FixedLocalBinding struct {
 	signatures     map[string]FuncSig
 	frames         map[string]bool   // Only entries whose complete local proof succeeded.
 	leaves         map[string]string // Original source symbol to observed native TEXT, never a signature.
+	registerArgs   map[string][]amd64GoArgumentCarrier
 	symbols        map[string]string
 	declarations   map[string]goAMD64FrameDeclaration
 	callees        map[string]goAMD64FrameDeclaration // Separate typed Go/SDK callees, not private source TEXTs.
@@ -32,10 +33,10 @@ type x86FixedLocalBinding struct {
 	globals        map[string]goReadOnlyObject
 }
 
-// BindFixedLocal binds a complete original typed ABI0 file to its actual Go
-// object observation. It does not support dynamic incoming frames, pointees,
-// unauthenticated imported declarations, native entries or arbitrary local-memory
-// effects. Foreign SDK calls require their captured declaration and ABI0 entry.
+// BindFixedLocal binds a complete original typed file to its actual Go object.
+// Original ABI0 entries and observed SDK register-ABI leaves have separate
+// input roles. Foreign SDK calls require their captured declaration and ABI0
+// entry. Pointers remain opaque without granting a pointee extent.
 // The returned Options are independent copies; their private signatures may
 // also be transported by GoModuleOptions.ManualSig. The capture context must
 // remain live through translation. Close or any failed Verify revokes them.
@@ -66,6 +67,9 @@ func (source *GoAMD64FrameSource) BindFixedLocal(ctx context.Context, pkg GoPack
 	resolved := make(map[string]string, len(file.Funcs))
 	for _, fn := range file.Funcs {
 		resolved[fn.Sym] = options.ResolveSym(fn.Sym)
+		if base, internal := strings.CutSuffix(fn.Sym, "<ABIInternal>"); internal {
+			resolved[base] = options.ResolveSym(base)
+		}
 		for _, ins := range fn.Instrs {
 			if ins.Op == OpCALL && len(ins.Args) == 1 && ins.Args[0].Kind == OpSym {
 				if name, offset, valid := parseSBRef(ins.Args[0].Sym); valid && offset == 0 {
@@ -277,13 +281,28 @@ func (source *GoAMD64FrameSource) bindFixedLocalLocked(ctx context.Context, life
 		}
 		observed, found := source.functions[name]
 		declaration, declared := declarations[name]
-		expectedName := pkg.Path + "." + strings.TrimPrefix(fn.Sym, "·")
+		expectedName := pkg.Path + "." + goAMD64FrameDeclarationName(fn.Sym)
 		sig, supplied := options.Sigs[name]
 		if !found || !supplied || name != expectedName || len(observed.code) == 0 ||
 			observed.locals != goAMD64FrameNativeLocals(fn.FrameSize) || !goAMD64FrameArgumentsMatch(fn, observed.args) ||
 			!reflect.DeepEqual(sig, observed.signature) || !declared ||
 			!source.matchesFixedLocalDeclaration(name, declaration) {
 			return Options{}, goAMD64FrameContext("fixed local actual declaration/object/symbol mismatch: %s", fn.Sym)
+		}
+		if base, internal := strings.CutSuffix(fn.Sym, "<ABIInternal>"); internal {
+			if source.sdkFrame == nil || observed.nativeABI != 1 || observed.sourceSymbol != fn.Sym ||
+				name != resolve(base) {
+				return Options{}, goAMD64FrameContext("fixed local register entry lacks its original SDK binding")
+			}
+			carriers, err := fixedLocalRegisterCarriers(pkg, fn, sig)
+			if err != nil {
+				return Options{}, err
+			}
+			if binding.registerArgs == nil {
+				binding.registerArgs = make(map[string][]amd64GoArgumentCarrier)
+			}
+			binding.registerArgs[name] = carriers
+			binding.symbols[base] = name
 		}
 		if fn.FrameSize > 0 {
 			binding.frames[name] = true

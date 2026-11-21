@@ -29,7 +29,7 @@ func goAMD64FrameListingWithSplitObject(listing []byte, file *File, pkg GoPackag
 	if len(texts) == 0 || target != "linux/amd64" && target != "darwin/amd64" && target != "windows/amd64" {
 		return nil, goAMD64FrameContext("automatic split layout lacks its complete object/target")
 	}
-	return goAMD64FrameListingRecords(listing, file, pkg, origins, texts, unwind, nil, target, directory, root)
+	return goAMD64FrameListingRecords(listing, file, pkg, origins, texts, unwind, nil, target, directory, root, nil)
 }
 
 // Listing identity is necessary but not sufficient: the complete relocation
