@@ -128,6 +128,8 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 	case wasmsimd.IntegerWiden:
 		wide := emitWASMV128IntegerWiden(b, newTmp, spec, lhs, rhs)
 		return wasmValue{typ: wasmV128CoreType, val: cast(wide, resultType, wasmV128CoreType)}
+	case wasmsimd.IntegerNarrow:
+		emitWASMV128IntegerNarrow(b, newTmp, spec, result, lhs, rhs)
 	case wasmsimd.Shift:
 		amount := emitWASMV128ShiftCount(b, newTmp, spec.Shape, inputs[1].val)
 		fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", result, spec.Operator, typ, lhs, amount)
@@ -179,6 +181,50 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 	return wasmValue{typ: wasmV128CoreType, val: cast(value, resultType, wasmV128CoreType)}
 }
 
+func wasmV128ShuffleIndices(count, first, step int) string {
+	var mask strings.Builder
+	for lane := 0; lane < count; lane++ {
+		if lane != 0 {
+			mask.WriteString(", ")
+		}
+		fmt.Fprintf(&mask, "i32 %d", first+lane*step)
+	}
+	return mask.String()
+}
+
+func emitWASMV128IntegerNarrow(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, result, lhs, rhs string) {
+	bits := spec.Shape.LaneBits
+	count, source := 128/bits, spec.InputLaneType()
+	half := fmt.Sprintf("<%d x %s>", count/2, spec.Shape.Element)
+	predicates := fmt.Sprintf("<%d x i1>", count/2)
+	low, high := int64(0), int64(1)<<bits-1
+	if spec.Operator == "signed" {
+		limit := int64(1) << (bits - 1)
+		low, high = -limit, limit-1
+	}
+	splat := func(bound int64) string {
+		return fmt.Sprintf("splat (i%d %d)", bits*2, bound)
+	}
+	lower, upper := splat(low), splat(high)
+	narrow := func(input string) string {
+		clamp := func(input, predicate, bound string) string {
+			test, output := newTmp(), newTmp()
+			fmt.Fprintf(b, "  %%%s = icmp %s %s %s, %s\n", test, predicate, source, input, bound)
+			fmt.Fprintf(b, "  %%%s = select %s %%%s, %s %s, %s %s\n", output, predicates, test, source, bound, source, input)
+			return "%" + output
+		}
+		// Both output forms clamp signed input lanes before reducing width.
+		input = clamp(input, "slt", lower)
+		input = clamp(input, "sgt", upper)
+		output := newTmp()
+		fmt.Fprintf(b, "  %%%s = trunc %s %s to %s\n", output, source, input, half)
+		return "%" + output
+	}
+	left, right := narrow(lhs), narrow(rhs)
+	fmt.Fprintf(b, "  %%%s = shufflevector %s %s, %s %s, <%d x i32> <%s>\n",
+		result, half, left, half, right, count, wasmV128ShuffleIndices(count, 0, 1))
+}
+
 func emitWASMV128IntegerWiden(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, lhs, rhs string) string {
 	lanes := 128 / spec.Shape.LaneBits
 	first, step := 0, 1
@@ -187,16 +233,6 @@ func emitWASMV128IntegerWiden(b *strings.Builder, newTmp func() string, spec was
 		first = lanes
 	case wasmsimd.AdjacentPairs:
 		step = 2
-	}
-	laneMask := func(start int) string {
-		var mask strings.Builder
-		for lane := 0; lane < lanes; lane++ {
-			if lane != 0 {
-				mask.WriteString(", ")
-			}
-			fmt.Fprintf(&mask, "i32 %d", start+lane*step)
-		}
-		return mask.String()
 	}
 	source, resultType := spec.InputLaneType(), spec.Shape.LaneType
 	half := fmt.Sprintf("<%d x i%d>", lanes, spec.Shape.LaneBits/2)
@@ -207,12 +243,12 @@ func emitWASMV128IntegerWiden(b *strings.Builder, newTmp func() string, spec was
 		fmt.Fprintf(b, "  %%%s = %s %s %%%s to %s\n", extended, spec.Operator, half, picked, resultType)
 		return "%" + extended
 	}
-	mask := laneMask(first)
+	mask := wasmV128ShuffleIndices(lanes, first, step)
 	left := widen(lhs, mask)
 	if spec.Widening == wasmsimd.AdjacentPairs {
 		// Generic IR keeps this legal without a mandatory SIMD backend.
 		// LLVM selects extadd_pairwise when the target has SIMD128.
-		right, result := widen(lhs, laneMask(1)), newTmp()
+		right, result := widen(lhs, wasmV128ShuffleIndices(lanes, 1, step)), newTmp()
 		fmt.Fprintf(b, "  %%%s = add %s %s, %s\n", result, resultType, left, right)
 		return "%" + result
 	}

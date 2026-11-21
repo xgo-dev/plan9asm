@@ -38,6 +38,10 @@ func wasmV128CoreNames() []string {
 		}
 	}
 	names = append(names, "I8x16Popcnt")
+	names = append(names,
+		"I8x16NarrowI16x8S", "I8x16NarrowI16x8U",
+		"I16x8NarrowI32x4S", "I16x8NarrowI32x4U",
+	)
 	for i, output := range []string{"I16x8", "I32x4", "I64x2"} {
 		input := [...]string{"I8x16", "I16x8", "I32x4"}[i]
 		for _, extension := range []string{"S", "U"} {
@@ -112,7 +116,8 @@ func wasmV128CoreObjectFixture() (string, map[string]FuncSig) {
 			sig.Args = []LLVMType{I64, "<4 x i32>"}
 			sig.ArgRegs = []Reg{"R0", "V0"}
 		case floatBits != 0 || wasmV128IntegerOrdering(integerOp) ||
-			wasmV128IntegerUnary(integerOp) || strings.HasPrefix(integerOp, "Ext"):
+			wasmV128IntegerUnary(integerOp) || strings.HasPrefix(integerOp, "Ext") ||
+			strings.HasPrefix(integerOp, "Narrow"):
 			body = ""
 			for arg := 0; arg < wasmV128CoreInputs(name); arg++ {
 				reg := Reg(fmt.Sprintf("V%d", arg))

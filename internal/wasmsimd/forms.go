@@ -21,6 +21,7 @@ const (
 	ExtractLane
 	ReplaceLane
 	IntegerWiden
+	IntegerNarrow
 )
 
 type ValueType string
@@ -191,6 +192,18 @@ func buildForms() map[string]Form {
 			scalar = I64
 		}
 		addLaneOperations(lane.prefix, shape, scalar)
+		if lane.bits <= 16 {
+			sourceBits := lane.bits * 2
+			source := fmt.Sprintf("I%dX%d", sourceBits, count/2)
+			inputLanes := fmt.Sprintf("<%d x i%d>", count/2, sourceBits)
+			for _, output := range []struct{ suffix, signedness string }{{"S", "signed"}, {"U", "unsigned"}} {
+				name := lane.prefix + "NARROW" + source + output.suffix
+				result[name] = Form{
+					stack: binary, inputLanes: inputLanes, Shape: shape,
+					Emission: IntegerNarrow, Operator: output.signedness,
+				}
+			}
+		}
 		add(lane.prefix, shape, operation{"ADD", "add", binary, Instruction})
 		add(lane.prefix, shape, operation{"SUB", "sub", binary, Instruction})
 		if lane.bits >= 16 {

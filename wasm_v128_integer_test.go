@@ -61,6 +61,55 @@ func wasmV128IntegerShift(op string) bool {
 	return op == "Shl" || op == "ShrS" || op == "ShrU"
 }
 
+func wasmV128IntegerNarrowingBounds(op string, width uint) (int64, int64) {
+	if strings.HasSuffix(op, "S") {
+		limit := int64(1) << (width - 1)
+		return -limit, limit - 1
+	}
+	return 0, int64(1)<<width - 1
+}
+
+func wasmV128IntegerNarrowingPatterns(op string, width uint) [][3][2]uint64 {
+	low, high := wasmV128IntegerNarrowingBounds(op, width)
+	sourceLimit := int64(1) << (width*2 - 1)
+	values := [...]int64{-sourceLimit, low - 1, low, low + 1, -1, 0, 1, high - 1, high, high + 1, sourceLimit - 1}
+	patterns := make([][3][2]uint64, len(values))
+	mask := uint64(1)<<(width*2) - 1
+	for seed := range patterns {
+		for lane := uint(0); lane < 64/width; lane++ {
+			offset := lane * width * 2
+			first := uint64(values[(seed+int(lane)*3)%len(values)]) & mask
+			second := uint64(values[(seed+int(lane)*7+1)%len(values)]) & mask
+			patterns[seed][0][offset/64] |= first << (offset % 64)
+			patterns[seed][1][offset/64] |= second << (offset % 64)
+		}
+	}
+	return patterns
+}
+
+func wasmV128IntegerNarrowingReference(op string, width uint, a, b [2]uint64) [2]uint64 {
+	low, high := wasmV128IntegerNarrowingBounds(op, width)
+	mask := uint64(1)<<width - 1
+	var result [2]uint64
+	for half, input := range [2][2]uint64{a, b} {
+		for lane := uint(0); lane < 64/width; lane++ {
+			offset := lane * width * 2
+			value := input[offset/64] >> (offset % 64)
+			// Both signed and unsigned output formats take signed input.
+			shift := 64 - width*2
+			signed := int64(value<<shift) >> shift
+			switch {
+			case signed < low:
+				signed = low
+			case signed > high:
+				signed = high
+			}
+			result[half] |= (uint64(signed) & mask) << (lane * width)
+		}
+	}
+	return result
+}
+
 func wasmV128IntegerReductionReference(op string, width uint, a [2]uint64) uint32 {
 	var signs, nonzero uint32
 	mask := uint64(1)<<width - 1

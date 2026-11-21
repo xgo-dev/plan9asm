@@ -15,7 +15,7 @@ type wasmV128CoreObservation struct {
 	Want uint32
 }
 
-const wasmV128CoreObservations = 2756
+const wasmV128CoreObservations = 2800
 
 var wasmV128CorePass = fmt.Sprintf("V128 core PASS %d", wasmV128CoreObservations)
 
@@ -30,6 +30,9 @@ func wasmV128CoreReference(name string, a, b, mask [2]uint64) [2]uint64 {
 	if bits, op := wasmV128IntegerParts(name); bits != 0 {
 		if strings.HasPrefix(op, "Ext") {
 			return wasmV128IntegerWideningReference(op, bits, a, b)
+		}
+		if strings.HasPrefix(op, "Narrow") {
+			return wasmV128IntegerNarrowingReference(op, bits, a, b)
 		}
 		return wasmV128IntegerReference(op, bits, a, b)
 	}
@@ -155,6 +158,8 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 				inputs = wasmV128IntegerOrderingPatterns(bits)
 			case strings.HasPrefix(op, "Ext"):
 				inputs = wasmV128IntegerOrderingPatterns(bits / 2)
+			case strings.HasPrefix(op, "Narrow"):
+				inputs = wasmV128IntegerNarrowingPatterns(op, bits)
 			}
 		}
 		for index, pattern := range inputs {
