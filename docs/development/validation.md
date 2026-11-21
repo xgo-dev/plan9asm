@@ -351,6 +351,10 @@ Windows targets. The frame proof requires a defined mask and all potentially
 accessed bytes. Broadcast uses its scalar tuple, and only merging forms
 require the previous destination. These checks provide object evidence for
 the exact source fixtures and track execution separately.
+The compact/expand frame checks cover the full possible memory span. A
+masked compression preserves any previously initialized bytes and revokes
+overlapping pointer spills without declaring the rest of the span initialized.
+Original Go EVEX.z memory stores remain terminal illegal-instruction forms.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies

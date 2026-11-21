@@ -90,10 +90,14 @@ func x86TypedCompactExpandByteEffect(op Op, ins Instr, arch string) (x86TypedByt
 	operands := []x86TypedByteOperand{
 		{index: 0, operand: ins.Args[0], width: int64(form.byteWidth), read: true},
 		{index: form.destination, operand: ins.Args[form.destination], width: int64(form.byteWidth),
-			read: form.mask >= 0 && !form.zeroing && form.memory != form.destination, write: true},
+			read: form.mask >= 0 && !form.zeroing && form.memory != form.destination, write: true,
+			partialWrite: form.mask >= 0 && form.memory == form.destination},
 	}
 	if form.mask >= 0 {
 		operands = append(operands, x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true})
 	}
-	return x86TypedByteEffect{operands: operands, dynamicMemory: form.memory >= 0, requiresResultProof: true}, true, nil
+	return x86TypedByteEffect{
+		operands: operands, vector: x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		dynamicMemory: form.memory >= 0, requiresResultProof: true,
+	}, true, nil
 }

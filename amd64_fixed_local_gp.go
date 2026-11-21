@@ -170,6 +170,10 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 				return err
 			}
 			if role == x86FixedLocalPrivateMemory {
+				if operand.partialWrite {
+					fixedLocalNumericalStore(state, offset, operand.width, false)
+					continue
+				}
 				// An integer RMW drops an overlapping native-address role,
 				// but its untouched actual machine bytes remain initialized.
 				for start := offset - 7; start < offset+operand.width; start++ {

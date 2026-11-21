@@ -15,6 +15,7 @@ type x86TypedByteOperand struct {
 	width         int64
 	read          bool
 	write         bool
+	partialWrite  bool   // A conditional memory write may leave any byte in its span unchanged.
 	requiredBytes uint64 // Optional vector-register read mask; zero requires the full width.
 }
 
@@ -24,7 +25,7 @@ type x86TypedByteEffect struct {
 	flagsRead           uint8
 	flagsDefined        uint8
 	flagsKilled         uint8
-	dynamicMemory       bool // A register-indexed bit string has no fixed base span.
+	dynamicMemory       bool // Accessed bytes depend on a register or a mask.
 	requiresResultProof bool // Mandatory NUM/result obligation, independent of cost-only storage routing.
 }
 

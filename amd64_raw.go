@@ -2228,21 +2228,9 @@ func decodeX86RawDirectiveGroupWithOpaque(
 				offset += length
 				continue
 			}
-			if instruction, length, ok, err := decodedX86PackedCompressInstruction(code[offset:], mode); ok {
+			if instruction, length, ok, err := decodedX86PackedCompactInstruction(code[offset:], mode, x86RawMemoryDecoder{}); ok {
 				if err != nil {
-					return nil, fmt.Errorf("decode raw x86 packed compress at instruction %d byte %d: %w: %q", start, offset, err, rawGroup)
-				}
-				if err := markInstruction(offset, length); err != nil {
-					return nil, err
-				}
-				instruction.Raw = fmt.Sprintf("%s /* decoded from %s */", instruction.Raw, rawGroup)
-				decodedByOffset[offset] = x86RawDecodedInstruction{length: length, instrs: []Instr{instruction}}
-				offset += length
-				continue
-			}
-			if instruction, length, ok, err := decodedX86PackedExpandInstruction(code[offset:], mode); ok {
-				if err != nil {
-					return nil, fmt.Errorf("decode raw x86 packed expand at instruction %d byte %d: %w: %q", start, offset, err, rawGroup)
+					return nil, fmt.Errorf("decode raw x86 packed compact at instruction %d byte %d: %w: %q", start, offset, err, rawGroup)
 				}
 				if err := markInstruction(offset, length); err != nil {
 					return nil, err
@@ -8649,15 +8637,7 @@ func decodedX86IndexedPermuteInstruction(code []byte, mode int) (instruction Ins
 
 // Go 1.27's _yvcompresspd and _yvexpandpd families share the same typed
 // register/memory grammar, with the ModRM roles reversed for stores.
-func decodedX86PackedCompressInstruction(code []byte, mode int) (Instr, int, bool, error) {
-	return decodedX86PackedCompactInstruction(code, mode, true)
-}
-
-func decodedX86PackedExpandInstruction(code []byte, mode int) (Instr, int, bool, error) {
-	return decodedX86PackedCompactInstruction(code, mode, false)
-}
-
-func decodedX86PackedCompactInstruction(code []byte, mode int, store bool) (instruction Instr, length int, ok bool, err error) {
+func decodedX86PackedCompactInstruction(code []byte, mode int, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
 	i, segment, addressOverride := x86RawSegmentPrefixes(code)
 	if mode != 32 && mode != 64 {
 		return Instr{}, 0, false, nil
@@ -8670,8 +8650,8 @@ func decodedX86PackedCompactInstruction(code []byte, mode int, store bool) (inst
 	if p0&0x0f != 2 || p1&0x07 != 5 {
 		return Instr{}, 0, false, nil
 	}
-	if store && opcode != 0x63 && opcode != 0x8a && opcode != 0x8b ||
-		!store && opcode != 0x62 && opcode != 0x88 && opcode != 0x89 {
+	store := opcode == 0x63 || opcode == 0x8a || opcode == 0x8b
+	if !store && opcode != 0x62 && opcode != 0x88 && opcode != 0x89 {
 		return Instr{}, 0, false, nil
 	}
 	ok = true
@@ -8748,7 +8728,7 @@ func decodedX86PackedCompactInstruction(code []byte, mode int, store bool) (inst
 	}
 	regNumber := int(modRM>>3&7) + rExt*8 + rHighExt*16
 	reg := Operand{Kind: OpReg, Reg: Reg(fmt.Sprintf("%s%d", vectorPrefix, regNumber))}
-	rm, consumed, decodeErr := decodedX86EVEXRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, vectorPrefix, laneBytes)
+	rm, consumed, decodeErr := memory.evex(code[modRMIndex:], mode, bExt, xExt, segment, vectorPrefix, laneBytes)
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}

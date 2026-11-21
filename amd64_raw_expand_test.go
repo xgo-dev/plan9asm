@@ -76,7 +76,7 @@ func TestDecodeX86RawExpandCompleteGoForms(t *testing.T) {
 				name := fmt.Sprintf("%s/%s/%s", form.op, vector, variant.name)
 				t.Run(name, func(t *testing.T) {
 					code := encodeX86RawExpand(form.opcode, form.widthBit, vectorBits, variant.mask, variant.zeroing, variant.memory)
-					got, length, ok, err := decodedX86PackedExpandInstruction(code, 64)
+					got, length, ok, err := decodedX86PackedCompactInstruction(code, 64, x86RawMemoryDecoder{})
 					if err != nil || !ok || length != len(code) {
 						t.Fatalf("decode %x = %+v, length=%d, ok=%v, err=%v", code, got, length, ok, err)
 					}
@@ -106,13 +106,13 @@ func TestDecodeX86RawExpandRejectsInvalidForms(t *testing.T) {
 	} {
 		code := append([]byte(nil), base...)
 		mutate(code)
-		if _, _, ok, err := decodedX86PackedExpandInstruction(code, 64); !ok || err == nil {
+		if _, _, ok, err := decodedX86PackedCompactInstruction(code, 64, x86RawMemoryDecoder{}); !ok || err == nil {
 			t.Fatalf("invalid encoding %x returned ok=%v err=%v", code, ok, err)
 		}
 	}
 	badMode32 := encodeX86RawExpand(0x88, 0, 2, 1, false, false)
 	badMode32[1] &^= 0x80 // The destination field has no physical mode32 register.
-	if _, _, ok, err := decodedX86PackedExpandInstruction(badMode32, 32); !ok || err == nil {
+	if _, _, ok, err := decodedX86PackedCompactInstruction(badMode32, 32, x86RawMemoryDecoder{}); !ok || err == nil {
 		t.Fatalf("accepted unbound mode32 destination bank: ok=%v err=%v", ok, err)
 	}
 }

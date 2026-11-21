@@ -129,6 +129,7 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		decodedX86VPINSRInstructionWithMemory,
 		decodedX86EVEXVPINSRInstructionWithMemory,
 		decodedX86PackedScalarExtractInstructionWithMemory,
+		decodedX86PackedCompactInstruction,
 		decodedX86VMOVQInstructionWithMemory,
 		decodedX86VEXVectorTestInstructionWithMemory,
 	}

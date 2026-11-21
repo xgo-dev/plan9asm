@@ -111,6 +111,12 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 			},
 		}, true, nil
 	}
+	if effect, known, err := x86TypedCompactExpandByteEffect(op, ins, arch); known {
+		// The frame proof checks the full possible span. Each compact
+		// prefix stays within that span, independent of the mask value.
+		effect.dynamicMemory = false
+		return effect, true, err
+	}
 	return x86TypedByteEffect{}, false, nil
 }
 

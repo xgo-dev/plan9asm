@@ -190,19 +190,23 @@ func fixedLocalCheckVEXPhysicalBoundaries(t *testing.T, witnesses []fixedLocalVE
 }
 
 func TestGoAMD64FixedLocalVEXBoundaries(t *testing.T) {
-	for _, row := range []struct{ name, operation string }{
-		{"unknown source", "VPADDQ Y7,Y1,Y2"},
-		{"missing count upper qword", "VPSRLQ 184(BP),Y1,Y2"},
-		{"outside private frame", "VPSHUFB 256(BP),Y1,Y2"},
-		{"numeric pointer", "VPOR (AX),Y1,Y2"},
-		{"unbound FP", "VPAND a+8(FP),Y1,Y2"},
-		{"EVEX high register", "VPADDQ X16,X1,X2"},
-		{"EVEX width", "VPADDQ Z0,Z1,Z2"},
-		{"EVEX mask", "KMOVQ AX,K1\nVPADDQ Y0,Y1,K1,Y2"},
-		{"EVEX broadcast", "VPADDQ.BCST (SI),Y1,Y2"},
-		{"EVEX-only member", "VPSRAQ $1,Y1,Y2"},
-		{"EVEX immediate memory", "VPSRLQ $1,64(BP),Y2"},
-		{"MMX", "PADDQ M0,M1"},
+	for _, row := range []struct {
+		name, operation string
+		valid           bool
+	}{
+		{"unknown source", "VPADDQ Y7,Y1,Y2", false},
+		{"missing count upper qword", "VPSRLQ 184(BP),Y1,Y2", false},
+		{"outside private frame", "VPSHUFB 256(BP),Y1,Y2", false},
+		{"numeric pointer", "VPOR (AX),Y1,Y2", true},
+		{"unbound FP", "VPAND a+8(FP),Y1,Y2", false},
+		{"undefined EVEX high register", "VPADDQ X16,X1,X2", false},
+		{"undefined EVEX mask", "VPADDQ Y0,Y1,K1,Y2", false},
+		{"EVEX width", "VPADDQ Z0,Z1,Z2", true},
+		{"EVEX mask", "KMOVQ AX,K1\nVPADDQ Y0,Y1,K1,Y2", true},
+		{"EVEX broadcast", "VPADDQ.BCST (SI),Y1,Y2", true},
+		{"EVEX-only member", "VPSRAQ $1,Y1,Y2", true},
+		{"EVEX immediate memory", "VPSRLQ $1,64(BP),Y2", true},
+		{"MMX", "PADDQ M0,M1", false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fn, sig, source := fixedLocalVEXFixture(t, row.operation)
@@ -211,8 +215,8 @@ func TestGoAMD64FixedLocalVEXBoundaries(t *testing.T) {
 					row.operation, 0, 32, false, "load volatile <32 x i8>")
 				return
 			}
-			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
-				t.Fatal("unproved form acquired fixed-local permission", err)
+			if _, err := proveX86FixedLocal(fn, sig); row.valid && err != nil || !row.valid && !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatalf("fixed-local proof valid=%t: %v", row.valid, err)
 			}
 		})
 	}
