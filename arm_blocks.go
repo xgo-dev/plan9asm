@@ -33,6 +33,7 @@ var armCondCodes = map[string]bool{
 
 func armSplitBlocks(fn Func) []armBlock {
 	names := newAssemblyBlockNames(fn)
+	localCalls := armHasNamedLocalCall(fn)
 	blocks := []armBlock{{name: names.fresh("entry"), synthetic: true}}
 	cur := 0
 	anon := 0
@@ -47,16 +48,23 @@ func armSplitBlocks(fn Func) []armBlock {
 		if ins.Op == OpRET {
 			return true
 		}
-		baseOp, cond, _, _ := armDecodeOp(strings.ToUpper(string(ins.Op)))
+		baseOp, _, _, _ := armDecodeOp(string(ins.Op))
 		switch baseOp {
+		case "RET", "UNDEF":
+			return localCalls
+		case "BL", "CALL":
+			return localCalls && armNamedLocalCall(ins)
 		case "B", "JMP":
 			return true
 		case "BEQ", "BNE", "BLT", "BGE", "BGT", "BLE", "BHS", "BHI", "BLS", "BLO", "BCC", "BCS", "BMI", "BPL", "BVS", "BVC":
 			return true
 		}
-		return baseOp == "B" && cond != ""
+		return false
 	}
 	isPCRelTarget := func(ins Instr) (int64, bool) {
+		if armNamedLocalCall(ins) {
+			return armLocalPCOffset(ins.Args[0])
+		}
 		baseOp, _, _, _ := armDecodeOp(strings.ToUpper(string(ins.Op)))
 		if baseOp == "JMP" {
 			baseOp = "B"
@@ -66,10 +74,10 @@ func armSplitBlocks(fn Func) []armBlock {
 		default:
 			return 0, false
 		}
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpMem || ins.Args[0].Mem.Base != PC {
+		if len(ins.Args) != 1 {
 			return 0, false
 		}
-		return ins.Args[0].Mem.Off, true
+		return armLocalPCOffset(ins.Args[0])
 	}
 
 	linear := make([]Instr, 0, len(fn.Instrs))
@@ -80,11 +88,8 @@ func armSplitBlocks(fn Func) []armBlock {
 	}
 	splitAt := map[int]bool{}
 	for i, ins := range linear {
-		if off, ok := isPCRelTarget(ins); ok {
-			target := i + int(off)
-			if target >= 0 && target < len(linear) {
-				splitAt[target] = true
-			}
+		if off, ok := isPCRelTarget(ins); ok && off >= -int64(i) && off < int64(len(linear)-i) {
+			splitAt[i+int(off)] = true
 		}
 	}
 
@@ -122,6 +127,8 @@ func armBranchTarget(op Operand) (string, bool) {
 	switch op.Kind {
 	case OpIdent:
 		return op.Ident, true
+	case OpLabel:
+		return op.Sym, true
 	case OpSym:
 		s := strings.TrimSuffix(strings.TrimSuffix(op.Sym, "(SB)"), "<>")
 		if s == "" {
@@ -137,18 +144,22 @@ func (c *armCtx) resolveBranchTarget(bi int, op Operand) (string, bool) {
 	if target, ok := armBranchTarget(op); ok {
 		return target, true
 	}
-	if op.Kind != OpMem || op.Mem.Base != PC || bi < 0 || bi >= len(c.blocks) {
+	offset, relative := armLocalPCOffset(op)
+	if !relative || bi < 0 || bi >= len(c.blocks) {
 		return "", false
 	}
 	current := len(c.blocks[bi].instrs) - 1
 	for i := 0; i < bi; i++ {
 		current += len(c.blocks[i].instrs)
 	}
-	target := current + int(op.Mem.Off)
+	if offset < -int64(current) || offset > int64(^uint(0)>>1)-int64(current) {
+		return "", false
+	}
+	target := current + int(offset)
 	base := 0
-	for i, block := range c.blocks {
+	for _, block := range c.blocks {
 		if base == target {
-			return c.blocks[i].name, true
+			return block.name, true
 		}
 		base += len(block.instrs)
 	}

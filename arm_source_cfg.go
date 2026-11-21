@@ -4,6 +4,10 @@ package plan9asm
 // It uses the same label/PC-ordinal resolution as lowering, before any LLVM
 // block traversal can turn an unreachable writer into an entry-state proof.
 func armSourcePredecessors(blocks []armBlock) (preds [][]int, reachable []bool) {
+	return armSourcePredecessorsFromEdges(armSourceSuccessors(blocks))
+}
+
+func armSourceSuccessors(blocks []armBlock) [][]int {
 	indices := map[string]int{}
 	for i, block := range blocks {
 		indices[block.name] = i
@@ -31,7 +35,11 @@ func armSourcePredecessors(blocks []armBlock) (preds [][]int, reachable []bool) 
 			succ[i] = append(succ[i], i+1)
 		}
 	}
-	reachable = make([]bool, len(blocks))
+	return succ
+}
+
+func armSourcePredecessorsFromEdges(succ [][]int) (preds [][]int, reachable []bool) {
+	reachable = make([]bool, len(succ))
 	var visit func(int)
 	visit = func(i int) {
 		if reachable[i] {
@@ -42,10 +50,10 @@ func armSourcePredecessors(blocks []armBlock) (preds [][]int, reachable []bool) 
 			visit(target)
 		}
 	}
-	if len(blocks) != 0 {
+	if len(succ) != 0 {
 		visit(0)
 	}
-	preds = make([][]int, len(blocks))
+	preds = make([][]int, len(succ))
 	for i, targets := range succ {
 		if reachable[i] {
 			for _, target := range targets {

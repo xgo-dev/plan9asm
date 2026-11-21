@@ -26,7 +26,7 @@ func proveARMKernelContinuation(fn Func) error {
 	if !hasCall {
 		return nil
 	}
-	noFrame, err := armKernelSourceNoFrame(fn)
+	noFrame, err := armSourceNoFrame(fn)
 	if err != nil {
 		return err
 	}
@@ -52,9 +52,9 @@ func proveARMKernelContinuation(fn Func) error {
 	return nil
 }
 
-func armKernelSourceNoFrame(fn Func) (bool, error) {
+func armSourceNoFrame(fn Func) (bool, error) {
 	if len(fn.Instrs) == 0 || fn.Instrs[0].Op != OpTEXT {
-		return false, fmt.Errorf("%w: ARM kernel caller %q has no source TEXT flags", ErrProbeNeedsContext, fn.Sym)
+		return false, fmt.Errorf("%w: ARM function %q has no source TEXT flags", ErrProbeNeedsContext, fn.Sym)
 	}
 	parts := splitTopLevelCSV(fn.Instrs[0].Raw)
 	flags := uint64(0)
@@ -68,10 +68,10 @@ func armKernelSourceNoFrame(fn Func) (bool, error) {
 		var ok bool
 		flags, ok = parseImmExpr(strings.TrimSpace(expression))
 		if !ok {
-			return false, fmt.Errorf("%w: ARM kernel caller %q has unresolved TEXT flags %q", ErrProbeNeedsContext, fn.Sym, parts[1])
+			return false, fmt.Errorf("%w: ARM function %q has unresolved TEXT flags %q", ErrProbeNeedsContext, fn.Sym, parts[1])
 		}
 	} else if len(parts) != 2 {
-		return false, fmt.Errorf("%w: ARM kernel caller %q has malformed TEXT metadata", ErrProbeNeedsContext, fn.Sym)
+		return false, fmt.Errorf("%w: ARM function %q has malformed TEXT metadata", ErrProbeNeedsContext, fn.Sym)
 	}
 	return fn.FrameSize == -4 || flags&512 != 0, nil
 }

@@ -15,7 +15,8 @@ type armCtx struct {
 
 	tmp int
 
-	blocks []armBlock
+	blocks       []armBlock
+	localControl *armLocalControl
 
 	usedRegs  map[Reg]bool
 	regSlot   map[Reg]string
@@ -399,13 +400,18 @@ func (c *armCtx) scanUsedRegs() {
 
 func (c *armCtx) emitEntryAllocasAndArgInit() error {
 	c.scanUsedRegs()
+	entry := c.blocks[0].name
+	if c.localControl != nil {
+		entry = c.localControl.entry
+		c.usedRegs[armLinkRegister] = true
+	}
 	regs := make([]string, 0, len(c.usedRegs))
 	for r := range c.usedRegs {
 		regs = append(regs, string(r))
 	}
 	sort.Strings(regs)
 
-	c.b.WriteString(armLLVMBlockName(c.blocks[0].name) + ":\n")
+	c.b.WriteString(armLLVMBlockName(entry) + ":\n")
 	for _, rs := range regs {
 		r := Reg(rs)
 		slot := c.slotName(r)

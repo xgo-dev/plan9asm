@@ -15,7 +15,7 @@ type armStatusState struct {
 // Reading CPSR instead requires a must-initialized proof for all four modeled
 // NZCV slots on every source path. Entry has no invented physical flags, and
 // an ordinary C call has no source-native flags-result contract.
-func proveARMStatusReads(fn Func, sig FuncSig) error {
+func proveARMStatusReads(fn Func, sig FuncSig, local *armLocalControl) error {
 	if !armFunctionUsesModeledFlags(fn) {
 		return nil
 	}
@@ -43,7 +43,13 @@ func proveARMStatusReads(fn Func, sig FuncSig) error {
 		fn.Instrs[i].Op = "CMPD" // Proof-only full NZCV writer; emitted source stays unchanged.
 	}
 	blocks := armSplitBlocks(fn)
-	preds, reachable := armSourcePredecessors(blocks)
+	var preds [][]int
+	var reachable []bool
+	if local != nil {
+		preds, reachable = armSourcePredecessorsFromEdges(local.successor)
+	} else {
+		preds, reachable = armSourcePredecessors(blocks)
+	}
 	entry := armStatusState{}
 	if sig.ARMEntry != nil {
 		// Full translation validates the entry contract before reaching this
@@ -207,6 +213,12 @@ func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr
 	predicate := armKernelConditionBits(condition)
 	if check && predicate != 0 && !state.initialized.has(predicate) {
 		return state, fmt.Errorf("%w: ARM CPSR continuation in %q has no initialized %s predicate: %s", ErrProbeNeedsContext, name, condition, ins.Raw)
+	}
+	if armNamedLocalCall(ins) {
+		// The linked edge replaces LR with a continuation, leaving NZCV
+		// and the ordinary register values available to the local body.
+		state.values &^= armKernelRegBit(armLinkRegister)
+		return state, nil
 	}
 	readsStatus := armInstructionReadsStatus(ins)
 	if check && readsStatus && !state.initialized.has(armKernelFlags) {

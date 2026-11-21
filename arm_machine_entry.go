@@ -189,7 +189,7 @@ func translateFuncARMMachineEntry(b *strings.Builder, fn Func, sig FuncSig, reso
 	if err := validateARMMachineEntry(fn, sig, triple); err != nil {
 		return err
 	}
-	if err := proveARMStatusReads(fn, sig); err != nil {
+	if err := proveARMStatusReads(fn, sig, nil); err != nil {
 		return err
 	}
 	bodyName := sig.Name + ".machine_body"

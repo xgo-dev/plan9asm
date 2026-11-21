@@ -24,7 +24,11 @@ func translateFuncARM(b *strings.Builder, fn Func, sig FuncSig, resolve func(str
 			}
 		}
 	}
-	if err := proveARMStatusReads(fn, sig); err != nil {
+	c := newARMCtx(b, fn, sig, resolve, sigs, annotateSource)
+	if err := c.prepareARMLocalControl(fn); err != nil {
+		return err
+	}
+	if err := proveARMStatusReads(fn, sig, c.localControl); err != nil {
 		return err
 	}
 	fmt.Fprintf(b, "define %s %s(", sig.Ret, llvmGlobal(sig.Name))
@@ -40,7 +44,6 @@ func translateFuncARM(b *strings.Builder, fn Func, sig FuncSig, resolve func(str
 	}
 	b.WriteString(" {\n")
 
-	c := newARMCtx(b, fn, sig, resolve, sigs, annotateSource)
 	// The source proof above establishes initialization at each flag use,
 	// including a read block emitted before its backward-edge predecessor.
 	// This boolean selects the modeled representation, not initial NZCV.
@@ -69,14 +72,27 @@ func (c *armCtx) lowerBlocks() error {
 		return nil
 	}
 
+	if c.localControl != nil {
+		emitBr(c.blocks[0].name)
+	}
 	for bi := 0; bi < len(c.blocks); bi++ {
 		blk := c.blocks[bi]
-		if bi != 0 {
+		if bi != 0 || c.localControl != nil {
 			fmt.Fprintf(c.b, "\n%s:\n", armLLVMBlockName(blk.name))
 		}
 		terminated := false
-		for _, ins := range blk.instrs {
+		for i, ins := range blk.instrs {
 			c.emitSourceComment(ins)
+			if c.localControl != nil && i == len(blk.instrs)-1 {
+				transfer := c.localControl.transfers[bi]
+				if transfer.kind != armLocalOrdinary {
+					if err := c.lowerARMLocalTransfer(bi, transfer, emitBr, emitCondBr); err != nil {
+						return fmt.Errorf("%s: %w", ins.Raw, err)
+					}
+					terminated = true
+					break
+				}
+			}
 			term, err := c.lowerInstr(bi, ins, emitBr, emitCondBr)
 			if err != nil {
 				return fmt.Errorf("%s: %w", ins.Raw, err)
