@@ -93,6 +93,13 @@ func TestCompileOneSelectedSDK386ABI0TailPreservesGlobalEntry(t *testing.T) {
 	if err := compileOne(pkg, plan9asm.ArchAMD64, "linux", "386", "i386-unknown-linux-gnu", task, false, config); err != nil {
 		t.Fatal(err)
 	}
+	ir, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ir), " = alloca ") {
+		t.Fatal("typed wrappers retained virtual-register or logical frame spills")
+	}
 	object, err := elf.Open(strings.TrimSuffix(output, ".ll") + ".o")
 	if err != nil {
 		t.Fatal(err)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/gostaticstorage"
@@ -164,6 +165,10 @@ func translateSDK386ABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 	if err != nil {
 		return nil, err
 	}
+	if err := promoteSDK386TailFrame(module); err != nil {
+		module.Dispose()
+		return nil, fmt.Errorf("promote SDK i386 tail registers and frame slots: %w", err)
+	}
 	var functions []GoFunction
 	for _, fn := range original.Funcs {
 		name := opt.ResolveSym(fn.Sym)
@@ -188,6 +193,34 @@ func translateSDK386ABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 		return nil, err
 	}
 	return &GoModuleTranslation{Module: module, Signatures: sigs, Functions: functions}, nil
+}
+
+var sdkTailLLVMTargets sync.Once
+
+// Frame slots contain target-sized pointers. Give LLVM its actual i386 layout
+// before scalarizing the frame and promoting virtual registers into SSA.
+func promoteSDK386TailFrame(module llvm.Module) error {
+	sdkTailLLVMTargets.Do(func() {
+		llvm.InitializeAllTargetInfos()
+		llvm.InitializeAllTargets()
+		llvm.InitializeAllTargetMCs()
+	})
+	triple := module.Target()
+	target, err := llvm.GetTargetFromTriple(triple)
+	if err != nil {
+		return err
+	}
+	machine := target.CreateTargetMachine(triple, "", "", llvm.CodeGenLevelDefault, llvm.RelocDefault, llvm.CodeModelDefault)
+	if machine.C == nil {
+		return fmt.Errorf("LLVM has no target machine for %q", triple)
+	}
+	defer machine.Dispose()
+	layout := machine.CreateTargetData()
+	defer layout.Dispose()
+	module.SetDataLayout(layout.String())
+	passes := llvm.NewPassBuilderOptions()
+	defer passes.Dispose()
+	return module.RunPasses("function(sroa,mem2reg,instcombine,simplifycfg)", machine, passes)
 }
 
 // Private aliases are an IR projection only. Native names are retained in the
