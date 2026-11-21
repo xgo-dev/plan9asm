@@ -50,20 +50,8 @@ func x86TypedPackedTestMaskByteEffect(op Op, ins Instr, arch string) (x86TypedBy
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	firstWidth := f.byteWidth
-	if f.memory >= 0 {
-		firstWidth = f.memoryBytes
-	}
-	effect := x86TypedByteEffect{requiresResultProof: true,
-		vector: x86TypedVectorEffect{memoryAlignment: 1},
-		operands: []x86TypedByteOperand{
-			{index: f.first, operand: f.source, width: int64(firstWidth), read: true},
-			{index: f.second, operand: ins.Args[f.second], width: int64(f.byteWidth), read: true},
-			{index: f.destination, operand: ins.Args[f.destination], width: 8, write: true},
-		}}
-	if f.mask >= 0 {
-		effect.operands = append(effect.operands, x86TypedByteOperand{index: f.mask, operand: ins.Args[f.mask], width: 8, read: true})
-	}
+	effect := x86PackedMaskResultEffect(ins, f.x86PackedBinaryForm, f.source, true)
+	effect.requiresResultProof = true
 	return effect, true, nil
 }
 

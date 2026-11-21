@@ -101,7 +101,7 @@ func (c *amd64Ctx) lowerFPClass(op Op, ins Instr) (ok bool, terminated bool, err
 		fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i64\n", wide, low)
 		result = "%" + wide
 	} else {
-		result = c.packFloatingCompareMask(classified, lanes)
+		result = c.packVectorPredicates(classified, lanes)
 	}
 	if masked {
 		writeMask, loadErr := c.loadK(ins.Args[2].Reg)

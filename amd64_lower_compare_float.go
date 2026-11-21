@@ -150,23 +150,6 @@ func (c *amd64Ctx) splatFloatingScalar(value string, lanes, elemBits int) string
 	return result
 }
 
-func (c *amd64Ctx) packFloatingCompareMask(compared string, lanes int) string {
-	if lanes == 1 {
-		wide := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i64\n", wide, compared)
-		return "%" + wide
-	}
-	packedType := fmt.Sprintf("i%d", lanes)
-	packed := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i1> %s to %s\n", packed, lanes, compared, packedType)
-	if lanes == 64 {
-		return "%" + packed
-	}
-	wide := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to i64\n", wide, packedType, packed)
-	return "%" + wide
-}
-
 func amd64FloatingScalarType(elemBits int) string {
 	if elemBits == 64 {
 		return "double"

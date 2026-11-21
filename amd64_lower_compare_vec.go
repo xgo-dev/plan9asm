@@ -295,21 +295,7 @@ func (c *amd64Ctx) emitPackedIntegerMaskCompare(baseOp string, laneBits, byteWid
 		return err
 	}
 	lanes := byteWidth * 8 / laneBits
-	packedType := fmt.Sprintf("i%d", lanes)
-	packed := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i1> %s to %s\n", packed, lanes, compared, packedType)
-	result := "%" + packed
-	if lanes < 64 {
-		wide := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", wide, packedType, result)
-		result = "%" + wide
-	}
-	if writeMask != "" {
-		masked := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", masked, result, writeMask)
-		result = "%" + masked
-	}
-	return c.storeK(dst, result)
+	return c.storeVectorPredicates(dst, compared, lanes, writeMask)
 }
 
 func (c *amd64Ctx) loadMaskedPackedCompareLanes(source Operand, byteWidth, laneBits int, broadcast bool, mask string) (string, error) {

@@ -374,6 +374,10 @@ index, table or accumulator input even with zeroing. Bit-to-mask lookup
 reads the writemask before defining its K result, including when they use
 the same register. The proof bounds the full possible stack input span,
 while lowering retains the lookup's byte-granular masked reads.
+Integer comparisons and bit tests share the same write-only K result and
+exact source tuple rules. They retain the input mask before a possible
+aliased write. An integer self-comparison can derive its result from register
+identity. A bit test reads the numerical intersection of its operands.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies

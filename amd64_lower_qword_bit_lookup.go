@@ -83,21 +83,7 @@ func (c *amd64Ctx) lowerQwordBitLookup(op Op, ins Instr) (ok bool, terminated bo
 	predicates := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = and <%d x i8> %s, %s\n", ones, byteWidth, selectedBytes, llvmSplatInteger(byteWidth, 8, 1))
 	fmt.Fprintf(c.b, "  %%%s = icmp ne <%d x i8> %%%s, zeroinitializer\n", predicates, byteWidth, ones)
-	packedType := fmt.Sprintf("i%d", byteWidth)
-	packed := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i1> %%%s to %s\n", packed, byteWidth, predicates, packedType)
-	result := "%" + packed
-	if byteWidth < 64 {
-		wide := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", wide, packedType, result)
-		result = "%" + wide
-	}
-	if form.mask >= 0 {
-		maskedResult := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", maskedResult, result, writeMask)
-		result = "%" + maskedResult
-	}
-	return true, false, c.storeK(destination.Reg, result)
+	return true, false, c.storeVectorPredicates(destination.Reg, "%"+predicates, byteWidth, writeMask)
 }
 
 // emitQwordBitLookupBytes rotates each corresponding data qword right by the

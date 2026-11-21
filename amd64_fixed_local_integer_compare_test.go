@@ -168,34 +168,63 @@ func TestGoAMD64FixedLocalIntegerCompareConsumerBoundaries(t *testing.T) {
 			}
 		}
 	}
-	// These valid ISA forms have separate MMX or EVEX mask-result consumers.
-	// Descriptor metadata must not silently grant fixed-frame vector storage.
-	var separate []string
+	// MMX keeps its separate region. EVEX mask results use the frame
+	// consumer with vector inputs and a write-only K destination.
+	var nonVectorResults []string
 	for index, name := range x86PackedIntegerCompareTestNames {
 		if index < 8 {
 			if index%4 != 3 {
-				separate = append(separate, name+" M0,M1")
+				nonVectorResults = append(nonVectorResults, name+" M0,M1")
 			}
 			continue
 		}
 		for _, bank := range []string{"X", "Y", "Z"} {
-			separate = append(separate, name+" "+bank+"0,"+bank+"1,K0", name+" "+bank+"0,"+bank+"1,K1,K2")
+			nonVectorResults = append(nonVectorResults, name+" "+bank+"0,"+bank+"1,K0", name+" "+bank+"0,"+bank+"1,K1,K2")
 		}
 	}
 	for _, name := range x86ImmediateCompareResultMembers {
 		for _, bank := range []string{"X", "Y", "Z"} {
-			separate = append(separate, name+" $255,"+bank+"0,"+bank+"1,K0", name+" $7,"+bank+"0,"+bank+"1,K1,K2")
+			nonVectorResults = append(nonVectorResults, name+" $255,"+bank+"0,"+bank+"1,K0", name+" $7,"+bank+"0,"+bank+"1,K1,K2")
 		}
 	}
-	for _, operation := range separate {
+	for _, operation := range nonVectorResults {
 		t.Run(operation, func(t *testing.T) {
 			ins := x86ScalarLaneInstruction(t, operation)
 			effect, known, err := x86TypedPackedIntegerCompareByteEffect(ins.Op, ins, "amd64")
-			if !known || err != nil || effect.vector != (x86TypedVectorEffect{}) {
-				t.Fatal("separate valid ISA form changed grammar or gained vector storage", err, effect)
+			if !known || err != nil {
+				t.Fatal("valid comparison changed grammar", err)
 			}
-			if _, known, err := fixedLocalVectorByteEffect(ins); known && err == nil {
-				t.Fatal("MMX or EVEX mask result acquired this fixed-frame vector consumer")
+			destination := ins.Args[len(ins.Args)-1]
+			if !amd64IsKOperand(destination) {
+				if effect.vector != (x86TypedVectorEffect{}) {
+					t.Fatalf("MMX acquired vector storage metadata: %+v", effect.vector)
+				}
+				if _, known, err := fixedLocalVectorByteEffect(ins); known && err == nil {
+					t.Fatal("MMX acquired fixed-frame vector storage")
+				}
+				return
+			}
+			if effect.vector != (x86TypedVectorEffect{x86TypedVectorNoWrite, 1}) {
+				t.Fatalf("mask result vector storage metadata: %+v", effect.vector)
+			}
+			for _, access := range effect.operands {
+				if access.write && (access.read || access.width != 8 || access.operand.Kind != OpReg ||
+					access.operand.Reg != destination.Reg || access.index != len(ins.Args)-1) {
+					t.Fatalf("unexpected compare output: %+v", access)
+				}
+			}
+			const initialized = ^uint64(0)
+			state := x86FixedLocalState{
+				vectors: map[Reg]uint64{"Z0": initialized, "Z1": initialized},
+				masks:   map[Reg]bool{"K1": true},
+				flags:   x86ByteFlagsAll,
+			}
+			if err := fixedLocalVectorStep(&ins, &state, nil, 0); err != nil {
+				t.Fatal("fixed frame rejected initialized comparison inputs", err)
+			}
+			if !state.masks[destination.Reg] || !state.masks["K1"] || state.flags != x86ByteFlagsAll ||
+				len(state.vectors) != 2 || state.vectors["Z0"] != initialized || state.vectors["Z1"] != initialized {
+				t.Fatal("comparison failed to define K or disturbed other registers or FLAGS", state)
 			}
 		})
 	}

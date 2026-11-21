@@ -61,27 +61,13 @@ func x86TypedQwordLookupByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	width, firstWidth := int64(form.byteWidth), int64(form.byteWidth)
-	if form.memory >= 0 {
-		firstWidth = int64(form.memoryBytes)
-	}
-	outputWidth, upper := width, x86TypedVectorUpperZero
+	first := ins.Args[form.first]
+	var effect x86TypedByteEffect
 	if form.spec.output == amd64QwordBitLookupMask {
-		outputWidth, upper = 8, x86TypedVectorNoWrite
+		effect = x86PackedMaskResultEffect(ins, form.x86PackedBinaryForm, first, true)
+	} else {
+		effect = x86PackedBinaryDependencyEffect(ins, form.x86PackedBinaryForm, first)
 	}
-	effect := x86TypedByteEffect{
-		requiresResultProof: true,
-		vector:              x86TypedVectorEffect{upper, 1},
-		operands: []x86TypedByteOperand{
-			{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
-			{index: form.second, operand: ins.Args[form.second], width: width, read: true},
-			{index: form.destination, operand: ins.Args[form.destination], width: outputWidth,
-				read: form.spec.output == amd64QwordBitLookupBytes && form.mask >= 0 && !form.zeroing, write: true},
-		},
-	}
-	if form.mask >= 0 {
-		effect.operands = append(effect.operands,
-			x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true})
-	}
+	effect.requiresResultProof = true
 	return effect, true, nil
 }

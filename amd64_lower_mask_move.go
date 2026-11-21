@@ -5,6 +5,30 @@ import (
 	"strings"
 )
 
+func (c *amd64Ctx) packVectorPredicates(predicates string, lanes int) string {
+	packedType := fmt.Sprintf("i%d", lanes)
+	packed := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i1> %s to %s\n", packed, lanes, predicates, packedType)
+	if lanes == 64 {
+		return "%" + packed
+	}
+	wide := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to i64\n", wide, packedType, packed)
+	return "%" + wide
+}
+
+// Packed predicate instructions zero bits outside their result width and
+// at disabled input mask positions. The old destination never merges.
+func (c *amd64Ctx) storeVectorPredicates(dst Reg, predicates string, lanes int, writeMask string) error {
+	result := c.packVectorPredicates(predicates, lanes)
+	if writeMask != "" {
+		masked := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", masked, result, writeMask)
+		result = "%" + masked
+	}
+	return c.storeK(dst, result)
+}
+
 // amd64MaskMoveSpecs is the complete Go 1.27 x86 mask-register move family.
 // All four instructions share _ykmovb and its K->memory, K->GP,
 // K-or-memory->K, and GP->K rows. Go accepts these rows in amd64 and 386 mode.

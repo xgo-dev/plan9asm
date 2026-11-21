@@ -44,6 +44,29 @@ func (effect *x86TypedByteEffect) addWritemask(ins Instr, mask int, zeroing bool
 	})
 }
 
+// A packed K result defines the entire register. The optional writemask
+// is an independent input even when it uses the same K register.
+func x86PackedMaskResultEffect(ins Instr, form x86PackedBinaryForm, source Operand, readInputs bool) x86TypedByteEffect {
+	width, sourceWidth := int64(form.byteWidth), int64(form.byteWidth)
+	if form.memory >= 0 {
+		sourceWidth = int64(form.memoryBytes)
+	}
+	effect := x86TypedByteEffect{
+		vector: x86TypedVectorEffect{x86TypedVectorNoWrite, 1},
+		operands: []x86TypedByteOperand{
+			{index: form.first, operand: source, width: sourceWidth, read: readInputs},
+			{index: form.second, operand: ins.Args[form.second], width: width, read: readInputs},
+			{index: form.destination, operand: ins.Args[form.destination], width: 8, write: true},
+		},
+	}
+	if form.mask >= 0 {
+		effect.operands = append(effect.operands, x86TypedByteOperand{
+			index: form.mask, operand: ins.Args[form.mask], width: 8, read: true,
+		})
+	}
+	return effect
+}
+
 type x86PackedBinaryEffectForm struct {
 	x86PackedBinaryForm
 	source Operand // Retains the actual MMX bank of a legacy GP spelling.

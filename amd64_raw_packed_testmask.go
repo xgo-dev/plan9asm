@@ -20,6 +20,10 @@ var x86RawPackedTestMaskOps = [2][2][2]Op{
 }
 
 func decodedX86RawPackedTestMaskInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawPackedTestMaskInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawPackedTestMaskInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, recognized := decodeX86RawVectorEncoding(code)
 	if !recognized || !p.evex || p.mapNumber != 2 ||
 		(p.pp != 1 && p.pp != 2) || (p.opcode != 0x26 && p.opcode != 0x27) {
@@ -63,7 +67,7 @@ func decodedX86RawPackedTestMaskInstruction(code []byte, mode int) (Instr, int, 
 		accessBytes = laneBits / 8
 		op += ".BCST"
 	}
-	first, consumed, err := decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, vectorPrefix, accessBytes)
+	first, consumed, err := memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, vectorPrefix, accessBytes)
 	if err != nil {
 		return Instr{}, 0, true, err
 	}

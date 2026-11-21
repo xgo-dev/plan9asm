@@ -24,6 +24,10 @@ var x86RawMaskCompareForms = map[[2]int]x86RawMaskCompareForm{
 }
 
 func decodedX86RawMaskCompareInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawMaskCompareInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawMaskCompareInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || !p.evex || p.mapNumber != 3 || p.pp != 1 {
 		return Instr{}, 0, false, nil
@@ -60,7 +64,7 @@ func decodedX86RawMaskCompareInstruction(code []byte, mode int) (Instr, int, boo
 	if p.broadcast {
 		disp8Scale = form.laneBytes
 	}
-	first, consumed, err := decodedX86EVEXRMOperand(
+	first, consumed, err := memory.evex(
 		code[p.modRM:], mode, p.b, p.x, p.segment, vector, disp8Scale,
 	)
 	if err != nil {

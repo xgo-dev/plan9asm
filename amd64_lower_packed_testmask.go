@@ -57,19 +57,5 @@ func (c *amd64Ctx) lowerPackedTestMask(op Op, ins Instr) (ok bool, terminated bo
 	}
 	tested := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp %s %s %%%s, zeroinitializer\n", tested, predicate, vectorType, intersection)
-	packedType := fmt.Sprintf("i%d", lanes)
-	packed := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i1> %%%s to %s\n", packed, lanes, tested, packedType)
-	result := "%" + packed
-	if lanes < 64 {
-		wide := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", wide, packedType, result)
-		result = "%" + wide
-	}
-	if writeMask != "" {
-		masked := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", masked, result, writeMask)
-		result = "%" + masked
-	}
-	return true, false, c.storeK(destination.Reg, result)
+	return true, false, c.storeVectorPredicates(destination.Reg, "%"+tested, lanes, writeMask)
 }

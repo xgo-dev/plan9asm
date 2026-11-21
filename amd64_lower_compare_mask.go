@@ -53,21 +53,7 @@ func (c *amd64Ctx) lowerImmediatePackedCompare(op Op, ins Instr) (ok bool, termi
 	}
 	lanes := form.byteWidth * 8 / form.spec.laneBits
 	compared := c.emitImmediatePackedComparePredicate(lanes, form.spec.laneBits, secondValue, firstValue, form.predicate, form.unsigned)
-	packedType := fmt.Sprintf("i%d", lanes)
-	packed := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i1> %s to %s\n", packed, lanes, compared, packedType)
-	result := "%" + packed
-	if lanes < 64 {
-		wide := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", wide, packedType, result)
-		result = "%" + wide
-	}
-	if writeMask != "" {
-		masked := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", masked, result, writeMask)
-		result = "%" + masked
-	}
-	return true, false, c.storeK(ins.Args[form.destination].Reg, result)
+	return true, false, c.storeVectorPredicates(ins.Args[form.destination].Reg, compared, lanes, writeMask)
 }
 
 func (c *amd64Ctx) emitImmediatePackedComparePredicate(lanes, laneBits int, left, right string, immediate uint8, unsigned bool) string {

@@ -161,27 +161,23 @@ func x86TypedPackedIntegerCompareByteEffect(op Op, ins Instr, arch string) (x86T
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
+	readInputs := !form.identicalVectorInputs(ins)
+	if form.maskResult {
+		effect := x86PackedMaskResultEffect(ins, form.x86PackedBinaryForm, form.source, readInputs)
+		effect.requiresResultProof = immediateFamily
+		return effect, true, nil
+	}
 	firstWidth := form.byteWidth
 	if form.memory >= 0 {
 		firstWidth = form.memoryBytes
 	}
-	readInputs := !form.identicalVectorInputs(ins)
 	operands := []x86TypedByteOperand{
 		{index: form.first, operand: form.source, width: int64(firstWidth), read: readInputs},
 		{index: form.second, operand: ins.Args[form.second], width: int64(form.byteWidth), read: readInputs},
+		{index: form.destination, operand: ins.Args[form.destination], width: int64(form.byteWidth), write: true},
 	}
-	if form.mask >= 0 {
-		operands = append(operands, x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true})
-	}
-	width := form.byteWidth
-	if form.maskResult {
-		width = 8
-	}
-	operands = append(operands, x86TypedByteOperand{
-		index: form.destination, operand: ins.Args[form.destination], width: int64(width), write: true,
-	})
-	effect := x86TypedByteEffect{operands: operands, requiresResultProof: immediateFamily}
-	if !form.mmx && !form.maskResult {
+	effect := x86TypedByteEffect{operands: operands}
+	if !form.mmx {
 		effect.vector.upperWrite = x86TypedVectorUpperZero
 		effect.vector.memoryAlignment = 1
 		if form.spec.legacy {
