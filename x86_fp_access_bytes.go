@@ -21,6 +21,9 @@ func X86FPAccessBytes(ins Instr, index int, arch string) (width int64, write, kn
 	if op := Op(normalizeInstructionOpcode(ins.Op)); x86RawReturnScalarMoveBytes(op) != 0 && ins.Op != op {
 		return 0, false, false
 	}
+	if _, known, err := x86CacheLineWritebackProperties(ins.Op, ins, arch); known {
+		return 1, false, err == nil // Address footprint only, with no scalar memory transfer.
+	}
 	// These three Ym rows observe exactly m16. FINIT/FCLEX and FSTSW AX
 	// have no FP memory access. This supplies only width/direction, never a
 	// known control/status word or an independent caller/storage permission.

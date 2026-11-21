@@ -428,6 +428,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86LoweredBoundStep(ins, state, owned, arch, c.targetTriple); known {
 			return accepted
 		}
+		if accepted, known := x86LoweredCacheLineWritebackStep(ins, state, owned, arch, c.targetTriple); known {
+			return accepted
+		}
 		if state.mode32Frame != nil {
 			for _, operand := range ins.Args {
 				if _, local := state.mode32Frame.offset(operand, 0); local {

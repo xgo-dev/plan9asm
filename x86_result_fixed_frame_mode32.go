@@ -233,6 +233,12 @@ func (frame *x86Mode32FrameState) clearSpills(start, width int) {
 }
 
 func x86Mode32FrameEffect(ins Instr) (x86TypedByteEffect, bool) {
+	if _, known, err := x86CacheLineWritebackProperties(ins.Op, ins, "386"); known {
+		if err != nil {
+			return x86TypedByteEffect{}, false
+		}
+		return x86TypedByteEffect{operands: []x86TypedByteOperand{{operand: ins.Args[0], width: 1}}}, true
+	}
 	if form, known, err := x86ScalarPhysicalMoveProperties(ins, "386"); known {
 		width := int64(form.bits / 8)
 		return x86TypedByteEffect{operands: []x86TypedByteOperand{
