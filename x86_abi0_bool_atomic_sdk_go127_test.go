@@ -61,16 +61,21 @@ func TestX86ABI0Mode32CanonicalBoolActualAtomicCompleteSourceNextContext(t *test
 		declarations           []string
 		texts                  int
 	}{
-		{"internal/runtime/atomic", "atomic_386.s", "tail callee needs its independent CALL contract", []string{"stubs.go", "atomic_386.go", "unaligned.go"}, 42},
+		{"internal/runtime/atomic", "atomic_386.s", "unknown effect or undefined input at instruction 10: CMPXCHG8B", []string{"stubs.go", "atomic_386.go", "unaligned.go"}, 42},
 		{"sync/atomic", "asm.s", "tail target lacks its independent exact canonical declaration/transport", []string{"doc.go", "doc_32.go"}, 36},
 	} {
 		t.Run(row.path, func(t *testing.T) {
 			pkg := x86ABI0BoolActualAtomicPackage(t, row.path, "386", row.declarations)
-			source, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src", filepath.FromSlash(row.path), row.member))
+			input := filepath.Join(runtime.GOROOT(), "src", filepath.FromSlash(row.path), row.member)
+			original, err := os.ReadFile(input)
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("complete original assembly %s/%s bytes=%d sha256=%x", row.path, row.member, len(source), sha256.Sum256(source))
+			t.Logf("complete original assembly %s/%s bytes=%d sha256=%x", row.path, row.member, len(original), sha256.Sum256(original))
+			source, err := ReadGoAssemblySourceAtGOROOT(input, filepath.Dir(input), runtime.GOROOT())
+			if err != nil {
+				t.Fatal(err)
+			}
 			file, err := ParseWithDefines(ArchAMD64, string(source), GoAssemblerDefines("linux", "386"))
 			if err != nil {
 				t.Fatal(err)
@@ -87,9 +92,9 @@ func TestX86ABI0Mode32CanonicalBoolActualAtomicCompleteSourceNextContext(t *test
 				if !x86ABI0NoArgumentVoidCallRole(sigs[resolve("·panicUnaligned")]) {
 					t.Fatal("actual Go void declaration acquired a bool-return/outgoing contract")
 				}
-				// Complete typed-tail preparation proves Cas's own LOCK/CAS
-				// predicate before aliases can forward it. Cas64's alignment
-				// failure CALL still needs its independent whole-callee contract.
+				// Cas64's cold path calls panicUnaligned. The signature alone
+				// does not establish that the call cannot return, so that path
+				// cannot provide BP at the following CMPXCHG8B.
 				if plan, err := prepareX86ABI0BoolCalls(file, Options{Goarch: "386", TargetTriple: "i386-unknown-linux-gnu", ResolveSym: resolve, Sigs: sigs}); plan != nil || !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), row.boundary) {
 					t.Fatal("complete original aliases borrowed an unclosed callee body", err)
 				}

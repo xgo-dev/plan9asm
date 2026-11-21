@@ -86,15 +86,19 @@ func (source *x86ABI0BoolCallSource) prepareTail(fn Func, sig FuncSig, byName ma
 		}
 		visiting[name] = true
 		defer delete(visiting, name)
-		if x86ABI0BoolFunctionControlNeeded(callee) {
-			if x86ABI0BoolHasCall(callee) {
-				return nil, x86ABI0BoolCallContext("tail callee needs its independent CALL contract")
-			}
+		hasCall := x86ABI0BoolHasCall(callee)
+		if !hasCall && x86ABI0BoolFunctionControlNeeded(callee) {
 			if _, err := source.prepareTail(callee, calleeSig, byName, visiting); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := (&x86ABI0BoolCallPlan{function: callee}).replay(); err != nil {
+			if hasCall {
+				plan := source.callers[name]
+				if plan == nil || len(plan.calls) == 0 || !plan.matches(callee, calleeSig, arch) {
+					return nil, x86ABI0BoolCallContext("tail callee needs its independent CALL contract")
+				}
+				callee.x86BoolCalls = plan
+			} else if err := (&x86ABI0BoolCallPlan{function: callee}).replay(); err != nil {
 				return nil, err
 			}
 			callee.x86ResultFlowBudget = &source.budget

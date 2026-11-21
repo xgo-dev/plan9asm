@@ -125,6 +125,7 @@ func prepareX86ABI0BoolCalls(file *File, options Options) (*x86ABI0BoolCallSourc
 		byName[fn.Sym], source.resolved[fn.Sym], resolved[name] = fn, name, true
 	}
 	checked := make(map[string]bool)
+	var tails []*x86ABI0BoolCallPlan
 	for _, fn := range source.original.Funcs {
 		if !x86ABI0BoolFunctionControlNeeded(fn) {
 			continue
@@ -148,22 +149,7 @@ func prepareX86ABI0BoolCalls(file *File, options Options) (*x86ABI0BoolCallSourc
 		plan := &x86ABI0BoolCallPlan{source: source, function: fn, signature: sig, calls: make(map[int]FuncSig), bytes: make(map[int64]bool)}
 		plan.signature.Name = source.resolved[fn.Sym]
 		if !x86ABI0BoolHasCall(fn) {
-			if x86DirectTailRootNeeded(fn) {
-				if err := source.prepareCustomRegisterTail(plan); err != nil {
-					return nil, err
-				}
-				source.callers[fn.Sym] = plan
-				continue
-			}
-			tail, err := source.prepareTail(fn, sig, byName, make(map[string]bool))
-			if err != nil {
-				return nil, err
-			}
-			plan.tail = tail
-			if err := plan.replay(); err != nil {
-				return nil, err
-			}
-			source.callers[fn.Sym] = plan
+			tails = append(tails, plan)
 			continue
 		}
 		for ordinal, ins := range fn.Instrs {
@@ -225,6 +211,26 @@ func prepareX86ABI0BoolCalls(file *File, options Options) (*x86ABI0BoolCallSourc
 		}
 		if err := plan.replay(); err != nil {
 			return nil, err
+		}
+		source.callers[fn.Sym] = plan
+	}
+	// Close ordinary CALL plans before checking same-file tail targets.
+	// Source TEXT order does not change any callee's available contract.
+	for _, plan := range tails {
+		fn := plan.function
+		if x86DirectTailRootNeeded(fn) {
+			if err := source.prepareCustomRegisterTail(plan); err != nil {
+				return nil, err
+			}
+		} else {
+			tail, err := source.prepareTail(fn, signatures[plan.signature.Name], byName, make(map[string]bool))
+			if err != nil {
+				return nil, err
+			}
+			plan.tail = tail
+			if err := plan.replay(); err != nil {
+				return nil, err
+			}
 		}
 		source.callers[fn.Sym] = plan
 	}

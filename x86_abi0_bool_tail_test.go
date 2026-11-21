@@ -37,6 +37,52 @@ func TestX86ABI0Mode32CanonicalBoolTypedTailThreeAPIs(t *testing.T) {
 	}
 }
 
+func TestX86ABI0CanonicalBoolTailToCallingEntry(t *testing.T) {
+	const declarations = "func wrapper(n uint32) bool\nfunc target(n uint32) bool\nfunc observe()\n"
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc is required")
+	}
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			triple := "x86_64-unknown-linux-gnu"
+			if arch == "386" {
+				triple = "i386-unknown-linux-gnu"
+			}
+			word := x86ResultPointerWord(arch)
+			wrapper := fmt.Sprintf("TEXT ·wrapper(SB),4,$0-%d\nJMP ·target(SB)\n", word+1)
+			target := fmt.Sprintf("TEXT ·target(SB),4,$0-%d\nCALL ·observe(SB)\nCMPL n+0(FP),$0\nSETNE ret+%d(FP)\nRET\n", word+1, word)
+			for _, row := range []struct {
+				name   string
+				source string
+				good   bool
+			}{
+				{"wrapper-first", wrapper + target, true},
+				{"target-first", target + wrapper, true},
+				{"stale-flags", wrapper + strings.Replace(target, "CMPL n+0(FP),$0\n", "", 1), false},
+				{"untyped-call", wrapper + strings.Replace(target, "·observe(SB)", "·unknown(SB)", 1), false},
+			} {
+				for _, api := range []string{"text", "module", "Go"} {
+					t.Run(row.name+"/"+api, func(t *testing.T) {
+						ir, err := x86ScalarFPBitViewAPI(t, row.source, declarations, arch, triple, api)
+						if !row.good {
+							if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+								t.Fatal("a tail acquired an unaudited callee", err)
+							}
+							return
+						}
+						if err != nil || !strings.Contains(ir, "call i1 @target(") ||
+							!strings.Contains(ir, "call void @observe(") {
+							t.Fatal("the tail or its independently typed call disappeared", err)
+						}
+						compileLLVMToObject(t, llc, triple, "tail.ll", "tail.o", ir)
+					})
+				}
+			}
+		})
+	}
+}
+
 func x86ABI0BoolTailParsed(t *testing.T) (*File, Options) {
 	t.Helper()
 	file, err := Parse(ArchAMD64, x86ABI0BoolTailAssembly)
