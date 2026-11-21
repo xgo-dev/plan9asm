@@ -20,6 +20,7 @@ const (
 	Splat
 	ExtractLane
 	ReplaceLane
+	IntegerWiden
 )
 
 type ValueType string
@@ -30,6 +31,14 @@ const (
 	I64  ValueType = "i64"
 	F32  ValueType = "float"
 	F64  ValueType = "double"
+)
+
+type WideningLanes uint8
+
+const (
+	LowHalf WideningLanes = iota
+	HighHalf
+	AdjacentPairs
 )
 
 type stackSignature struct {
@@ -49,10 +58,12 @@ type Shape struct {
 
 type Form struct {
 	stack        stackSignature
+	inputLanes   string
 	Emission     Emission
 	Operator     string
 	Shape        Shape
 	CanonicalNaN bool
+	Widening     WideningLanes
 }
 
 func (f Form) Arity() int { return len(f.stack.inputs) }
@@ -60,6 +71,13 @@ func (f Form) Arity() int { return len(f.stack.inputs) }
 func (f Form) InputType(index int) ValueType { return f.stack.inputs[index] }
 
 func (f Form) ResultType() ValueType { return f.stack.result }
+
+func (f Form) InputLaneType() string {
+	if f.inputLanes != "" {
+		return f.inputLanes
+	}
+	return f.Shape.LaneType
+}
 
 func (f Form) HasLaneIndex() bool {
 	return f.Emission == ExtractLane || f.Emission == ReplaceLane
@@ -124,6 +142,33 @@ func buildForms() map[string]Form {
 			add(prefix, shape, operation{"EXTRACTLANE", "", extract, ExtractLane})
 		}
 	}
+	addWideningOperations := func(prefix string, shape Shape) {
+		bits := shape.LaneBits / 2
+		count := 128 / bits
+		source := fmt.Sprintf("I%dX%d", bits, count)
+		inputLanes := fmt.Sprintf("<%d x i%d>", count, bits)
+		for _, extension := range []struct{ suffix, operator string }{{"S", "sext"}, {"U", "zext"}} {
+			form := Form{
+				stack: unary, inputLanes: inputLanes, Shape: shape,
+				Emission: IntegerWiden, Operator: extension.operator,
+			}
+			for _, half := range []struct {
+				name  string
+				lanes WideningLanes
+			}{{"LOW", LowHalf}, {"HIGH", HighHalf}} {
+				form.Widening = half.lanes
+				form.stack = unary
+				result[prefix+"EXTEND"+half.name+source+extension.suffix] = form
+				form.stack = binary
+				result[prefix+"EXTMUL"+half.name+source+extension.suffix] = form
+			}
+			if bits < 32 {
+				form.stack = unary
+				form.Widening = AdjacentPairs
+				result[prefix+"EXTADDPAIRWISE"+source+extension.suffix] = form
+			}
+		}
+	}
 
 	for _, lane := range []struct {
 		prefix string
@@ -150,6 +195,7 @@ func buildForms() map[string]Form {
 		add(lane.prefix, shape, operation{"SUB", "sub", binary, Instruction})
 		if lane.bits >= 16 {
 			add(lane.prefix, shape, operation{"MUL", "mul", binary, Instruction})
+			addWideningOperations(lane.prefix, shape)
 		}
 		if lane.bits <= 16 {
 			add(lane.prefix, shape, operation{"ADDSATS", "sadd.sat", binary, Intrinsic})

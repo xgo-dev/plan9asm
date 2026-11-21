@@ -38,6 +38,17 @@ func wasmV128CoreNames() []string {
 		}
 	}
 	names = append(names, "I8x16Popcnt")
+	for i, output := range []string{"I16x8", "I32x4", "I64x2"} {
+		input := [...]string{"I8x16", "I16x8", "I32x4"}[i]
+		for _, extension := range []string{"S", "U"} {
+			for _, operation := range strings.Fields("ExtendLow ExtendHigh ExtmulLow ExtmulHigh") {
+				names = append(names, output+operation+input+extension)
+			}
+			if i < 2 {
+				names = append(names, output+"ExtaddPairwise"+input+extension)
+			}
+		}
+	}
 	return names
 }
 
@@ -100,7 +111,8 @@ func wasmV128CoreObjectFixture() (string, map[string]FuncSig) {
 			body = "Get V0\nGet R0\nI32WrapI64\n" + name + "\n"
 			sig.Args = []LLVMType{I64, "<4 x i32>"}
 			sig.ArgRegs = []Reg{"R0", "V0"}
-		case floatBits != 0 || wasmV128IntegerOrdering(integerOp) || wasmV128IntegerUnary(integerOp):
+		case floatBits != 0 || wasmV128IntegerOrdering(integerOp) ||
+			wasmV128IntegerUnary(integerOp) || strings.HasPrefix(integerOp, "Ext"):
 			body = ""
 			for arg := 0; arg < wasmV128CoreInputs(name); arg++ {
 				reg := Reg(fmt.Sprintf("V%d", arg))
@@ -140,14 +152,20 @@ func TestWASMV128CoreThreeAPIObjects(t *testing.T) {
 	}
 	for _, route := range []string{"Translate", "TranslateModule", "TranslateModuleInContext"} {
 		t.Run(route, func(t *testing.T) {
-			ir, err := wasmPackedTranslate(t, file, wasmPackedOptions(sigs, WASMABIDirect), route)
-			if err != nil || ir == "" {
-				t.Fatal("V128 core semantic family rejected", err)
+			for _, triple := range []string{"wasm32-unknown-unknown", "wasm32-wasi"} {
+				t.Run(triple, func(t *testing.T) {
+					options := wasmPackedOptions(sigs, WASMABIDirect)
+					options.TargetTriple = triple
+					ir, err := wasmPackedTranslate(t, file, options, route)
+					if err != nil || ir == "" {
+						t.Fatal("V128 core semantic family rejected", err)
+					}
+					if strings.Contains(ir, "blockaddress") {
+						t.Fatal("V128 core introduced an unsupported Wasm code address")
+					}
+					compileLLVMToObject(t, wasmDataTool(t, "llc"), triple, "v128-core.ll", "v128-core.o", ir)
+				})
 			}
-			if strings.Contains(ir, "blockaddress") {
-				t.Fatal("V128 core introduced an unsupported Wasm code address")
-			}
-			compileLLVMToObject(t, wasmDataTool(t, "llc"), "wasm32-unknown-unknown", "v128-core.ll", "v128-core.o", ir)
 		})
 	}
 }

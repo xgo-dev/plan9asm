@@ -87,6 +87,7 @@ func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmsimd.Fo
 
 func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, ins Instr, inputs []wasmValue) wasmValue {
 	typ := spec.Shape.LaneType
+	inputType := LLVMType(spec.InputLaneType())
 	cast := func(value string, from, to LLVMType) string {
 		if from == to {
 			return value
@@ -98,11 +99,11 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 
 	lhs := inputs[0].val
 	if spec.InputType(0) == wasmsimd.V128 {
-		lhs = cast(lhs, wasmV128CoreType, LLVMType(typ))
+		lhs = cast(lhs, wasmV128CoreType, inputType)
 	}
 	var rhs string
 	if len(inputs) == 2 && spec.InputType(1) == wasmsimd.V128 {
-		rhs = cast(inputs[1].val, wasmV128CoreType, LLVMType(typ))
+		rhs = cast(inputs[1].val, wasmV128CoreType, inputType)
 	}
 	resultType := LLVMType(typ)
 	result := newTmp()
@@ -124,6 +125,9 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		fmt.Fprintf(b, "  %%%s = call %s @%s(%s %s, i1 false)\n", result, typ, spec.IntrinsicName(), typ, lhs)
 	case wasmsimd.IntegerNeg:
 		fmt.Fprintf(b, "  %%%s = sub %s zeroinitializer, %s\n", result, typ, lhs)
+	case wasmsimd.IntegerWiden:
+		wide := emitWASMV128IntegerWiden(b, newTmp, spec, lhs, rhs)
+		return wasmValue{typ: wasmV128CoreType, val: cast(wide, resultType, wasmV128CoreType)}
 	case wasmsimd.Shift:
 		amount := emitWASMV128ShiftCount(b, newTmp, spec.Shape, inputs[1].val)
 		fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", result, spec.Operator, typ, lhs, amount)
@@ -173,6 +177,51 @@ func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.F
 		resultType = integerType
 	}
 	return wasmValue{typ: wasmV128CoreType, val: cast(value, resultType, wasmV128CoreType)}
+}
+
+func emitWASMV128IntegerWiden(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, lhs, rhs string) string {
+	lanes := 128 / spec.Shape.LaneBits
+	first, step := 0, 1
+	switch spec.Widening {
+	case wasmsimd.HighHalf:
+		first = lanes
+	case wasmsimd.AdjacentPairs:
+		step = 2
+	}
+	laneMask := func(start int) string {
+		var mask strings.Builder
+		for lane := 0; lane < lanes; lane++ {
+			if lane != 0 {
+				mask.WriteString(", ")
+			}
+			fmt.Fprintf(&mask, "i32 %d", start+lane*step)
+		}
+		return mask.String()
+	}
+	source, resultType := spec.InputLaneType(), spec.Shape.LaneType
+	half := fmt.Sprintf("<%d x i%d>", lanes, spec.Shape.LaneBits/2)
+	widen := func(input, mask string) string {
+		picked, extended := newTmp(), newTmp()
+		fmt.Fprintf(b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
+			picked, source, input, source, lanes, mask)
+		fmt.Fprintf(b, "  %%%s = %s %s %%%s to %s\n", extended, spec.Operator, half, picked, resultType)
+		return "%" + extended
+	}
+	mask := laneMask(first)
+	left := widen(lhs, mask)
+	if spec.Widening == wasmsimd.AdjacentPairs {
+		// Generic IR keeps this legal without a mandatory SIMD backend.
+		// LLVM selects extadd_pairwise when the target has SIMD128.
+		right, result := widen(lhs, laneMask(1)), newTmp()
+		fmt.Fprintf(b, "  %%%s = add %s %s, %s\n", result, resultType, left, right)
+		return "%" + result
+	}
+	if rhs == "" {
+		return left
+	}
+	right, result := widen(rhs, mask), newTmp()
+	fmt.Fprintf(b, "  %%%s = mul %s %s, %s\n", result, resultType, left, right)
+	return "%" + result
 }
 
 func emitWASMV128CanonicalNaN(b *strings.Builder, newTmp func() string, shape wasmsimd.Shape, value string) string {

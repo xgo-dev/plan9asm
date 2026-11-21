@@ -15,7 +15,9 @@ type wasmV128CoreObservation struct {
 	Want uint32
 }
 
-const wasmV128CorePass = "V128 core PASS 2420"
+const wasmV128CoreObservations = 2756
+
+var wasmV128CorePass = fmt.Sprintf("V128 core PASS %d", wasmV128CoreObservations)
 
 func wasmV128CoreScalarResult(name string) bool {
 	_, op := wasmV128IntegerParts(name)
@@ -26,6 +28,9 @@ func wasmV128CoreScalarResult(name string) bool {
 // Observation uses XOR/AnyTrue so it requires no vector store or extraction.
 func wasmV128CoreReference(name string, a, b, mask [2]uint64) [2]uint64 {
 	if bits, op := wasmV128IntegerParts(name); bits != 0 {
+		if strings.HasPrefix(op, "Ext") {
+			return wasmV128IntegerWideningReference(op, bits, a, b)
+		}
 		return wasmV128IntegerReference(op, bits, a, b)
 	}
 	var result [2]uint64
@@ -144,8 +149,13 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 		inputs := patterns
 		if bits, _ := wasmV128FloatParts(name); bits != 0 {
 			inputs = wasmV128FloatPatterns(bits)
-		} else if bits, op := wasmV128IntegerParts(name); wasmV128IntegerOrdering(op) {
-			inputs = wasmV128IntegerOrderingPatterns(bits)
+		} else if bits, op := wasmV128IntegerParts(name); op != "" {
+			switch {
+			case wasmV128IntegerOrdering(op):
+				inputs = wasmV128IntegerOrderingPatterns(bits)
+			case strings.HasPrefix(op, "Ext"):
+				inputs = wasmV128IntegerOrderingPatterns(bits / 2)
+			}
 		}
 		for index, pattern := range inputs {
 			a, b, mask := pattern[0], pattern[1], pattern[2]
@@ -187,7 +197,7 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 			add(form.numericRuntimeBody(datum.vector, datum.scalar), 0)
 		}
 	}
-	if len(rows) != 2420 {
+	if len(rows) != wasmV128CoreObservations {
 		t.Fatal("complete vector observation inventory changed", len(rows))
 	}
 	program.WriteString("func main() {\n")

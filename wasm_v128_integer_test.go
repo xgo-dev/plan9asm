@@ -19,7 +19,42 @@ func wasmV128IntegerUnary(op string) bool {
 	case "Abs", "Neg", "Popcnt", "AllTrue", "Bitmask":
 		return true
 	}
-	return false
+	return strings.HasPrefix(op, "Extend") || strings.HasPrefix(op, "ExtaddPairwise")
+}
+
+func wasmV128IntegerWideningReference(op string, width uint, a, b [2]uint64) [2]uint64 {
+	// Go integer arithmetic provides an independent lane-by-lane oracle.
+	sourceWidth := width / 2
+	inputMask := uint64(1)<<sourceWidth - 1
+	resultMask := uint64(1)<<width - 1
+	laneCount := 128 / width
+	loadLane := func(vector [2]uint64, lane uint) uint64 {
+		offset := lane * sourceWidth
+		value := (vector[offset/64] >> (offset % 64)) & inputMask
+		if strings.HasSuffix(op, "S") && value>>(sourceWidth-1) != 0 {
+			value |= ^inputMask
+		}
+		return value
+	}
+	var result [2]uint64
+	for lane := uint(0); lane < laneCount; lane++ {
+		input := lane
+		if strings.Contains(op, "High") {
+			input += laneCount
+		}
+		var value uint64
+		switch {
+		case strings.HasPrefix(op, "ExtaddPairwise"):
+			value = loadLane(a, lane*2) + loadLane(a, lane*2+1)
+		case strings.HasPrefix(op, "Extmul"):
+			value = loadLane(a, input) * loadLane(b, input)
+		default:
+			value = loadLane(a, input)
+		}
+		offset := lane * width
+		result[offset/64] |= (value & resultMask) << (offset % 64)
+	}
+	return result
 }
 
 func wasmV128IntegerShift(op string) bool {
