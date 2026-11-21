@@ -106,6 +106,10 @@ func x86TypedPackedAbsSignByteEffect(op Op, ins Instr, arch string) (x86TypedByt
 		{index: form.destination, operand: ins.Args[form.destination], width: width,
 			read: form.spec.sign && form.legacy || form.mask >= 0 && !form.zeroing, write: true},
 	}}
+	effect.vector = x86TypedVectorEffect{x86TypedVectorUpperZero, 1}
+	if form.legacy {
+		effect.vector = x86TypedVectorEffect{x86TypedVectorUpperPreserve, 16}
+	}
 	if form.spec.sign && !form.legacy {
 		effect.operands = append(effect.operands,
 			x86TypedByteOperand{index: form.second, operand: ins.Args[form.second], width: width, read: true})

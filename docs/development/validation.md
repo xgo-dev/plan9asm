@@ -390,6 +390,9 @@ accounts for the immediate byte without granting raw-source access to storage.
 Scalar float-to-integer conversions share the fixed-frame GP proof with exact
 four- or eight-byte input widths. A conversion that writes SP requires a
 separate physical stack contract.
+Packed ABS, SIGN, floating shuffle and ternary logic share the vector byte
+proof. Legacy m128 still needs alignment. Broadcast reads use one element,
+and value-independent results retain the original memory access obligation.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies

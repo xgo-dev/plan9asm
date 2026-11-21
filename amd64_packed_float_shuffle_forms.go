@@ -99,25 +99,7 @@ func x86TypedPackedFloatShuffleByteEffect(op Op, ins Instr, arch string) (x86Typ
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	width, firstWidth := int64(f.byteWidth), int64(f.byteWidth)
-	if f.memory >= 0 {
-		firstWidth = int64(f.memoryBytes)
-	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: f.first, operand: ins.Args[f.first], width: firstWidth, read: true},
-		{index: f.second, operand: ins.Args[f.second], width: width, read: true},
-	}}
-	if f.legacy {
-		effect.operands[1].write = true
-	} else {
-		effect.operands = append(effect.operands, x86TypedByteOperand{
-			index: f.destination, operand: ins.Args[f.destination], width: width, write: true,
-			read: f.mask >= 0 && !f.zeroing,
-		})
-	}
-	if f.mask >= 0 {
-		effect.operands = append(effect.operands,
-			x86TypedByteOperand{index: f.mask, operand: ins.Args[f.mask], width: 8, read: true})
-	}
+	effect := x86PackedBinaryDependencyEffect(ins, f.x86PackedBinaryForm, ins.Args[f.first])
+	effect.requiresResultProof = true
 	return effect, true, nil
 }

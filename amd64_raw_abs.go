@@ -10,6 +10,10 @@ import (
 // D/Q memory broadcast. VPABSQ is EVEX-only. VEX B/W/D ignore W; EVEX
 // requires W0 for B/W/D and W1 for Q, independently of the named Go encoder.
 func decodedX86RawPackedAbsInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawPackedAbsInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawPackedAbsInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || p.mapNumber != 2 || p.pp != 1 || p.opcode < 0x1c || p.opcode > 0x1f {
 		return Instr{}, 0, false, nil
@@ -49,9 +53,9 @@ func decodedX86RawPackedAbsInstruction(code []byte, mode int) (Instr, int, bool,
 	var consumed int
 	var err error
 	if p.evex {
-		source, consumed, err = decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, width, scale)
+		source, consumed, err = memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, width, scale)
 	} else {
-		source, consumed, err = decodedX86VEXVectorRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, width)
+		source, consumed, err = memory.vex(code[p.modRM:], mode, p.b, p.x, p.segment, width)
 	}
 	if err != nil {
 		return Instr{}, 0, true, err

@@ -10,6 +10,10 @@ import (
 var x86RawPackedSignOps = [...]Op{"VPSIGNB", "VPSIGNW", "VPSIGND"}
 
 func decodedX86RawPackedSignInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawPackedSignInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawPackedSignInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || p.mapNumber != 2 || p.opcode < 0x08 || p.opcode > 0x0a {
 		return Instr{}, 0, false, nil
@@ -31,7 +35,7 @@ func decodedX86RawPackedSignInstruction(code []byte, mode int) (Instr, int, bool
 	if mode == 32 && (destinationNumber >= 8 || p.upper >= 8) {
 		return fail("extended vector register unavailable in 32-bit mode")
 	}
-	source, consumed, err := decodedX86VEXVectorRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, width)
+	source, consumed, err := memory.vex(code[p.modRM:], mode, p.b, p.x, p.segment, width)
 	if err != nil {
 		return Instr{}, 0, true, err
 	}

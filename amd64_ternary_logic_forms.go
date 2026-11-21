@@ -151,7 +151,10 @@ func x86TypedTernaryLogicByteEffect(op Op, ins Instr, arch string) (x86TypedByte
 	if form.mask >= 0 && !form.zeroing {
 		dependencies |= 1 // An inactive merging lane retains the old A value.
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true}
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+	}
 	for role, index := range form.inputs {
 		width := form.byteWidth
 		read := dependencies>>uint(role)&1 != 0

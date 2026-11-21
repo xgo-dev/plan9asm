@@ -7021,12 +7021,16 @@ func decodedX86EVEXTRACTInstructionWithMemory(code []byte, i, mode int, segment 
 // VSHUFPS/VSHUFPD operand table. x/arch v0.14 rejects some extended VEX
 // encodings and all EVEX forms used by generated ecosystem assembly.
 func decodedX86VSHUFPSInstruction(code []byte, mode int) (instruction Instr, length int, ok bool, err error) {
+	return decodedX86VSHUFPSInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86VSHUFPSInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
 	i, segment, addressOverride := x86RawSegmentPrefixes(code)
 	if mode != 32 && mode != 64 {
 		return Instr{}, 0, false, nil
 	}
 	if len(code) > i && code[i] == 0x62 {
-		return decodedX86EVEXPackedFloatShuffleInstruction(code, i, mode, segment, addressOverride)
+		return decodedX86EVEXPackedFloatShuffleInstruction(code, i, mode, segment, addressOverride, memory)
 	}
 	var vexLength, rExt, xExt, bExt int
 	var vexBits byte
@@ -7074,7 +7078,7 @@ func decodedX86VSHUFPSInstruction(code []byte, mode int) (instruction Instr, len
 	if mode == 32 && (rExt != 0 || xExt != 0 || bExt != 0 || secondSourceNumber >= 8 || destinationNumber >= 8) {
 		return Instr{}, 0, true, fmt.Errorf("extended register in 32-bit mode")
 	}
-	firstSource, consumed, err := decodedX86VEXVectorRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, vectorPrefix)
+	firstSource, consumed, err := memory.vex(code[modRMIndex:], mode, bExt, xExt, segment, vectorPrefix)
 	if err != nil {
 		return Instr{}, 0, true, err
 	}
@@ -7093,7 +7097,7 @@ func decodedX86VSHUFPSInstruction(code []byte, mode int) (instruction Instr, len
 	return instruction, immediateIndex + 1, true, nil
 }
 
-func decodedX86EVEXPackedFloatShuffleInstruction(code []byte, i, mode int, segment Reg, addressOverride bool) (instruction Instr, length int, ok bool, err error) {
+func decodedX86EVEXPackedFloatShuffleInstruction(code []byte, i, mode int, segment Reg, addressOverride bool, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
 	if len(code) < i+7 {
 		return Instr{}, 0, false, nil
 	}
@@ -7143,7 +7147,7 @@ func decodedX86EVEXPackedFloatShuffleInstruction(code []byte, i, mode int, segme
 			disp8Scale = 8
 		}
 	}
-	firstSource, consumed, decodeErr := decodedX86EVEXRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, vectorPrefix, disp8Scale)
+	firstSource, consumed, decodeErr := memory.evex(code[modRMIndex:], mode, bExt, xExt, segment, vectorPrefix, disp8Scale)
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}

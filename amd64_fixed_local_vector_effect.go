@@ -16,8 +16,16 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	} else {
 		effect, known, err = x86PackedBinaryByteEffect(ins.Op, ins, "amd64")
 	}
-	if !known {
-		effect, known, err = x86TypedPackedIntegerCompareByteEffect(ins.Op, ins, "amd64")
+	for _, project := range [...]func(Op, Instr, string) (x86TypedByteEffect, bool, error){
+		x86TypedPackedIntegerCompareByteEffect,
+		x86TypedPackedAbsSignByteEffect,
+		x86TypedPackedFloatShuffleByteEffect,
+		x86TypedTernaryLogicByteEffect,
+	} {
+		if known {
+			break
+		}
+		effect, known, err = project(ins.Op, ins, "amd64")
 	}
 	if !known {
 		// These forms also accept individually typed scalar FP fields.
