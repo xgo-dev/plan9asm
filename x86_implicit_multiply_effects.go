@@ -46,7 +46,7 @@ func x86NamedMultiplyMemoryError(operand Operand, arch string) error {
 	}
 	if !x86MemoryRegistersValidForArch(memory, arch) || memory.OffRaw != "" ||
 		memory.Index == SP || memory.Index != "" && memory.Scale != 1 && memory.Scale != 2 && memory.Scale != 4 && memory.Scale != 8 ||
-		memory.Off != int64(int32(memory.Off)) && !(arch == "386" && memory.Off == int64(uint32(memory.Off))) {
+		!x86MemoryDisplacementValid(memory.Off, arch) {
 		return fmt.Errorf("has an unencodable or unresolved memory source")
 	}
 	return nil

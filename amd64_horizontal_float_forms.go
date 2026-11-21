@@ -59,10 +59,7 @@ func x86HorizontalFloatProperties(ins Instr, goarch string) (x86HorizontalFloatF
 			}
 		}
 		if first.Kind == OpMem {
-			displacement := first.Mem.Off
-			if displacement != int64(int32(displacement)) && (goarch != "386" || displacement != int64(uint32(displacement))) ||
-				!x86MemoryRegistersValidForArch(first.Mem, goarch) || first.Mem.Index != "" &&
-				(first.Mem.Index == SP || first.Mem.Scale != 1 && first.Mem.Scale != 2 && first.Mem.Scale != 4 && first.Mem.Scale != 8) {
+			if !x86MemoryRegisterEncodingValid(first.Mem, goarch) {
 				return fail()
 			}
 		}

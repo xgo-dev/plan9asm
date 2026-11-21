@@ -267,19 +267,8 @@ func x86PackedBinaryOperandGrammar(ins Instr, goarch string, spec x86PackedBinar
 				return fail()
 			}
 		}
-		if first.Kind == OpMem {
-			// Go asmandsz requires signed disp32 in amd64 mode. Its historical
-			// 386 rule additionally admits uint32 spellings for the same bits;
-			// packed logical rows have no LEAL-only overflow exception.
-			displacement := first.Mem.Off
-			if displacement != int64(int32(displacement)) &&
-				(goarch != "386" || displacement != int64(uint32(displacement))) {
-				return fail()
-			}
-			if !x86MemoryRegistersValidForArch(first.Mem, goarch) || first.Mem.Index != "" &&
-				(first.Mem.Index == SP || first.Mem.Scale != 1 && first.Mem.Scale != 2 && first.Mem.Scale != 4 && first.Mem.Scale != 8) {
-				return fail()
-			}
+		if first.Kind == OpMem && !x86MemoryRegisterEncodingValid(first.Mem, goarch) {
+			return fail()
 		}
 		form.memory, form.memoryBytes = form.first, form.byteWidth
 		if form.broadcast {

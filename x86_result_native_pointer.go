@@ -39,7 +39,7 @@ func x86ResultIncomingPointerAddress(arg Operand, state *x86ResultState, arch st
 	}
 	memory := arg.Mem
 	if memory.Sym != "" || memory.OffRaw != "" || memory.Segment != "" || memory.IndexExt != "" ||
-		memory.Off < -1<<31 || memory.Off > 1<<31-1 {
+		!x86MemoryDisplacementValid(memory.Off, arch) {
 		return false
 	}
 	word := x86ResultPointerWord(arch)

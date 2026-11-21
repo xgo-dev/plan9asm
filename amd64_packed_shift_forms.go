@@ -201,8 +201,5 @@ func x86PackedShiftMemoryValid(operand Operand, goarch string) bool {
 	if operand.Kind != OpMem {
 		return operand.Kind == OpFP
 	}
-	memory := operand.Mem
-	return (memory.Off == int64(int32(memory.Off)) || goarch == "386" && memory.Off == int64(uint32(memory.Off))) &&
-		x86MemoryRegistersValidForArch(memory, goarch) && (memory.Index == "" || memory.Index != SP &&
-		(memory.Scale == 1 || memory.Scale == 2 || memory.Scale == 4 || memory.Scale == 8))
+	return x86MemoryRegisterEncodingValid(operand.Mem, goarch)
 }

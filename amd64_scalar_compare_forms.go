@@ -146,7 +146,7 @@ func x86ScalarCompareMemoryValid(operand Operand, arch string) bool {
 		}
 	}
 	return x86MemoryRegistersValidForArch(memory, arch) &&
-		(memory.Off == int64(int32(memory.Off)) || arch == "386" && memory.Off == int64(uint32(memory.Off))) &&
+		x86MemoryDisplacementValid(memory.Off, arch) &&
 		(memory.Index == "" && memory.Scale == 0 || memory.Index != "" && memory.Index != SP &&
 			(memory.Scale == 1 || memory.Scale == 2 || memory.Scale == 4 || memory.Scale == 8))
 }

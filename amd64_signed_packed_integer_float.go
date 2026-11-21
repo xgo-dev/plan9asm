@@ -138,10 +138,7 @@ func x86SignedPackedFloatMemoryOperand(source Operand, goarch string) bool {
 	if source.Kind != OpMem {
 		return source.Kind == OpFP
 	}
-	displacement := source.Mem.Off
-	return (displacement == int64(int32(displacement)) || goarch == "386" && displacement == int64(uint32(displacement))) &&
-		x86MemoryRegistersValidForArch(source.Mem, goarch) && (source.Mem.Index == "" || source.Mem.Index != SP &&
-		(source.Mem.Scale == 1 || source.Mem.Scale == 2 || source.Mem.Scale == 4 || source.Mem.Scale == 8))
+	return x86MemoryRegisterEncodingValid(source.Mem, goarch)
 }
 
 func (c *amd64Ctx) lowerSignedPackedIntegerFloat(op Op, ins Instr) (bool, bool, error) {

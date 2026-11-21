@@ -16,7 +16,7 @@ func x86SourceTLSMemoryRole(operand Operand, arch string) bool {
 		return false
 	}
 	if memory.OffRaw != "" || memory.IndexExt != "" ||
-		memory.Off != int64(int32(memory.Off)) && !(arch == "386" && memory.Off == int64(uint32(memory.Off))) ||
+		!x86MemoryDisplacementValid(memory.Off, arch) ||
 		memory.Segment != "" && memory.Segment != FS && memory.Segment != GS {
 		return false
 	}

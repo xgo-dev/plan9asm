@@ -5,6 +5,21 @@ import (
 	"strings"
 )
 
+// Go's ordinary x86 address encoding uses a signed disp32. Mode 32 also
+// accepts unsigned spellings of those bits, as asmandsz does.
+// LEAL and explicit address-size overrides have separate rules.
+func x86MemoryDisplacementValid(displacement int64, arch string) bool {
+	return displacement == int64(int32(displacement)) ||
+		arch == "386" && displacement == int64(uint32(displacement))
+}
+
+func x86MemoryRegisterEncodingValid(memory MemRef, arch string) bool {
+	return x86MemoryDisplacementValid(memory.Off, arch) &&
+		x86MemoryRegistersValidForArch(memory, arch) &&
+		(memory.Index == "" || memory.Index != SP &&
+			(memory.Scale == 1 || memory.Scale == 2 || memory.Scale == 4 || memory.Scale == 8))
+}
+
 // NAME_EXTERN/NAME_STATIC in the non-shared Go 386 encoder discards Reg,
 // including a nonscaled SP/BP annotation. Index remains an actual address
 // input. AMD64 uses RIP and rejects either annotation. This describes address

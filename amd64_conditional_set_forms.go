@@ -56,7 +56,7 @@ func x86ConditionalSetProperties(op Op, ins Instr, arch string) (x86ConditionalS
 		}
 		if !x86MemoryRegistersValidForArch(memory, arch) || memory.Index == SP ||
 			memory.Index != "" && memory.Scale != 1 && memory.Scale != 2 && memory.Scale != 4 && memory.Scale != 8 ||
-			memory.Off != int64(int32(memory.Off)) && !(arch == "386" && memory.Off == int64(uint32(memory.Off))) {
+			!x86MemoryDisplacementValid(memory.Off, arch) {
 			return fail("has an unencodable memory address")
 		}
 	}

@@ -118,14 +118,8 @@ func x86PackedExtendProperties(ins Instr, goarch string) (x86PackedExtendForm, b
 				return fail()
 			}
 		}
-		if source.Kind == OpMem {
-			displacement := source.Mem.Off
-			if displacement != int64(int32(displacement)) &&
-				(goarch != "386" || displacement != int64(uint32(displacement))) ||
-				!x86MemoryRegistersValidForArch(source.Mem, goarch) || source.Mem.Index != "" &&
-				(source.Mem.Index == SP || source.Mem.Scale != 1 && source.Mem.Scale != 2 && source.Mem.Scale != 4 && source.Mem.Scale != 8) {
-				return fail()
-			}
+		if source.Kind == OpMem && !x86MemoryRegisterEncodingValid(source.Mem, goarch) {
+			return fail()
 		}
 		form.memory = 0
 	} else {
