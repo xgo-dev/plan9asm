@@ -339,7 +339,11 @@ base-less, segment-relative, implicit, symbolic and aliased GP addresses stay
 outside this fixture. The `scalar-register` profile covers typed GP operands,
 including explicit and implicit multiply, divide, shifts, comparisons, and
 instructions with FLAGS inputs such as ADC and SETcc. Use `mask-logical` for
-the K-register logical family. All four accept
+the K-register logical family. Use `scalar-memory` for fixed-width GP
+memory effects with the same explicit pointer fixture. It also initializes
+reaching FLAGS and any implicit accumulator inputs required by the form.
+Dynamic bit strings and private stack effects require separate validation.
+All five profiles accept
 `-goarch=386` and cover occurrences in the selected SDK corpus. A synthetic
 input can still take an architectural fault. The report records object evidence
 without certifying the original function's inputs or runtime behavior.

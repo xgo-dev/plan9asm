@@ -543,6 +543,56 @@ func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
 	}
 }
 
+func TestInitializedContextReprobeScalarMemory(t *testing.T) {
+	for _, mode := range []struct{ arch, size string }{{"amd64", "Q"}, {"386", "L"}} {
+		t.Run(mode.arch, func(t *testing.T) {
+			rows := []string{
+				"ADD%[1]s (BX),CX",
+				"ADC%[1]s DX, (BX)",
+				"CMP%[1]s (BX),CX",
+				"SAR%[1]s CX, (BX)",
+				"CMOV%[1]sEQ (BX),CX",
+				"MUL%[1]s (BX)",
+				"IDIV%[1]s 4(BX)(DX*2)",
+			}
+			instructions := make([]string, 0, len(rows)+3)
+			for _, row := range rows {
+				instructions = append(instructions, fmt.Sprintf(row, mode.size))
+			}
+			instructions = append(instructions, "SETCC 2(BX)(AX*1)", "ADC"+mode.size+" BX, (BX)", "PUSH"+mode.size+" (BX)")
+			forms := make(map[string]*formStat)
+			for i, line := range instructions {
+				ins := compactProbeInstructions(t, line)[0]
+				form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, mode.arch, ins).Form
+				if forms[form] == nil {
+					forms[form] = &formStat{}
+				}
+				err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, mode.arch, ins)
+				if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+					t.Fatalf("%s did not require context: %v", line, err)
+				}
+				captureContextSource(forms, plan9asm.ArchAMD64, mode.arch, ins,
+					initializedContextSource{File: "scalar.s", Function: "case", Line: i + 1}, err)
+			}
+			evidence, err := runInitializedContextReprobe(forms, "scalar-memory", mode.arch, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.Status != "pass" || evidence.EligibleCases != 8 || len(evidence.UnregisteredCases) != 2 {
+				t.Fatalf("unexpected scalar-memory partition: %s, eligible=%d, unregistered=%d",
+					evidence.Status, evidence.EligibleCases, len(evidence.UnregisteredCases))
+			}
+			for i, row := range evidence.Cases {
+				if !row.MemoryPointerArgument || row.OriginalInstruction.Raw != instructions[i] ||
+					row.IRTextGeneration.Status != "pass" || row.LLVMObjectCompilation.Status != "pass" ||
+					row.RuntimeExecution.Status != "not_run" {
+					t.Fatalf("incorrect scalar-memory evidence: %+v", row)
+				}
+			}
+		})
+	}
+}
+
 func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
 	const arch = "386"
 	_, forms, parseErrors, _, err := scanGoAssemblerTestdataWithContexts(runtime.GOROOT(), plan9asm.ArchAMD64, arch, true)

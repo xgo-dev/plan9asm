@@ -82,20 +82,8 @@ func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 		}
 		return initializedVectorMemorySequence(goarch, ins, memory.Base, registers, activeMask)
 	}
-	var memory MemRef
-	for _, operand := range ins.Args {
-		if operand.Kind != OpMem {
-			continue
-		}
-		if memory.Base != "" || operand.Mem.Base == "" || operand.Mem.Sym != "" ||
-			operand.Mem.OffRaw != "" || operand.Mem.Segment != "" || operand.Mem.IndexExt != "" ||
-			operand.Mem.Index == "" && operand.Mem.Scale != 0 ||
-			!x86MemoryRegisterEncodingValid(operand.Mem, goarch) {
-			return nil, false, nil
-		}
-		memory = operand.Mem
-	}
-	if memory.Base == "" {
+	memory, memoryIndex := initializedOrdinaryProbeMemory(goarch, ins)
+	if memoryIndex < 0 {
 		return nil, false, nil
 	}
 	inputs, memoryBytes, valid := initializedVectorOperands(goarch, ins)
@@ -135,12 +123,7 @@ func initializedVectorMemorySequence(goarch string, ins Instr, addressBase Reg, 
 		mask := Operand{Kind: OpReg, Reg: activeMask}
 		sequence = append(sequence, x86ProbeInstruction("VPCMPEQD", mask, mask, mask))
 	}
-	move := Op("MOVQ")
-	if goarch == "386" {
-		move = "MOVL"
-	}
-	bind := x86ProbeInstruction(move, Operand{Kind: OpFP, FPName: "memory"}, Operand{Kind: OpReg, Reg: base})
-	return append(sequence, bind, ins), true, nil
+	return append(sequence, initializedProbeMemoryBinding(goarch, base), ins), true, nil
 }
 
 func initializedVectorProbeSequence(goarch string, ins Instr, inputs []Operand) ([]Instr, bool, error) {
@@ -410,13 +393,13 @@ func initializedX86GPInputs(goarch string, ins Instr) (x86TypedByteEffect, bool)
 	if form, known, err := x86ScalarShiftProperties(ins.Op, ins, goarch); known {
 		// The fixture supplies the variable count explicitly. Use the
 		// input effect because the output effect depends on that count.
-		if err != nil || form.hasMemory() {
+		if err != nil {
 			return x86TypedByteEffect{}, false
 		}
 		return form.inputEffect(), true
 	}
 	if form, known, err := x86ScalarCompareProperties(ins.Op, ins, goarch); known {
-		if err != nil || form.memory != -1 {
+		if err != nil {
 			return x86TypedByteEffect{}, false
 		}
 		width := int64(form.bits / 8)
@@ -427,6 +410,142 @@ func initializedX86GPInputs(goarch string, ins Instr) (x86TypedByteEffect, bool)
 	}
 	effect, known, err := x86TypedGPByteEffect(ins.Op, ins, goarch)
 	return effect, known && err == nil
+}
+
+// InitializedScalarMemoryProbeSequence supplies one explicit pointer
+// argument and the typed GP/FLAGS inputs of a fixed-width memory form. The
+// fixture establishes neither original-source storage nor a safe divisor.
+func InitializedScalarMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
+	if goarch != "386" && goarch != "amd64" || !x86ResultNamedPredicateInstruction(ins) {
+		return nil, false, nil
+	}
+	memory, memoryIndex := initializedOrdinaryProbeMemory(goarch, ins)
+	if memoryIndex < 0 {
+		return nil, false, nil
+	}
+	base, valid := initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: memory.Base})
+	if !valid {
+		return nil, false, nil
+	}
+	var index Reg
+	if memory.Index != "" {
+		index, valid = initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: memory.Index})
+		if !valid || index == base {
+			return nil, false, nil
+		}
+	}
+	for i, operand := range ins.Args {
+		if i == memoryIndex || operand.Kind == OpImm && operand.ImmRaw == "" && !operand.ImmIsFloat {
+			continue
+		}
+		if _, valid := initializedX86GPRegister(goarch, operand); !valid {
+			return nil, false, nil
+		}
+	}
+
+	effect, valid := initializedX86GPInputs(goarch, ins)
+	if !valid {
+		if form, known, err := x86ConditionalSetProperties(ins.Op, ins, goarch); known && err == nil {
+			effect = x86TypedByteEffect{flagsRead: x86ByteConditionFlags(form.condition),
+				operands: []x86TypedByteOperand{{index: 0, operand: form.destination, width: 1, write: true}}}
+			valid = true
+		} else if multiply, known, err := x86TypedImplicitMultiplyByteEffect(ins.Op, ins, goarch); known && err == nil {
+			effect, valid = multiply, true
+		}
+	}
+	division, divides, err := x86ImplicitDivideProperties(ins.Op, ins, goarch)
+	if divides && err == nil && division.source.Kind == OpMem {
+		width := int64(division.spec.bits / 8)
+		effect.operands = []x86TypedByteOperand{
+			{index: 0, operand: division.source, width: width, read: true},
+			{index: -1, operand: Operand{Kind: OpReg, Reg: AX}, width: width, read: true},
+		}
+		if width != 1 {
+			effect.operands = append(effect.operands, x86TypedByteOperand{
+				index: -1, operand: Operand{Kind: OpReg, Reg: DX}, width: width, read: true,
+			})
+		}
+		valid = true
+	}
+	if !valid || effect.dynamicMemory {
+		return nil, false, nil
+	}
+
+	move := Op("MOVL")
+	if goarch == "amd64" {
+		move = "MOVQ"
+	}
+	var sequence []Instr
+	seeded := make(map[Reg]bool)
+	seed := func(register Reg, value int64) {
+		if !seeded[register] {
+			sequence = append(sequence, x86ProbeInstruction(move, Operand{Kind: OpImm, Imm: value}, Operand{Kind: OpReg, Reg: register}))
+			seeded[register] = true
+		}
+	}
+	hasMemory := false
+	for _, input := range effect.operands {
+		if input.operand.Kind == OpMem {
+			if input.index != memoryIndex || input.width < 1 || input.width > 8 {
+				return nil, false, nil
+			}
+			hasMemory = true
+			continue
+		}
+		if !input.read || input.operand.Kind == OpImm {
+			continue
+		}
+		root, valid := initializedX86GPRegister(goarch, input.operand)
+		if !valid || root == base {
+			return nil, false, nil
+		}
+		value := int64(0x01020202)
+		switch {
+		case divides && root == DX:
+			value = 0
+		case divides || root == index:
+			value = 1
+		}
+		seed(root, value)
+	}
+	if !hasMemory {
+		return nil, false, nil
+	}
+	if index != "" {
+		seed(index, 1)
+	}
+	if effect.flagsRead != 0 {
+		seed(AX, 1)
+		ax := Operand{Kind: OpReg, Reg: AX}
+		sequence = append(sequence, x86ProbeInstruction("CMPL", ax, ax))
+	}
+	return append(sequence, initializedProbeMemoryBinding(goarch, base), ins), true, nil
+}
+
+func initializedOrdinaryProbeMemory(goarch string, ins Instr) (MemRef, int) {
+	index := -1
+	var memory MemRef
+	for i, operand := range ins.Args {
+		if operand.Kind != OpMem {
+			continue
+		}
+		candidate := operand.Mem
+		if index >= 0 || candidate.Base == "" || candidate.Sym != "" || candidate.OffRaw != "" ||
+			candidate.Segment != "" || candidate.IndexExt != "" || candidate.Index == "" && candidate.Scale != 0 ||
+			!x86MemoryRegisterEncodingValid(candidate, goarch) {
+			return MemRef{}, -1
+		}
+		memory, index = candidate, i
+	}
+	return memory, index
+}
+
+func initializedProbeMemoryBinding(goarch string, base Reg) Instr {
+	move := Op("MOVQ")
+	if goarch == "386" {
+		move = "MOVL"
+	}
+	return x86ProbeInstruction(move, Operand{Kind: OpFP, FPName: "memory"}, Operand{Kind: OpReg, Reg: base})
 }
 
 func initializedX86GPRegister(goarch string, operand Operand) (Reg, bool) {

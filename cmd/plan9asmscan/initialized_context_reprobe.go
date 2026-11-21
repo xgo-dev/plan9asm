@@ -62,6 +62,7 @@ type initializedContextReport struct {
 var initializedContextProfiles = map[string]func(string, plan9asm.Instr) ([]plan9asm.Instr, bool, error){
 	"mask-logical":    plan9asm.InitializedMaskLogicalProbeSequence,
 	"scalar-register": plan9asm.InitializedScalarRegisterProbeSequence,
+	"scalar-memory":   plan9asm.InitializedScalarMemoryProbeSequence,
 	"vector-memory":   plan9asm.InitializedVectorMemoryProbeSequence,
 	"vector-register": plan9asm.InitializedVectorRegisterProbeSequence,
 }
@@ -137,7 +138,7 @@ func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, l
 			return result, err
 		}
 		source.Initialization = sequence[:len(sequence)-1]
-		source.MemoryPointerArgument = profile == "vector-memory"
+		source.MemoryPointerArgument = profile == "vector-memory" || profile == "scalar-memory"
 		result.Cases = append(result.Cases, source)
 	}
 	result.EligibleCases = len(result.Cases)
