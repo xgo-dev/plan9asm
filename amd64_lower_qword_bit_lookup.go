@@ -106,30 +106,19 @@ func (c *amd64Ctx) lowerQwordBitLookup(op Op, ins Instr) (ok bool, terminated bo
 func (c *amd64Ctx) emitQwordBitLookupBytes(byteWidth int, dataQwords, controls string) string {
 	result := "zeroinitializer"
 	qwords := byteWidth / 8
-	for lane := 0; lane < byteWidth; lane++ {
+	for group := 0; group < qwords; group++ {
 		data := c.newTmp()
-		controlByte := c.newTmp()
-		controlWide := c.newTmp()
-		control := c.newTmp()
-		right := c.newTmp()
-		negated := c.newTmp()
-		wrappedLeftCount := c.newTmp()
-		left := c.newTmp()
-		rotated := c.newTmp()
-		selected := c.newTmp()
-		inserted := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractelement <%d x i64> %s, i32 %d\n", data, qwords, dataQwords, lane/8)
-		fmt.Fprintf(c.b, "  %%%s = extractelement <%d x i8> %s, i32 %d\n", controlByte, byteWidth, controls, lane)
-		fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", controlWide, controlByte)
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 63\n", control, controlWide)
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %%%s, %%%s\n", right, data, control)
-		fmt.Fprintf(c.b, "  %%%s = sub i64 0, %%%s\n", negated, control)
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 63\n", wrappedLeftCount, negated)
-		fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, %%%s\n", left, data, wrappedLeftCount)
-		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", rotated, right, left)
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i8\n", selected, rotated)
-		fmt.Fprintf(c.b, "  %%%s = insertelement <%d x i8> %s, i8 %%%s, i32 %d\n", inserted, byteWidth, result, selected, lane)
-		result = "%" + inserted
+		fmt.Fprintf(c.b, "  %%%s = extractelement <%d x i64> %s, i32 %d\n", data, qwords, dataQwords, group)
+		for lane := group * 8; lane < (group+1)*8; lane++ {
+			controlByte, control, rotated := c.newTmp(), c.newTmp(), c.newTmp()
+			selected, inserted := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = extractelement <%d x i8> %s, i32 %d\n", controlByte, byteWidth, controls, lane)
+			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", control, controlByte)
+			fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.fshr.i64(i64 %%%s, i64 %%%s, i64 %%%s)\n", rotated, data, data, control)
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i8\n", selected, rotated)
+			fmt.Fprintf(c.b, "  %%%s = insertelement <%d x i8> %s, i8 %%%s, i32 %d\n", inserted, byteWidth, result, selected, lane)
+			result = "%" + inserted
+		}
 	}
 	return result
 }

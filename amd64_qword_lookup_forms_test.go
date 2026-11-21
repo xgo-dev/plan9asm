@@ -10,6 +10,20 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
 
+func TestX86QwordLookupRotateIRSize(t *testing.T) {
+	for _, width := range []int{16, 32, 64} {
+		var body strings.Builder
+		ctx := amd64Ctx{b: &body}
+		ctx.emitQwordBitLookupBytes(width, "%qwords", "%controls")
+		instructions := strings.Count(body.String(), "\n")
+		// At most one data extraction per qword and five instructions
+		// per byte, including extracting the control and saving the result.
+		if limit := width/8 + 5*width; instructions > limit {
+			t.Errorf("%d-byte lookup emits %d IR instructions, limit %d", width, instructions, limit)
+		}
+	}
+}
+
 func TestX86QwordLookupCompleteIndependentGoRows(t *testing.T) {
 	rules, err := goasmrules.LoadX86AVXRules(runtime.GOROOT())
 	if err != nil {

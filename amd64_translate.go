@@ -51,6 +51,7 @@ func emitAMD64Prelude(b *strings.Builder, goarch string, file *File) {
 			}
 		}
 	}
+	b.WriteString("declare i64 @llvm.fshr.i64(i64, i64, i64)\n")
 	b.WriteString("declare i64 @llvm.bswap.i64(i64)\n")
 	b.WriteString("declare i32 @llvm.bswap.i32(i32)\n")
 	b.WriteString("declare i16 @llvm.bswap.i16(i16)\n")
