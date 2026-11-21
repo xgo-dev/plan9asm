@@ -47,9 +47,9 @@ const sdk386SharedTailDriver = `#include <stdint.h>
 typedef uint32_t word;
 typedef word (*multiply)(word *, word *, word);
 
-extern word mul1024(word *, word *, word) __asm__("crypto/internal/fips140/bigmod.addMulVVW1024");
-extern word mul1536(word *, word *, word) __asm__("crypto/internal/fips140/bigmod.addMulVVW1536");
-extern word mul2048(word *, word *, word) __asm__("crypto/internal/fips140/bigmod.addMulVVW2048");
+extern word mul1024(word *, word *, word) __asm__("\"crypto/internal/fips140/bigmod.addMulVVW1024\"");
+extern word mul1536(word *, word *, word) __asm__("\"crypto/internal/fips140/bigmod.addMulVVW1536\"");
+extern word mul2048(word *, word *, word) __asm__("\"crypto/internal/fips140/bigmod.addMulVVW2048\"");
 
 // This C object crosses the native ABI0 boundary independently of the LLVM
 // wrappers. EBX carries the count; the Go frame holds three arguments and carry.
