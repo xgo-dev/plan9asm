@@ -71,15 +71,14 @@ type arm64Ctx struct {
 	exclusiveSizeSlot  string
 	exclusiveValueSlot string
 
-	fpParams            map[int64]FrameSlot // off(FP) -> slot
-	fpParamAlloca       map[int64]string    // parameter off(FP) -> mutable alloca
-	fpResults           []FrameSlot         // result slots (Index is result index)
-	fpResAllocaOff      map[int64]string    // off(FP) -> alloca
-	fpResAllocaIdx      map[int]string      // result index -> alloca
-	fpResWritten        map[int]bool        // result index -> direct writes to fp slot
-	fpResAddrTaken      map[int]bool        // result index -> fp result slot address escaped
-	fpPaddingReads      map[[2]int]arm64FPPaddingRead
-	fpResultStoreExtent arm64FPResultStoreExtent
+	fpParams       map[int64]FrameSlot // off(FP) -> slot
+	fpParamAlloca  map[int64]string    // parameter off(FP) -> mutable alloca
+	fpResults      []FrameSlot         // result slots (Index is result index)
+	fpResAllocaOff map[int64]string    // off(FP) -> alloca
+	fpResAllocaIdx map[int]string      // result index -> alloca
+	fpResWritten   map[int]bool        // result index -> direct writes to fp slot
+	fpResAddrTaken map[int]bool        // result index -> fp result slot address escaped
+	fpPaddingReads map[[2]int]arm64FPPaddingRead
 }
 
 func newARM64Ctx(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, annotate bool) *arm64Ctx {

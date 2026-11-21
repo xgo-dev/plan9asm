@@ -60,9 +60,7 @@ func (c *arm64Ctx) lowerARM64ScalarMemory(op Op, ins Instr) (bool, bool, error) 
 			return true, false, err
 		}
 		if f.memory.Kind == OpFP {
-			offset := f.memory.FPOffset
-			size := c.fpResultStoreExtent.width(offset, int64(f.bits/8))
-			err = c.storeFPFrameBits(offset, size, value)
+			err = c.storeFPFrameBits(f.memory.FPOffset, int64(f.bits/8), value)
 		} else {
 			if f.bits != 64 {
 				t := c.newTmp()

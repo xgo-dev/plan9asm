@@ -1018,7 +1018,6 @@ func translateFuncARM64WithSourceCallsAndAttrs(b *strings.Builder, fn Func, sig 
 
 	c := newARM64CtxWithTarget(b, fn, sig, resolve, sigs, target, annotateSource)
 	c.fpPaddingReads = paddingReads
-	c.fpResultStoreExtent = arm64ProveFPResultStoreExtent(paddingSource, fn, sig)
 	c.nanosleepOriginal = originalNanosleep
 	if originalNanosleep != nil {
 		originalNanosleep.owner = c
