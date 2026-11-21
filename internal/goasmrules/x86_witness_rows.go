@@ -357,6 +357,12 @@ func X86AVXFloatBinaryRows(legacy X86LegacyCatalog, avx []X86AVXRule) ([]X86Pack
 		VMINPS VMINPD VMINSS VMINSD VMAXPS VMAXPD VMAXSS VMAXSD`)
 }
 
+// X86FloatingCompareRows retains the original VEX vector and EVEX mask
+// results, including scalar tuples, broadcast and register-only SAE.
+func X86FloatingCompareRows(legacy X86LegacyCatalog, avx []X86AVXRule) ([]X86PackedBinaryRow, error) {
+	return x86PackedBinaryRows(legacy, avx, "VCMPPS VCMPPD VCMPSS VCMPSD")
+}
+
 // X86PackedEVEXBinaryRemainderRows retains the remaining _yvblendmpd members.
 // Their common encoding grammar does not imply common old-destination reads.
 func X86PackedEVEXBinaryRemainderRows(legacy X86LegacyCatalog, avx []X86AVXRule) ([]X86PackedBinaryRow, error) {

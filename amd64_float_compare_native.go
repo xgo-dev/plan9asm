@@ -38,7 +38,7 @@ func (c *amd64Ctx) emitNativeFloatingCompare(ins Instr, f x86FloatCompareForm) e
 		mask = value
 	}
 	typ := amd64FloatingVectorType(f.byteWidth*8/f.bits, f.bits)
-	second, err := c.loadFloatingVectorOperand(ins.Args[f.second], f.byteWidth, f.byteWidth*8/f.bits, f.bits)
+	second, err := c.loadNativeFloatingCompareRegister(ins.Args[f.second], f, typ)
 	if err != nil {
 		return err
 	}
@@ -115,12 +115,10 @@ func (c *amd64Ctx) nativeFloatingCompareSource(source Operand, f x86FloatCompare
 		if loadErr != nil {
 			return "", "", "", "", loadErr
 		}
-		inserted := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = insertelement %s zeroinitializer, %s %s, i32 0\n", inserted, typ, amd64FloatingScalarType(f.bits), bits)
-		return "%" + inserted, typ, "v", "$1", nil
+		return c.nativeFloatingCompareScalarVector(bits, typ, f.bits), typ, "v", "$1", nil
 	}
 	if source.Kind == OpReg {
-		value, err = c.loadFloatingVectorOperand(source, f.byteWidth, f.byteWidth*8/f.bits, f.bits)
+		value, err = c.loadNativeFloatingCompareRegister(source, f, typ)
 		return value, typ, "v", "$1", err
 	}
 	if source.Kind != OpMem && source.Kind != OpSym {
@@ -135,4 +133,23 @@ func (c *amd64Ctx) nativeFloatingCompareSource(source Operand, f x86FloatCompare
 		segment = "%" + strings.ToLower(string(source.Mem.Segment)) + ":"
 	}
 	return pointer, fmt.Sprintf("%s elementtype([%d x i8])", pointerType, f.memoryBytes), "*m", segment + "$1", nil
+}
+
+func (c *amd64Ctx) loadNativeFloatingCompareRegister(operand Operand, form x86FloatCompareForm, typ string) (string, error) {
+	if !form.scalar || !form.maskResult {
+		return c.loadFloatingVectorOperand(operand, form.byteWidth, form.byteWidth*8/form.bits, form.bits)
+	}
+	// Scalar K results consume only lane zero. Keep the native vector
+	// constraint without passing unrelated upper bytes as asm inputs.
+	value, err := c.loadFloatingScalarOperand(operand, form.bits)
+	if err != nil {
+		return "", err
+	}
+	return c.nativeFloatingCompareScalarVector(value, typ, form.bits), nil
+}
+
+func (c *amd64Ctx) nativeFloatingCompareScalarVector(value, typ string, bits int) string {
+	inserted := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = insertelement %s zeroinitializer, %s %s, i32 0\n", inserted, typ, amd64FloatingScalarType(bits), value)
+	return "%" + inserted
 }

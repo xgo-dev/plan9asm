@@ -148,3 +148,28 @@ func x86FloatCompareProperties(ins Instr, goarch string) (x86FloatCompareForm, b
 	}
 	return form, true, nil
 }
+
+func x86TypedFloatCompareMaskByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	local := ins
+	local.Op = op
+	form, known, err := x86FloatCompareProperties(local, arch)
+	if !known || err != nil {
+		return x86TypedByteEffect{}, known, err
+	}
+	if !form.maskResult {
+		return x86TypedByteEffect{}, false, nil
+	}
+	if ins.Op != "" && !strings.EqualFold(string(ins.Op), string(op)) {
+		return x86TypedByteEffect{}, true, fmt.Errorf("floating compare effect/source opcode mismatch: %s/%s", op, ins.Op)
+	}
+	// The frame proof needs the numerical input width. A scalar still
+	// uses X registers in the native encoding, independently of these bytes.
+	dependencies := x86PackedBinaryForm{
+		first: form.first, second: form.second, destination: form.destination,
+		byteWidth: form.inputByteWidth(), mask: form.mask,
+		memory: form.memory, memoryBytes: form.memoryBytes,
+	}
+	effect := x86PackedMaskResultEffect(ins, dependencies, ins.Args[form.first], true)
+	effect.requiresResultProof = true
+	return effect, true, nil
+}

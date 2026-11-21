@@ -378,6 +378,9 @@ Integer comparisons and bit tests share the same write-only K result and
 exact source tuple rules. They retain the input mask before a possible
 aliased write. An integer self-comparison can derive its result from register
 identity. A bit test reads the numerical intersection of its operands.
+Floating K-result comparisons use the same frame proof with separate scalar,
+broadcast and packed source widths. The original comparison remains a single
+native operation with its MXCSR exception behavior and explicit SAE forms.
 
 Use `vector-numeric-memory` for ordinary SIMD operands with the same GP
 register in both address fields. Its machine-word integer parameter supplies
