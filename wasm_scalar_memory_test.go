@@ -221,6 +221,11 @@ for (const address of [memory.buffer.byteLength, 0xffffffff]) {
 
 func runLLVMWASMObject(t *testing.T, ir, level, script string, arguments ...string) {
 	t.Helper()
+	runLLVMWASMObjectWithNodeFlags(t, ir, level, script, nil, arguments...)
+}
+
+func runLLVMWASMObjectWithNodeFlags(t *testing.T, ir, level, script string, nodeFlags []string, arguments ...string) {
+	t.Helper()
 	dir := t.TempDir()
 	input := filepath.Join(dir, "input.ll")
 	object, binary := filepath.Join(dir, "output.o"), filepath.Join(dir, "output.wasm")
@@ -234,5 +239,6 @@ func runLLVMWASMObject(t *testing.T, ir, level, script string, arguments ...stri
 	}
 	wasmFloatBinaryCommand(t, wasmDataTool(t, "llc"), "-O"+level, "-filetype=obj", input, "-o", object)
 	wasmFloatBinaryCommand(t, wasmDataTool(t, "wasm-ld"), "--no-entry", "--export-all", object, "-o", binary)
-	wasmFloatBinaryCommand(t, wasmPackedNode(t), append([]string{"-e", script, binary}, arguments...)...)
+	args := append(append([]string(nil), nodeFlags...), "-e", script, binary)
+	wasmFloatBinaryCommand(t, wasmPackedNode(t), append(args, arguments...)...)
 }

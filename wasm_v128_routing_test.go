@@ -59,7 +59,7 @@ func TestWASMV128RoutingDifferential(t *testing.T) {
 	checkWASMV128MemoryRuntime(t, wasmV128RoutingSource(rows), rows, wasmV128RoutingOracle)
 }
 
-func checkWASMV128MemoryRuntime(t *testing.T, source string, rows any, oracle string) {
+func checkWASMV128MemoryRuntime(t *testing.T, source string, rows any, oracle string, nodeFlags ...string) {
 	t.Helper()
 	file, err := Parse(ArchWASM, source)
 	if err != nil {
@@ -92,7 +92,7 @@ func checkWASMV128MemoryRuntime(t *testing.T, source string, rows any, oracle st
 				}
 				for _, level := range []string{"0", "2"} {
 					t.Run("O"+level, func(t *testing.T) {
-						runLLVMWASMObject(t, ir, level, oracle, matrix)
+						runLLVMWASMObjectWithNodeFlags(t, ir, level, oracle, nodeFlags, matrix)
 					})
 				}
 			})

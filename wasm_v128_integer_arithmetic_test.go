@@ -16,7 +16,11 @@ func wasmV128IntegerArithmeticCases() []wasmV128ArithmeticCase {
 
 func TestWASMV128IntegerArithmeticDifferential(t *testing.T) {
 	rows := wasmV128IntegerArithmeticCases()
-	checkWASMV128MemoryRuntime(t, wasmV128ArithmeticSource(rows), rows, wasmV128IntegerArithmeticOracle)
+	// Node 22's x64 Liftoff SSE path can lose one input when a relaxed
+	// dot product reuses its register. Use the optimizing tier as the
+	// native reference and still check every signed input against the
+	// independent scalar results.
+	checkWASMV128MemoryRuntime(t, wasmV128ArithmeticSource(rows), rows, wasmV128IntegerArithmeticOracle, "--no-liftoff")
 }
 
 func TestWASMV128IntegerArithmeticRejectsMalformedSource(t *testing.T) {
