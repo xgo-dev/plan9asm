@@ -262,6 +262,18 @@ func (source *x86ABI0BoolCallSource) verify() (result error) {
 	if !reflect.DeepEqual(source.original, x86DirectTailSnapshot(source.origin)) || !reflect.DeepEqual(source.signatures, source.options.Sigs) {
 		return x86ABI0BoolCallContext("complete original source or declarations changed")
 	}
+	for _, plan := range source.callers {
+		if tail := plan.tail; tail != nil && tail.signature.x86ImportedBoolTail {
+			pkg := source.options.goPackage
+			if pkg == nil {
+				return x86ABI0BoolCallContext("imported bool tail needs its actual Go declaration source")
+			}
+			if err := verifyGoX86ImportedTail(*pkg, plan.function, plan.signature.Name, tail.target,
+				plan.signature, tail.signature, source.options.Goarch); err != nil {
+				return err
+			}
+		}
+	}
 	if source.customGraph != nil {
 		if err := source.customGraph.verify(source.origin, source.options); err != nil {
 			return err

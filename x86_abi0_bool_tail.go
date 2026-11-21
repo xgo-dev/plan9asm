@@ -50,6 +50,7 @@ func x86ABI0BoolTailTransport(left, right FuncSig, arch string) bool {
 	// offsets, types, field paths, argument order and ABI/native fields remain.
 	project := func(sig FuncSig) FuncSig {
 		sig.Name, sig.Attrs = "", ""
+		sig.x86ImportedBoolTail = false
 		sig.Frame.Params = append([]FrameSlot(nil), sig.Frame.Params...)
 		sig.Frame.Results = append([]FrameSlot(nil), sig.Frame.Results...)
 		for index := range sig.Frame.Params {

@@ -34,9 +34,9 @@ type ordinaryDeclarationSource struct {
 	sizes      types.Sizes
 }
 
-// This is only a cost query: a real variable mentioned by an SB operand makes
-// its complete declaration source worth reading. It does not duplicate the
-// translator's operand grammar, access widths, or imported-CMP-only admission.
+// This is only a cost query. SB data references and direct tail stubs may
+// need complete Go declarations. The GoModule frontend validates the actual
+// operand, source identity, memory width and ABI for each use.
 func ordinaryDeclarationCandidates(pkg *packages.Package, file *plan9asm.File) map[string]*packages.Package {
 	result := make(map[string]*packages.Package)
 	if pkg == nil || pkg.Types == nil || file == nil {
@@ -71,12 +71,27 @@ func ordinaryDeclarationCandidates(pkg *packages.Package, file *plan9asm.File) m
 				if owner == nil || owner.Types == nil || owner.Types.Scope() == nil || !token.IsIdentifier(name) {
 					continue
 				}
-				if variable, ok := owner.Types.Scope().Lookup(name).(*types.Var); ok && !variable.IsField() && variable.Pkg() == owner.Types {
-					if owner == pkg {
-						path = ""
-					}
-					result[path] = owner
+				declaration := owner.Types.Scope().Lookup(name)
+				if declaration == nil || declaration.Pkg() != owner.Types {
+					continue
 				}
+				switch declaration := declaration.(type) {
+				case *types.Var:
+					if declaration.IsField() {
+						continue
+					}
+				case *types.Func:
+					if owner == pkg || function.FrameSize != 0 || len(function.Instrs) != 2 || instruction.Op != plan9asm.OpJMP ||
+						len(instruction.Args) != 1 || operand.Kind != plan9asm.OpSym {
+						continue
+					}
+				default:
+					continue
+				}
+				if owner == pkg {
+					path = ""
+				}
+				result[path] = owner
 			}
 		}
 	}

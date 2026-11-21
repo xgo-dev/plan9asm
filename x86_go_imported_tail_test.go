@@ -170,6 +170,68 @@ func TestX86GoImportedTailPublicModule(t *testing.T) {
 	}
 }
 
+type importedTailFixtureImporter map[string]*types.Package
+
+func (imports importedTailFixtureImporter) Import(path string) (*types.Package, error) {
+	if pkg := imports[path]; pkg != nil {
+		return pkg, nil
+	}
+	return nil, fmt.Errorf("unselected fixture import %s", path)
+}
+
+func TestX86GoImportedBoolTailRechecksSelectedDeclaration(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			const dependency = "example.com/leaf"
+			leaf := mustGoPackage(t, dependency, "package leaf\nfunc Nonzero(value uint32) bool\n")
+			set := token.NewFileSet()
+			caller, err := parser.ParseFile(set, "wrapper.go",
+				"package tail\nimport _ \""+dependency+"\"\nfunc Flag(value uint32) bool\n", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			syntax := []*ast.File{caller}
+			imports := importedTailFixtureImporter{dependency: leaf.Types}
+			sizes := types.SizesFor("gc", arch)
+			typed, err := (&types.Config{Importer: imports, Sizes: sizes}).Check("example.com/tail", set, syntax, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkg := GoPackage{Path: typed.Path(), Syntax: syntax, Types: typed, Imports: imports,
+				ImportSyntax: map[string][]*ast.File{dependency: leaf.Syntax}}
+			file, err := Parse(ArchAMD64, "TEXT ·Flag(SB),4,$0\nJMP example·com∕leaf·Nonzero(SB)\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolve := testResolveSym(pkg.Path)
+			sigs, err := goSigsForAsmFile(pkg, file, resolve, arch, sizes, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			triple := "x86_64-unknown-linux-gnu"
+			if arch == "386" {
+				triple = "i386-unknown-linux-gnu"
+			}
+			opts := Options{Goarch: arch, TargetTriple: triple, Sigs: sigs, goPackage: &pkg}
+			mutate := false
+			opts.ResolveSym = func(symbol string) string {
+				if mutate {
+					delete(pkg.ImportSyntax, dependency)
+				}
+				return resolve(symbol)
+			}
+			plan, err := prepareX86ABI0BoolCalls(file, opts)
+			if err != nil || plan == nil {
+				t.Fatal("selected declaration failed to build a bool terminal", err)
+			}
+			mutate = true
+			if err := plan.verify(); !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("resolved bool terminal accepted lost selected declaration syntax", err)
+			}
+		})
+	}
+}
+
 func TestX86GoImportedTailSignatureCollectionKeepsIndependentConsumers(t *testing.T) {
 	for _, arch := range []string{"386", "amd64"} {
 		t.Run(arch, func(t *testing.T) {

@@ -195,45 +195,51 @@ func (graph *x86DirectTailGraph) verifyPureGoTails() error {
 		if goReadOnlyLocalName(pkg, calleeName) != "" {
 			continue // Same-package Go tails keep their pre-existing declaration path.
 		}
-		name := goReadOnlyLocalName(pkg, fn.Sym)
-		declaration, err := goX86TailFunction(pkg, name, true, types.SizesFor("gc", graph.goarch))
-		if err != nil {
-			return err
-		}
 		resolved := graph.symbols[fn.Sym]
-		if resolved != pkg.Path+"."+name {
-			return x86DirectTailContext("tail caller resolver differs from its actual declaration")
-		}
-		caller, err := goFuncSigForDeclaredFunc(resolved, declaration, graph.goarch, nil, nil, true)
-		if err != nil {
+		if err := verifyGoX86ImportedTail(pkg, fn, resolved, calleeName,
+			graph.signatures[resolved], graph.signatures[calleeName], graph.goarch); err != nil {
 			return err
 		}
-		word := int64(8)
-		if graph.goarch == "386" {
-			word = 4
-		}
-		end := int64(0)
-		for _, slots := range [][]FrameSlot{caller.Frame.Params, caller.Frame.Results} {
-			for _, slot := range slots {
-				if next := slot.Offset + frameTypeSize(slot.Type, word); next > end {
-					end = next
-				}
+	}
+	return nil
+}
+
+func verifyGoX86ImportedTail(pkg GoPackage, fn Func, resolved, calleeName string, callerSig, calleeSig FuncSig, arch string) error {
+	name := goReadOnlyLocalName(pkg, fn.Sym)
+	declaration, err := goX86TailFunction(pkg, name, true, types.SizesFor("gc", arch))
+	if err != nil {
+		return err
+	}
+	if resolved != pkg.Path+"."+name {
+		return x86DirectTailContext("tail caller resolver differs from its actual declaration")
+	}
+	caller, err := goFuncSigForDeclaredFunc(resolved, declaration, arch, nil, nil, true)
+	if err != nil {
+		return err
+	}
+	word := x86ResultPointerWord(arch)
+	end := int64(0)
+	for _, slots := range [][]FrameSlot{caller.Frame.Params, caller.Frame.Results} {
+		for _, slot := range slots {
+			if next := slot.Offset + frameTypeSize(slot.Type, word); next > end {
+				end = next
 			}
 		}
-		op, rest := splitOpcode(fn.Instrs[0].Raw)
-		frame, err := parseTEXTFrameSpec(strings.Split(rest, ","))
-		if err != nil || !strings.EqualFold(op, "TEXT") || frame.frameSize != fn.FrameSize || frame.argSize != fn.ArgSize ||
-			!x86ABI0FrameLayout(caller, end, graph.goarch) ||
-			!x86TEXTArgumentsUnspecified(fn) && !goabi.MatchesABI0TextSize(graph.goarch, fn.ArgSize, end) {
-			return x86DirectTailContext("tail TEXT extent differs from actual ordinary Go ABI0 declaration")
-		}
-		callee, err := goX86ImportedTailSignature(pkg, calleeName, graph.goarch, nil, nil)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(caller, graph.signatures[resolved]) || !reflect.DeepEqual(callee, graph.signatures[calleeName]) {
-			return x86DirectTailContext("pure tail signatures differ from actual ordinary Go ABI0 declarations")
-		}
+	}
+	op, rest := splitOpcode(fn.Instrs[0].Raw)
+	frame, err := parseTEXTFrameSpec(strings.Split(rest, ","))
+	if err != nil || !strings.EqualFold(op, "TEXT") || frame.frameSize != fn.FrameSize || frame.argSize != fn.ArgSize ||
+		!x86ABI0FrameLayout(caller, end, arch) ||
+		!x86TEXTArgumentsUnspecified(fn) && !goabi.MatchesABI0TextSize(arch, fn.ArgSize, end) {
+		return x86DirectTailContext("tail TEXT extent differs from actual ordinary Go ABI0 declaration")
+	}
+	callee, err := goX86ImportedTailSignature(pkg, calleeName, arch, nil, nil)
+	if err != nil {
+		return err
+	}
+	calleeSig.x86ImportedBoolTail = false // The recheck marker carries no ABI role.
+	if !reflect.DeepEqual(caller, callerSig) || !reflect.DeepEqual(callee, calleeSig) {
+		return x86DirectTailContext("pure tail signatures differ from actual ordinary Go ABI0 declarations")
 	}
 	return nil
 }

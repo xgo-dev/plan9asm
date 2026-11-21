@@ -92,6 +92,10 @@ type FuncSig struct {
 	// Denial-only provenance: an unresolved 386 bool tail copied its caller's
 	// signature. This is not an independent target declaration or capability.
 	x86BorrowedBoolTail bool
+
+	// A selected imported bool terminal must recheck its Go declaration at
+	// consumption, including after symbol resolution callbacks.
+	x86ImportedBoolTail bool
 }
 
 // WASMABI selects the physical ABI used for WebAssembly Plan 9 assembly.

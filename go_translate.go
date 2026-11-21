@@ -907,7 +907,7 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 				continue // Bound only by complete source nodes and root must-state.
 			}
 			if b.directTail && pureTail && tailJump && tailTarget == base && hasCallerSig &&
-				!x86DirectTailSigNeedsOwnBoolFrame(callerSig, fn, b.goarch) &&
+				(!x86DirectTailSigNeedsOwnBoolFrame(callerSig, fn, b.goarch) || x86ABI0BoolDeclarationRole(callerSig, b.goarch)) &&
 				goReadOnlyLocalName(b.packageData, b.resolve(base)) == "" {
 				path, _ := goReadOnlyImportedName(b.resolve(base))
 				// Missing imports are deferred to the complete consumer. Source-only
@@ -920,6 +920,7 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 					if manual, ok := goLookupManualSig(b.manualSig, b.resolve(base)); ok && !reflect.DeepEqual(manual, fs) {
 						return x86DirectTailContext("manual signature differs from actual imported Go declaration")
 					}
+					fs.x86ImportedBoolTail = x86ABI0BoolResultNeedsProof(callerSig, b.goarch)
 					b.sigs[b.resolve(base)] = fs
 					continue
 				}

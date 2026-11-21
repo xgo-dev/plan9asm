@@ -265,6 +265,7 @@ func numericalCloneSignatures(input map[string]FuncSig) (map[string]FuncSig, err
 		sig.x86CallerRegions, sig.x86FixedLocal = old.x86CallerRegions, old.x86FixedLocal
 		sig.arm64FPReadDeclaration, sig.arm64ABI0Declaration, sig.arm64ABI0TailDeclaration, sig.arm64NativeScratch = old.arm64FPReadDeclaration, old.arm64ABI0Declaration, old.arm64ABI0TailDeclaration, old.arm64NativeScratch
 		sig.x86BorrowedBoolTail = old.x86BorrowedBoolTail
+		sig.x86ImportedBoolTail = old.x86ImportedBoolTail
 		sig.amd64GoArguments = old.amd64GoArguments
 		result[name] = sig
 	}
