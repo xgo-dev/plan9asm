@@ -202,7 +202,7 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 		autoExtent, scopedControl = x86X87ScopedControlScratchExtent(fn, goarch)
 	}
 	if scalarViews && x86Mode32FixedFrameCandidate(fn, goarch) {
-		if err := x86CheckMode32FixedFrame(fn); err != nil {
+		if err := x86CheckMode32FixedFrame(fn, sig.Frame); err != nil {
 			return err
 		}
 		autoExtent = int(fn.FrameSize)

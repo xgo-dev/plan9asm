@@ -32,7 +32,7 @@ func x86Mode32FixedFrameCandidate(fn Func, arch string) bool {
 	return false
 }
 
-func x86CheckMode32FixedFrame(fn Func) error {
+func x86CheckMode32FixedFrame(fn Func, layout FrameLayout) error {
 	fail := func(reason string, src string) error {
 		return fmt.Errorf("%w: 386 fixed TEXT frame: %s: %q", ErrProbeNeedsContext, reason, src)
 	}
@@ -42,6 +42,15 @@ func x86CheckMode32FixedFrame(fn Func) error {
 	}
 	if err := x86ResultLocalSourceReplay(fn, "386", "physical frame"); err != nil {
 		return err
+	}
+	if len(layout.Params) == 0 && len(layout.Results) == 0 {
+		// An FP address needs an incoming typed slot even when the
+		// instruction itself lives in a bounded physical TEXT frame.
+		for _, ins := range fn.Instrs {
+			if _, _, _, address := x86LogicalFPLEAWriteShape(ins, "386"); address {
+				return x86UnboundFPAddress("386", ins.Args[0].FPOffset)
+			}
+		}
 	}
 	for _, ins := range fn.Instrs {
 		if !x86ResultNamedPredicateInstruction(ins) || x86LinuxSyscallCandidate(ins) {

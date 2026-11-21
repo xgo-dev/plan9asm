@@ -2,13 +2,17 @@ package plan9asm
 
 import "fmt"
 
+func x86UnboundFPAddress(goarch string, off int64) error {
+	return fmt.Errorf("%w: %s FP address at +%d(FP) requires bound typed frame storage", ErrProbeNeedsContext, goarch, off)
+}
+
 // boundFPAddress addresses a declared field's backing storage, never its
 // current value. An unbound source address needs a physical frame contract;
 // inventing a zero pointer or extending an alloca into padding is not one.
 func (c *amd64Ctx) boundFPAddress(off int64) (string, error) {
 	slot, result, ok := c.fpVectorSlot(off)
 	if !ok {
-		return "", fmt.Errorf("%w: %s FP address at +%d(FP) requires bound typed frame storage", ErrProbeNeedsContext, c.goarch, off)
+		return "", x86UnboundFPAddress(c.goarch, off)
 	}
 	if x86FrameScalarBytes(slot.Type, c.goarch) == 0 {
 		// The vector lookup's conservative aggregate-size fallback is not a
