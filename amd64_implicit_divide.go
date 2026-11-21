@@ -194,9 +194,13 @@ func x86LoweredImplicitDivideStep(ins Instr, state *x86ResultState, owned []bool
 		form.source.Kind == OpReg && x86LogicalSourceFrameRegister(form.source.Reg, arch) {
 		return false, true
 	}
-	if form.source.Kind != OpReg && form.source.Kind != OpFP && !x86RegisterAddressedNativeMemoryOperand(form.source, arch) {
+	_, static := x86StaticSBReadAddress(form.source, arch)
+	if form.source.Kind != OpReg && form.source.Kind != OpFP && !static &&
+		!x86RegisterAddressedNativeMemoryOperand(form.source, arch) {
 		return false, true
 	}
+	// A static source flows through the same width-checked result read as
+	// other bounded DATA. Its address alone supplies no initialized bytes.
 	width, accumulatorWidth := int64(form.spec.bits/8), int64(form.spec.bits/8)
 	if form.spec.bits == 8 {
 		accumulatorWidth = 2

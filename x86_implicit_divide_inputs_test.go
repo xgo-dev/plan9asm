@@ -154,3 +154,31 @@ func TestX86ImplicitDivideNativeReadRequiresActualAddressAndNoNewBacking(t *test
 		}
 	}
 }
+
+func TestX86ImplicitDivideStaticReadsRequireCompleteBoundBytes(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		for _, row := range x86ImplicitDivideOracle {
+			if arch == "386" && row.bits == 64 {
+				continue
+			}
+			t.Run(arch+"/"+row.name, func(t *testing.T) {
+				ins := x86YMMReadSource(t, row.name+" divisor<>+8(SB)")
+				width := int64(row.bits / 8)
+				address := x86StaticSBAddress{symbol: "divisor<>", offset: 8}
+				for _, extent := range []int64{0, width - 1, width} {
+					state := x86ImplicitDivideInputState(row.bits, arch)
+					state.loweredStaticReads = map[x86StaticSBAddress]int64{address: extent}
+					before := state.clone()
+					before.loweredStaticReads = state.loweredStaticReads
+					accepted, known := x86LoweredImplicitDivideStep(ins, &state, nil, arch)
+					if !known || accepted != (extent >= width) {
+						t.Errorf("closed source with %d/%d bytes: accepted=%v, known=%v", extent, width, accepted, known)
+					}
+					if !accepted && !reflect.DeepEqual(state, before) {
+						t.Fatal("rejected symbolic divisor changed reaching state")
+					}
+				}
+			})
+		}
+	}
+}

@@ -80,12 +80,13 @@ func TestX86ImplicitDivideInitializedFamilyFiveTargets(t *testing.T) {
 				move = "MOVL"
 			}
 			var assembly, declarations strings.Builder
+			assembly.WriteString("DATA divisor<>+8(SB)/8,$3\nGLOBL divisor<>(SB),$16\n")
 			count := 0
 			for _, row := range x86ImplicitDivideOracle {
 				if target.arch == "386" && row.bits == 64 {
 					continue // Stock Go rejects Q in mode32; no supported target is skipped.
 				}
-				for _, source := range []string{"CX", "1(SI)"} {
+				for _, source := range []string{"CX", "1(SI)", "divisor<>+8(SB)"} {
 					name := fmt.Sprint("Divide", count)
 					fmt.Fprintf(&declarations, "func %s(p *byte) uint32\n", name)
 					fmt.Fprintf(&assembly, "TEXT ·%s(SB),4,$0-%d\n%s p+0(FP),SI\nMOVL $0,AX\n%sMOVL AX,ret+%d(FP)\nRET\n",
@@ -93,9 +94,9 @@ func TestX86ImplicitDivideInitializedFamilyFiveTargets(t *testing.T) {
 					count++
 				}
 			}
-			want := 16
+			want := 24
 			if target.arch == "386" {
-				want = 12
+				want = 18
 			}
 			if count != want {
 				t.Fatal("complete division direction/width/source matrix changed", count)
