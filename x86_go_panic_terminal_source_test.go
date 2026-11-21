@@ -19,6 +19,8 @@ func TestX86GoPanicTerminalBindsSourceOSToBackend(t *testing.T) {
 		{"windows/386", "windows", "i686-unknown-linux-gnu"},
 		{"windows/386", "linux", "i386-unknown-linux-gnu"},
 		{"windows/386", "windows", "x86_64-pc-windows-msvc"},
+		{"windows/386", "windows", "i686-pc-windows-msvc-elf"},
+		{"linux/386", "linux", "i386-unknown-linux-gnu-coff"},
 		{"freebsd/386", "freebsd", "i386-unknown-freebsd"},
 	} {
 		request := GoSDKAssemblyCaptureRequest{Target: row.source}
@@ -26,6 +28,10 @@ func TestX86GoPanicTerminalBindsSourceOSToBackend(t *testing.T) {
 		result, err := TranslateGoX86SDKPanicTerminalModuleInContext(context.Background(), ctx, request, options)
 		if result != nil || !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "target-matched 386") {
 			t.Errorf("mismatched target %+v acquired a producer: %v", row, err)
+		}
+		result, err = TranslateGoX86SDKABI0TailModuleInContext(context.Background(), ctx, request, options)
+		if result != nil || !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "target-matched 386") {
+			t.Errorf("mismatched target %+v acquired an ABI0 tail: %v", row, err)
 		}
 	}
 }

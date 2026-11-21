@@ -5,7 +5,6 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
-	"strings"
 
 	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/gostaticstorage"
@@ -22,7 +21,7 @@ type x86GoPanicTerminalSourceObservation struct {
 
 func (source *GoX86SDKASMDataSource) panicTerminalObservation(ctx context.Context, budget *x86ResultFlowBudget) (observed *x86GoPanicTerminalSourceObservation, result error) {
 	if source == nil || source.identity != source || source.guard == nil || source.guard != source.originalGuard ||
-		source.captureRole != sdkASMDataOriginalSourceRole || !x86GoPanicTerminalTarget(source.request.Target) || budget == nil ||
+		source.captureRole != sdkASMDataOriginalSourceRole || !x86SDK386OriginalTarget(source.request.Target) || budget == nil ||
 		budget.visits >= 16384 || budget.bytes >= 64<<20 {
 		return nil, sdkASMDataContext("panic association requires its original private386 source observation")
 	}
@@ -115,10 +114,7 @@ func (source *GoX86SDKASMDataSource) panicTerminalObservation(ctx context.Contex
 func TranslateGoX86SDKPanicTerminalModuleInContext(ctx context.Context, irCtx llvm.Context,
 	request GoX86SDKASMDataCaptureRequest, opt GoModuleOptions,
 ) (result *GoModuleTranslation, resultErr error) {
-	triple := llvmNormalizedTargetTriple(opt.TargetTriple)
-	fields := strings.SplitN(triple, "-", 4)
-	if !x86GoPanicTerminalTarget(request.Target) || request.Target != opt.GOOS+"/"+opt.GOARCH ||
-		len(fields) < 3 || fields[2] != opt.GOOS || !x86ScalarFloatIntegerNativeTarget("386", triple) ||
+	if !x86SDK386OriginalTargetMatchesBackend(request.Target, opt) ||
 		opt.ManualSig != nil || opt.Sizes != nil || opt.FrameSizes != nil ||
 		opt.NumericalReads != nil || opt.X86TLSMoves != nil || opt.ARM64ByteCarrierSource != nil ||
 		len(opt.ARM64ClosureABIs) != 0 {

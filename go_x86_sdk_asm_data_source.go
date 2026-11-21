@@ -203,6 +203,35 @@ func captureGoX86SDKASMDataSourceRole(ctx context.Context, request GoX86SDKASMDa
 	return source, nil
 }
 
+func x86SDK386OriginalTarget(target string) bool {
+	return target == "linux/386" || target == "windows/386"
+}
+
+func x86SDK386OriginalTargetMatchesBackend(target string, opt GoModuleOptions) bool {
+	if !x86SDK386OriginalTarget(target) || target != opt.GOOS+"/"+opt.GOARCH {
+		return false
+	}
+	triple := llvmNormalizedTargetTriple(opt.TargetTriple)
+	parts := strings.Split(triple, "-")
+	if len(parts) < 3 || parts[2] != opt.GOOS || !x86ScalarFloatIntegerNativeTarget("386", triple) {
+		return false
+	}
+	if len(parts) == 3 {
+		return true
+	}
+	// With no explicit object format, LLVM selects ELF or COFF from the OS.
+	switch parts[len(parts)-1] {
+	case "elf":
+		return opt.GOOS == "linux"
+	case "coff":
+		return opt.GOOS == "windows"
+	case "dxcontainer", "goff", "macho", "spirv", "wasm", "xcoff":
+		return false
+	default:
+		return true
+	}
+}
+
 func sdkASMDataEnvironment(request GoX86SDKASMDataCaptureRequest) (map[string]string, error) {
 	provided := make(map[string]string)
 	for _, pair := range request.Environment {

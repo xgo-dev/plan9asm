@@ -993,7 +993,7 @@ func compileOneAttempt(pkg *packages.Package, arch plan9asm.Arch, goos, goarch, 
 		var translate sdkSourceTranslator
 		switch {
 		case goarch == "386" && ccfg.ordinaryDeclarations == nil:
-			if goos == "linux" && plan9asm.GoX86SDKABI0TailCandidate(file) {
+			if plan9asm.GoX86SDKABI0TailCandidate(file) {
 				translate = plan9asm.TranslateGoX86SDKABI0TailModuleInContext
 			} else if sdkPanicTerminalCandidate(pkg, file) {
 				translate = plan9asm.TranslateGoX86SDKPanicTerminalModuleInContext

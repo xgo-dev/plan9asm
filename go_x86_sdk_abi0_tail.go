@@ -75,10 +75,8 @@ func sdkABI0TailHelpers(file *File) map[string]bool {
 func TranslateGoX86SDKABI0TailModuleInContext(ctx context.Context, irCtx llvm.Context,
 	request GoX86SDKASMDataCaptureRequest, opt GoModuleOptions,
 ) (*GoModuleTranslation, error) {
-	triple := llvmNormalizedTargetTriple(opt.TargetTriple)
-	if request.Target != "linux/386" || opt.GOOS != "linux" || opt.GOARCH != "386" ||
-		!strings.Contains(triple, "-linux-") || !x86ScalarFloatIntegerNativeTarget("386", triple) {
-		return nil, sdkASMDataContext("global ABI0 tail needs the original Linux i386 target")
+	if !x86SDK386OriginalTargetMatchesBackend(request.Target, opt) {
+		return nil, sdkASMDataContext("global ABI0 tail needs the original target-matched 386 Go transport")
 	}
 	return translateGoSDKABI0TailModule(ctx, irCtx, request, opt, sdkASMDataOriginalSourceRole)
 }
@@ -134,8 +132,12 @@ func translateGoSDKABI0TailModule(ctx context.Context, irCtx llvm.Context,
 		return nil, err
 	}
 	objects := source.observation.Objects
+	if objects == nil || objects.Target != request.Target ||
+		len(objects.Sources) != len(pkg.SourceSelection.SelectedAssemblyFiles) {
+		return nil, sdkASMDataContext("global ABI0 tail lost its target-matched source objects")
+	}
 	for ordinal, name := range pkg.SourceSelection.SelectedAssemblyFiles {
-		if name == opt.FileName && objects != nil && ordinal < len(objects.Sources) {
+		if name == opt.FileName {
 			if opt.ResolveSym == nil {
 				prefix := gosym.PackagePrefix(request.PackagePath)
 				opt.ResolveSym = func(symbol string) string {
@@ -177,7 +179,15 @@ func translateSDKABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 		if original.Arch == ArchARM {
 			native.WriteString(".arm\n")
 		}
-		fmt.Fprintf(&native, ".p2align 4\n.globl %[1]s\n.type %[1]s,%%function\n%[1]s:\n", fn.Sym)
+		fmt.Fprintf(&native, ".p2align 4\n.globl %s\n", fn.Sym)
+		if opt.GOOS == "windows" {
+			// Module assembly retains the Go name verbatim. LLVM's C ABI
+			// decoration applies to the separate typed wrapper definitions.
+			fmt.Fprintf(&native, ".def %s; .scl 2; .type 32; .endef\n", fn.Sym)
+		} else {
+			fmt.Fprintf(&native, ".type %s,%%function\n", fn.Sym)
+		}
+		fmt.Fprintf(&native, "%s:\n", fn.Sym)
 		if original.Arch == ArchARM64 || original.Arch == ArchARM {
 			if len(first.Code)%4 != 0 {
 				return nil, sdkASMDataContext("global ARM helper %s does not have complete instruction words", fn.Sym)
@@ -195,7 +205,9 @@ func translateSDKABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 			}
 			native.WriteByte('\n')
 		}
-		fmt.Fprintf(&native, ".size %[1]s,.-%[1]s\n", fn.Sym)
+		if opt.GOOS != "windows" {
+			fmt.Fprintf(&native, ".size %[1]s,.-%[1]s\n", fn.Sym)
+		}
 	}
 
 	projected, err := projectSDKABI0Tail(original, helpers)
