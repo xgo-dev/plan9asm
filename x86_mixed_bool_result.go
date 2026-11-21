@@ -76,7 +76,7 @@ func x86OrdinaryScalarCodegenSource(fn Func, sig FuncSig, arch string) bool {
 		sig.WASMContext != "" || sig.WASMNative || sig.x86BorrowedBoolTail || sig.x86ImportedBoolTail ||
 		sig.amd64GoArguments != nil ||
 		sig.x86FixedLocal != nil || sig.x86CallerRegions != nil || len(fn.X86RawText) != 0 || fn.X86RawAlign != 0 || fn.x86SourceStack != nil ||
-		fn.arm64PrivateRegisterEntry || fn.arm64PrivateUnexposedFrame || fn.arm64PrivateTailSource != nil ||
+		fn.armSDKABI0Tail || fn.arm64PrivateRegisterEntry || fn.arm64PrivateUnexposedFrame || fn.arm64PrivateTailSource != nil ||
 		fn.arm64PrivateCallSource != nil || fn.arm64ABI0TailSource != nil ||
 		fn.x86FixedLocal != nil || fn.x86DirectTailRoot != nil || fn.x86ContinuationFlow != nil || fn.x86RawReplay != nil ||
 		len(fn.x86ContinuationAddresses) != 0 || len(fn.x86IndirectLabels) != 0 || fn.x86BoolCalls != nil ||

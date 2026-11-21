@@ -59,6 +59,10 @@ func translateModuleDirectInContext(ctx llvm.Context, file *File, opt Options) (
 
 	for i := range file.Funcs {
 		fn := &file.Funcs[i]
+		if fn.armSDKABI0Tail {
+			mod.Dispose()
+			return llvm.Module{}, directUnsupportedf("ARM ABI0 continuation requires shared CFG lowering for %s", fn.Sym)
+		}
 		if fn.X86RawText != nil {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("address-sensitive x86 raw TEXT requires textual lowering for %s", fn.Sym)

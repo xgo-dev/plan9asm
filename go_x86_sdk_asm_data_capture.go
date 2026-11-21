@@ -29,6 +29,13 @@ func (source *GoX86SDKASMDataSource) verifySDKDirectory() error {
 	return nil
 }
 
+func sdkARMTailCPUKey(target string) string {
+	if target == "linux/arm" {
+		return "GOARM"
+	}
+	return "GOARM64"
+}
+
 // This pure predicate validates a command's observed profile. Only capture's
 // independent live source/tool/selection guards can authenticate that command.
 func (source *GoX86SDKASMDataSource) validateObservedEnvironment(raw []byte, provided map[string]string) (map[string]string, error) {
@@ -47,10 +54,11 @@ func (source *GoX86SDKASMDataSource) validateObservedEnvironment(raw []byte, pro
 		// cmd/go reports this inactive setting verbatim (including empty).
 		// Retain it in the sealed observation, never invent a v1 environment.
 		_, cpuProfile = env["GOAMD64"]
-	} else if source.captureRole == sdkASMDataARM64TailRole && env["GOARCH"] == "arm64" {
-		_, err := GoAssemblerDefinesForEnvironment(env["GOOS"], "arm64", env)
-		requested := provided["GOARM64"]
-		cpuProfile = err == nil && env["GOARM64"] != "" && (requested == "" || requested == env["GOARM64"])
+	} else if source.captureRole == sdkASMDataARMTailRole {
+		key := sdkARMTailCPUKey(source.request.Target)
+		_, err := GoAssemblerDefinesForEnvironment(env["GOOS"], env["GOARCH"], env)
+		requested := provided[key]
+		cpuProfile = err == nil && env[key] != "" && (requested == "" || requested == env[key])
 	}
 	if !strings.HasPrefix(env["GOVERSION"], "go1.27.") ||
 		env["GOOS"]+"/"+env["GOARCH"] != source.request.Target ||
@@ -88,9 +96,9 @@ func (source *GoX86SDKASMDataSource) capture(ctx context.Context, provided map[s
 			source.observation.Protocol = "actual_go_sdk_original_source_observation_v1"
 		}
 	}
-	if source.captureRole == sdkASMDataARM64TailRole {
-		arguments = append(arguments, "GOARM64")
-		source.observation.Protocol = "actual_go_sdk_arm64_tail_source_observation_v1"
+	if source.captureRole == sdkASMDataARMTailRole {
+		arguments = append(arguments, sdkARMTailCPUKey(source.request.Target))
+		source.observation.Protocol = "actual_go_sdk_arm_tail_source_observation_v1"
 	}
 	raw, err := source.run(ctx, arguments...)
 	if err != nil {
@@ -135,9 +143,12 @@ func (source *GoX86SDKASMDataSource) capture(ctx context.Context, provided map[s
 		"src/cmd/compile/internal/gc/obj.go", "src/cmd/link/internal/ld/go.go",
 		"src/cmd/asm/main.go", "src/cmd/asm/internal/lex/input.go", "src/cmd/asm/internal/lex/stack.go",
 		"src/cmd/asm/internal/lex/tokenizer.go", "src/cmd/compile/internal/typecheck/subr.go"}
-	if source.captureRole == sdkASMDataARM64TailRole {
+	switch env["GOARCH"] {
+	case "arm":
+		sourceRoles = append(sourceRoles, "src/cmd/internal/obj/arm/asm5.go", "src/cmd/internal/obj/arm/obj5.go")
+	case "arm64":
 		sourceRoles = append(sourceRoles, "src/cmd/internal/obj/arm64/asm7.go", "src/cmd/internal/obj/arm64/obj7.go")
-	} else {
+	default:
 		sourceRoles = append(sourceRoles, "src/cmd/internal/obj/x86/asm6.go", "src/cmd/internal/obj/x86/obj6.go")
 	}
 	for _, role := range sourceRoles {
@@ -238,8 +249,8 @@ func (source *GoX86SDKASMDataSource) capture(ctx context.Context, provided map[s
 	}
 	source.observation.ObjectInputs = objectInputs
 	observe := gostaticstorage.ObserveX86SDKCPPASMData
-	if source.captureRole == sdkASMDataARM64TailRole {
-		observe = gostaticstorage.ObserveARM64SDKCPPASMData
+	if source.captureRole == sdkASMDataARMTailRole {
+		observe = gostaticstorage.ObserveARMSDKCPPASMData
 	}
 	objects, err := observe(objectInputs)
 	if err != nil {

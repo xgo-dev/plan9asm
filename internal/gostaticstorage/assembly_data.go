@@ -187,12 +187,12 @@ func observeX86SDKASMData(request SDKASMDataObservationRequest, cpp bool) (*SDKA
 	return observeSDKASMData(request, cpp)
 }
 
-// ObserveARM64SDKCPPASMData joins the original and expanded Linux ARM64
+// ObserveARMSDKCPPASMData joins the original and expanded Linux ARM/AArch64
 // objects to the selected archive. The x86 float-pool grammar cannot account
-// for ARM64-generated DATA. Unexpected definitions fail the ordinary join.
-func ObserveARM64SDKCPPASMData(request SDKASMDataObservationRequest) (*SDKASMDataObservation, error) {
-	if request.Target != "linux/arm64" {
-		return nil, contextError("unobserved ARM64 SDK ASM target")
+// for ARM-generated DATA. Unexpected definitions fail the ordinary join.
+func ObserveARMSDKCPPASMData(request SDKASMDataObservationRequest) (*SDKASMDataObservation, error) {
+	if request.Target != "linux/arm" && request.Target != "linux/arm64" {
+		return nil, contextError("unobserved ARM SDK ASM target")
 	}
 	return observeSDKASMData(request, true)
 }

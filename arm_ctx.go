@@ -7,11 +7,12 @@ import (
 )
 
 type armCtx struct {
-	b        *strings.Builder
-	sig      FuncSig
-	resolve  func(string) string
-	sigs     map[string]FuncSig
-	annotate bool
+	b           *strings.Builder
+	sig         FuncSig
+	resolve     func(string) string
+	sigs        map[string]FuncSig
+	annotate    bool
+	sdkABI0Tail bool
 
 	tmp int
 
@@ -57,6 +58,7 @@ func newARMCtx(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) st
 		resolve:        resolve,
 		sigs:           sigs,
 		annotate:       annotate,
+		sdkABI0Tail:    fn.armSDKABI0Tail,
 		blocks:         armSplitBlocks(fn),
 		usedRegs:       map[Reg]bool{},
 		regSlot:        map[Reg]string{},
@@ -416,8 +418,7 @@ func (c *armCtx) emitEntryAllocasAndArgInit() error {
 		r := Reg(rs)
 		slot := c.slotName(r)
 		c.regSlot[r] = slot
-		fmt.Fprintf(c.b, "  %s = alloca i32\n", slot)
-		fmt.Fprintf(c.b, "  store i32 0, ptr %s\n", slot)
+		c.emitVirtualSlot(slot, I32, "0")
 	}
 	fregs := make([]string, 0, len(c.usedFRegs))
 	for r := range c.usedFRegs {
@@ -436,14 +437,9 @@ func (c *armCtx) emitEntryAllocasAndArgInit() error {
 	c.flagsZSlot = "%flags_z"
 	c.flagsCSlot = "%flags_c"
 	c.flagsVSlot = "%flags_v"
-	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsNSlot)
-	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsNSlot)
-	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsZSlot)
-	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
-	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsCSlot)
-	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCSlot)
-	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsVSlot)
-	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
+	for _, slot := range []string{c.flagsNSlot, c.flagsZSlot, c.flagsCSlot, c.flagsVSlot} {
+		c.emitVirtualSlot(slot, I1, "false")
+	}
 
 	c.exclusiveValidSlot = "%exclusive_valid"
 	c.exclusivePtrSlot = "%exclusive_ptr"
@@ -478,8 +474,7 @@ func (c *armCtx) emitEntryAllocasAndArgInit() error {
 		name := fmt.Sprintf("%%fp_ret_%d", r.Index)
 		c.fpResAllocaIdx[r.Index] = name
 		c.fpResAllocaOff[r.Offset] = name
-		fmt.Fprintf(c.b, "  %s = alloca %s\n", name, r.Type)
-		fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", r.Type, llvmZeroValue(r.Type), name)
+		c.emitVirtualSlot(name, r.Type, llvmZeroValue(r.Type))
 	}
 
 	if len(c.sig.ArgRegs) > 0 {
@@ -502,6 +497,13 @@ func (c *armCtx) emitEntryAllocasAndArgInit() error {
 		return c.initializeMachineState()
 	}
 	return nil
+}
+
+func (c *armCtx) emitVirtualSlot(name string, ty LLVMType, initial string) {
+	fmt.Fprintf(c.b, "  %s = alloca %s\n", name, ty)
+	if !c.sdkABI0Tail {
+		fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", ty, initial, name)
+	}
 }
 
 func armValueAsI32(c *armCtx, ty LLVMType, v string) (out string, ok bool, err error) {

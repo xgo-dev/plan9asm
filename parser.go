@@ -69,6 +69,7 @@ type Func struct {
 	arm64PrivateCallSource     *arm64PrivateCallSource // sealed original CALL bodies and exact prepared CFG
 	arm64ABI0TailSource        *arm64ABI0TailSource
 	arm64PrivateSourceAdded    int                 // resource accounting only, never a machine-state permission
+	armSDKABI0Tail             bool                // sealed SDK callers require reaching virtual-register and FP result definitions
 	x86RawReplay               *x86RawReplaySource // immutable raw source/replay identity, never a capability
 	x86DirectTailRoot          *x86DirectTailRoot
 	x86ResultFlowBudget        *x86ResultFlowBudget // request-local combined proof accounting only

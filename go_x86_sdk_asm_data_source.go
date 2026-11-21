@@ -33,7 +33,7 @@ const (
 	sdkASMDataStrictRole sdkASMDataCaptureRole = iota
 	sdkASMDataOriginalFrameRole
 	sdkASMDataOriginalSourceRole
-	sdkASMDataARM64TailRole
+	sdkASMDataARMTailRole
 )
 
 // GoX86SDKASMDataSource authenticates source/header/CPP/object observations
@@ -105,7 +105,7 @@ func captureGoX86SDKASMDataSource(ctx context.Context, request GoX86SDKASMDataCa
 // A distinct private source-only role observes the same original profile but
 // never captures AMD64 native frames or constructs their observation owner.
 func captureGoX86SDKASMDataSourceRole(ctx context.Context, request GoX86SDKASMDataCaptureRequest, role sdkASMDataCaptureRole) (_ *GoX86SDKASMDataSource, result error) {
-	if role > sdkASMDataARM64TailRole {
+	if role > sdkASMDataARMTailRole {
 		return nil, sdkASMDataContext("unknown private SDK source observation role")
 	}
 	originalProfile := role != sdkASMDataStrictRole
@@ -113,8 +113,8 @@ func captureGoX86SDKASMDataSourceRole(ctx context.Context, request GoX86SDKASMDa
 		return nil, fmt.Errorf("capture SDK ASM DATA: %w", ctx.Err())
 	}
 	targetOK := gostaticstorage.X86SDKTarget(request.Target)
-	if role == sdkASMDataARM64TailRole {
-		targetOK = request.Target == "linux/arm64"
+	if role == sdkASMDataARMTailRole {
+		targetOK = request.Target == "linux/arm" || request.Target == "linux/arm64"
 	}
 	if ctx == nil || !targetOK ||
 		!filepath.IsAbs(request.GoBinary) || !filepath.IsAbs(request.Directory) ||
@@ -133,7 +133,7 @@ func captureGoX86SDKASMDataSourceRole(ctx context.Context, request GoX86SDKASMDa
 		provided, err = sdkAMD64FrameEnvironment(request)
 	} else if role == sdkASMDataOriginalSourceRole {
 		provided, err = sdkX86OriginalSourceEnvironment(request)
-	} else if role == sdkASMDataARM64TailRole {
+	} else if role == sdkASMDataARMTailRole {
 		provided, err = sdkOriginalSourceEnvironment(request)
 	} else {
 		provided, err = sdkASMDataEnvironment(request)

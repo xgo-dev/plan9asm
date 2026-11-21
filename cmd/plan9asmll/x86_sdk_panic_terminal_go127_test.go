@@ -80,6 +80,10 @@ func TestCompileOneSelectedSDKARM64ABI0TailPreservesGlobalEntry(t *testing.T) {
 	testCompileOneSelectedSDKABI0Tail(t, "arm64", plan9asm.ArchARM64, "aarch64-unknown-linux-gnu", elf.EM_AARCH64)
 }
 
+func TestCompileOneSelectedSDKARMABI0TailPreservesGlobalEntry(t *testing.T) {
+	testCompileOneSelectedSDKABI0Tail(t, "arm", plan9asm.ArchARM, "armv7-unknown-linux-gnueabihf", elf.EM_ARM)
+}
+
 func testCompileOneSelectedSDKABI0Tail(t *testing.T, goarch string, arch plan9asm.Arch, triple string, machine elf.Machine) {
 	t.Helper()
 	const packagePath = "crypto/internal/fips140/bigmod"

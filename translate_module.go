@@ -21,6 +21,9 @@ func TranslateModuleInContext(ctx llvm.Context, file *File, opt Options) (result
 	if err := validateBackendSourceGoarch(file, opt); err != nil {
 		return llvm.Module{}, err
 	}
+	if GoARMSDKABI0TailCandidate(file) {
+		return llvm.Module{}, fmt.Errorf("%w: ARM global tail needs the original Go ABI0 caller frame", ErrProbeNeedsContext)
+	}
 	// Register first so this also checks early byte-carrier returns, after
 	// every source-owner completion guard. Never return a partial module when
 	// its actual LLVM target cannot represent the emitted operations.

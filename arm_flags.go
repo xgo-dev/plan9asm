@@ -206,18 +206,21 @@ func (c *armCtx) condValue(cond string) (string, error) {
 	if !c.flagsWritten {
 		return "", fmt.Errorf("%w: arm condition %s has no prior flags write", ErrProbeNeedsContext, cond)
 	}
-	ldN := c.newTmp()
-	ldZ := c.newTmp()
-	ldC := c.newTmp()
-	ldV := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", ldN, c.flagsNSlot)
-	fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", ldZ, c.flagsZSlot)
-	fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", ldC, c.flagsCSlot)
-	fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", ldV, c.flagsVSlot)
-	n := "%" + ldN
-	z := "%" + ldZ
-	carry := "%" + ldC
-	v := "%" + ldV
+	cond = strings.ToUpper(cond)
+	mask := armKernelConditionBits(cond)
+	var n, z, carry, v string
+	if mask&armKernelN != 0 {
+		n = c.loadFlagValue(c.flagsNSlot)
+	}
+	if mask&armKernelZ != 0 {
+		z = c.loadFlagValue(c.flagsZSlot)
+	}
+	if mask&armKernelC != 0 {
+		carry = c.loadFlagValue(c.flagsCSlot)
+	}
+	if mask&armKernelV != 0 {
+		v = c.loadFlagValue(c.flagsVSlot)
+	}
 	not := func(x string) string {
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, x)
@@ -243,7 +246,7 @@ func (c *armCtx) condValue(cond string) (string, error) {
 		fmt.Fprintf(c.b, "  %%%s = icmp eq i1 %s, %s\n", t, a, b)
 		return "%" + t
 	}
-	switch strings.ToUpper(cond) {
+	switch cond {
 	case "EQ":
 		return z, nil
 	case "NE":

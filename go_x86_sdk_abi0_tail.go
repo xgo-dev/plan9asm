@@ -25,8 +25,14 @@ func GoARM64SDKABI0TailCandidate(file *File) bool {
 	return file != nil && file.Arch == ArchARM64 && len(sdkABI0TailHelpers(file)) != 0
 }
 
+// GoARMSDKABI0TailCandidate reports ARM's same-file global continuation shape.
+// The ordinary translator needs the SDK path to bind the caller's ABI0 frame.
+func GoARMSDKABI0TailCandidate(file *File) bool {
+	return file != nil && file.Arch == ArchARM && len(sdkABI0TailHelpers(file)) != 0
+}
+
 func sdkABI0TailEdge(arch Arch, ins Instr) bool {
-	return (ins.Op == OpJMP || arch == ArchARM64 && (ins.Op == "B" || ins.Op == OpRET)) &&
+	return (ins.Op == OpJMP || (arch == ArchARM || arch == ArchARM64) && (ins.Op == "B" || ins.Op == OpRET)) &&
 		len(ins.Args) == 1 && ins.Args[0].Kind == OpSym
 }
 
@@ -87,7 +93,20 @@ func TranslateGoARM64SDKABI0TailModuleInContext(ctx context.Context, irCtx llvm.
 		!strings.HasPrefix(triple, "aarch64-") || !strings.Contains(triple, "-linux-") {
 		return nil, sdkASMDataContext("global ABI0 tail needs the original little-endian Linux ARM64 target")
 	}
-	return translateGoSDKABI0TailModule(ctx, irCtx, request, opt, sdkASMDataARM64TailRole)
+	return translateGoSDKABI0TailModule(ctx, irCtx, request, opt, sdkASMDataARMTailRole)
+}
+
+// TranslateGoARMSDKABI0TailModuleInContext translates the typed ARM callers
+// and retains the original A32 entry for native Go ABI0 callers.
+func TranslateGoARMSDKABI0TailModuleInContext(ctx context.Context, irCtx llvm.Context,
+	request GoSDKAssemblyCaptureRequest, opt GoModuleOptions,
+) (*GoModuleTranslation, error) {
+	triple := llvmNormalizedTargetTriple(opt.TargetTriple)
+	if request.Target != "linux/arm" || opt.GOOS != "linux" || opt.GOARCH != "arm" ||
+		!armWordFloatNativeTarget(triple) || !strings.HasPrefix(triple, "arm") || !strings.Contains(triple, "-linux-") {
+		return nil, sdkASMDataContext("global ABI0 tail needs the original little-endian Linux ARM target")
+	}
+	return translateGoSDKABI0TailModule(ctx, irCtx, request, opt, sdkASMDataARMTailRole)
 }
 
 func translateGoSDKABI0TailModule(ctx context.Context, irCtx llvm.Context,
@@ -154,10 +173,14 @@ func translateSDKABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 			len(second.Relocations) != 0 || !bytes.Equal(first.Code, second.Code) {
 			return nil, sdkASMDataContext("global ABI0 helper %s needs its exact relocation-free native code", fn.Sym)
 		}
-		fmt.Fprintf(&native, ".text\n.p2align 4\n.globl %[1]s\n.type %[1]s,%%function\n%[1]s:\n", fn.Sym)
-		if original.Arch == ArchARM64 {
+		native.WriteString(".text\n")
+		if original.Arch == ArchARM {
+			native.WriteString(".arm\n")
+		}
+		fmt.Fprintf(&native, ".p2align 4\n.globl %[1]s\n.type %[1]s,%%function\n%[1]s:\n", fn.Sym)
+		if original.Arch == ArchARM64 || original.Arch == ArchARM {
 			if len(first.Code)%4 != 0 {
-				return nil, sdkASMDataContext("global ARM64 helper %s does not have complete instruction words", fn.Sym)
+				return nil, sdkASMDataContext("global ARM helper %s does not have complete instruction words", fn.Sym)
 			}
 			for code := first.Code; len(code) != 0; code = code[4:] {
 				fmt.Fprintf(&native, ".inst 0x%08x\n", binary.LittleEndian.Uint32(code))
@@ -180,7 +203,13 @@ func translateSDKABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 		return nil, err
 	}
 	var tailSigs map[string]FuncSig
-	if original.Arch == ArchARM64 {
+	switch original.Arch {
+	case ArchARM:
+		projected, tailSigs, err = prepareSDKARMABI0Tails(pkg, projected, helpers, opt.ResolveSym)
+		if err != nil {
+			return nil, err
+		}
+	case ArchARM64:
 		tailSigs, err = goBindARM64ABI0TailDeclarations(pkg, projected, opt.ResolveSym, opt)
 		if err != nil {
 			return nil, err
@@ -200,11 +229,24 @@ func translateSDKABI0Tail(ctx llvm.Context, pkg GoPackage, original *File,
 	if err := rebindARM64ABI0TailDeclarations(sigs, tailSigs); err != nil {
 		return nil, err
 	}
+	if original.Arch == ArchARM {
+		for name, sig := range tailSigs {
+			sigs[name] = sig
+		}
+	}
 	options := Options{Goarch: opt.GOARCH, TargetTriple: opt.TargetTriple, ResolveSym: opt.ResolveSym,
 		Sigs: sigs, AnnotateSource: opt.AnnotateSource, X87Mode: opt.X87Mode, goPackage: &pkg}
 	module, err := TranslateModuleInContext(ctx, projected, options)
 	if err != nil {
 		return nil, err
+	}
+	if original.Arch == ArchARM {
+		for name := range tailSigs {
+			if err := proveSDKARMTailDefinitions(module.NamedFunction(name)); err != nil {
+				module.Dispose()
+				return nil, err
+			}
+		}
 	}
 	if err := promoteSDKTailFrame(module); err != nil {
 		module.Dispose()

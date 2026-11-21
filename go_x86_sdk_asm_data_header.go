@@ -209,9 +209,9 @@ func (source *GoX86SDKASMDataSource) typedPackage(language string) (GoPackage, e
 		return GoPackage{}, err
 	}
 	selected.Fset, selected.Sizes = fset, types.SizesFor("gc", source.guard.env["GOARCH"])
-	arch := ArchAMD64
-	if source.captureRole == sdkASMDataARM64TailRole {
-		arch = ArchARM64
+	arch, err := goArchFor(source.guard.env["GOARCH"])
+	if err != nil {
+		return GoPackage{}, err
 	}
 	for ordinal, cpp := range source.observation.CPP {
 		if ordinal >= len(source.guard.selection.SFiles) {

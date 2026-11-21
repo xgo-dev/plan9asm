@@ -41,6 +41,7 @@ func x86VectorRefinementRoleControls() []struct {
 		{"Func", "x86ContinuationFlow", func(f *Func, _ *FuncSig) { f.x86ContinuationFlow = new(x86ContinuationFlow) }},
 		{"Func", "x86SourceStack", func(f *Func, _ *FuncSig) { f.x86SourceStack = new(x86SourceStackProof) }},
 		{"Func", "x86FixedLocal", func(f *Func, _ *FuncSig) { f.x86FixedLocal = new(x86FixedLocalProof) }},
+		{"Func", "armSDKABI0Tail", func(f *Func, _ *FuncSig) { f.armSDKABI0Tail = true }},
 		{"Func", "arm64PrivateRegisterEntry", func(f *Func, _ *FuncSig) { f.arm64PrivateRegisterEntry = true }},
 		{"Func", "arm64PrivateUnexposedFrame", func(f *Func, _ *FuncSig) { f.arm64PrivateUnexposedFrame = true }},
 		{"Func", "arm64PrivateTailSource", func(f *Func, _ *FuncSig) { f.arm64PrivateTailSource = new(arm64PrivateTailSource) }},

@@ -245,10 +245,10 @@ func parseASMDataSource(source []byte, packagePath, target string) ([]asmDataLay
 		return nil, err
 	}
 	pointerWidth := int64(8)
-	if !X86SDKTarget(target) && target != "linux/arm64" {
+	if !X86SDKTarget(target) && target != "linux/arm" && target != "linux/arm64" {
 		return nil, contextError("DATA source target has no observed pointer width")
 	}
-	if strings.HasSuffix(target, "/386") {
+	if strings.HasSuffix(target, "/386") || target == "linux/arm" {
 		pointerWidth = 4
 	}
 	states := make(map[string]*asmDataLayoutState)

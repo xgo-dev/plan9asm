@@ -999,6 +999,8 @@ func compileOneAttempt(pkg *packages.Package, arch plan9asm.Arch, goos, goarch, 
 			}
 		case goarch == "arm64" && plan9asm.GoARM64SDKABI0TailCandidate(file):
 			translate = plan9asm.TranslateGoARM64SDKABI0TailModuleInContext
+		case goarch == "arm" && plan9asm.GoARMSDKABI0TailCandidate(file):
+			translate = plan9asm.TranslateGoARMSDKABI0TailModuleInContext
 		}
 		if translate != nil {
 			ccfg.sdkOriginal = sdkOriginalSourceFallback(pkg, t, originalReads, goarch, triple, annotate, resolve, ccfg, translate)

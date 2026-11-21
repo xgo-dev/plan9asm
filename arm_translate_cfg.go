@@ -109,6 +109,9 @@ func (c *armCtx) lowerBlocks() error {
 			emitBr(c.blocks[bi+1].name)
 			continue
 		}
+		if c.sdkABI0Tail {
+			return sdkASMDataContext("ARM ABI0 caller %q falls through without a source return or branch", c.sig.Name)
+		}
 		c.lowerRetZero()
 	}
 	return nil
@@ -212,6 +215,10 @@ func (c *armCtx) lowerRET() error {
 		return c.returnMachineState()
 	}
 	if len(c.fpResults) == 0 {
+		if c.sdkABI0Tail && c.sig.Ret == Void {
+			c.b.WriteString("  ret void\n")
+			return nil
+		}
 		r0, err := c.loadReg(Reg("R0"))
 		if err != nil {
 			return err
@@ -252,7 +259,7 @@ func (c *armCtx) lowerRET() error {
 		slot := c.fpResults[0]
 		var v string
 		var err error
-		if c.fpResWritten[slot.Index] || c.fpResAddrTaken[slot.Index] {
+		if c.hasFPReturnSlot(slot) {
 			v, err = c.loadFPResult(slot)
 		} else {
 			v, err = c.loadRetSlotFallback(slot)
@@ -267,7 +274,7 @@ func (c *armCtx) lowerRET() error {
 		parts := make([]string, 2)
 		for i, slot := range c.fpResults {
 			var err error
-			if c.fpResWritten[slot.Index] || c.fpResAddrTaken[slot.Index] {
+			if c.hasFPReturnSlot(slot) {
 				parts[i], err = c.loadFPResult(slot)
 			} else {
 				parts[i], err = c.loadRetSlotFallback(slot)
@@ -292,7 +299,7 @@ func (c *armCtx) lowerRET() error {
 	for _, slot := range c.fpResults {
 		var v string
 		var err error
-		if c.fpResWritten[slot.Index] || c.fpResAddrTaken[slot.Index] {
+		if c.hasFPReturnSlot(slot) {
 			v, err = c.loadFPResult(slot)
 		} else {
 			v, err = c.loadRetSlotFallback(slot)
@@ -307,6 +314,10 @@ func (c *armCtx) lowerRET() error {
 	}
 	fmt.Fprintf(c.b, "  ret %s %s\n", c.sig.Ret, last)
 	return nil
+}
+
+func (c *armCtx) hasFPReturnSlot(slot FrameSlot) bool {
+	return c.sdkABI0Tail || c.fpResWritten[slot.Index] || c.fpResAddrTaken[slot.Index]
 }
 
 func (c *armCtx) lowerRetZero() {
