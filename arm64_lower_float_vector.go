@@ -274,30 +274,16 @@ func (c *arm64Ctx) lowerARM64VectorFloatArithmetic(op Op, ins Instr) (ok bool, t
 	return c.lowerARM64VectorFloatArithmeticForm(op, ins, false)
 }
 
+var arm64VectorFloatArithmeticOps = map[Op]string{
+	"VFADD": "add", "VFSUB": "sub", "VFMUL": "mul", "VFDIV": "div",
+	"VFMAX": "maximum", "VFMAXNM": "maxnum", "VFMIN": "minimum", "VFMINNM": "minnum",
+	"VFABD": "fabd", "VFMULX": "fmulx",
+}
+
 func (c *arm64Ctx) lowerARM64VectorFloatArithmeticForm(op Op, ins Instr, allowRawHalf bool) (ok bool, terminated bool, err error) {
-	type operationSpec struct {
-		operation string
-		pairwise  bool
-	}
-	specs := map[Op]operationSpec{
-		"VFADD":    {operation: "add"},
-		"VFSUB":    {operation: "sub"},
-		"VFMUL":    {operation: "mul"},
-		"VFDIV":    {operation: "div"},
-		"VFMAX":    {operation: "maximum"},
-		"VFMAXNM":  {operation: "maxnum"},
-		"VFMIN":    {operation: "minimum"},
-		"VFMINNM":  {operation: "minnum"},
-		"VFABD":    {operation: "fabd"},
-		"VFMULX":   {operation: "fmulx"},
-		"VFADDP":   {operation: "add", pairwise: true},
-		"VFMAXP":   {operation: "maximum", pairwise: true},
-		"VFMAXNMP": {operation: "maxnum", pairwise: true},
-		"VFMINP":   {operation: "minimum", pairwise: true},
-		"VFMINNMP": {operation: "minnum", pairwise: true},
-	}
-	spec, handled := specs[op]
-	if !handled {
+	operation, binary := arm64VectorFloatArithmeticOps[op]
+	pairOp, pairwise := arm64GoFloatPairwiseOps[op]
+	if !binary && !pairwise {
 		return false, false, nil
 	}
 	if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 3 {
@@ -321,6 +307,14 @@ func (c *arm64Ctx) lowerARM64VectorFloatArithmeticForm(op Op, ins Instr, allowRa
 		}
 	}
 
+	if pairwise {
+		// Go encodes the second textual operand as Rn, the first as Rm.
+		form := arm64FloatPairwiseForm{
+			op: pairOp, arrangement: arrangement,
+			first: ins.Args[1].Reg, second: ins.Args[0].Reg, destination: ins.Args[2].Reg,
+		}
+		return true, false, c.lowerARM64FloatPairwise(form)
+	}
 	first, err := c.loadARM64VectorFloat(ins.Args[0].Reg, arrangement)
 	if err != nil {
 		return true, false, err
@@ -330,47 +324,20 @@ func (c *arm64Ctx) lowerARM64VectorFloatArithmeticForm(op Op, ins Instr, allowRa
 		return true, false, err
 	}
 	floatType, intrinsicSuffix, _ := arm64ScalarFloatType(arrangement.elementBits)
-	result := ""
-	if !spec.pairwise {
-		computed := c.newTmp()
-		switch spec.operation {
-		case "add", "sub", "mul", "div":
-			fmt.Fprintf(c.b, "  %%%s = f%s <%d x %s> %s, %s\n", computed, spec.operation, arrangement.lanes, floatType, second, first)
-		case "fabd", "fmulx":
-			fmt.Fprintf(c.b, "  %%%s = call <%d x %s> @llvm.aarch64.neon.%s.v%d%s(<%d x %s> %s, <%d x %s> %s)\n",
-				computed, arrangement.lanes, floatType, spec.operation, arrangement.lanes, intrinsicSuffix,
-				arrangement.lanes, floatType, second, arrangement.lanes, floatType, first)
-		default:
-			fmt.Fprintf(c.b, "  %%%s = call <%d x %s> @llvm.%s.v%d%s(<%d x %s> %s, <%d x %s> %s)\n",
-				computed, arrangement.lanes, floatType, spec.operation, arrangement.lanes, intrinsicSuffix,
-				arrangement.lanes, floatType, second, arrangement.lanes, floatType, first)
-		}
-		result = "%" + computed
-	} else {
-		result = "poison"
-		half := arrangement.lanes / 2
-		for lane := 0; lane < arrangement.lanes; lane++ {
-			source := second
-			if lane >= half {
-				source = first
-			}
-			pair := (lane % half) * 2
-			left := c.newTmp()
-			right := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement <%d x %s> %s, i32 %d\n", left, arrangement.lanes, floatType, source, pair)
-			fmt.Fprintf(c.b, "  %%%s = extractelement <%d x %s> %s, i32 %d\n", right, arrangement.lanes, floatType, source, pair+1)
-			combined := c.newTmp()
-			if spec.operation == "add" {
-				fmt.Fprintf(c.b, "  %%%s = fadd %s %%%s, %%%s\n", combined, floatType, left, right)
-			} else {
-				fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %%%s, %s %%%s)\n", combined, floatType, spec.operation, intrinsicSuffix, floatType, left, floatType, right)
-			}
-			inserted := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = insertelement <%d x %s> %s, %s %%%s, i32 %d\n", inserted, arrangement.lanes, floatType, result, floatType, combined, lane)
-			result = "%" + inserted
-		}
+	result := c.newTmp()
+	switch operation {
+	case "add", "sub", "mul", "div":
+		fmt.Fprintf(c.b, "  %%%s = f%s <%d x %s> %s, %s\n", result, operation, arrangement.lanes, floatType, second, first)
+	case "fabd", "fmulx":
+		fmt.Fprintf(c.b, "  %%%s = call <%d x %s> @llvm.aarch64.neon.%s.v%d%s(<%d x %s> %s, <%d x %s> %s)\n",
+			result, arrangement.lanes, floatType, operation, arrangement.lanes, intrinsicSuffix,
+			arrangement.lanes, floatType, second, arrangement.lanes, floatType, first)
+	default:
+		fmt.Fprintf(c.b, "  %%%s = call <%d x %s> @llvm.%s.v%d%s(<%d x %s> %s, <%d x %s> %s)\n",
+			result, arrangement.lanes, floatType, operation, arrangement.lanes, intrinsicSuffix,
+			arrangement.lanes, floatType, second, arrangement.lanes, floatType, first)
 	}
-	return true, false, c.storeARM64VectorFloat(ins.Args[2].Reg, arrangement, result)
+	return true, false, c.storeARM64VectorFloat(ins.Args[2].Reg, arrangement, "%"+result)
 }
 
 func (c *arm64Ctx) lowerARM64VectorFloatUnary(op Op, ins Instr) (ok bool, terminated bool, err error) {

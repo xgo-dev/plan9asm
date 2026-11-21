@@ -39,7 +39,7 @@ func TestTranslateARM64RawFloatPairwiseMinMaxCompleteArchitecturalFormats(t *tes
 	if llc == "" {
 		t.Fatal("LLVM 22 llc not found")
 	}
-	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc"} {
+	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc", "x86_64-unknown-linux-gnu"} {
 		t.Run(triple, func(t *testing.T) {
 			ir, err := Translate(file, Options{
 				TargetTriple: triple, Goarch: "arm64",
@@ -49,6 +49,12 @@ func TestTranslateARM64RawFloatPairwiseMinMaxCompleteArchitecturalFormats(t *tes
 				t.Fatal(err)
 			}
 			for _, op := range ops {
+				if triple != "x86_64-unknown-linux-gnu" {
+					if got := strings.Count(ir, "asm sideeffect \""+op.name+" "); got != 8 {
+						t.Fatalf("raw %s emitted %d native forms for %s, want 8", op.name, got, triple)
+					}
+					continue
+				}
 				for _, suffix := range []string{"f16", "f32", "f64", "v4f16", "v8f16", "v2f32", "v4f32", "v2f64"} {
 					want := "@llvm." + op.intrinsic + "." + suffix
 					if !strings.Contains(ir, want) {
@@ -69,7 +75,7 @@ func TestARM64RawFloatPairwiseMinMaxDecoderRejectsAdjacentAndReservedEncodings(t
 		0x2e403800, // adjacent FP16 opcode bits
 		0x5e70f800, // reserved scalar FP16 size combination
 	} {
-		if _, ok := decodeARM64RawFloatPairwiseMinMax(word); ok {
+		if form, ok := decodeARM64RawFloatPairwise(word); ok && form.op != arm64FloatPairwiseAdd {
 			t.Fatalf("pairwise min/max decoder accepted adjacent/reserved encoding %#08x", word)
 		}
 	}

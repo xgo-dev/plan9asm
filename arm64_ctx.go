@@ -618,19 +618,12 @@ func (c *arm64Ctx) scanUsedRegs() {
 					markReg(Reg(fmt.Sprintf("V%d", form.source)))
 					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
 				}
-				if form, ok := decodeARM64RawFADDP(word); ok {
-					markReg(Reg(fmt.Sprintf("V%d", form.first)))
+				if form, ok := decodeARM64RawFloatPairwise(word); ok {
+					markReg(form.first)
 					if !form.scalar {
-						markReg(Reg(fmt.Sprintf("V%d", form.second)))
+						markReg(form.second)
 					}
-					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
-				}
-				if form, ok := decodeARM64RawFloatPairwiseMinMax(word); ok {
-					markReg(Reg(fmt.Sprintf("V%d", form.first)))
-					if !form.scalar {
-						markReg(Reg(fmt.Sprintf("V%d", form.second)))
-					}
-					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
+					markReg(form.destination)
 				}
 				if form, ok := decodeARM64RawTableLookup(word); ok {
 					markReg(Reg(fmt.Sprintf("V%d", form.index)))

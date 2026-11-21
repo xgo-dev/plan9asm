@@ -60,7 +60,7 @@ func TestARM64RawFADDPDecoderRejectsAdjacentAndReservedEncodings(t *testing.T) {
 		0x2e401800, // adjacent opcode bits in the FP16 vector encoding.
 		0x5e70d800, // reserved scalar FP16 size combination.
 	} {
-		if _, ok := decodeARM64RawFADDP(word); ok {
+		if form, ok := decodeARM64RawFloatPairwise(word); ok && form.op == arm64FloatPairwiseAdd {
 			t.Fatalf("FADDP decoder accepted adjacent/reserved encoding %#08x", word)
 		}
 	}
