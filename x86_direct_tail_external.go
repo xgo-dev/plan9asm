@@ -20,9 +20,16 @@ func (graph *x86DirectTailGraph) ordinaryExternalTail(root int, symbol string) b
 	calleeSig, calleeKnown := graph.signatures[calleeName]
 	if !rootKnown || !known || calleeName == "" || !calleeKnown || len(rootSig.ArgRegs) != 0 || len(calleeSig.ArgRegs) != 0 ||
 		rootSig.ARMEntry != nil || calleeSig.ARMEntry != nil || rootSig.WASMContext != "" || calleeSig.WASMContext != "" ||
-		len(rootSig.Frame.Results) == 0 || len(calleeSig.Frame.Results) == 0 ||
 		calleeSig.Name != "" && calleeSig.Name != calleeName {
 		return false
+	}
+	if len(rootSig.Frame.Results) == 0 || len(calleeSig.Frame.Results) == 0 {
+		target, pure := x86OrdinaryExternalTailTarget(graph.original.Funcs[root])
+		if !pure || target != symbol || graph.goPackage == nil ||
+			rootSig.Ret != Void || calleeSig.Ret != Void ||
+			len(rootSig.Frame.Results) != 0 || len(calleeSig.Frame.Results) != 0 {
+			return false
+		}
 	}
 	role := func(sig FuncSig) FuncSig {
 		sig.Name = ""

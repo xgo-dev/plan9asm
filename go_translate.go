@@ -30,6 +30,11 @@ type GoPackage struct {
 	// caller, native-entry, pointer, writable storage or captured SDK authority.
 	ImportSyntax map[string][]*ast.File
 
+	// AssemblyImports supplies selected standard-library packages referenced by
+	// assembly but absent from Go's import graph. Only exact linknamestd ABI0
+	// tail targets can consume these declarations.
+	AssemblyImports map[string]GoPackage
+
 	// SourceSelection is the compiler's complete same-profile typed selection.
 	// Nil keeps the existing conservative raw-return pointer contract. Supplying
 	// source data does not itself certify a stack, memory effect or continuation.
@@ -919,7 +924,7 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 				path, _ := goReadOnlyImportedName(b.resolve(base))
 				// Missing imports are deferred to the complete consumer. Source-only
 				// declaration collection must preserve independent bool/alias checks.
-				if b.packageData.Imports[path] != nil {
+				if b.packageData.Imports[path] != nil || b.packageData.AssemblyImports[path].Types != nil {
 					fs, err := goX86ImportedTailSignature(b.packageData, b.resolve(base), b.goarch, b.sz, b.frameSz)
 					if err != nil {
 						return err

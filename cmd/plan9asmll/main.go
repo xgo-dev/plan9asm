@@ -144,6 +144,7 @@ type compileConfig struct {
 	ordinaryDeclarations *ordinaryDeclarationSource
 	acquireSDKNumerical  bool
 	sdkPanicTerminal     func(llvm.Context) (llvm.Module, error)
+	buildTags            []string
 	diagnostics          *instructionDiagnostics
 }
 
@@ -483,6 +484,7 @@ func runOneTarget(spec targetSpec, pats, buildTags, exactAsmFiles []string, modu
 		return runReport{}, nil, fmt.Errorf("load packages: %w", err)
 	}
 	ccfg.x86CallerSelections = captureX86CallerSelectionsInEnvironment(pkgs, spec.Goos+"/"+spec.Goarch, loadEnvironment)
+	ccfg.buildTags = buildTags
 	if ccfg.Feature != nil {
 		if err := ccfg.Feature.capturePackages(pkgs); err != nil {
 			return runReport{}, nil, err

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/goabi"
+	"github.com/xgo-dev/plan9asm/internal/gosym"
 )
 
 // Ordinary Go declarations retain their source convention. A structurally
@@ -158,17 +159,25 @@ func goX86ImportedTailSignature(pkg GoPackage, resolved, arch string, sizes, fra
 		return FuncSig{}, x86DirectTailContext("tail needs its exact ordinary selected import: %s", resolved)
 	}
 	dependency := pkg.Imports[path]
-	if dependency == nil || dependency == pkg.Types || dependency.Path() != path || !dependency.Complete() || dependency.Scope() == nil {
-		return FuncSig{}, x86DirectTailContext("tail lacks its complete selected typed import: %s", path)
-	}
-	found := false
-	for _, imported := range pkg.Types.Imports() {
-		found = found || imported == dependency
-	}
-	if !found {
-		return FuncSig{}, x86DirectTailContext("tail import differs from actual typed dependency: %s", path)
-	}
 	owner := GoPackage{Path: path, Types: dependency, Syntax: pkg.ImportSyntax[path]}
+	if dependency == nil {
+		owner = pkg.AssemblyImports[path]
+		if owner.Path != path || owner.Types == nil || owner.Types == pkg.Types ||
+			owner.Types.Path() != path || !owner.Types.Complete() || !goX86LinknameStdExport(owner, name) {
+			return FuncSig{}, x86DirectTailContext("tail lacks its complete selected typed import: %s", path)
+		}
+	} else {
+		if dependency == pkg.Types || dependency.Path() != path || !dependency.Complete() || dependency.Scope() == nil {
+			return FuncSig{}, x86DirectTailContext("tail lacks its complete selected typed import: %s", path)
+		}
+		found := false
+		for _, imported := range pkg.Types.Imports() {
+			found = found || imported == dependency
+		}
+		if !found {
+			return FuncSig{}, x86DirectTailContext("tail import differs from actual typed dependency: %s", path)
+		}
+	}
 	if sizes == nil {
 		sizes = types.SizesFor("gc", arch)
 	}
@@ -177,6 +186,43 @@ func goX86ImportedTailSignature(pkg GoPackage, resolved, arch string, sizes, fra
 		return FuncSig{}, err
 	}
 	return goFuncSigForDeclaredFunc(resolved, fn, arch, sizes, frames, true)
+}
+
+func goX86LinknameStdExport(owner GoPackage, name string) bool {
+	native := gosym.PackagePrefix(owner.Path) + "." + name
+	found := false
+	for _, file := range owner.Syntax {
+		if file == nil {
+			return false
+		}
+		for _, group := range file.Comments {
+			for _, comment := range group.List {
+				fields := strings.Fields(comment.Text)
+				if len(fields) < 2 || fields[1] != name ||
+					fields[0] != "//go:linknamestd" && fields[0] != "//go:linkname" {
+					continue
+				}
+				if found || fields[0] != "//go:linknamestd" ||
+					len(fields) > 3 || len(fields) == 3 && fields[2] != native {
+					return false
+				}
+				for _, imported := range file.Imports {
+					if imported == nil || imported.Path == nil {
+						continue
+					}
+					path, err := strconv.Unquote(imported.Path.Value)
+					if err == nil && path == "unsafe" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return false
+				}
+			}
+		}
+	}
+	return found
 }
 
 // Only the newly admitted pure external stubs need this declaration join.

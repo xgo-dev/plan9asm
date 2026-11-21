@@ -179,6 +179,53 @@ func (imports importedTailFixtureImporter) Import(path string) (*types.Package, 
 	return nil, fmt.Errorf("unselected fixture import %s", path)
 }
 
+func TestX86GoAssemblyLinknameTailRequiresExactDeclaration(t *testing.T) {
+	const callerPath = "sdkcaller"
+	const ownerPath = "sdkowner"
+	const assembly = "TEXT ·Forward(SB),4,$0\nJMP sdkowner·Target(SB)\n"
+	const unsafeImport = "import _ \"unsafe\"\n"
+	const directive = "//go:linknamestd Target\n"
+	const target = "func Target(p *uint32) uint32 { return *p }\n"
+	for _, tc := range []struct {
+		name, source string
+		accepted     bool
+	}{
+		{"selected", unsafeImport + directive + target, true},
+		{"raw-unsafe-import", "import _ `unsafe`\n" + directive + target, true},
+		{"missing-directive", unsafeImport + target, false},
+		{"missing-unsafe-import", directive + target, false},
+		{"ordinary-linkname", unsafeImport + "//go:linkname Target\n" + target, false},
+		{"different-link-name", unsafeImport + "//go:linknamestd Target external.Target\n" + target, false},
+		{"duplicate-directive", unsafeImport + directive + directive + target, false},
+		{"different-abi", unsafeImport + directive + "func Target(p uint32) uint32 { return p }\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := mustGoPackage(t, callerPath, "package sdkcaller\nfunc Forward(p *uint32) uint32\n")
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "owner.go", "package sdkowner\n"+tc.source, parser.ParseComments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			syntax := []*ast.File{file}
+			conf := types.Config{Importer: importedTailFixtureImporter{"unsafe": types.Unsafe}}
+			owner, err := conf.Check(ownerPath, fset, syntax, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			caller.AssemblyImports = map[string]GoPackage{ownerPath: {Path: ownerPath, Types: owner, Syntax: syntax}}
+			tr, err := TranslateGoModule(caller, []byte(assembly), GoModuleOptions{
+				GOOS: "linux", GOARCH: "amd64", TargetTriple: "x86_64-unknown-linux-gnu", ResolveSym: testResolveSym(callerPath),
+			})
+			if err == nil {
+				defer tr.Module.Dispose()
+			}
+			if tc.accepted && err != nil || !tc.accepted && !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatalf("accepted=%v, translation error: %v", tc.accepted, err)
+			}
+		})
+	}
+}
+
 func TestX86GoImportedBoolTailRechecksSelectedDeclaration(t *testing.T) {
 	for _, arch := range []string{"386", "amd64"} {
 		t.Run(arch, func(t *testing.T) {

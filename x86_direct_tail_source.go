@@ -251,6 +251,13 @@ func PrepareX86DirectTailSource(file *File, options Options) (*File, error) {
 		if x86DirectTailSigNeedsOwnBoolFrame(sig, fn, goarch) {
 			return nil, x86DirectTailContext("ABI0 bool byte needs its independent canonical frame contract")
 		}
+		if symbol, pure := x86OrdinaryExternalTailTarget(fn); pure && len(view.points) == 1 &&
+			view.externalTails[0] && graph.goPackage != nil &&
+			goReadOnlyLocalName(*graph.goPackage, graph.externalSymbols[symbol]) == "" {
+			// verifyPureGoTails joins both complete ABI0 declarations. The
+			// single jump transports the whole result without a local write.
+			continue
+		}
 		c := newX86Ctx(new(strings.Builder), fn, sig, resolve, signatures, goarch, options.TargetTriple, false)
 		c.fpScalarData = x86LoweredScalarDataReads(graph.original, resolve, signatures, goarch)
 		c.fpShiftLiterals = x86LoweredShiftLiterals(graph.original, resolve,

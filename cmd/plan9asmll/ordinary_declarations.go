@@ -105,7 +105,11 @@ func captureOrdinaryDeclarations(pkg *packages.Package, file *plan9asm.File, sou
 		return nil, nil
 	}
 	candidates := ordinaryDeclarationCandidates(pkg, file)
-	if len(candidates) == 0 {
+	assemblyImports, err := sdkAssemblyTailPackages(pkg, file, config)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 && len(assemblyImports) == 0 {
 		return nil, nil
 	}
 	ctx, target := config.Context, goos+"/"+goarch
@@ -119,9 +123,12 @@ func captureOrdinaryDeclarations(pkg *packages.Package, file *plan9asm.File, sou
 	if err := verifyAMD64FixedLocalSelection(pkg, selection, target); err != nil {
 		return nil, err
 	}
-	// Read the complete current package and only referenced direct imports. The
-	// real dependency export graph is reused, never reloaded or replaced.
+	// Read the complete current package and the referenced declarations from
+	// its actual imports and the separately selected assembly-only packages.
 	candidates[""] = pkg
+	for path, owner := range assemblyImports {
+		candidates[path] = owner
+	}
 	paths := make([]string, 0, len(candidates))
 	for path := range candidates {
 		paths = append(paths, path)
@@ -133,7 +140,8 @@ func captureOrdinaryDeclarations(pkg *packages.Package, file *plan9asm.File, sou
 	}
 	actual := &ordinaryDeclarationSource{
 		pkg: plan9asm.GoPackage{Path: pkg.PkgPath, Types: pkg.Types,
-			Imports: make(map[string]*types.Package), ImportSyntax: make(map[string][]*ast.File)},
+			Imports: make(map[string]*types.Package), ImportSyntax: make(map[string][]*ast.File),
+			AssemblyImports: make(map[string]plan9asm.GoPackage, len(assemblyImports))},
 		file: file, source: append([]byte(nil), source...), target: target,
 		sizes:    pkg.TypesSizes,
 		selected: captureX86CallerSelectionsInEnvironment(owners, target, selection.env),
@@ -197,6 +205,8 @@ func captureOrdinaryDeclarations(pkg *packages.Package, file *plan9asm.File, sou
 		}
 		if path == "" {
 			actual.pkg.Syntax = syntax
+		} else if assemblyImports[path] != nil {
+			actual.pkg.AssemblyImports[path] = plan9asm.GoPackage{Path: path, Types: owner.Types, Syntax: syntax}
 		} else {
 			actual.pkg.ImportSyntax[path] = syntax
 		}
