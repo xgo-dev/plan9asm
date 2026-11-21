@@ -37,7 +37,13 @@ func (source *GoX86SDKASMDataSource) validateObservedEnvironment(raw []byte, pro
 		return nil, sdkASMDataContext("actual SDK/compiler environment is not a complete string observation")
 	}
 	amd64Profile := env["GOAMD64"] == "v1"
-	if source.captureRole == sdkASMDataOriginalSourceRole && env["GOARCH"] == "386" {
+	if source.captureRole == sdkASMDataOriginalFrameRole && env["GOARCH"] == "amd64" {
+		// Preserve the actual CPU level and its assembly macros. An explicit
+		// input must match the observed level; an unset input may use GOENV.
+		_, err := GoAssemblerDefinesForEnvironment(env["GOOS"], "amd64", env)
+		requested := provided["GOAMD64"]
+		amd64Profile = err == nil && (requested == "" || requested == env["GOAMD64"])
+	} else if source.captureRole == sdkASMDataOriginalSourceRole && env["GOARCH"] == "386" {
 		// cmd/go reports this inactive setting verbatim (including empty).
 		// Retain it in the sealed observation, never invent a v1 environment.
 		_, amd64Profile = env["GOAMD64"]

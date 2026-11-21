@@ -68,7 +68,9 @@ func TestX86SDKOriginalObservedInactiveCPUField(t *testing.T) {
 						provided["GOAMD64"] = inactive
 						source.request.Environment = append(source.request.Environment, "GOAMD64="+inactive)
 					}
-					accept := inactive == "v1" || arch == "386" && role == sdkASMDataOriginalSourceRole
+					variant := inactive == "v2" || inactive == "v3" || inactive == "v4"
+					accept := inactive == "v1" || arch == "386" && role == sdkASMDataOriginalSourceRole ||
+						arch == "amd64" && role == sdkASMDataOriginalFrameRole && variant
 					sdkCheckOriginalObservedProfile(t, source, provided, env, accept)
 				})
 			}
@@ -88,6 +90,12 @@ func profileRoleName(role sdkASMDataCaptureRole) string {
 }
 
 func TestX86SDKOriginalObservedActiveAndCompleteProfileStillRequired(t *testing.T) {
+	t.Run("amd64/changed-explicit-GOAMD64", func(t *testing.T) {
+		source, provided, env := sdkOriginalObservedProfile(t, sdkASMDataOriginalFrameRole, "amd64")
+		provided["GOAMD64"] = "v2"
+		source.request.Environment = append(source.request.Environment, "GOAMD64=v2")
+		sdkCheckOriginalObservedProfile(t, source, provided, env, false)
+	})
 	for _, arch := range []string{"386", "amd64"} {
 		for key, value := range map[string]string{"GOOS": "windows", "GOARCH": "arm64", "GOROOT": "other-sdk",
 			"GOVERSION": "go1.20.14", "GOFLAGS": "-overlay=changed", "GOEXPERIMENT": "changed",

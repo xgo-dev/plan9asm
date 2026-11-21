@@ -94,6 +94,54 @@ func TestSDKAMD64OriginalFrameProfileActualCompleteSource(t *testing.T) {
 	}
 }
 
+func TestSDKAMD64OriginalFrameProfileCPUVariants(t *testing.T) {
+	for _, level := range []string{"v1", "v2", "v3", "v4"} {
+		t.Run(level, func(t *testing.T) {
+			ctx, request := sdkASMDataRequest(t, "amd64", "internal/chacha8rand")
+			for i, pair := range request.Environment {
+				if strings.HasPrefix(pair, "GOAMD64=") {
+					request.Environment[i] = "GOAMD64=" + level
+				}
+			}
+			observed, err := CaptureGoAMD64SDKFrameObservation(ctx, request)
+			if err != nil {
+				t.Fatal("could not observe the original CPU profile", err)
+			}
+			defer observed.Close()
+			source := observed.source
+			objects := source.observation.Objects.Sources
+			frames := source.observation.Frames
+			cpp := source.observation.CPP
+			if source.guard.env["GOAMD64"] != level || len(objects) != 1 || len(frames) != 1 || len(cpp) != 1 ||
+				len(objects[0].Original.Texts) != 1 || len(frames[0].Records) != 1 {
+				t.Fatal("incomplete original profile, object or frame inventory")
+			}
+			text, frame := objects[0].Original.Texts[0], frames[0].Records[0]
+			if text.ABI != 1 || text.Name != "internal/chacha8rand.block" || text.Name != frame.Symbol ||
+				frame.Locals != 24 || !frame.NoSplit || len(text.Code) == 0 {
+				t.Fatalf("original register-ABI frame identity differs: symbol=%s abi=%d frame=%+v", text.Name, text.ABI, frame)
+			}
+			shuffle := strings.Contains(cpp[0].Output, "PSHUFB")
+			// cmd/go defines only the selected level for the assembler.
+			if shuffle != (level == "v2") {
+				t.Fatalf("preprocessed source selected the wrong rotation forms at %s", level)
+			}
+			if level != "v1" {
+				strict, err := CaptureGoX86SDKASMDataSource(ctx, request)
+				if strict != nil {
+					strict.Close()
+				}
+				if strict != nil || !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("variant frame observation changed the strict public DATA profile", err)
+				}
+			}
+			if err := observed.Verify(ctx); err != nil {
+				t.Fatal("live original profile verification failed", err)
+			}
+		})
+	}
+}
+
 func TestSDKAMD64OriginalFrameProfileRejectsEqualByteConfigReplacement(t *testing.T) {
 	ctx, request := sdkASMDataRequest(t, "amd64", "internal/cpu")
 	config := filepath.Join(t.TempDir(), "go-env")
