@@ -15,10 +15,11 @@ import (
 // This is a layout observation, not bodyless-source or memory permission.
 // Only the explicit source binder below produces the separate source record.
 type arm64ABI0Declaration struct {
-	function  *types.Func
-	signature FuncSig
-	argsSize  int64
-	types     string
+	function       *types.Func
+	signature      FuncSig
+	argsSize       int64
+	types          string
+	trailingResult *arm64ABI0TailDeclaration
 }
 
 func arm64ABI0SignatureSnapshot(sig FuncSig) FuncSig {
@@ -167,11 +168,9 @@ func (d *arm64ABI0TailDeclaration) matches(sig FuncSig) bool {
 	return true
 }
 
-// BindGoARM64ABI0TailDeclarations binds only actually consumed local ABI0 tail
-// roots to the same typechecked bodyless declarations and complete selected Go
-// bytes. It certifies neither ZIP/CPP/tool provenance nor a native extent. The
-// complete source continuation and every return still need their own proof.
-// Neither input is modified. File-only preparation remains strict.
+// BindGoARM64ABI0TailDeclarations binds private tail callers and candidate
+// trailing result stores to their selected bodyless Go declarations. The
+// consuming body and its physical frame bounds require their own proofs.
 func BindGoARM64ABI0TailDeclarations(pkg GoPackage, file *File, resolve func(string) string, sigs map[string]FuncSig) (map[string]FuncSig, error) {
 	result := make(map[string]FuncSig, len(sigs))
 	for name, sig := range sigs {
@@ -181,76 +180,97 @@ func BindGoARM64ABI0TailDeclarations(pkg GoPackage, file *File, resolve func(str
 		return result, nil
 	}
 	for _, root := range file.Funcs {
-		candidate := arm64ABI0TailCandidate(file, root, resolve, sigs)
-		if !candidate || strings.HasSuffix(root.Sym, "<ABIInternal>") || strings.HasSuffix(root.Sym, "<>") {
+		tail := arm64ABI0TailCandidate(file, root, resolve, sigs)
+		trailing := arm64TrailingResultCandidate(root)
+		if (!tail && !trailing) || strings.HasSuffix(root.Sym, "<ABIInternal>") || strings.HasSuffix(root.Sym, "<>") {
 			continue
 		}
 		if resolve == nil || !strings.HasPrefix(root.Sym, "·") || strings.ContainsAny(strings.TrimPrefix(root.Sym, "·"), "·<>") {
-			return nil, arm64GoABIContext("ABI0 tail needs an exact local declaration/source namespace")
+			if tail {
+				return nil, arm64GoABIContext("ABI0 tail needs an exact local declaration/source namespace")
+			}
+			continue
 		}
 		name := resolve(goTextSymbolForResolution(root.Sym))
 		sig := result[name]
 		if len(sig.ArgRegs) != 0 {
 			continue // Existing explicit callable-helper register transport stays separate.
 		}
-		decl := sig.arm64ABI0Declaration
-		selection := pkg.SourceSelection
-		if !decl.matches(sig) || pkg.Types == nil || pkg.Types != decl.function.Pkg() ||
-			!arm64ABI0TailPackageNamespaceMatches(pkg, decl.function.Name(), name) ||
-			decl.function.Name() != strings.TrimPrefix(root.Sym, "·") ||
-			selection == nil || selection.Fset == nil || selection.TypesInfo == nil || selection.Sizes == nil ||
-			len(selection.SelectedGoFiles) == 0 || len(selection.SelectedGoFiles) > 256 ||
-			len(selection.GoSources) != len(selection.SelectedGoFiles) || len(pkg.Syntax) != len(selection.SelectedGoFiles) {
-			return nil, arm64GoABIContext("ABI0 tail lacks its actual selected bodyless declaration")
-		}
-		bound := &arm64ABI0TailDeclaration{
-			declaration: decl, packageData: pkg, sources: make(map[string][]byte),
-			selected: append([]string(nil), selection.SelectedGoFiles...), fset: selection.Fset, file: file,
-			original: arm64ABI0FileSnapshot(file), root: arm64PrivateTailSnapshot(root), name: name, symbolPath: pkg.Path,
-		}
-		total := 0
-		for i, filename := range selection.SelectedGoFiles {
-			source, present := selection.GoSources[filename]
-			total += len(source)
-			if !present || len(source) == 0 || total > 16<<20 || bound.sources[filename] != nil {
-				return nil, arm64GoABIContext("ABI0 tail has an incomplete/oversized selected Go inventory")
+		bound, err := bindARM64ABI0SourceDeclaration(pkg, file, root, sig, name)
+		if err != nil {
+			if tail {
+				return nil, err
 			}
-			parsedSet := token.NewFileSet()
-			parsed, err := parser.ParseFile(parsedSet, filename, source, parser.ParseComments)
-			if err != nil {
-				return nil, arm64GoABIContext("ABI0 tail selected Go source cannot parse: %v", err)
-			}
-			actual, err := arm64ABI0Syntax(pkg.Syntax[i], selection.Fset)
-			fromBytes, parseErr := arm64ABI0Syntax(parsed, parsedSet)
-			if err != nil || parseErr != nil || actual != fromBytes || pkg.Syntax[i].Name.Name != pkg.Types.Name() {
-				return nil, arm64GoABIContext("ABI0 tail typed syntax differs from its complete selected bytes")
-			}
-			bound.syntax = append(bound.syntax, actual)
-			bound.sources[filename] = append([]byte(nil), source...)
-			for _, node := range pkg.Syntax[i].Decls {
-				fn, ok := node.(*ast.FuncDecl)
-				if !ok || fn.Name.Name != decl.function.Name() {
-					continue
-				}
-				if bound.object != nil || fn.Recv != nil || fn.Body != nil ||
-					selection.TypesInfo.Defs[fn.Name] != decl.function || fn.Name.Pos() != decl.function.Pos() ||
-					selection.Fset.Position(fn.Name.Pos()).Filename != filename {
-					return nil, arm64GoABIContext("ABI0 tail declaration role/type identity is not bodyless")
-				}
-				bound.object = fn.Name
-			}
+			continue // Ordinary FP validation reports an unbound wider store.
 		}
-		if bound.object == nil || !bound.matches(sig) {
-			return nil, arm64GoABIContext("ABI0 tail has no complete actual bodyless source binding")
+		if tail {
+			sig.arm64ABI0TailDeclaration = bound
 		}
-		sig.arm64ABI0TailDeclaration = bound
+		if trailing {
+			decl := *sig.arm64ABI0Declaration
+			decl.trailingResult = bound
+			sig.arm64ABI0Declaration = &decl
+		}
 		result[name] = sig
 	}
 	return result, nil
 }
 
-// The source binding is needed only for actual ABI0 private tails. Ordinary
-// files and Phase1 ABIInternal roots do not load a second declaration graph.
+func bindARM64ABI0SourceDeclaration(pkg GoPackage, file *File, root Func, sig FuncSig, name string) (*arm64ABI0TailDeclaration, error) {
+	decl := sig.arm64ABI0Declaration
+	selection := pkg.SourceSelection
+	if !decl.matches(sig) || pkg.Types == nil || pkg.Types != decl.function.Pkg() ||
+		!arm64ABI0TailPackageNamespaceMatches(pkg, decl.function.Name(), name) ||
+		decl.function.Name() != strings.TrimPrefix(root.Sym, "·") ||
+		selection == nil || selection.Fset == nil || selection.TypesInfo == nil || selection.Sizes == nil ||
+		len(selection.SelectedGoFiles) == 0 || len(selection.SelectedGoFiles) > 256 ||
+		len(selection.GoSources) != len(selection.SelectedGoFiles) || len(pkg.Syntax) != len(selection.SelectedGoFiles) {
+		return nil, arm64GoABIContext("ABI0 tail lacks its actual selected bodyless declaration")
+	}
+	bound := &arm64ABI0TailDeclaration{
+		declaration: decl, packageData: pkg, sources: make(map[string][]byte),
+		selected: append([]string(nil), selection.SelectedGoFiles...), fset: selection.Fset, file: file,
+		original: arm64ABI0FileSnapshot(file), root: arm64PrivateTailSnapshot(root), name: name, symbolPath: pkg.Path,
+	}
+	total := 0
+	for i, filename := range selection.SelectedGoFiles {
+		source, present := selection.GoSources[filename]
+		total += len(source)
+		if !present || len(source) == 0 || total > 16<<20 || bound.sources[filename] != nil {
+			return nil, arm64GoABIContext("ABI0 tail has an incomplete/oversized selected Go inventory")
+		}
+		parsedSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(parsedSet, filename, source, parser.ParseComments)
+		if err != nil {
+			return nil, arm64GoABIContext("ABI0 tail selected Go source cannot parse: %v", err)
+		}
+		actual, err := arm64ABI0Syntax(pkg.Syntax[i], selection.Fset)
+		fromBytes, parseErr := arm64ABI0Syntax(parsed, parsedSet)
+		if err != nil || parseErr != nil || actual != fromBytes || pkg.Syntax[i].Name.Name != pkg.Types.Name() {
+			return nil, arm64GoABIContext("ABI0 tail typed syntax differs from its complete selected bytes")
+		}
+		bound.syntax = append(bound.syntax, actual)
+		bound.sources[filename] = append([]byte(nil), source...)
+		for _, node := range pkg.Syntax[i].Decls {
+			fn, ok := node.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != decl.function.Name() {
+				continue
+			}
+			if bound.object != nil || fn.Recv != nil || fn.Body != nil ||
+				selection.TypesInfo.Defs[fn.Name] != decl.function || fn.Name.Pos() != decl.function.Pos() ||
+				selection.Fset.Position(fn.Name.Pos()).Filename != filename {
+				return nil, arm64GoABIContext("ABI0 tail declaration role/type identity is not bodyless")
+			}
+			bound.object = fn.Name
+		}
+	}
+	if bound.object == nil || !bound.matches(sig) {
+		return nil, arm64GoABIContext("ABI0 tail has no complete actual bodyless source binding")
+	}
+	return bound, nil
+}
+
+// Only ABI0 private tails and candidate trailing stores require source binding.
 func GoARM64ABI0TailDeclarationBindingNeeded(file *File) bool {
 	if file == nil || file.Arch != ArchARM64 {
 		return false
@@ -259,7 +279,7 @@ func GoARM64ABI0TailDeclarationBindingNeeded(file *File) bool {
 		if strings.Contains(fn.Sym, "<") {
 			continue
 		}
-		if arm64ABI0TailCandidate(file, fn, nil, nil) {
+		if arm64ABI0TailCandidate(file, fn, nil, nil) || arm64TrailingResultCandidate(fn) {
 			return true
 		}
 	}
@@ -327,7 +347,8 @@ func abi0FramelessHelper(fn Func) bool {
 
 func rebindARM64ABI0TailDeclarations(sigs, tailSigs map[string]FuncSig) error {
 	for name, sourceSig := range tailSigs {
-		if sourceSig.arm64ABI0TailDeclaration == nil {
+		decl := sourceSig.arm64ABI0Declaration
+		if sourceSig.arm64ABI0TailDeclaration == nil && (decl == nil || decl.trailingResult == nil) {
 			continue
 		}
 		sig, present := sigs[name]

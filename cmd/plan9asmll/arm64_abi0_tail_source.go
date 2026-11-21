@@ -19,8 +19,8 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// Reuse the immutable actual-load inventory, not the x86 caller permission.
-// Only a genuinely consumed ABI0 private tail needs this second typed graph.
+// Reuse the immutable actual-load inventory for private tails and candidate
+// trailing result stores. Each consumer validates its own source role.
 type arm64ABI0TailTypedSource struct {
 	original  *packages.Package
 	actual    *packages.Package
