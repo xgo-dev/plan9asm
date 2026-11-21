@@ -27,7 +27,7 @@ func x86GoPanicTerminalAssemblyCalls(pkg GoPackage, bodies []x86GoPanicTerminalC
 		return nil, sdkASMDataContext("panic CALL association: %s", reason)
 	}
 	if budget == nil || budget.visits >= 16384 || budget.bytes >= 64<<20 || objects == nil || pkg.SourceSelection == nil ||
-		objects.Protocol != gostaticstorage.ASMDataCPPProtocol || objects.Target != "linux/386" || objects.PackagePath != pkg.Path ||
+		objects.Protocol != gostaticstorage.ASMDataCPPProtocol || !x86GoPanicTerminalTarget(objects.Target) || objects.PackagePath != pkg.Path ||
 		len(objects.Sources) == 0 || len(objects.Sources) != len(cpp) || len(cpp) != len(positions) ||
 		len(objects.Members) != len(cpp)+2 || len(pkg.SourceSelection.SelectedAssemblyFiles) != len(cpp) || len(pkg.SourceSelection.Assembly) != len(cpp) {
 		return fail("missing complete source/member/compiler/shared-budget identity")

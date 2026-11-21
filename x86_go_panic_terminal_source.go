@@ -22,7 +22,7 @@ type x86GoPanicTerminalSourceObservation struct {
 
 func (source *GoX86SDKASMDataSource) panicTerminalObservation(ctx context.Context, budget *x86ResultFlowBudget) (observed *x86GoPanicTerminalSourceObservation, result error) {
 	if source == nil || source.identity != source || source.guard == nil || source.guard != source.originalGuard ||
-		source.captureRole != sdkASMDataOriginalSourceRole || source.request.Target != "linux/386" || budget == nil ||
+		source.captureRole != sdkASMDataOriginalSourceRole || !x86GoPanicTerminalTarget(source.request.Target) || budget == nil ||
 		budget.visits >= 16384 || budget.bytes >= 64<<20 {
 		return nil, sdkASMDataContext("panic association requires its original private386 source observation")
 	}
@@ -74,6 +74,7 @@ func (source *GoX86SDKASMDataSource) panicTerminalObservation(ctx context.Contex
 	count := len(source.guard.selection.SFiles)
 	if count == 0 || len(source.observation.CPP) != count || len(source.observation.Positions) != count ||
 		len(source.observation.ObjectInputs.Sources) != count || source.observation.Objects == nil ||
+		source.observation.Objects.Target != source.request.Target ||
 		len(source.observation.Objects.Sources) != count {
 		return nil, sdkASMDataContext("panic association lost its complete actual Go/ASM selection")
 	}
@@ -108,18 +109,20 @@ func (source *GoX86SDKASMDataSource) panicTerminalObservation(ctx context.Contex
 	return &x86GoPanicTerminalSourceObservation{pkg: pkg, bodies: bodies, calls: calls}, errors.Join(private.Err(), source.guard.verifyInputs())
 }
 
-// TranslateGoX86SDKPanicTerminalModuleInContext translates an actual selected
-// linux/386 SDK member with its original non-returning Go CALLs. The original
+// TranslateGoX86SDKPanicTerminalModuleInContext translates a selected Linux
+// or Windows 386 SDK member with its original non-returning Go CALLs. The
 // capture remains live until translation and symbol resolution finish.
 func TranslateGoX86SDKPanicTerminalModuleInContext(ctx context.Context, irCtx llvm.Context,
 	request GoX86SDKASMDataCaptureRequest, opt GoModuleOptions,
 ) (result *GoModuleTranslation, resultErr error) {
-	if request.Target != "linux/386" || opt.GOOS != "linux" || opt.GOARCH != "386" ||
-		!strings.Contains(opt.TargetTriple, "-linux-") || !x86ScalarFloatIntegerNativeTarget("386", opt.TargetTriple) ||
+	triple := llvmNormalizedTargetTriple(opt.TargetTriple)
+	fields := strings.SplitN(triple, "-", 4)
+	if !x86GoPanicTerminalTarget(request.Target) || request.Target != opt.GOOS+"/"+opt.GOARCH ||
+		len(fields) < 3 || fields[2] != opt.GOOS || !x86ScalarFloatIntegerNativeTarget("386", triple) ||
 		opt.ManualSig != nil || opt.Sizes != nil || opt.FrameSizes != nil ||
 		opt.NumericalReads != nil || opt.X86TLSMoves != nil || opt.ARM64ByteCarrierSource != nil ||
 		len(opt.ARM64ClosureABIs) != 0 {
-		return nil, sdkASMDataContext("panic CALL translation needs the original linux/386 Go transport")
+		return nil, sdkASMDataContext("panic CALL translation needs the original target-matched 386 Go transport")
 	}
 	source, err := captureGoX86SDKASMDataSourceRole(ctx, request, sdkASMDataOriginalSourceRole)
 	if err != nil {

@@ -985,14 +985,15 @@ func compileOneAttempt(pkg *packages.Package, arch plan9asm.Arch, goos, goarch, 
 	if err := outputStage.protectInputs(pkg, originalInputs, originalSearchMisses); err != nil {
 		return err
 	}
-	if goos == "linux" && pkg.Module == nil && ccfg.Feature == nil && ccfg.Context != nil &&
+	if (goos == "linux" || goos == "windows" && goarch == "386") &&
+		pkg.Module == nil && ccfg.Feature == nil && ccfg.Context != nil &&
 		originalReads != nil && ccfg.numericalOptions == nil &&
 		callerSource == nil && continuationSource == nil && fixedLocalSource == nil && tailSource == nil && scratchSource == nil &&
 		len(ccfg.X86TailGroups) == 0 {
 		var translate sdkSourceTranslator
 		switch {
 		case goarch == "386" && ccfg.ordinaryDeclarations == nil:
-			if plan9asm.GoX86SDKABI0TailCandidate(file) {
+			if goos == "linux" && plan9asm.GoX86SDKABI0TailCandidate(file) {
 				translate = plan9asm.TranslateGoX86SDKABI0TailModuleInContext
 			} else if sdkPanicTerminalCandidate(pkg, file) {
 				translate = plan9asm.TranslateGoX86SDKPanicTerminalModuleInContext
@@ -1003,7 +1004,7 @@ func compileOneAttempt(pkg *packages.Package, arch plan9asm.Arch, goos, goarch, 
 			translate = plan9asm.TranslateGoARMSDKABI0TailModuleInContext
 		}
 		if translate != nil {
-			ccfg.sdkOriginal = sdkOriginalSourceFallback(pkg, t, originalReads, goarch, triple, annotate, resolve, ccfg, translate)
+			ccfg.sdkOriginal = sdkOriginalSourceFallback(pkg, t, originalReads, goos, goarch, triple, annotate, resolve, ccfg, translate)
 		}
 	}
 	// A continuation and the initializer taking its block address must remain

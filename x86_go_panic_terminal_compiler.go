@@ -22,7 +22,7 @@ func x86GoPanicTerminalCompilerBodies(pkg GoPackage, symABI []byte, objects *gos
 		return nil, err
 	}
 	if objects == nil || objects.Protocol != gostaticstorage.ASMDataCPPProtocol || objects.PackagePath != pkg.Path ||
-		objects.Target != "linux/386" || pkg.SourceSelection.Sizes.Sizeof(types.Typ[types.Uintptr]) != 4 ||
+		!x86GoPanicTerminalTarget(objects.Target) || pkg.SourceSelection.Sizes.Sizeof(types.Typ[types.Uintptr]) != 4 ||
 		len(objects.Sources) == 0 || len(objects.Sources) > gostaticstorage.ArchiveMemberInventoryLimit-2 ||
 		len(objects.Members) != len(objects.Sources)+2 || objects.Members[0].Name != "__.PKGDEF" ||
 		objects.Members[1].Name != "_go_.o" || objects.Members[1].Flags != 16 {

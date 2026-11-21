@@ -49,10 +49,10 @@ func sdkPanicTerminalCandidate(pkg *packages.Package, file *plan9asm.File) bool 
 type sdkSourceTranslator func(context.Context, llvm.Context, plan9asm.GoSDKAssemblyCaptureRequest, plan9asm.GoModuleOptions) (*plan9asm.GoModuleTranslation, error)
 
 func sdkOriginalSourceFallback(pkg *packages.Package, task asmTask, reads *plan9asm.GoAssemblySourceReadReport,
-	goarch, triple string, annotate bool, resolve func(string) string, config compileConfig, translate sdkSourceTranslator,
+	goos, goarch, triple string, annotate bool, resolve func(string) string, config compileConfig, translate sdkSourceTranslator,
 ) func(llvm.Context) (llvm.Module, error) {
 	return func(irCtx llvm.Context) (llvm.Module, error) {
-		target := "linux/" + goarch
+		target := goos + "/" + goarch
 		selected := config.x86CallerSelections[pkg]
 		if err := verifyAMD64FixedLocalSelection(pkg, selected, target); err != nil {
 			return llvm.Module{}, err
@@ -75,7 +75,7 @@ func sdkOriginalSourceFallback(pkg *packages.Package, task asmTask, reads *plan9
 		}
 		result, err := translate(config.Context, irCtx, request,
 			plan9asm.GoModuleOptions{
-				FileName: member, GOOS: "linux", GOARCH: goarch, TargetTriple: triple,
+				FileName: member, GOOS: goos, GOARCH: goarch, TargetTriple: triple,
 				ResolveSym: resolve, AnnotateSource: annotate,
 			})
 		if err != nil {

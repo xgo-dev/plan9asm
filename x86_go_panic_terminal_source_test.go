@@ -4,10 +4,31 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/gostaticstorage"
 )
+
+func TestX86GoPanicTerminalBindsSourceOSToBackend(t *testing.T) {
+	ctx := llvm.NewContext()
+	defer ctx.Dispose()
+	for _, row := range []struct{ source, goos, triple string }{
+		{"linux/386", "windows", "i686-pc-windows-msvc"},
+		{"windows/386", "windows", "i686-unknown-linux-gnu"},
+		{"windows/386", "linux", "i386-unknown-linux-gnu"},
+		{"windows/386", "windows", "x86_64-pc-windows-msvc"},
+		{"freebsd/386", "freebsd", "i386-unknown-freebsd"},
+	} {
+		request := GoSDKAssemblyCaptureRequest{Target: row.source}
+		options := GoModuleOptions{GOARCH: "386", GOOS: row.goos, TargetTriple: row.triple}
+		result, err := TranslateGoX86SDKPanicTerminalModuleInContext(context.Background(), ctx, request, options)
+		if result != nil || !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "target-matched 386") {
+			t.Errorf("mismatched target %+v acquired a producer: %v", row, err)
+		}
+	}
+}
 
 func TestX86GoPanicTerminalSourceCannotBeReconstructedFromReports(t *testing.T) {
 	for _, source := range []*GoX86SDKASMDataSource{nil, {}, {ready: true, generation: 1, captureRole: sdkASMDataOriginalSourceRole}} {
@@ -74,6 +95,7 @@ func TestX86GoPanicTerminalCompilerSchemaNeedsActual386Producer(t *testing.T) {
 		"missing":     nil,
 		"version":     {"GOVERSION": "go1.20.14", "GOOS": "linux", "GOARCH": "386", "GO386": "sse2"},
 		"target":      {"GOVERSION": "go1.27.2", "GOOS": "linux", "GOARCH": "amd64", "GO386": "sse2"},
+		"OS":          {"GOVERSION": "go1.27.2", "GOOS": "freebsd", "GOARCH": "386", "GO386": "sse2"},
 		"CPU":         {"GOVERSION": "go1.27.2", "GOOS": "linux", "GOARCH": "386", "GO386": "softfloat"},
 		"experiments": {"GOVERSION": "go1.27.2", "GOOS": "linux", "GOARCH": "386", "GO386": "sse2", "GOEXPERIMENT": "regabiwrappers"},
 	} {
