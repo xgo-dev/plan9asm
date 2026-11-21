@@ -283,6 +283,30 @@ func initializedExplicitSIMDOperands(goarch string, ins Instr) ([]Operand, int64
 	if f, known, err := x86PackedLogicalProperties(ins, goarch); known {
 		return ins.Args, int64(f.memoryBytes), err == nil && !f.mmx
 	}
+	if f, _, known, err := x86FixedVectorValueProperties(ins, goarch); known {
+		return ins.Args, int64(f.memoryBytes), err == nil && !f.mmx
+	}
+	if f, known, err := x86PackedNarrowProperties(ins, goarch); known {
+		return ins.Args, int64(f.memoryBytes), err == nil && !f.mmx
+	}
+	if f, known, err := x86PackedUnpackProperties(ins, goarch); known {
+		return ins.Args, int64(f.memoryBytes), err == nil && !f.mmx
+	}
+	if f, known, err := x86DuplicateMoveProperties(ins.Op, ins, goarch); known {
+		return ins.Args, int64(f.memoryBytes), err == nil
+	}
+	if f, known, err := x86SignedPackedFloatProperties(ins, goarch); known {
+		return ins.Args, int64(f.memoryBytes), err == nil && !f.mmx
+	}
+	if f, known, err := x86SqrtProperties(ins, goarch); known {
+		return ins.Args, int64(f.memoryBytes), err == nil
+	}
+	if f, known, err := x86PackedSADProperties(ins, goarch); known {
+		return ins.Args, int64(f.memoryBytes), err == nil
+	}
+	if f, known, err := x86NonTemporalVectorProperties(ins.Op, ins, goarch); known {
+		return ins.Args, int64(f.move.byteWidth), err == nil && !f.trap
+	}
 	return nil, 0, false
 }
 
