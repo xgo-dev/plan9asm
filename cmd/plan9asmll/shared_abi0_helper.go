@@ -7,6 +7,88 @@ import (
 	"github.com/xgo-dev/plan9asm"
 )
 
+// A 386 bool wrapper can pass the address of its ABI0 result byte along with
+// ordinary pointer and numerical inputs. Infer the helper's register types
+// from the declared callers. The translator still verifies every reaching
+// value and canonical result write through the complete private graph.
+func inferShared386BoolRegisterHelper(
+	file *plan9asm.File, resolve func(string) string, target string,
+	callers []plan9asm.FuncSig, callerFuncs []plan9asm.Func,
+) (plan9asm.FuncSig, bool) {
+	if len(callers) < 2 || len(callers) != len(callerFuncs) {
+		return plan9asm.FuncSig{}, false
+	}
+	body := sharedABI0HelperBody(file, resolve, target)
+	if body == nil || !strings.HasSuffix(body.Sym, "<>") || body.FrameSize != 0 || body.ArgSize != 0 {
+		return plan9asm.FuncSig{}, false
+	}
+	var common map[plan9asm.Reg]plan9asm.LLVMType
+	var resultReg plan9asm.Reg
+	for i, caller := range callers {
+		if caller.Ret != plan9asm.I1 || len(caller.Frame.Results) != 1 || caller.Frame.Results[0].Type != plan9asm.I1 {
+			return plan9asm.FuncSig{}, false
+		}
+		register, ok := callerABI0ResultPointerRegister(callerFuncs[i], caller.Frame.Results[0], target, resolve)
+		if !ok || resultReg != "" && resultReg != register {
+			return plan9asm.FuncSig{}, false
+		}
+		resultReg = register
+		roles := caller386BoolRegisterTypes(callerFuncs[i], caller)
+		roles[resultReg] = plan9asm.Ptr
+		if common == nil {
+			common = roles
+			continue
+		}
+		for reg, typ := range common {
+			if roles[reg] != typ {
+				delete(common, reg)
+			}
+		}
+	}
+
+	signature := plan9asm.FuncSig{Name: target, Ret: plan9asm.Void}
+	for _, reg := range x86HelperRegisterOperands(*body, resultReg, "386") {
+		if typ := common[reg]; typ != "" {
+			signature.Args = append(signature.Args, typ)
+			signature.ArgRegs = append(signature.ArgRegs, reg)
+		}
+	}
+	return signature, len(signature.Args) <= 6
+}
+
+func caller386BoolRegisterTypes(fn plan9asm.Func, sig plan9asm.FuncSig) map[plan9asm.Reg]plan9asm.LLVMType {
+	roles := make(map[plan9asm.Reg]plan9asm.LLVMType)
+	for _, ins := range fn.Instrs {
+		if ins.Op != "MOVL" || len(ins.Args) != 2 || ins.Args[1].Kind != plan9asm.OpReg ||
+			!x86HelperGeneralRegister(ins.Args[1].Reg, "386") {
+			continue
+		}
+		input, reg := ins.Args[0], ins.Args[1].Reg
+		switch input.Kind {
+		case plan9asm.OpFP:
+			for _, param := range sig.Frame.Params {
+				if param.Offset == input.FPOffset && (param.Name == "" || param.Name == input.FPName) &&
+					(param.Type == plan9asm.Ptr || param.Type == plan9asm.I32) {
+					roles[reg] = param.Type
+					break
+				}
+			}
+		case plan9asm.OpImm, plan9asm.OpMem:
+			roles[reg] = plan9asm.I32
+		}
+	}
+	return roles
+}
+
+func sharedABI0HelperBody(file *plan9asm.File, resolve func(string) string, target string) *plan9asm.Func {
+	for i := range file.Funcs {
+		if resolve(stripABISuffix(file.Funcs[i].Sym)) == target {
+			return &file.Funcs[i]
+		}
+	}
+	return nil
+}
+
 // A shared ABI0 body can receive its arguments in physical registers while
 // its wrappers pass a pointer to their own result slots. In that case the
 // helper returns void; each wrapper reads its FP results after the call.
@@ -38,13 +120,7 @@ func inferSharedABI0ResultPointerHelper(
 		pointerReg = reg
 	}
 
-	var body *plan9asm.Func
-	for i := range file.Funcs {
-		if resolve(stripABISuffix(file.Funcs[i].Sym)) == target {
-			body = &file.Funcs[i]
-			break
-		}
-	}
+	body := sharedABI0HelperBody(file, resolve, target)
 	if body == nil || !helperWritesThroughRegister(*body, pointerReg) {
 		return plan9asm.FuncSig{}, false
 	}

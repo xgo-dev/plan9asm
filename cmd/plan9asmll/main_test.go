@@ -717,6 +717,95 @@ TEXT memeqbody<>(SB),NOSPLIT,$0-0
 	}
 }
 
+func TestCompile386SharedABI0BoolRegisterTail(t *testing.T) {
+	typesPkg := types.NewPackage("example.com/compare", "compare")
+	pointer := types.NewPointer(types.Typ[types.Byte])
+	for _, name := range []string{"CheckN", "Check"} {
+		params := []*types.Var{
+			types.NewParam(token.NoPos, typesPkg, "p", pointer),
+			types.NewParam(token.NoPos, typesPkg, "q", pointer),
+		}
+		if name == "CheckN" {
+			params = append(params, types.NewParam(token.NoPos, typesPkg, "n", types.Typ[types.Uint32]))
+		}
+		result := types.NewParam(token.NoPos, typesPkg, "ret", types.Typ[types.Bool])
+		signature := types.NewSignatureType(nil, nil, nil, types.NewTuple(params...), types.NewTuple(result), false)
+		typesPkg.Scope().Insert(types.NewFunc(token.NoPos, typesPkg, name, signature))
+	}
+	pkg := &packages.Package{PkgPath: typesPkg.Path(), Types: typesPkg, TypesSizes: types.SizesFor("gc", "386")}
+	const original = `TEXT ·CheckN(SB),NOSPLIT,$0-13
+	MOVL p+0(FP), SI
+	MOVL q+4(FP), DI
+	CMPL SI, DI
+	JEQ equal
+	MOVL n+8(FP), BX
+	LEAL ret+12(FP), AX
+	JMP compareBytes<>(SB)
+equal:
+	MOVB $1, ret+12(FP)
+	RET
+TEXT ·Check(SB),NOSPLIT,$0-9
+	MOVL p+0(FP), SI
+	MOVL q+4(FP), DI
+	MOVL $4, BX
+	LEAL ret+8(FP), AX
+	JMP compareBytes<>(SB)
+TEXT compareBytes<>(SB),NOSPLIT,$0-0
+	MOVBLZX (SI), CX
+	MOVBLZX (DI), DX
+	ADDL BX, CX
+	CMPL CX, DX
+	SETEQ (AX)
+	RET
+`
+	for _, target := range []struct{ goos, triple string }{
+		{"linux", "i386-unknown-linux-gnu"},
+		{"windows", "i686-pc-windows-msvc"},
+	} {
+		t.Run(target.goos, func(t *testing.T) {
+			for _, row := range []struct {
+				name, source string
+				fail         bool
+			}{
+				{"two-declared-roots", original, false},
+				{"clobbered-pointer", strings.Replace(original, "MOVL $4, BX", "MOVL $4, BX\n\tMOVL $0, SI", 1), true},
+				{"skipped-length", strings.NewReplacer(
+					"JEQ equal", "JEQ toHelper",
+					"\tLEAL ret+12(FP), AX", "toHelper:\n\tLEAL ret+12(FP), AX",
+				).Replace(original), true},
+				{"undeclared-context", strings.Replace(original, "MOVL $4, BX", "MOVL 4(DX), BX", 1), true},
+			} {
+				t.Run(row.name, func(t *testing.T) {
+					dir := t.TempDir()
+					asm := filepath.Join(dir, "compare_386.s")
+					if err := os.WriteFile(asm, []byte(row.source), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					config, err := resolveCompileConfig(true, "", true, 2)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out := filepath.Join(dir, "compare.ll")
+					err = compileOne(pkg, plan9asm.ArchAMD64, target.goos, "386", target.triple,
+						asmTask{PkgPath: pkg.PkgPath, AsmFile: asm, OutLL: out}, false, config)
+					if row.fail {
+						if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+							t.Fatalf("missing reaching register fact accepted: %v", err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if stat, err := os.Stat(strings.TrimSuffix(out, ".ll") + ".o"); err != nil || stat.Size() == 0 {
+						t.Fatal("missing compiled object", err)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestSigsForAsmFileInfersSharedABI0ResultPointerHelper(t *testing.T) {
 	typesPkg := types.NewPackage("example.com/hash", "hash")
 	hashType := types.NewNamed(

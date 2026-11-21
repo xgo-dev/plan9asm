@@ -1764,6 +1764,14 @@ func inferSigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve fun
 		if len(callers) == 0 {
 			continue
 		}
+		if goarch == "386" && callers[0].Ret == plan9asm.I1 {
+			helper, ok := inferShared386BoolRegisterHelper(file, resolve, targetResolved, callers, declaredTailCallerFuncs[targetResolved])
+			if ok {
+				sigs[targetResolved] = helper
+				knownABISigs[targetResolved] = true
+				continue
+			}
+		}
 		inferred := callers[0]
 		fullABIAGrees := true
 		returnTypeAgrees := true
