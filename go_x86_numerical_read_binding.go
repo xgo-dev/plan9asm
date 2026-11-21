@@ -74,7 +74,7 @@ func (source *GoX86NumericalReadSource) bindNumericalReads(ctx context.Context, 
 	if file == nil || options.ResolveSym == nil || pkg.Types == nil || pkg.Path != source.request.PackagePath || pkg.Types.Path() != pkg.Path || pkg.SourceSelection != nil {
 		return Options{}, numericalSBContext("binding lacks complete original declarations/source/resolver")
 	}
-	_, arch, _ := strings.Cut(source.request.Target, "/")
+	goos, arch, _ := strings.Cut(source.request.Target, "/")
 	triple := numericalSDKTargetTriple(source.request.Target)
 	if options.Goarch != arch || options.TargetTriple != triple || options.WASMABI != WASMABIDirect || len(options.X86TailGroups) != 0 || options.NumericalReads != nil {
 		return Options{}, numericalSBContext("binding profile or existing authority differs")
@@ -197,6 +197,7 @@ func (source *GoX86NumericalReadSource) bindNumericalReads(ctx context.Context, 
 		return Options{}, err
 	}
 	options.Sigs, options.ResolveSym = sigs, nil
+	options.x86ABI0EntryDirection = go386ABI0EntryDirection(GoModuleOptions{GOOS: goos, GOARCH: arch})
 	binding := &GoX86NumericalReadBinding{source: source, originalSource: source, context: ctx, originalContext: ctx, packageInput: pkg,
 		originalTypes: pkg.Types, originalImports: numericalImportIdentities(pkg.Imports), file: actual,
 		options: options, symbols: symbols, declarations: declarations, reads: source.readFacts(), literalAccesses: literalAccesses,
@@ -321,20 +322,22 @@ func (binding *GoX86NumericalReadBinding) digest() ([32]byte, error) {
 		}
 	}
 	data, err := json.Marshal(struct {
-		File         [32]byte
-		Target, Arch string
-		WASM         WASMABI
-		X87          X87Mode
-		Annotate     bool
-		Sigs         map[string]FuncSig
-		TailGroups   []X86TailGroup
-		Symbols      map[string]string
-		Reads        []numericalSBReadFact
-		Literals     []x86SDKLiteralAccess
-		Minimum      *numericalSDKLiteralMinimumJoin
-		Arguments    map[string][32]byte
+		File           [32]byte
+		Target, Arch   string
+		WASM           WASMABI
+		X87            X87Mode
+		Annotate       bool
+		EntryDirection x86ResultDirection
+		Sigs           map[string]FuncSig
+		TailGroups     []X86TailGroup
+		Symbols        map[string]string
+		Reads          []numericalSBReadFact
+		Literals       []x86SDKLiteralAccess
+		Minimum        *numericalSDKLiteralMinimumJoin
+		Arguments      map[string][32]byte
 	}{binding.file, binding.options.TargetTriple, binding.options.Goarch, binding.options.WASMABI, binding.options.X87Mode,
-		binding.options.AnnotateSource, binding.options.Sigs, binding.options.X86TailGroups, binding.symbols, binding.reads, binding.literalAccesses, binding.literalMinimum, arguments})
+		binding.options.AnnotateSource, binding.options.x86ABI0EntryDirection, binding.options.Sigs, binding.options.X86TailGroups,
+		binding.symbols, binding.reads, binding.literalAccesses, binding.literalMinimum, arguments})
 	return sha256.Sum256(data), err
 }
 

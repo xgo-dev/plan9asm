@@ -383,6 +383,14 @@ func TestGoX86NumericalSBReadConsumerResolverMutationGuard(t *testing.T) {
 
 func TestGoX86NumericalSBReadBindingDeclarationIdentityAndWrapperGuards(t *testing.T) {
 	pkg, _, _, create := numericalConsumerFactory(t, "amd64")
+	t.Run("private entry direction", func(t *testing.T) {
+		_, options := create(t)
+		binding := options.NumericalReads
+		binding.options.x86ABI0EntryDirection = x86ResultDirectionBackward
+		if !errors.Is(binding.verify(), ErrProbeNeedsContext) {
+			t.Fatal("changed entry direction retained the original source seal")
+		}
+	})
 	t.Run("private types identity", func(t *testing.T) {
 		_, options := create(t)
 		binding := options.NumericalReads
