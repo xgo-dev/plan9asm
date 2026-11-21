@@ -44,6 +44,9 @@ func wasmFloatBinaryReferenceValue(name string, a, b uint64) (uint64, int) {
 	isNaN := func(v uint64) bool { return v&exponent == exponent && v&(quiet*2-1) != 0 }
 	nanA, nanB := isNaN(a), isNaN(b)
 	operation := name[3:]
+	if operation == "Copysign" {
+		return a&^sign | b&sign, 0
+	}
 	if operation == "Min" || operation == "Max" {
 		if nanA || nanB {
 			kind := 1
@@ -100,7 +103,7 @@ func wasmFloatBinaryRuntimeFixture(t *testing.T) (string, string, map[string]Fun
 
 // Share the actual ABI adapter, bounded execution and NaN-set checkers across
 // floating families. Each caller supplies its independent full opcode/input
-// inventory and reference; the existing comparison/minmax denominator is fixed.
+// inventory and bit-level reference.
 func wasmFloatRuntimeFixture(t *testing.T, names []string,
 	types func(string) (LLVMType, LLVMType, Reg, Reg), samples func(int) []uint64,
 	reference func(string, uint64, uint64) (uint64, int)) (string, string, map[string]FuncSig, string, string, []byte) {
@@ -263,7 +266,7 @@ func main() {
 
 func TestWASMFloatBinaryOriginalGoRuntime(t *testing.T) {
 	_, source, _, _, goSource, _ := wasmFloatBinaryRuntimeFixture(t)
-	wasmFloatRunOriginal(t, source, goSource, 25600)
+	wasmFloatRunOriginal(t, source, goSource, 28800)
 }
 
 func wasmFloatRunOriginal(t *testing.T, source, goSource string, count int) {
@@ -306,7 +309,7 @@ func wasmFloatBinaryCommand(t *testing.T, command string, arguments ...string) s
 
 func TestWASMFloatBinaryThreeAPIsFourOptimizationAxesRuntime(t *testing.T) {
 	source, _, sigs, wrappers, _, inputs := wasmFloatBinaryRuntimeFixture(t)
-	wasmFloatRunLLVM(t, source, sigs, wrappers, inputs, 25600)
+	wasmFloatRunLLVM(t, source, sigs, wrappers, inputs, 28800)
 }
 
 func wasmFloatRunLLVM(t *testing.T, source string, sigs map[string]FuncSig, wrappers string, inputs []byte, count int) {

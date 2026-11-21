@@ -174,7 +174,7 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 				fmt.Fprintf(b, "declare %s @llvm.%s.f%s(%s)\n", typ, name, bits, typ)
 			}
 		}
-		for _, name := range []string{"minimum", "maximum"} {
+		for _, name := range []string{"minimum", "maximum", "copysign"} {
 			if wantFloatBinary[string(typ)+"|"+name] {
 				fmt.Fprintf(b, "declare %s @llvm.%s.f%s(%s, %s)\n", typ, name, bits, typ, typ)
 			}

@@ -13,7 +13,7 @@ func wasmFloatNaNBits(bits int) (signless, infinity, canonical uint64) {
 }
 
 // Go's scalar floating binary families share pure, zero-operand stack grammar.
-// Comparisons produce i32; arithmetic and min/max retain the operand width.
+// Comparisons produce i32; numerical and sign operations retain operand width.
 type wasmFloatBinaryOp struct {
 	typ       LLVMType
 	predicate string
@@ -22,22 +22,24 @@ type wasmFloatBinaryOp struct {
 }
 
 var wasmFloatBinaryOps = map[string]wasmFloatBinaryOp{
-	"F32EQ":  {typ: "float", predicate: "oeq"},
-	"F32NE":  {typ: "float", predicate: "une"},
-	"F32LT":  {typ: "float", predicate: "olt"},
-	"F32GT":  {typ: "float", predicate: "ogt"},
-	"F32LE":  {typ: "float", predicate: "ole"},
-	"F32GE":  {typ: "float", predicate: "oge"},
-	"F64EQ":  {typ: "double", predicate: "oeq"},
-	"F64NE":  {typ: "double", predicate: "une"},
-	"F64LT":  {typ: "double", predicate: "olt"},
-	"F64GT":  {typ: "double", predicate: "ogt"},
-	"F64LE":  {typ: "double", predicate: "ole"},
-	"F64GE":  {typ: "double", predicate: "oge"},
-	"F32MIN": {typ: "float", intrinsic: "minimum"},
-	"F32MAX": {typ: "float", intrinsic: "maximum"},
-	"F64MIN": {typ: "double", intrinsic: "minimum"},
-	"F64MAX": {typ: "double", intrinsic: "maximum"},
+	"F32EQ":       {typ: "float", predicate: "oeq"},
+	"F32NE":       {typ: "float", predicate: "une"},
+	"F32LT":       {typ: "float", predicate: "olt"},
+	"F32GT":       {typ: "float", predicate: "ogt"},
+	"F32LE":       {typ: "float", predicate: "ole"},
+	"F32GE":       {typ: "float", predicate: "oge"},
+	"F64EQ":       {typ: "double", predicate: "oeq"},
+	"F64NE":       {typ: "double", predicate: "une"},
+	"F64LT":       {typ: "double", predicate: "olt"},
+	"F64GT":       {typ: "double", predicate: "ogt"},
+	"F64LE":       {typ: "double", predicate: "ole"},
+	"F64GE":       {typ: "double", predicate: "oge"},
+	"F32MIN":      {typ: "float", intrinsic: "minimum"},
+	"F32MAX":      {typ: "float", intrinsic: "maximum"},
+	"F64MIN":      {typ: "double", intrinsic: "minimum"},
+	"F64MAX":      {typ: "double", intrinsic: "maximum"},
+	"F32COPYSIGN": {typ: "float", intrinsic: "copysign"},
+	"F64COPYSIGN": {typ: "double", intrinsic: "copysign"},
 }
 
 var wasmFloatArithmeticOps = map[string]wasmFloatBinaryOp{

@@ -104,6 +104,10 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err != nil {
 			return FuncSig{}, err
 		}
+		floatConstant, floatConstantKnown, err := parseWASMFloatConstant(ins, op)
+		if err != nil {
+			return FuncSig{}, err
+		}
 		conversion, conversionKnown, err := parseWASMConversion(ins)
 		if err != nil {
 			return FuncSig{}, err
@@ -202,6 +206,10 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			if err := typedBinary(op, spec.typ, spec.resultType()); err != nil {
 				return FuncSig{}, err
 			}
+			continue
+		}
+		if floatConstantKnown {
+			push(wasmInferValue{typ: floatConstant.typ})
 			continue
 		}
 		switch op {

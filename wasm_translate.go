@@ -53,6 +53,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if _, _, err := parseWASMFloatBinary(ins); err != nil {
 			return err
 		}
+		if _, _, err := parseWASMFloatConstant(ins, op); err != nil {
+			return err
+		}
 		if _, _, err := parseWASMIntegerCount(ins); err != nil {
 			return err
 		}
@@ -1266,9 +1269,12 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 					// underflow and the declared rounding precision are live.
 					fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", name, spec.operation, spec.typ, lhs.val, rhs.val)
 				} else {
-					// Unlike minnum/maxnum or ordered select, minimum/maximum
-					// propagate NaNs and order -0 before +0, as Wasm requires.
 					fmt.Fprintf(b, "  %%%s = call %s @llvm.%s.f%d(%s %s, %s %s)\n", name, spec.typ, spec.intrinsic, bits, spec.typ, lhs.val, spec.typ, rhs.val)
+				}
+				if spec.intrinsic == "copysign" {
+					// CopySign changes only the sign bit, including on NaNs.
+					push(wasmValue{typ: spec.typ, val: "%" + name})
+					continue
 				}
 				// LLVM may fold minimum(x,x) or identity arithmetic to x,
 				// including a signaling NaN. Wasm requires a quiet NaN;
@@ -1499,11 +1505,12 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return fmt.Errorf("%s expects one integer immediate or symbol address: %w", ins.Op, err)
 			}
 			push(v)
-		case "F64CONST":
-			if len(ins.Args) != 1 || ins.Args[0].Kind != OpImm {
-				return fmt.Errorf("F64Const expects one floating immediate")
+		case "F32CONST", "F64CONST":
+			constant, _, err := parseWASMFloatConstant(ins, op)
+			if err != nil {
+				return err
 			}
-			push(wasmValue{typ: LLVMType("double"), val: fmt.Sprintf("0x%016X", uint64(ins.Args[0].Imm))})
+			push(constant.value())
 		case "I32EQZ", "NOT":
 			if err := emitIntCompare(op, I32, "eq", true); err != nil {
 				return err

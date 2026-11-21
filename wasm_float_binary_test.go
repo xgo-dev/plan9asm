@@ -21,11 +21,11 @@ func wasmFloatBinaryGoNames(t *testing.T) []string {
 		t.Fatal(err)
 	}
 	var names []string
-	for _, match := range regexp.MustCompile(`"(F(?:32|64)(?:Eq|Ne|Lt|Gt|Le|Ge|Min|Max))"`).FindAllSubmatch(data, -1) {
+	for _, match := range regexp.MustCompile(`"(F(?:32|64)(?:Eq|Ne|Lt|Gt|Le|Ge|Min|Max|Copysign))"`).FindAllSubmatch(data, -1) {
 		names = append(names, string(match[1]))
 	}
-	if len(names) != 16 {
-		t.Fatalf("selected Go float comparison/minmax namespace changed: %v", names)
+	if len(names) != 18 {
+		t.Fatalf("selected Go float comparison/minmax/sign namespace changed: %v", names)
 	}
 	return names
 }
@@ -36,7 +36,7 @@ func wasmFloatBinaryTestTypes(name string) (LLVMType, LLVMType, Reg, Reg) {
 		typ, first, second = "double", "F16", "F17"
 	}
 	result := I32
-	if strings.HasSuffix(name, "Min") || strings.HasSuffix(name, "Max") {
+	if strings.HasSuffix(name, "Min") || strings.HasSuffix(name, "Max") || strings.HasSuffix(name, "Copysign") {
 		result = typ
 	}
 	return typ, result, first, second
