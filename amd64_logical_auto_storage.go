@@ -14,11 +14,13 @@ func (c *amd64Ctx) prepareLogicalAUTOStorage() error {
 		return nil
 	}
 	if x86Mode32FixedFrameCandidate(fn, c.goarch) {
-		// The complete paired transfer verified physical SP accesses.
-		// addrFromPlainMem uses the existing real-offset shadow stack.
+		// The paired transfer mapped named AUTO and physical addresses into
+		// the same frame. Preserve that projection in the emitter.
 		if !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) {
 			return fmt.Errorf("%w: 386 fixed TEXT frame requires a matching pointer width", ErrProbeNeedsContext)
 		}
+		c.logicalAUTOExtent = int(fn.FrameSize)
+		c.physicalSPWithAUTO = true
 		return nil
 	}
 	if _, scopedControl := x86X87ScopedControlScratchExtent(fn, c.goarch); scopedControl {
@@ -33,8 +35,8 @@ func (c *amd64Ctx) prepareLogicalAUTOStorage() error {
 	if err != nil {
 		return err
 	}
-	c.privateFlagsStack = stack != nil
-	extent, err := x86ResultAUTOExtentWithPrivateStack(fn, c.goarch, c.privateFlagsStack)
+	c.physicalSPWithAUTO = stack != nil
+	extent, err := x86ResultAUTOExtentWithPrivateStack(fn, c.goarch, c.physicalSPWithAUTO)
 	if err != nil {
 		return err
 	}
@@ -49,9 +51,9 @@ func (c *amd64Ctx) logicalAUTOAddress(mem MemRef) (string, bool, error) {
 	if c.logicalAUTOExtent == 0 || mem.Base != SP {
 		return "", false, nil
 	}
-	if c.privateFlagsStack && mem.Off >= 0 && mem.Sym == "" && mem.OffRaw == "" &&
+	if c.physicalSPWithAUTO && mem.Off >= 0 && mem.Sym == "" && mem.OffRaw == "" &&
 		mem.Index == "" && mem.IndexExt == "" && mem.Segment == "" && mem.Scale == 0 {
-		return "", false, nil // Reaching PUSH depth, rather than the immutable AUTO base, owns this access.
+		return "", false, nil // The reaching physical stack pointer owns this operand.
 	}
 	if _, static := x86SBMemoryAddressRole(Operand{Kind: OpMem, Mem: mem}, c.goarch); static {
 		return "", false, nil

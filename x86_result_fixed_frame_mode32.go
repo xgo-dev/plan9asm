@@ -66,16 +66,27 @@ func x86CheckMode32FixedFrame(fn Func, layout FrameLayout, calls map[string]x86M
 			ins.Op == "ADJSP" || ins.Op == OpCALL && !boundCall {
 			return fail("changes or exposes physical SP", ins.Raw)
 		}
-		_, rest := splitOpcode(ins.Raw)
-		for _, literal := range splitTopLevelCSV(rest) {
-			// Named AUTO and physical SP have distinct source roles. The
-			// physical proof uses only resolved displacements on the real SP.
-			match := x86ResultAUTOLiteral.FindStringSubmatch(literal)
-			if match == nil {
+		var literals []string
+		for index, operand := range ins.Args {
+			if operand.Kind != OpMem || operand.Mem.Base != SP || operand.Mem.Sym != "" {
 				continue
 			}
-			if _, named := parseNamedStackConstantOffset(match[1]); named {
-				return fail("mixed logical AUTO and physical SP operands", ins.Raw)
+			if literals == nil {
+				_, rest := splitOpcode(ins.Raw)
+				literals = splitTopLevelCSV(rest)
+			}
+			if len(literals) != len(ins.Args) || operand.Mem.OffRaw != "" {
+				return fail("unbound SP operand spelling", ins.Raw)
+			}
+			offset, named := int64(0), false
+			if match := x86ResultAUTOLiteral.FindStringSubmatch(literals[index]); match != nil {
+				offset, named = parseNamedStackConstantOffset(match[1])
+			}
+			// Go's virtual SP is at the top of the allocated frame. Only
+			// negative named offsets reach into it. Bare physical offsets
+			// are relative to the bottom of the same frame.
+			if named && (offset != operand.Mem.Off || offset >= 0) || !named && operand.Mem.Off < 0 {
+				return fail("SP operand outside its source frame role", ins.Raw)
 			}
 		}
 	}
@@ -199,7 +210,10 @@ func (frame *x86Mode32FrameState) offset(arg Operand, width int64) (int, bool) {
 	}
 	base, local := frame.registerOffset(arg.Mem.Base)
 	disp := arg.Mem.Off
-	if !local || arg.Mem != (MemRef{Base: arg.Mem.Base, Off: disp}) || width < 0 ||
+	if arg.Mem.Base == SP && disp < 0 {
+		disp += int64(len(frame.spills)) // The source check bound this as a named AUTO.
+	}
+	if !local || arg.Mem != (MemRef{Base: arg.Mem.Base, Off: arg.Mem.Off}) || width < 0 ||
 		disp < -base || disp > int64(len(frame.spills))-base-width {
 		return 0, false
 	}

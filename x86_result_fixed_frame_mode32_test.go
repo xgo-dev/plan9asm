@@ -32,12 +32,15 @@ var x86Mode32DerivedFrameSource = strings.NewReplacer(
 
 func TestX86Mode32FixedFrame(t *testing.T) {
 	const triple = "i386-unknown-linux-gnu"
+	mixed := strings.NewReplacer("MOVL SI,16(SP)", "MOVL SI,save-8(SP)",
+		"ADDL 0(SP),AX", "ADDL savedNumber-24(SP),AX").Replace(x86Mode32FrameTestSource)
 	for _, row := range []struct {
 		name   string
 		source string
 	}{
 		{"direct", x86Mode32FrameTestSource},
 		{"derived", x86Mode32DerivedFrameSource},
+		{"named and physical aliases", mixed},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			goAssemblerOracleOutput(t, "386", row.source, "", true)
@@ -62,6 +65,10 @@ func TestX86Mode32FixedFrameGuards(t *testing.T) {
 		{"undefined slot", "MOVL AX,0(SP)", "NOP"},
 		{"conditionally defined slot", "MOVL AX,0(SP)", "CMPL AX,$0\nJEQ load\nMOVL AX,0(SP)\nload:"},
 		{"negative physical offset", "ADDL 0(SP),AX", "ADDL -4(SP),AX"},
+		{"bare name at frame boundary", "ADDL 0(SP),AX", "ADDL savedNumber(SP),AX"},
+		{"named zero outside frame", "ADDL 0(SP),AX", "ADDL savedNumber+0(SP),AX"},
+		{"named access crossing frame boundary", "ADDL 0(SP),AX", "ADDL savedNumber-2(SP),AX"},
+		{"named access below frame", "ADDL 0(SP),AX", "ADDL savedNumber-25(SP),AX"},
 		{"partial out of range", "ADDL 0(SP),AX", "ADDL 22(SP),AX"},
 		{"partially overwritten pointer", "MOVL 16(SP),DI", "MOVB $0,17(SP)\nMOVL 16(SP),DI"},
 		{"numerical use of pointer", "ADDL 0(SP),AX", "ADDL 16(SP),AX"},

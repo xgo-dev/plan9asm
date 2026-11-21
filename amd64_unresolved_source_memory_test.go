@@ -242,9 +242,13 @@ func TestX86UnresolvedSourceMemoryBareStackNamesRemainResolved(t *testing.T) {
 				}
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(api, func(t *testing.T) {
-						ir, err := x86ScalarFPBitViewAPI(t, source, "func view()\n", target.arch, target.triple, api)
+						// The Go assembler encodes the bare AUTO at offset
+						// FrameSize from physical SP. Use an allocated slot
+						// for the translation and object witness.
+						bounded := strings.ReplaceAll(source, name+"(SP)", name+"-4(SP)")
+						ir, err := x86ScalarFPBitViewAPI(t, bounded, "func view()\n", target.arch, target.triple, api)
 						if err != nil || ir == "" {
-							t.Fatalf("resolved bare AUTO name lost its existing object path: %v", err)
+							t.Fatalf("bounded named AUTO lost its object path: %v", err)
 						}
 						compileLLVMToObject(t, llc, target.triple, "bare-auto.ll", "bare-auto.o", ir)
 					})
