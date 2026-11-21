@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/wasmsimd"
 )
 
 func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string, goarch string, wasmABI WASMABI) {
@@ -51,7 +53,7 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	wantFloatBinary := make(map[string]bool)
 	wantIntegerIntrinsic := make(map[string]bool)
 	wantConversion := make(map[string]wasmConversionOp)
-	var wantVectorIntrinsic map[string]LLVMType
+	var wantVectorIntrinsic map[string]wasmsimd.Form
 	wantTrap := false
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
@@ -81,11 +83,11 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 			if spec, ok := wasmFloatBinaryOps[op]; ok && spec.intrinsic != "" {
 				wantFloatBinary[string(spec.typ)+"|"+spec.intrinsic] = true
 			}
-			if spec, ok := wasmV128CoreOps[op]; ok && spec.saturating {
+			if spec, ok := wasmsimd.Lookup(op); ok && spec.Emission == wasmsimd.Intrinsic {
 				if wantVectorIntrinsic == nil {
-					wantVectorIntrinsic = make(map[string]LLVMType)
+					wantVectorIntrinsic = make(map[string]wasmsimd.Form)
 				}
-				wantVectorIntrinsic[spec.intrinsic()] = spec.laneType()
+				wantVectorIntrinsic[spec.IntrinsicName()] = spec
 			}
 			switch op {
 			case "MEMORYCOPY":
@@ -117,8 +119,9 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	}
 	sort.Strings(vectorIntrinsics)
 	for _, intrinsic := range vectorIntrinsics {
-		typ := wantVectorIntrinsic[intrinsic]
-		fmt.Fprintf(b, "declare %s @%s(%s, %s)\n", typ, intrinsic, typ, typ)
+		spec := wantVectorIntrinsic[intrinsic]
+		typ := spec.Shape.LaneType
+		fmt.Fprintf(b, "declare %s @%s(%s%s)\n", typ, intrinsic, typ, strings.Repeat(", "+typ, spec.Inputs-1))
 	}
 	if want["memmove"] {
 		b.WriteString("declare void @llvm.memmove.p0.p0.i32(ptr, ptr, i32, i1 immarg)\n")

@@ -12,12 +12,18 @@ import (
 // This semantic inventory is independent of the translator and host Go's
 // assembler version. LLVM coverage must also run before Go 1.27 added SIMD.
 func wasmV128CoreNames() []string {
-	return []string{
+	names := []string{
 		"V128Const", "V128Not", "V128And", "V128Andnot", "V128Or", "V128Xor", "V128Bitselect", "V128AnyTrue",
 		"I8x16Add", "I8x16AddSatS", "I8x16AddSatU", "I8x16Sub", "I8x16SubSatS", "I8x16SubSatU",
 		"I16x8Add", "I16x8AddSatS", "I16x8AddSatU", "I16x8Sub", "I16x8SubSatS", "I16x8SubSatU", "I16x8Mul",
 		"I32x4Add", "I32x4Sub", "I32x4Mul", "I64x2Add", "I64x2Sub", "I64x2Mul",
 	}
+	for _, shape := range []string{"F32x4", "F64x2"} {
+		for _, operation := range strings.Fields("Abs Neg Sqrt Ceil Floor Trunc Nearest Add Sub Mul Div Min Max Pmin Pmax Eq Ne Lt Gt Le Ge") {
+			names = append(names, shape+operation)
+		}
+	}
+	return names
 }
 
 func wasmV128CoreConstant(value [2]uint64) string {
@@ -25,6 +31,14 @@ func wasmV128CoreConstant(value [2]uint64) string {
 }
 
 func wasmV128CoreInputs(name string) int {
+	if _, op := wasmV128FloatParts(name); op != "" {
+		switch op {
+		case "Abs", "Neg", "Sqrt", "Ceil", "Floor", "Trunc", "Nearest":
+			return 1
+		default:
+			return 2
+		}
+	}
 	switch name {
 	case "V128Const":
 		return 0
@@ -56,12 +70,23 @@ func wasmV128CoreObjectFixture() (string, map[string]FuncSig) {
 	sigs := make(map[string]FuncSig)
 	for index, name := range wasmV128CoreNames() {
 		function := fmt.Sprintf("core%d", index)
+		sig := FuncSig{Name: function, Ret: I32}
 		body := wasmV128CoreBody(name, [2]uint64{1, 2}, [2]uint64{3, 4}, [2]uint64{5, 6})
+		if bits, _ := wasmV128FloatParts(name); bits != 0 {
+			body = ""
+			for arg := 0; arg < wasmV128CoreInputs(name); arg++ {
+				reg := Reg(fmt.Sprintf("V%d", arg))
+				body += fmt.Sprintf("Get %s\n", reg)
+				sig.Args = append(sig.Args, "<4 x i32>")
+				sig.ArgRegs = append(sig.ArgRegs, reg)
+			}
+			body += name + "\n"
+		}
 		if name != "V128AnyTrue" {
 			body += "V128AnyTrue\n"
 		}
 		fmt.Fprintf(&source, "TEXT %s(SB),4,$0-0\n%sReturn\n", function, body)
-		sigs[function] = FuncSig{Name: function, Ret: I32}
+		sigs[function] = sig
 	}
 	return source.String(), sigs
 }
@@ -74,8 +99,15 @@ func TestWASMV128CoreThreeAPIObjects(t *testing.T) {
 	}
 	for _, function := range file.Funcs {
 		sig, err := InferWASMAssemblyFuncSig(function, function.Sym)
-		if err != nil || len(sig.Args) != 0 || sig.Ret != I32 {
+		want := sigs[function.Sym]
+		if err != nil || sig.Ret != want.Ret || len(sig.Args) != len(want.Args) || len(sig.ArgRegs) != len(want.ArgRegs) {
 			t.Errorf("V128 core typed stack inference: %+v, %v", sig, err)
+			continue
+		}
+		for i := range sig.Args {
+			if sig.Args[i] != want.Args[i] || sig.ArgRegs[i] != want.ArgRegs[i] {
+				t.Errorf("V128 core typed argument %d: %+v, want %+v", i, sig, want)
+			}
 		}
 	}
 	for _, route := range []string{"Translate", "TranslateModule", "TranslateModuleInContext"} {

@@ -3,73 +3,27 @@ package plan9asm
 import (
 	"fmt"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/wasmsimd"
 )
 
-// Reuse the existing V-register carrier. These bitwise operations have one
-// fixed 128-bit type; they do not introduce scalar/vector casts or memory.
+// All SIMD lane formats share the same 128-bit register and stack carrier.
 const wasmV128CoreType LLVMType = "<4 x i32>"
 
-type wasmV128CoreOp struct {
-	inputs     int
-	operation  string
-	laneBits   int
-	saturating bool
-}
-
-var wasmV128CoreOps = map[string]wasmV128CoreOp{
-	"V128CONST":     {operation: "const"},
-	"V128NOT":       {inputs: 1, operation: "not"},
-	"V128AND":       {inputs: 2, operation: "and"},
-	"V128ANDNOT":    {inputs: 2, operation: "andnot"},
-	"V128OR":        {inputs: 2, operation: "or"},
-	"V128XOR":       {inputs: 2, operation: "xor"},
-	"V128BITSELECT": {inputs: 3, operation: "bitselect"},
-	"V128ANYTRUE":   {inputs: 1, operation: "anytrue"},
-
-	"I8X16ADD":     {inputs: 2, operation: "add", laneBits: 8},
-	"I8X16ADDSATS": {inputs: 2, operation: "sadd.sat", laneBits: 8, saturating: true},
-	"I8X16ADDSATU": {inputs: 2, operation: "uadd.sat", laneBits: 8, saturating: true},
-	"I8X16SUB":     {inputs: 2, operation: "sub", laneBits: 8},
-	"I8X16SUBSATS": {inputs: 2, operation: "ssub.sat", laneBits: 8, saturating: true},
-	"I8X16SUBSATU": {inputs: 2, operation: "usub.sat", laneBits: 8, saturating: true},
-	"I16X8ADD":     {inputs: 2, operation: "add", laneBits: 16},
-	"I16X8ADDSATS": {inputs: 2, operation: "sadd.sat", laneBits: 16, saturating: true},
-	"I16X8ADDSATU": {inputs: 2, operation: "uadd.sat", laneBits: 16, saturating: true},
-	"I16X8SUB":     {inputs: 2, operation: "sub", laneBits: 16},
-	"I16X8SUBSATS": {inputs: 2, operation: "ssub.sat", laneBits: 16, saturating: true},
-	"I16X8SUBSATU": {inputs: 2, operation: "usub.sat", laneBits: 16, saturating: true},
-	"I16X8MUL":     {inputs: 2, operation: "mul", laneBits: 16},
-	"I32X4ADD":     {inputs: 2, operation: "add", laneBits: 32},
-	"I32X4SUB":     {inputs: 2, operation: "sub", laneBits: 32},
-	"I32X4MUL":     {inputs: 2, operation: "mul", laneBits: 32},
-	"I64X2ADD":     {inputs: 2, operation: "add", laneBits: 64},
-	"I64X2SUB":     {inputs: 2, operation: "sub", laneBits: 64},
-	"I64X2MUL":     {inputs: 2, operation: "mul", laneBits: 64},
-}
-
-func (op wasmV128CoreOp) laneType() LLVMType {
-	return LLVMType(fmt.Sprintf("<%d x i%d>", 128/op.laneBits, op.laneBits))
-}
-
-func (op wasmV128CoreOp) intrinsic() string {
-	return fmt.Sprintf("llvm.%s.v%di%d", op.operation, 128/op.laneBits, op.laneBits)
-}
-
-func (op wasmV128CoreOp) resultType() LLVMType {
-	if op.operation == "anytrue" {
+func wasmV128ResultType(op wasmsimd.Form) LLVMType {
+	if op.Operator == "anytrue" {
 		return I32
 	}
 	return wasmV128CoreType
 }
 
-func parseWASMV128Core(ins Instr) (wasmV128CoreOp, bool, error) {
-	name := normalizeInstructionOpcode(ins.Op)
-	spec, found := wasmV128CoreOps[name]
+func parseWASMV128Core(ins Instr, name string) (wasmsimd.Form, bool, error) {
+	spec, found := wasmsimd.Lookup(name)
 	if !found {
 		return spec, false, nil
 	}
 	operands := 0
-	if spec.operation == "const" {
+	if spec.Operator == "const" {
 		operands = 2
 	}
 	if strings.ToUpper(string(ins.Op)) != name || len(ins.Args) != operands {
@@ -85,11 +39,11 @@ func parseWASMV128Core(ins Instr) (wasmV128CoreOp, bool, error) {
 
 // Values arrive in Wasm source order, not pop order: Bitselect's third input
 // is the mask, and Andnot complements only the second input.
-func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmV128CoreOp, ins Instr, inputs []wasmValue) wasmValue {
-	if spec.laneBits != 0 {
-		return emitWASMV128IntegerBinary(b, newTmp, spec, inputs[0], inputs[1])
+func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, ins Instr, inputs []wasmValue) wasmValue {
+	if spec.Emission != wasmsimd.Core {
+		return emitWASMV128Lanes(b, newTmp, spec, inputs)
 	}
-	if spec.operation == "const" {
+	if spec.Operator == "const" {
 		low, high := uint64(ins.Args[0].Imm), uint64(ins.Args[1].Imm)
 		value := fmt.Sprintf("<i32 %d, i32 %d, i32 %d, i32 %d>",
 			int32(low), int32(low>>32), int32(high), int32(high>>32))
@@ -104,7 +58,7 @@ func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmV128Cor
 		return binary("xor", value, "<i32 -1, i32 -1, i32 -1, i32 -1>")
 	}
 	var result string
-	switch spec.operation {
+	switch spec.Operator {
 	case "not":
 		result = invert(inputs[0].val)
 	case "andnot":
@@ -121,13 +75,13 @@ func emitWASMV128Core(b *strings.Builder, newTmp func() string, spec wasmV128Cor
 		fmt.Fprintf(b, "  %%%s = zext i1 %%%s to i32\n", integer, nonzero)
 		result = "%" + integer
 	default: // The descriptor's remaining three operations are LLVM bitwise ops.
-		result = binary(spec.operation, inputs[0].val, inputs[1].val)
+		result = binary(spec.Operator, inputs[0].val, inputs[1].val)
 	}
-	return wasmValue{typ: spec.resultType(), val: result}
+	return wasmValue{typ: wasmV128ResultType(spec), val: result}
 }
 
-func emitWASMV128IntegerBinary(b *strings.Builder, newTmp func() string, spec wasmV128CoreOp, lhs, rhs wasmValue) wasmValue {
-	typ := spec.laneType()
+func emitWASMV128Lanes(b *strings.Builder, newTmp func() string, spec wasmsimd.Form, inputs []wasmValue) wasmValue {
+	typ := spec.Shape.LaneType
 	cast := func(value string, from, to LLVMType) string {
 		if from == to {
 			return value
@@ -136,13 +90,38 @@ func emitWASMV128IntegerBinary(b *strings.Builder, newTmp func() string, spec wa
 		fmt.Fprintf(b, "  %%%s = bitcast %s %s to %s\n", result, from, value, to)
 		return "%" + result
 	}
-	a, c := cast(lhs.val, wasmV128CoreType, typ), cast(rhs.val, wasmV128CoreType, typ)
-	result := newTmp()
-	if spec.saturating {
-		fmt.Fprintf(b, "  %%%s = call %s @%s(%s %s, %s %s)\n", result, typ, spec.intrinsic(), typ, a, typ, c)
-	} else {
-		// Unflagged LLVM integer arithmetic wraps separately in each lane.
-		fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", result, spec.operation, typ, a, c)
+
+	lhs := cast(inputs[0].val, wasmV128CoreType, LLVMType(typ))
+	var rhs string
+	if len(inputs) == 2 {
+		rhs = cast(inputs[1].val, wasmV128CoreType, LLVMType(typ))
 	}
-	return wasmValue{typ: wasmV128CoreType, val: cast("%"+result, typ, wasmV128CoreType)}
+	resultType := LLVMType(typ)
+	result := newTmp()
+	switch spec.Emission {
+	case wasmsimd.Instruction:
+		fmt.Fprintf(b, "  %%%s = %s %s %s", result, spec.Operator, typ, lhs)
+		if rhs != "" {
+			fmt.Fprintf(b, ", %s", rhs)
+		}
+		b.WriteByte('\n')
+	case wasmsimd.Intrinsic:
+		fmt.Fprintf(b, "  %%%s = call %s @%s(%s %s", result, typ, spec.IntrinsicName(), typ, lhs)
+		if rhs != "" {
+			fmt.Fprintf(b, ", %s %s", typ, rhs)
+		}
+		b.WriteString(")\n")
+	case wasmsimd.FloatCompare, wasmsimd.FloatSelect:
+		predicate := newTmp()
+		fmt.Fprintf(b, "  %%%s = fcmp %s %s %s, %s\n", predicate, spec.Operator, typ, lhs, rhs)
+		if spec.Emission == wasmsimd.FloatCompare {
+			// Wasm's true lanes contain all one bits.
+			resultType = LLVMType(spec.Shape.MaskType)
+			fmt.Fprintf(b, "  %%%s = sext %s %%%s to %s\n", result, spec.Shape.PredicateType, predicate, resultType)
+		} else {
+			// Pseudo-min/max choose the first operand on a tie or an unordered comparison.
+			fmt.Fprintf(b, "  %%%s = select %s %%%s, %s %s, %s %s\n", result, spec.Shape.PredicateType, predicate, typ, rhs, typ, lhs)
+		}
+	}
+	return wasmValue{typ: wasmV128CoreType, val: cast("%"+result, resultType, wasmV128CoreType)}
 }

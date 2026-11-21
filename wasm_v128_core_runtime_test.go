@@ -14,7 +14,7 @@ type wasmV128CoreObservation struct {
 	Want uint32
 }
 
-const wasmV128CorePass = "V128 core PASS 270"
+const wasmV128CorePass = "V128 core PASS 942"
 
 // Whole-bit Wasm relations, independent of the translator's representation.
 // Observation uses XOR/AnyTrue so it requires no vector store or extraction.
@@ -116,7 +116,11 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 	sigs := make(map[string]FuncSig)
 	var rows []wasmV128CoreObservation
 	for _, name := range wasmV128CoreNames() {
-		for _, pattern := range patterns {
+		inputs := patterns
+		if bits, _ := wasmV128FloatParts(name); bits != 0 {
+			inputs = wasmV128FloatPatterns(bits)
+		}
+		for _, pattern := range inputs {
 			a, b, mask := pattern[0], pattern[1], pattern[2]
 			function := fmt.Sprintf("core%d", len(rows))
 			body, want := wasmV128CoreBody(name, a, b, mask), uint32(0)
@@ -124,6 +128,9 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 				if a[0] != 0 || a[1] != 0 {
 					want = 1
 				}
+			} else if bits, op := wasmV128FloatParts(name); op != "" {
+				expected, comparisonMask := wasmV128FloatReference(bits, op, a, b)
+				body += wasmV128CoreConstant(comparisonMask) + "V128And\n" + wasmV128CoreConstant(expected) + "V128Xor\nV128AnyTrue\n"
 			} else {
 				body += wasmV128CoreConstant(wasmV128CoreReference(name, a, b, mask)) + "V128Xor\nV128AnyTrue\n"
 			}
@@ -134,7 +141,7 @@ func wasmV128CoreRuntimeFixture(t *testing.T) (string, string, string, map[strin
 			rows = append(rows, wasmV128CoreObservation{Name: function, Want: want})
 		}
 	}
-	if len(rows) != 270 {
+	if len(rows) != 942 {
 		t.Fatal("complete vector observation inventory changed", len(rows))
 	}
 	program.WriteString("func main() {\n")

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -21,11 +22,14 @@ func TestWASMV128CoreActualGoNamespaceAndObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	var names []string
-	pattern := `"(V128(?:Const|Not|And|Andnot|Or|Xor|Bitselect|AnyTrue)|I(?:8x16|16x8|32x4|64x2)(?:Add(?:Sat[SU])?|Sub(?:Sat[SU])?|Mul))"`
+	pattern := `"(V128(?:Const|Not|And|Andnot|Or|Xor|Bitselect|AnyTrue)|I(?:8x16|16x8|32x4|64x2)(?:Add(?:Sat[SU])?|Sub(?:Sat[SU])?|Mul)|F(?:32x4|64x2)(?:Abs|Neg|Sqrt|Ceil|Floor|Trunc|Nearest|Add|Sub|Mul|Div|Min|Max|Pmin|Pmax|Eq|Ne|Lt|Gt|Le|Ge))"`
 	for _, match := range regexp.MustCompile(pattern).FindAllSubmatch(data, -1) {
 		names = append(names, string(match[1]))
 	}
-	if !reflect.DeepEqual(names, wasmV128CoreNames()) {
+	want := wasmV128CoreNames()
+	sort.Strings(names)
+	sort.Strings(want)
+	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("complete official V128 core namespace changed: %v", names)
 	}
 	source, _ := wasmV128CoreObjectFixture()

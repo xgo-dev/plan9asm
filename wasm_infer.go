@@ -92,7 +92,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		// Validate typed source formats even when the instruction is dead,
 		// matching translateFuncWASM's prepass. Retain these descriptors for
 		// live stack inference instead of parsing them again.
-		vector, vectorKnown, err := parseWASMV128Core(ins)
+		vector, vectorKnown, err := parseWASMV128Core(ins, op)
 		if err != nil {
 			return FuncSig{}, err
 		}
@@ -163,11 +163,10 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			continue
 		}
 		if vectorKnown {
-			spec := vector
-			if len(stack) < spec.inputs {
-				return FuncSig{}, fmt.Errorf("%s: %s requires %d V128 stack operands", name, op, spec.inputs)
+			if len(stack) < vector.Inputs {
+				return FuncSig{}, fmt.Errorf("%s: %s requires %d V128 stack operands", name, op, vector.Inputs)
 			}
-			for index := 0; index < spec.inputs; index++ {
+			for index := 0; index < vector.Inputs; index++ {
 				value := pop(op)
 				for reg := range value.regs {
 					if wasmDefaultRegisterType(reg) != wasmV128CoreType {
@@ -178,7 +177,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 					return FuncSig{}, err
 				}
 			}
-			push(wasmInferValue{typ: spec.resultType()})
+			push(wasmInferValue{typ: wasmV128ResultType(vector)})
 			continue
 		}
 		if countKnown {

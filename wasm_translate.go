@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/wasmsimd"
 )
 
 type wasmValue struct {
@@ -57,7 +59,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if _, _, err := parseWASMConversion(ins); err != nil {
 			return err
 		}
-		if _, _, err := parseWASMV128Core(ins); err != nil {
+		if _, _, err := parseWASMV128Core(ins, op); err != nil {
 			return err
 		}
 	}
@@ -1143,9 +1145,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if blockTerminated && op != "ELSE" && op != "END" && op != "LABEL" {
 			continue
 		}
-		if spec, ok := wasmV128CoreOps[op]; ok {
+		if spec, ok := wasmsimd.Lookup(op); ok {
 			var inputs [3]wasmValue
-			for index := spec.inputs - 1; index >= 0; index-- {
+			for index := spec.Inputs - 1; index >= 0; index-- {
 				value, err := pop(op)
 				if err != nil {
 					return err
@@ -1155,7 +1157,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				}
 				inputs[index] = value
 			}
-			push(emitWASMV128Core(b, newTmp, spec, ins, inputs[:spec.inputs]))
+			push(emitWASMV128Core(b, newTmp, spec, ins, inputs[:spec.Inputs]))
 			continue
 		}
 		if spec, ok := wasmIntegerCountOps[op]; ok {
