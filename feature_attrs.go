@@ -1556,6 +1556,9 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				}
 			}
 		case ArchARM:
+			if form, ok := armNamedVFPArithmetic(op); ok && form.fused {
+				add("+vfp4")
+			}
 			if op == "WORD" && len(ins.Args) == 1 && ins.Args[0].Kind == OpImm {
 				if _, ok := decodeARMRawVFPMove(uint32(ins.Args[0].Imm)); ok {
 					add("+vfp2")
@@ -1575,8 +1578,11 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				if _, ok := decodeARMRawVFPStatusTransfer(uint32(ins.Args[0].Imm)); ok {
 					add("+vfp2")
 				}
-				if _, ok := decodeARMRawVFPScalarArithmetic(uint32(ins.Args[0].Imm)); ok {
+				if form, ok := decodeARMRawVFPScalarArithmetic(uint32(ins.Args[0].Imm)); ok {
 					add("+vfp2")
+					if form.fused {
+						add("+vfp4")
+					}
 				}
 				if form, ok := decodeARMRawNEONMultiplyLane(uint32(ins.Args[0].Imm)); ok {
 					add("+neon")

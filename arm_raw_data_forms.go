@@ -213,7 +213,7 @@ func decodeARMRawDataForm(ins Instr) (armRawDataForm, bool) {
 			family:    "VFPScalarArithmetic",
 			condition: form.condition,
 			gpWrites:  0,
-			lower:     func(c *armCtx) error { return c.lowerRawVFPScalarArithmetic(form) },
+			lower:     func(c *armCtx) error { return c.lowerVFPScalarArithmetic(form) },
 		}, true
 	}
 	if form, ok := decodeARMRawNEONMultiplyLane(word); ok {

@@ -16,6 +16,8 @@ func emitARMPrelude(b *strings.Builder) {
 	b.WriteString("declare double @llvm.fabs.f64(double)\n")
 	b.WriteString("declare float @llvm.sqrt.f32(float)\n")
 	b.WriteString("declare double @llvm.sqrt.f64(double)\n")
+	b.WriteString("declare float @llvm.fma.f32(float, float, float)\n")
+	b.WriteString("declare double @llvm.fma.f64(double, double, double)\n")
 	b.WriteString("declare void @llvm.prefetch.p0(ptr, i32, i32, i32)\n")
 	b.WriteString("\n")
 }

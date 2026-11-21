@@ -25,6 +25,14 @@ func armSingleRegisterNumber(r Reg) (int, bool) {
 	return n, err == nil && n >= 0 && n <= 31
 }
 
+func armNamedVFPRegisterNumber(reg Reg, bits int) int {
+	number, _ := strconv.Atoi(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(string(reg))), "F"))
+	if bits == 32 {
+		return 2 * number
+	}
+	return number
+}
+
 func armSingleOperandNumber(op Operand) (int, bool) {
 	switch op.Kind {
 	case OpReg:
@@ -395,126 +403,6 @@ func (c *armCtx) lowerARMWordFloatConversion(op, cond string, ins Instr) (ok boo
 	}
 }
 
-func armScalarFloatArithmeticKind(op string) (kind string, bits int, accumulating bool, ok bool) {
-	bits = 32
-	if strings.HasSuffix(op, "D") {
-		bits = 64
-	}
-	switch op {
-	case "ADDF", "ADDD":
-		return "add", bits, false, true
-	case "SUBF", "SUBD":
-		return "sub", bits, false, true
-	case "MULF", "MULD":
-		return "mul", bits, false, true
-	case "NMULF", "NMULD":
-		return "nmul", bits, false, true
-	case "DIVF", "DIVD":
-		return "div", bits, false, true
-	case "MULAF", "MULAD", "FMULAF", "FMULAD":
-		return "madd", bits, true, true
-	case "MULSF", "MULSD", "FMULSF", "FMULSD":
-		return "msub", bits, true, true
-	case "NMULAF", "NMULAD", "FNMULAF", "FNMULAD":
-		return "nmadd", bits, true, true
-	case "NMULSF", "NMULSD", "FNMULSF", "FNMULSD":
-		return "nmsub", bits, true, true
-	default:
-		return "", 0, false, false
-	}
-}
-
-func (c *armCtx) lowerARMScalarFloatArithmetic(op, cond string, ins Instr) (ok bool, terminated bool, err error) {
-	kind, bits, accumulating, handled := armScalarFloatArithmeticKind(op)
-	if !handled {
-		return false, false, nil
-	}
-	if err := armRequireConditionOnlySuffix(ins); err != nil {
-		return true, false, err
-	}
-	wantMin := 2
-	if accumulating {
-		wantMin = 3
-	}
-	if len(ins.Args) < wantMin || len(ins.Args) > 3 {
-		if accumulating {
-			return true, false, fmt.Errorf("arm %s expects Fsrc1, Fsrc2, Faccumulator: %q", op, ins.Raw)
-		}
-		return true, false, fmt.Errorf("arm %s expects Fsrc,Fdst or Fsrc1,Fsrc2,Fdst: %q", op, ins.Raw)
-	}
-	for _, arg := range ins.Args {
-		if arg.Kind != OpReg || !isARMFReg(arg.Reg) {
-			return true, false, fmt.Errorf("arm %s accepts only floating registers: %q", op, ins.Raw)
-		}
-	}
-	if cond != "" && !strings.EqualFold(cond, "AL") {
-		err := c.emitConditionalEffect(cond, func() error {
-			_, _, innerErr := c.lowerARMScalarFloatArithmetic(op, "", ins)
-			return innerErr
-		})
-		return true, false, err
-	}
-
-	// obj/arm encodes p.From as Vm and p.Reg (or p.To for two-operand
-	// instructions) as Vn. Plan 9 order is therefore Vm,Vn,Vd and subtraction
-	// and division must compute Vn op Vm.
-	rhs, err := c.loadARMFloatRegValue(ins.Args[0].Reg, bits)
-	if err != nil {
-		return true, false, err
-	}
-	lhsIndex := 1
-	dstIndex := len(ins.Args) - 1
-	lhs, err := c.loadARMFloatRegValue(ins.Args[lhsIndex].Reg, bits)
-	if err != nil {
-		return true, false, err
-	}
-	floatType := "float"
-	if bits == 64 {
-		floatType = "double"
-	}
-	emitBinary := func(operation, left, right string) string {
-		name := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", name, operation, floatType, left, right)
-		return "%" + name
-	}
-	emitNeg := func(value string) string {
-		name := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fneg %s %s\n", name, floatType, value)
-		return "%" + name
-	}
-
-	var result string
-	switch kind {
-	case "add":
-		result = emitBinary("fadd", lhs, rhs)
-	case "sub":
-		result = emitBinary("fsub", lhs, rhs)
-	case "mul":
-		result = emitBinary("fmul", lhs, rhs)
-	case "nmul":
-		result = emitNeg(emitBinary("fmul", lhs, rhs))
-	case "div":
-		result = emitBinary("fdiv", lhs, rhs)
-	default:
-		product := emitBinary("fmul", lhs, rhs)
-		accumulator, loadErr := c.loadARMFloatRegValue(ins.Args[dstIndex].Reg, bits)
-		if loadErr != nil {
-			return true, false, loadErr
-		}
-		switch kind {
-		case "madd":
-			result = emitBinary("fadd", accumulator, product)
-		case "msub":
-			result = emitBinary("fsub", accumulator, product)
-		case "nmadd":
-			result = emitNeg(emitBinary("fadd", accumulator, product))
-		case "nmsub":
-			result = emitBinary("fsub", product, accumulator)
-		}
-	}
-	return true, false, c.storeARMFloatRegValue(ins.Args[dstIndex].Reg, "", bits, result)
-}
-
 func (c *armCtx) lowerFloat(op, cond string, ins Instr) (ok bool, terminated bool, err error) {
 	if ok, terminated, err := c.lowerARMFloatCompare(op, cond, ins); ok {
 		return ok, terminated, err
@@ -522,8 +410,11 @@ func (c *armCtx) lowerFloat(op, cond string, ins Instr) (ok bool, terminated boo
 	if ok, terminated, err := c.lowerARMWordFloatConversion(op, cond, ins); ok {
 		return ok, terminated, err
 	}
-	if ok, terminated, err := c.lowerARMScalarFloatArithmetic(op, cond, ins); ok {
-		return ok, terminated, err
+	if form, matched, err := parseARMScalarFloatArithmetic(op, cond, ins); matched {
+		if err != nil {
+			return true, false, err
+		}
+		return true, false, c.lowerVFPScalarArithmetic(form)
 	}
 	switch op {
 	case "NEGF", "NEGD", "ABSF", "ABSD", "SQRTF", "SQRTD", "MOVFD", "MOVDF":

@@ -2,8 +2,6 @@ package plan9asm
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 )
 
 // Go's CMPF/CMPD are signaling compares followed by VMRS APSR_nzcv,FPSCR.
@@ -38,17 +36,10 @@ func parseARMScalarCompare(op string, ins Instr) (armScalarCompareForm, bool, er
 		form.bits = 64
 	}
 	_, form.condition, _, _ = armDecodeOp(string(ins.Op))
-	number := func(arg Operand) int {
-		value, _ := strconv.Atoi(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(string(arg.Reg))), "F"))
-		if form.bits == 32 {
-			value *= 2 // A Go F register's low S half.
-		}
-		return value
-	}
 	// Go's From operand is Vm; Reg is Vd. A single operand uses Vd,#0.
-	form.lhs = number(ins.Args[len(ins.Args)-1])
+	form.lhs = armNamedVFPRegisterNumber(ins.Args[len(ins.Args)-1].Reg, form.bits)
 	if !form.zeroRHS {
-		form.rhs = number(ins.Args[0])
+		form.rhs = armNamedVFPRegisterNumber(ins.Args[0].Reg, form.bits)
 	}
 	return form, true, nil
 }
