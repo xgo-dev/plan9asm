@@ -6,6 +6,16 @@ import (
 )
 
 func (c *amd64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	source := ins
+	if source.Op == "" {
+		source.Op = op
+	}
+	if form, known, err := x86LinuxSyscallProperties(source, c.goarch, c.targetTriple); known {
+		if err != nil {
+			return true, false, err
+		}
+		return true, false, c.emitLinuxSyscall(form)
+	}
 	switch op {
 	case "WAIT":
 		if len(ins.Args) != 0 {
@@ -26,12 +36,6 @@ func (c *amd64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err
 		if c.goarch == "386" && (len(ins.Args) != 1 || ins.Args[0].Kind != OpImm) {
 			return true, false, fmt.Errorf("386 INT expects an immediate vector: %q", ins.Raw)
 		}
-		if c.goarch == "386" && len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].Imm == 0x80 {
-			if !strings.Contains(strings.ToLower(c.targetTriple), "linux") {
-				return true, false, fmt.Errorf("386 INT $0x80 requires a Linux target triple: %q", ins.Raw)
-			}
-			return true, false, c.lowerLinux386Syscall()
-		}
 		// Software interrupt/trap path (e.g. runtime.exitThread INT $3).
 		if c.goarch == "386" {
 			c.emitX86Trap()
@@ -41,60 +45,59 @@ func (c *amd64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err
 			c.b.WriteString("  unreachable\n")
 		}
 		return true, true, nil
-	case "SYSCALL":
-		source := ins
-		if source.Op == "" {
-			source.Op = op
-		}
-		effect, known, err := x86LinuxSyscallByteEffect(source, c.goarch, c.targetTriple)
-		if !known || err != nil {
-			return true, false, fmt.Errorf("%w: raw SYSCALL lacks its closed source mode/form/target: %v", ErrProbeNeedsContext, err)
-		}
-		arguments := make([]string, 0, 7)
-		for _, operand := range effect.operands {
-			if !operand.read {
-				continue
-			}
-			value, err := c.loadReg(operand.operand.Reg)
-			if err != nil {
-				return true, false, err
-			}
-			arguments = append(arguments, "i64 "+value)
-		}
-		// The shared ordered input roles match Linux's AX/DI/SI/DX/R10/R8/R9.
-		// Preserve the raw -errno result and DX; libc must not change TLS errno.
-		result := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i64 asm sideeffect %q, %q(%s)\n", result, "syscall",
-			"={ax},0,{di},{si},{dx},{r10},{r8},{r9},~{rcx},~{r11},~{dirflag},~{fpsr},~{flags},~{memory}", strings.Join(arguments, ", "))
-		if err := c.storeReg(AX, "%"+result); err != nil {
-			return true, false, err
-		}
-		return true, false, nil
 	}
 	return false, false, nil
 }
 
-func (c *amd64Ctx) lowerLinux386Syscall() error {
-	regs := []Reg{AX, BX, CX, DX, SI, DI, BP}
-	args := make([]string, len(regs))
-	for i, reg := range regs {
-		value, err := c.evalIntSized(Operand{Kind: OpReg, Reg: reg}, I32)
+func (c *amd64Ctx) emitLinuxSyscall(form x86LinuxSyscallForm) error {
+	typ := I64
+	if form.width == 4 {
+		typ = I32
+	}
+	resultType := string(typ)
+	constraints := []string{"={ax}"}
+	if form.observesDX {
+		resultType = fmt.Sprintf("{ %s, %s }", typ, typ)
+		constraints = append(constraints, "={dx}")
+	}
+
+	args := make([]string, len(form.inputs))
+	for index, register := range form.inputs {
+		value, err := c.evalIntSized(Operand{Kind: OpReg, Reg: register}, typ)
 		if err != nil {
 			return err
 		}
-		args[i] = value
+		args[index] = string(typ) + " " + value
+		switch {
+		case register == AX:
+			constraints = append(constraints, "0") // AX carries both the number and raw result.
+		case register == DX && form.observesDX:
+			constraints = append(constraints, "1")
+		default:
+			constraints = append(constraints, "{"+strings.ToLower(string(register))+"}")
+		}
 	}
-	call := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = call { i32, i32 } asm sideeffect %q, %q(i32 %s, i32 %s, i32 %s, i32 %s, i32 %s, i32 %s, i32 %s)\n",
-		call,
-		"int $$0x80",
-		"={ax},={dx},{ax},{bx},{cx},{dx},{si},{di},{bp},~{dirflag},~{fpsr},~{flags},~{memory}",
-		args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-	)
-	for i, reg := range []Reg{AX, DX} {
-		value := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue { i32, i32 } %%%s, %d\n", value, call, i)
-		if err := c.storeRegSized(reg, I32, "%"+value); err != nil {
+	for _, register := range form.clobbers {
+		if register == "" {
+			continue
+		}
+		name := strings.ToLower(string(register))
+		if register == CX {
+			name = "rcx"
+		}
+		constraints = append(constraints, "~{"+name+"}")
+	}
+	constraints = append(constraints, "~{dirflag}", "~{fpsr}", "~{flags}", "~{memory}")
+	result := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s asm sideeffect %q, %q(%s)\n", result, resultType,
+		form.instruction, strings.Join(constraints, ","), strings.Join(args, ", "))
+	if !form.observesDX {
+		return c.storeRegSized(AX, typ, "%"+result)
+	}
+	for index, register := range [...]Reg{AX, DX} {
+		word := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, %d\n", word, resultType, result, index)
+		if err := c.storeRegSized(register, typ, "%"+word); err != nil {
 			return err
 		}
 	}

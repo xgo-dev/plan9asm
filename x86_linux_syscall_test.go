@@ -26,9 +26,14 @@ const x86LinuxSyscallDeclaration = `func Raw(number, a1, a2, a3, a4, a5, a6 uint
 var x86LinuxSyscallAssembly string
 
 func TestX86LinuxSyscallOriginalGo(t *testing.T) {
+	x86LinuxSyscallOriginalGo(t, "amd64", x86LinuxSyscallAssembly)
+}
+
+func x86LinuxSyscallOriginalGo(t *testing.T, arch, assembly string) {
+	t.Helper()
 	directory := t.TempDir()
-	files := make(map[string]string)
-	for _, name := range []string{"go.mod.txt", "main.go", "raw_amd64.s"} {
+	files := map[string]string{"raw_" + arch + ".s": assembly}
+	for _, name := range []string{"go.mod.txt", "main.go"} {
 		data, err := os.ReadFile(filepath.Join("testdata/amd64/linux-syscall", name))
 		if err != nil {
 			t.Fatal(err)
@@ -47,11 +52,11 @@ func TestX86LinuxSyscallOriginalGo(t *testing.T) {
 	defer cancel()
 	command := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin/go"), "build", "-p=1", "-mod=readonly", "-o", filepath.Join(directory, "original"), ".")
 	command.Dir = directory
-	command.Env = append(os.Environ(), "GOROOT="+runtime.GOROOT(), "GOTOOLCHAIN=local", "GOENV=off", "GOWORK=off", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0", "GOPROXY=off")
+	command.Env = append(os.Environ(), "GOROOT="+runtime.GOROOT(), "GOTOOLCHAIN=local", "GOENV=off", "GOWORK=off", "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0", "GOPROXY=off")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("original full Go assembly/ELF link: %v\n%s", err, output)
 	}
-	if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
+	if runtime.GOOS == "linux" && (runtime.GOARCH == arch || runtime.GOARCH == "amd64" && arch == "386") {
 		command = exec.CommandContext(ctx, filepath.Join(directory, "original"))
 		output, err := command.CombinedOutput()
 		if err != nil || !strings.Contains(string(output), "ORIGINAL_RAW_SYSCALL_PASS") {
@@ -127,19 +132,14 @@ func TestX86LinuxSyscallEmitterArtifact(t *testing.T) {
 
 func TestX86LinuxSyscallFormAndTarget(t *testing.T) {
 	for _, target := range []string{"x86_64-unknown-linux-gnu", "x86_64-linux-gnu"} {
-		effect, known, err := x86LinuxSyscallByteEffect(Instr{Op: "SYSCALL", Raw: "SYSCALL"}, "amd64", target)
-		if !known || err != nil || !effect.requiresResultProof || len(effect.operands) != 8 || effect.flagsKilled != x86ByteFlagsAll || effect.flagsDefined != 0 {
-			t.Fatal("complete target-aware raw effect", target, known, err, effect)
-		}
-		for index, register := range []Reg{AX, DI, SI, DX, "R10", "R8", "R9"} {
-			operand := effect.operands[index]
-			if !operand.read || operand.write || operand.width != 8 || operand.operand.Kind != OpReg || operand.operand.Reg != register {
-				t.Fatal("kernel input role changed", index, operand)
-			}
+		form, known, err := x86LinuxSyscallProperties(Instr{Op: "SYSCALL", Raw: "SYSCALL"}, "amd64", target)
+		if !known || err != nil || form.width != 8 || form.inputs != [7]Reg{AX, DI, SI, DX, "R10", "R8", "R9"} ||
+			form.clobbers != [2]Reg{CX, "R11"} || form.observesDX || form.instruction != "syscall" {
+			t.Fatal("complete target-aware raw form", target, known, err, form)
 		}
 	}
 	for _, target := range []string{"", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-linux-windows-msvc", "i386-unknown-linux-gnu", "wasm32-unknown-unknown"} {
-		if _, _, err := x86LinuxSyscallByteEffect(Instr{Op: "SYSCALL", Raw: "SYSCALL"}, "amd64", target); err == nil {
+		if _, _, err := x86LinuxSyscallProperties(Instr{Op: "SYSCALL", Raw: "SYSCALL"}, "amd64", target); err == nil {
 			t.Fatal("unclosed target accepted", target)
 		}
 	}

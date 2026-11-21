@@ -12,7 +12,8 @@ func Raw(number, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr)
 var kept []byte // The uintptr transport never supplies a GC root itself.
 
 func main() {
-	const sentinel = uintptr(0x123456789abcdef)
+	sentinelBits := uint64(0x123456789abcdef)
+	sentinel := uintptr(sentinelBits)
 	pid, preserved := Raw(syscall.SYS_GETPID, 0, 0, sentinel, 0, 0, 0)
 	if pid != uintptr(syscall.Getpid()) || preserved != sentinel {
 		panic("getpid/register")

@@ -30,6 +30,11 @@ func checkX86LogicalRegisterResultInitialization(fn Func, sig FuncSig, arch stri
 		validRole = arch == "386" && sig.Ret == I1 && len(sig.ArgRegs) != 0 &&
 			len(sig.ArgRegs) == len(sig.Args) && len(sig.Args) <= 6
 		width = 1
+	} else if sig.Ret == Void {
+		role = "custom register void source"
+		validRole = arch == "386" && len(sig.ArgRegs) != 0 &&
+			len(sig.ArgRegs) == len(sig.Args) && len(sig.Args) <= 7
+		width = 0
 	}
 	fail := func(reason string) error {
 		return fmt.Errorf("%w: %s: %s", ErrProbeNeedsContext, role, reason)
@@ -101,6 +106,9 @@ func checkX86LogicalRegisterResultInitialization(fn Func, sig FuncSig, arch stri
 	}
 	return checkX86ResultSourceFlow(fn, initial, nil, 0, arch, transfer,
 		func(state x86ResultState, pc int) error {
+			if width == 0 {
+				return nil // Void still proves every reaching input and effect.
+			}
 			root, mask, _ := x86ResultGP(AX, width, arch)
 			if state.gp[root]&mask != mask {
 				return fail(fmt.Sprintf("AX low %d result bytes are not initialized on every path to RET %d", width, pc))

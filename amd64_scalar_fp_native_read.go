@@ -36,8 +36,15 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	}
 	var nativeMMX *x86NativeMMXRegion
 	named := true
+	hasLinuxSyscall := false
 	for _, ins := range fn.Instrs {
 		named = named && x86ResultNamedPredicateInstruction(ins)
+		if _, known, err := x86LinuxSyscallProperties(ins, arch, c.targetTriple); known {
+			if err != nil {
+				return err
+			}
+			hasLinuxSyscall = true
+		}
 	}
 	if named {
 		var err error
@@ -78,6 +85,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 	}
 	customRegisterBool := arch == "386" && sig.Ret == I1 && len(sig.ArgRegs) != 0
+	customRegisterVoid := hasLinuxSyscall && arch == "386" && sig.Ret == Void && len(sig.ArgRegs) != 0
 	logicalScalar := x86LogicalScalarResultNeedsProof(sig, arch)
 	if customRegisterBool || logicalScalar {
 		strictErr = checkX86LogicalRegisterResultInitialization(fn, sig, arch,
@@ -903,7 +911,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	if registerEntry {
 		return checkAMD64RegisterResultInitialization(fn, sig, zeroX15, transfer)
 	}
-	if customRegisterBool || logicalScalar {
+	if customRegisterBool || customRegisterVoid || logicalScalar {
 		return checkX86LogicalRegisterResultInitialization(fn, sig, arch, transfer, customRegisterBool, true)
 	}
 	vectorEntry := arch == "amd64" && nativeMMX == nil && fn.FrameSize == 0 &&
