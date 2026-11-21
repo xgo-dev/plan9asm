@@ -1920,6 +1920,14 @@ func fallbackSigForAsmFunc(fn plan9asm.Func, resolved, goarch string) plan9asm.F
 			return native
 		}
 	}
+	if goarch == "386" && fn.FrameSize == 0 && fn.ArgSize == 0 && len(fn.X86RawText) == 0 &&
+		len(fn.Instrs) == 2 && fn.Instrs[0].Op == plan9asm.OpTEXT &&
+		fn.Instrs[1].Op == plan9asm.OpRET && len(fn.Instrs[1].Args) == 0 &&
+		!strings.Contains(strings.TrimSuffix(fn.Sym, "<>"), "<") {
+		// A bare return in an empty ordinary entry supplies no AX value.
+		// This also covers file-local TEXTs whose address is taken.
+		return plan9asm.FuncSig{Name: resolved, Ret: plan9asm.Void}
+	}
 	paramOff := map[int64]struct{}{}
 	retOff := map[int64]struct{}{}
 

@@ -452,6 +452,32 @@ func TestFallbackARMKernelHelperIsNotGuessedIntegerReturn(t *testing.T) {
 	}
 }
 
+func TestFallback386EmptyTextHasNoInventedAXResult(t *testing.T) {
+	for _, row := range []struct {
+		name, source string
+		want         plan9asm.LLVMType
+	}{
+		{"address marker", "TEXT marker<>(SB), $0\nRET\n", plan9asm.Void},
+		{"explicit zero arguments", "TEXT ·marker(SB), 4, $0-0\nRET\n", plan9asm.Void},
+		{"register result", "TEXT ·value(SB), 4, $0-0\nMOVL $7, AX\nRET\n", plan9asm.I32},
+		{"other return form", "TEXT ·forward(SB), 4, $0-0\nRET ·other(SB)\n", plan9asm.I32},
+		{"explicit register ABI", "TEXT ·marker<ABIInternal>(SB), 4, $0-0\nRET\n", plan9asm.I32},
+		{"nonempty argument extent", "TEXT ·marker(SB), 4, $0-4\nRET\n", plan9asm.I32},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			file, err := plan9asm.Parse(plan9asm.ArchAMD64, row.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fn := file.Funcs[0]
+			sig := fallbackSigForAsmFunc(fn, fn.Sym, "386")
+			if sig.Ret != row.want || len(sig.Args)+len(sig.Frame.Params)+len(sig.Frame.Results) != 0 {
+				t.Fatalf("fallback signature = %#v, want no arguments and %s result", sig, row.want)
+			}
+		})
+	}
+}
+
 func TestSigsForAsmFileDiscoversRETTailTarget(t *testing.T) {
 	typesPkg := types.NewPackage("example.com/retjmp", "retjmp")
 	voidSig := types.NewSignatureType(nil, nil, nil, nil, nil, false)
