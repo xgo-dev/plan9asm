@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -61,7 +62,12 @@ func TestX86RawDescriptorStoreCompiles(t *testing.T) {
 	} {
 		t.Run(target.goarch, func(t *testing.T) {
 			var source strings.Builder
-			source.WriteString("TEXT rawDescriptorStore(SB),$0-0\n")
+			word, move := 8, "MOVQ"
+			if target.goarch == "386" {
+				word, move = 4, "MOVL"
+			}
+			head := fmt.Sprintf("TEXT ·rawDescriptorStore(SB),4,$0-%d\n", word)
+			setup := fmt.Sprintf("%s address+0(FP), DI\n", move)
 			codes := [][]byte{
 				{0x0f, 0x00, 0x07}, {0x0f, 0x00, 0x0f}, {0x0f, 0x01, 0x27},
 				{0x66, 0x0f, 0x00, 0xc0}, {0x0f, 0x00, 0xc0},
@@ -81,18 +87,41 @@ func TestX86RawDescriptorStoreCompiles(t *testing.T) {
 				}
 			}
 			source.WriteString("RET\n")
-			file, err := Parse(ArchAMD64, source.String())
-			if err != nil {
-				t.Fatal(err)
+			body := source.String()
+			const decl = "func rawDescriptorStore(address *[2]byte)"
+			bound := head + setup + body
+			requireX86GoAssemblerResult(t, target.goarch, bound, true)
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run(api, func(t *testing.T) {
+					ir, err := x86ScalarFPBitViewAPI(t, bound, decl, target.goarch, target.triple, api)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Count(ir, "elementtype(i16)") != 3 {
+						t.Fatalf("raw descriptor stores must preserve each m16 access:\n%s", ir)
+					}
+					for _, regForm := range []struct{ suffix, typ string }{{"w", "i16"}, {"l", "i32"}, {"q", "i64"}} {
+						if regForm.suffix == "q" && target.goarch == "386" {
+							continue
+						}
+						for _, stem := range []string{"sldt", "smsw", "str"} {
+							prefix := fmt.Sprintf("call %s asm sideeffect %q", regForm.typ, stem+regForm.suffix+" $0")
+							if !strings.Contains(ir, prefix) {
+								t.Fatalf("raw descriptor register width missing %s:\n%s", prefix, ir)
+							}
+						}
+					}
+					compileLLVMToObject(t, llc, target.triple, "raw-descriptor-store.ll", "raw-descriptor-store.o", ir)
+
+					if out, err := x86ScalarFPBitViewAPI(t, head+body, decl, target.goarch, target.triple, api); out != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatalf("descriptor store with no address setup: %v\n%s", err, out)
+					}
+					const override = "BYTE $0x67\nBYTE $0x0f\nBYTE $0x00\nBYTE $0x07\nRET\n"
+					if out, err := x86ScalarFPBitViewAPI(t, head+setup+override, decl, target.goarch, target.triple, api); out != "" || !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatalf("descriptor store with an unbound address-size override: %v\n%s", err, out)
+					}
+				})
 			}
-			ir, err := Translate(file, Options{
-				Goarch: target.goarch, TargetTriple: target.triple,
-				Sigs: map[string]FuncSig{"rawDescriptorStore": {Name: "rawDescriptorStore", Ret: Void}},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			compileLLVMToObject(t, llc, target.triple, "raw-descriptor-store.ll", "raw-descriptor-store.o", ir)
 		})
 	}
 }

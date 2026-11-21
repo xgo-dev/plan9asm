@@ -9736,6 +9736,16 @@ func decodedX86GoSyntax(inst x86asm.Inst, encoding []byte) (string, error) {
 		// x/arch prints the unsuffixed Intel names, while Go's descriptor
 		// grammar selects the destination width in the mnemonic. Memory
 		// destinations are always the architectural 16-bit selector/status.
+		for _, prefix := range inst.Prefix {
+			switch prefix & 0xff {
+			case x86asm.PrefixLOCK:
+				return "", fmt.Errorf("raw %s does not allow LOCK", inst.Op)
+			case x86asm.PrefixREP, x86asm.PrefixREPN:
+				if prefix&x86asm.PrefixIgnored == 0 {
+					return "", fmt.Errorf("%w: raw %s has an unbound repeat prefix", ErrProbeNeedsContext, inst.Op)
+				}
+			}
+		}
 		bits := 0
 		switch destination := inst.Args[0].(type) {
 		case x86asm.Mem:

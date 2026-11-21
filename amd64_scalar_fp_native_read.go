@@ -148,6 +148,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	boundRawPackedDot := false
 	boundRawZeroExtend := false
 	boundRawPackedPrecision := false
+	boundRawDescriptor := false
 	for _, ins := range fn.Instrs {
 		if x86RawMaskMoveSource(ins, arch) {
 			continue // Exact mask data retains independent input, native-address and width checks.
@@ -307,6 +308,13 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		if x86RawMOVBESource(ins, arch) {
 			continue // Decoder identity grants neither native input bytes nor a destination pointer.
+		}
+		if x86RawDescriptorWriteOrigin(ins, arch) {
+			if !boundRawDescriptor && (fn.x86RawReplay == nil || fn.x86RawReplay.validate(fn, arch) != nil) {
+				return strictErr
+			}
+			boundRawDescriptor = true
+			continue // The paired descriptor effect still checks every address and register write.
 		}
 		if x86RawTernaryGPSource(ins, arch) {
 			continue // Exact source identity does not supply numerical inputs or native memory.

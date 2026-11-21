@@ -2,6 +2,7 @@ package plan9asm
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -18,6 +19,15 @@ var x86DescriptorWriteWidths = x86OpcodeWidths{
 	"STR":  "WLQ",
 }
 
+func x86DescriptorWriteOpcode(op string) (stem string, suffix byte, known bool) {
+	if op == "" {
+		return "", 0, false
+	}
+	last := len(op) - 1
+	stem, suffix = op[:last], op[last]
+	return stem, suffix, strings.ContainsRune(x86DescriptorWriteWidths[stem], rune(suffix))
+}
+
 func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, bool, error) {
 	base, _, suffix := strings.Cut(strings.ToUpper(string(op)), ".")
 	if base == "" {
@@ -31,10 +41,10 @@ func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, 
 		width = 2 + x86ResultPointerWord(arch)
 	case "LLDT", "LTR", "LMSW":
 	default:
-		last := len(base) - 1
-		stem = base[:last]
-		widthSuffix := base[last]
-		if !strings.ContainsRune(x86DescriptorWriteWidths[stem], rune(widthSuffix)) {
+		var widthSuffix byte
+		var known bool
+		stem, widthSuffix, known = x86DescriptorWriteOpcode(base)
+		if !known {
 			return x86DescriptorForm{}, false, nil
 		}
 		write = true
@@ -162,7 +172,8 @@ func x86LoweredSystemStep(ins Instr, state *x86ResultState, owned []bool, result
 // Native addresses grant no local initialized bytes or pointer provenance.
 func x86LoweredSystemOperandStep(ins Instr, effect x86TypedByteOperand, state *x86ResultState,
 	owned []bool, resultOffset int64, arch, triple string) bool {
-	if !x86ScalarFloatIntegerNativeTarget(arch, triple) || !x86ResultNamedPredicateInstruction(ins) {
+	if !x86ScalarFloatIntegerNativeTarget(arch, triple) ||
+		!(x86ResultNamedPredicateInstruction(ins) || x86RawDescriptorWriteOrigin(ins, arch)) {
 		return false
 	}
 	operand := effect.operand
@@ -186,6 +197,23 @@ func x86LoweredSystemOperandStep(ins Instr, effect x86TypedByteOperand, state *x
 	}
 	return x86ResultIncomingPointerAddressIdentity(operand, state, arch) ||
 		x86ResultNativeNumericAddress(operand, state, arch)
+}
+
+// The decoder's SLDT/SMSW/STR alias keeps the exact register width or m16
+// destination. The origin does not supply an initialized address or frame.
+func x86RawDescriptorWriteOrigin(ins Instr, arch string) bool {
+	origin := ins.x86SourceRaw
+	if origin == nil || ins.Op != origin.op || len(ins.Args) != 1 ||
+		origin.addressBits != 0 || ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride ||
+		ins.x86SegmentPrefix != 0 || ins.x86RawNearReturn != nil || ins.x86RIPLiteral {
+		return false
+	}
+	if _, _, known := x86DescriptorWriteOpcode(string(ins.Op)); !known || !reflect.DeepEqual(origin.args, ins.Args) {
+		return false
+	}
+	operand := ins.Args[0]
+	return operand.Kind == OpReg ||
+		x86RegisterAddressedNativeMemoryOperand(operand, arch) && operand.Mem.Segment == ""
 }
 
 func (c *amd64Ctx) x86DescriptorMemoryPointer(operand Operand) (ptr, ptrType string, err error) {
