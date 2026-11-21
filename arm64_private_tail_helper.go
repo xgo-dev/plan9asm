@@ -146,16 +146,27 @@ func arm64PrivateTailDataRegister(reg Reg) bool {
 // the entire resulting root CFG. Reject source expansions that independently
 // materialize Go R27 even when it is absent from the written operands.
 func arm64PrivateTailBody(fn Func) error {
+	return arm64PrivateTailBodyWithFrame(fn, false)
+}
+
+func arm64PrivateTailBodyWithFrame(fn Func, borrowed bool) error {
 	if err := arm64PrivateTailZeroFrame(fn, false); err != nil {
 		return err
 	}
-	return arm64PrivateContinuationBody(fn, arm64PrivateTailDataRegister, nil, true)
+	if borrowed {
+		var err error
+		fn, err = normalizeARM64ScalarMemoryFrame(fn)
+		if err != nil {
+			return err
+		}
+	}
+	return arm64PrivateContinuationBody(fn, arm64PrivateTailDataRegister, nil, true, borrowed)
 }
 
 // Operand purity is shared by CALL and tail continuations, but their entry and
 // return contracts remain separate. This grammar grants neither initialized
 // inputs nor pointer bounds: the complete root's independent proofs own those.
-func arm64PrivateContinuationBody(fn Func, dataRegister func(Reg) bool, scratchContract func(Op, Instr, arm64GPDataForm) bool, allowAlignment bool) error {
+func arm64PrivateContinuationBody(fn Func, dataRegister func(Reg) bool, scratchContract func(Op, Instr, arm64GPDataForm) bool, allowAlignment, borrowed bool) error {
 	labels := map[string]bool{}
 	for _, ins := range fn.Instrs[1:] {
 		if ins.Op == OpLABEL {
@@ -227,6 +238,13 @@ func arm64PrivateContinuationBody(fn Func, dataRegister func(Reg) bool, scratchC
 					}
 				}
 				data = true
+			case OpFP:
+				form, ok := arm64RawPrivateMemory(ins)
+				if !borrowed || !ok || !form.gp || form.pre || form.post ||
+					len(form.registers) != 1 || form.elementBytes == 0 {
+					return arm64GoABIContext("private tail %q has an unbound frame operand at %q", fn.Sym, ins.Raw)
+				}
+				data = true
 			case OpMem:
 				m := arg.Mem
 				if m.Sym != "" || m.Segment != "" || m.OffRaw != "" || !arm64PrivateDataGP(m.Base) || m.Base == ZR || !dataRegister(m.Base) ||
@@ -268,6 +286,7 @@ func coalesceARM64PrivateTailHelpersWithABI0(file *File, remaining *int, sigs ma
 		return file, nil
 	}
 	requested := map[string]bool{}
+	borrowers := map[string]bool{}
 	for _, fn := range file.Funcs {
 		declaredABI0 := resolve != nil && sigs[resolve(goTextSymbolForResolution(fn.Sym))].arm64ABI0TailDeclaration != nil
 		if !strings.HasSuffix(fn.Sym, "<ABIInternal>") && !declaredABI0 {
@@ -276,6 +295,7 @@ func coalesceARM64PrivateTailHelpersWithABI0(file *File, remaining *int, sigs ma
 		for _, ins := range fn.Instrs {
 			if name, ok := arm64PrivateTailTarget(ins); ok {
 				requested[name] = true
+				borrowers[name] = borrowers[name] || declaredABI0
 			}
 		}
 	}
@@ -284,19 +304,14 @@ func coalesceARM64PrivateTailHelpersWithABI0(file *File, remaining *int, sigs ma
 		if !requested[fn.Sym] {
 			continue
 		}
-		fp := false
-		for _, ins := range fn.Instrs {
-			for _, arg := range ins.Args {
-				fp = fp || arg.Kind == OpFP || arg.Kind == OpFPAddr
-			}
-		}
-		if fp || fn.ArgSize != 0 {
+		fp := arm64TailUsesFrame(fn)
+		if fn.ArgSize != 0 || fp && (!borrowers[fn.Sym] || !arm64ABI0UnboundBorrowedHelper(fn, resolve, sigs)) {
 			continue // Existing explicit FP/callee contracts are not continuations.
 		}
 		if _, duplicate := helpers[fn.Sym]; duplicate {
 			return nil, arm64GoABIContext("duplicate private tail TEXT %q", fn.Sym)
 		}
-		if err := arm64PrivateTailBody(fn); err != nil {
+		if err := arm64PrivateTailBodyWithFrame(fn, fp); err != nil {
 			return nil, err
 		}
 		helpers[fn.Sym] = fn
@@ -359,6 +374,9 @@ func coalesceARM64PrivateTailHelpersWithABI0(file *File, remaining *int, sigs ma
 				}
 				var err error
 				if strings.HasSuffix(fn.Sym, "<ABIInternal>") {
+					if arm64TailUsesFrame(helpers[base]) {
+						return nil, arm64GoABIContext("branch to %q has no borrowed ABI0 frame", base)
+					}
 					err = arm64PrivateTailZeroFrame(fn, true)
 				} else if resolve != nil {
 					err = arm64ABI0TailRoot(fn, sigs[resolve(goTextSymbolForResolution(fn.Sym))])

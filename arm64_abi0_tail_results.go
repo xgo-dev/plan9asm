@@ -10,8 +10,9 @@ import (
 // or mixed capability. Neither initialized LLVM allocas nor function-wide FP
 // routing hints establish that a result was written on every returning path.
 type arm64ABI0ResultState struct {
-	addresses [32]int16
-	written   [16]uint8
+	addresses     [32]int16
+	written       [16]uint8
+	borrowedFrame bool
 }
 
 func arm64ABI0ResultRegister(reg Reg) (int, bool) {
@@ -109,6 +110,14 @@ func (s *arm64ABI0ResultState) step(ins Instr, sig FuncSig) error {
 	}
 	if form, known := arm64RawPrivateMemory(ins); known {
 		if form.store {
+			if s.borrowedFrame && form.gp && form.memory.Kind == OpMem && form.scratch == nil && s.operand(form.memory) {
+				for _, reg := range form.registers {
+					if s.address(reg) != 0 {
+						return reject()
+					}
+				}
+				return nil // Ordinary reaching data cannot initialize an ABI0 result.
+			}
 			if !form.gp || len(form.registers) != 1 || form.pre || form.post || form.scratch != nil ||
 				s.address(form.registers[0]) != 0 {
 				return reject()
@@ -135,6 +144,12 @@ func (s *arm64ABI0ResultState) step(ins Instr, sig FuncSig) error {
 		if form.memory.Kind == OpFP {
 			if _, result := arm64ABI0ResultIndex(sig, form.memory.FPOffset); result {
 				return reject() // Initial scope uses declared parameter loads only.
+			}
+			if s.borrowedFrame {
+				size := form.elementBytes * int64(len(form.registers))
+				if _, err := arm64FPFrameParts(form.memory.FPOffset, size, sig.Frame.Params, nil); err != nil {
+					return arm64GoABIContext("borrowed ABI0 frame read requires declared parameter bytes: %v", err)
+				}
 			}
 		}
 		for _, reg := range form.registers {
@@ -189,7 +204,7 @@ func (s *arm64ABI0ResultState) step(ins Instr, sig FuncSig) error {
 	return nil
 }
 
-func arm64ABI0TailResultProof(fn Func, sig FuncSig) error {
+func arm64ABI0TailResultProof(fn Func, sig FuncSig, borrowed bool) error {
 	if len(fn.Instrs) == 0 || len(fn.Instrs) > arm64PrivateRegisterExpansionBudget || len(sig.Frame.Results) > 16 {
 		return arm64GoABIContext("ABI0 result CFG exceeds its checked bound")
 	}
@@ -203,7 +218,7 @@ func arm64ABI0TailResultProof(fn Func, sig FuncSig) error {
 		}
 	}
 	states := make([]*arm64ABI0ResultState, len(fn.Instrs))
-	states[0] = &arm64ABI0ResultState{}
+	states[0] = &arm64ABI0ResultState{borrowedFrame: borrowed}
 	queue := []int{0}
 	steps, returns := 0, 0
 	for len(queue) != 0 {

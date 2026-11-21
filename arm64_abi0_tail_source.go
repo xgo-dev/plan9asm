@@ -96,12 +96,18 @@ func validateARM64ABI0TailSource(fn Func, sig FuncSig) error {
 	if err := arm64ABI0TailRoot(p.original, sig); err != nil {
 		return err
 	}
+	borrowed := false
 	for _, helper := range p.helpers {
-		if err := arm64PrivateTailBody(helper); err != nil {
+		fp := arm64TailUsesFrame(helper)
+		if fp && !arm64ABI0UnboundBorrowedHelper(helper, nil, nil) {
+			return arm64GoABIContext("ABI0 continuation lost its frameless helper")
+		}
+		if err := arm64PrivateTailBodyWithFrame(helper, fp); err != nil {
 			return err
 		}
+		borrowed = borrowed || fp
 	}
-	return arm64ABI0TailResultProof(fn, sig)
+	return arm64ABI0TailResultProof(fn, sig, borrowed)
 }
 
 // PrepareGoARM64ABI0TailContinuations is declaration-backed preparation before

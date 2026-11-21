@@ -15,6 +15,10 @@ type arm64FPFramePart struct {
 // Frame fields have independent allocas: their ABI offsets describe byte
 // adjacency, not the physical adjacency of the LLVM allocations.
 func (c *arm64Ctx) fpFrameParts(off, size int64) ([]arm64FPFramePart, error) {
+	return arm64FPFrameParts(off, size, c.sig.Frame.Params, c.fpResults)
+}
+
+func arm64FPFrameParts(off, size int64, params, results []FrameSlot) ([]arm64FPFramePart, error) {
 	const maxOffset = int64(1<<63 - 1)
 	if off < 0 || size <= 0 || size > 16 || off > maxOffset-size {
 		return nil, fmt.Errorf("arm64: invalid FP frame range +%d(FP), size %d", off, size)
@@ -22,7 +26,8 @@ func (c *arm64Ctx) fpFrameParts(off, size int64) ([]arm64FPFramePart, error) {
 	// Generated Go argument/result layouts start at zero and advance by
 	// nonnegative field sizes. Reject malformed slot extents before any signed
 	// subtraction or end-offset arithmetic can wrap and appear in-range.
-	for _, slots := range [][]FrameSlot{c.sig.Frame.Params, c.fpResults} {
+	groups := [2][]FrameSlot{params, results}
+	for _, slots := range groups {
 		for _, slot := range slots {
 			slotSize := frameTypeSize(slot.Type, 8)
 			if slot.Offset < 0 || slot.Offset > maxOffset-slotSize {
@@ -33,7 +38,7 @@ func (c *arm64Ctx) fpFrameParts(off, size int64) ([]arm64FPFramePart, error) {
 	var parts []arm64FPFramePart
 	for cursor := off; cursor < off+size; {
 		var found *FrameSlot
-		for _, slots := range [][]FrameSlot{c.sig.Frame.Params, c.fpResults} {
+		for _, slots := range groups {
 			for _, slot := range slots {
 				slotSize := frameTypeSize(slot.Type, 8)
 				if cursor < slot.Offset || cursor >= slot.Offset+slotSize {
@@ -56,7 +61,7 @@ func (c *arm64Ctx) fpFrameParts(off, size int64) ([]arm64FPFramePart, error) {
 		if remaining := off + size - cursor; bytes > remaining {
 			bytes = remaining
 		}
-		for _, slots := range [][]FrameSlot{c.sig.Frame.Params, c.fpResults} {
+		for _, slots := range groups {
 			for _, slot := range slots {
 				if slot.Offset > cursor && slot.Offset < cursor+bytes {
 					return nil, fmt.Errorf("arm64: FP frame range +%d(FP)..+%d(FP) contains overlapping slots at +%d(FP)", off, off+size, slot.Offset)

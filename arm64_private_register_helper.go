@@ -32,7 +32,7 @@ func arm64PrivateRegisterLeaf(fn Func) error {
 	if !valid || offset != 0 || name != fn.Sym || err != nil || frame != fn.FrameSize || args != fn.ArgSize {
 		return arm64GoABIContext("private helper %q changed its complete TEXT identity", fn.Sym)
 	}
-	if err := arm64PrivateContinuationBody(fn, arm64PrivateCallDataRegister, arm64PrivateCallImmediateScratch, false); err != nil {
+	if err := arm64PrivateContinuationBody(fn, arm64PrivateCallDataRegister, arm64PrivateCallImmediateScratch, false, false); err != nil {
 		return err
 	}
 	return arm64PrivateCallAcyclic(fn)

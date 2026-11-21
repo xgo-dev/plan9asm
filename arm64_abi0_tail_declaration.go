@@ -181,7 +181,7 @@ func BindGoARM64ABI0TailDeclarations(pkg GoPackage, file *File, resolve func(str
 		return result, nil
 	}
 	for _, root := range file.Funcs {
-		candidate := arm64ABI0TailCandidate(file, root)
+		candidate := arm64ABI0TailCandidate(file, root, resolve, sigs)
 		if !candidate || strings.HasSuffix(root.Sym, "<ABIInternal>") || strings.HasSuffix(root.Sym, "<>") {
 			continue
 		}
@@ -259,14 +259,14 @@ func GoARM64ABI0TailDeclarationBindingNeeded(file *File) bool {
 		if strings.Contains(fn.Sym, "<") {
 			continue
 		}
-		if arm64ABI0TailCandidate(file, fn) {
+		if arm64ABI0TailCandidate(file, fn, nil, nil) {
 			return true
 		}
 	}
 	return false
 }
 
-func arm64ABI0TailCandidate(file *File, root Func) bool {
+func arm64ABI0TailCandidate(file *File, root Func, resolve func(string) string, sigs map[string]FuncSig) bool {
 	for _, ins := range root.Instrs {
 		name, tail := arm64PrivateTailTarget(ins)
 		if !tail {
@@ -276,18 +276,47 @@ func arm64ABI0TailCandidate(file *File, root Func) bool {
 			if helper.Sym != name || helper.ArgSize != 0 {
 				continue
 			}
-			fp := false
-			for _, instruction := range helper.Instrs {
-				for _, arg := range instruction.Args {
-					fp = fp || arg.Kind == OpFP || arg.Kind == OpFPAddr
-				}
-			}
-			if !fp {
+			if !arm64TailUsesFrame(helper) ||
+				arm64ABI0UnboundBorrowedHelper(helper, resolve, sigs) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func arm64TailUsesFrame(fn Func) bool {
+	for _, ins := range fn.Instrs {
+		for _, arg := range ins.Args {
+			if arg.Kind == OpFP || arg.Kind == OpFPAddr {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func arm64ABI0UnboundBorrowedHelper(fn Func, resolve func(string) string, sigs map[string]FuncSig) bool {
+	if !strings.HasSuffix(fn.Sym, "<>") || fn.FrameSize != 0 || fn.ArgSize != 0 ||
+		len(fn.Instrs) == 0 || fn.Instrs[0].Op != OpTEXT {
+		return false
+	}
+	if resolve != nil {
+		if _, declared := sigs[resolve(goTextSymbolForResolution(fn.Sym))]; declared {
+			return false
+		}
+	}
+	_, text := splitOpcode(fn.Instrs[0].Raw)
+	fields := strings.Split(text, ",")
+	if len(fields) != 3 {
+		return false
+	}
+	flags, numeric := parseImmExpr(strings.TrimSpace(fields[1]))
+	if numeric {
+		return flags == 4|512 // NOSPLIT | NOFRAME.
+	}
+	named, err := nativeFlags(fields[1], "NOSPLIT", "NOFRAME")
+	return err == nil && named["NOSPLIT"] && named["NOFRAME"]
 }
 
 func goBindARM64ABI0TailDeclarations(pkg GoPackage, file *File, resolve func(string) string, opt GoModuleOptions) (map[string]FuncSig, error) {
