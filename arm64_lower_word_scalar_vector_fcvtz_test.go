@@ -2,31 +2,45 @@ package plan9asm
 
 import (
 	"fmt"
-	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestARM64RawScalarVectorFCVTZCompleteFamily(t *testing.T) {
-	forms := []struct {
-		name       string
-		encoding   uint32
-		irFragment string
-	}{
-		{"FCVTZS H", 0x5ef9b800, "fcvtzs ${0:h}, ${1:h}"},
-		{"FCVTZS S", 0x5ea1b800, "fcvtzs ${0:s}, ${1:s}"},
-		{"FCVTZS D", 0x5ee1b800, "fcvtzs ${0:d}, ${1:d}"},
-		{"FCVTZU H", 0x7ef9b800, "fcvtzu ${0:h}, ${1:h}"},
-		{"FCVTZU S", 0x7ea1b800, "fcvtzu ${0:s}, ${1:s}"},
-		{"FCVTZU D", 0x7ee1b800, "fcvtzu ${0:d}, ${1:d}"},
+type arm64ScalarSIMDFloatToIntCase struct {
+	name, register string
+	bits           int
+	unsigned       bool
+}
+
+func arm64ScalarSIMDFloatToIntCases(t *testing.T) ([]arm64ScalarSIMDFloatToIntCase, []uint32) {
+	t.Helper()
+	var forms []arm64ScalarSIMDFloatToIntCase
+	var instructions []string
+	for _, mode := range []string{"n", "a", "p", "m", "z"} {
+		for _, sign := range []string{"s", "u"} {
+			for _, width := range []struct {
+				register string
+				bits     int
+			}{{"h", 16}, {"s", 32}, {"d", 64}} {
+				name := "fcvt" + mode + sign
+				forms = append(forms, arm64ScalarSIMDFloatToIntCase{name, width.register, width.bits, sign == "u"})
+				instructions = append(instructions, fmt.Sprintf("%s %s0, %s0", name, width.register, width.register))
+			}
+		}
 	}
-	for _, form := range forms {
+	return forms, assembleARM64LLVMWords(t, instructions, "+fullfp16")
+}
+
+func TestARM64RawScalarVectorFCVTZCompleteFamily(t *testing.T) {
+	forms, encodings := arm64ScalarSIMDFloatToIntCases(t)
+	for index, form := range forms {
 		for sourceReg := 0; sourceReg < 32; sourceReg++ {
 			for destinationReg := 0; destinationReg < 32; destinationReg++ {
-				word := form.encoding | uint32(sourceReg)<<5 | uint32(destinationReg)
-				decoded, ok := decodeARM64RawScalarVectorFCVTZ(word)
-				if !ok || decoded.source != sourceReg || decoded.destination != destinationReg {
-					t.Fatalf("%s register fields not decoded for %#08x: %+v, ok=%v", form.name, word, decoded, ok)
+				word := encodings[index] | uint32(sourceReg)<<5 | uint32(destinationReg)
+				decoded, ok := decodeARM64RawScalarSIMDFloatToInt(word)
+				if !ok || decoded.bits != form.bits || decoded.unsigned != form.unsigned ||
+					decoded.source != sourceReg || decoded.destination != destinationReg {
+					t.Fatalf("%s %s fields not decoded for %#08x: %+v, ok=%v", form.name, form.register, word, decoded, ok)
 				}
 			}
 		}
@@ -34,9 +48,9 @@ func TestARM64RawScalarVectorFCVTZCompleteFamily(t *testing.T) {
 
 	var source strings.Builder
 	source.WriteString("TEXT rawscalarvectorfcvtz(SB),$0-0\n")
-	for _, form := range forms {
-		word := form.encoding | 31<<5 | 30
-		fmt.Fprintf(&source, "\tWORD $%#08x // %s F31, F30\n", word, form.name)
+	for index, form := range forms {
+		word := encodings[index] | 31<<5 | 30
+		fmt.Fprintf(&source, "\tWORD $%#08x // %s %s30, %s31\n", word, form.name, form.register, form.register)
 	}
 	source.WriteString("\tRET\n")
 	requireARM64GoAssemblerResult(t, source.String(), true)
@@ -66,8 +80,9 @@ func TestARM64RawScalarVectorFCVTZCompleteFamily(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, form := range forms {
-				if !strings.Contains(ir, form.irFragment) {
-					t.Fatalf("%s IR omitted %q", form.name, form.irFragment)
+				fragment := fmt.Sprintf("%s ${0:%s}, ${1:%s}", form.name, form.register, form.register)
+				if !strings.Contains(ir, fragment) {
+					t.Fatalf("%s IR omitted %q", form.name, fragment)
 				}
 			}
 			if !strings.Contains(ir, `"target-features"="+fullfp16"`) {
@@ -78,54 +93,110 @@ func TestARM64RawScalarVectorFCVTZCompleteFamily(t *testing.T) {
 	}
 }
 
-func TestARM64RawScalarVectorFCVTZRuntime(t *testing.T) {
-	if runtime.GOARCH != "arm64" {
-		t.Skip("native ARM64 runtime required")
-	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Fatal("LLVM 22 llc/clang not found")
-	}
-	const source = `
-TEXT rawscalarvectorfcvtzruntime(SB),$0-16
+func TestCrossLinuxRuntimeMatrixARM64RawScalarSIMDFloatToInt(t *testing.T) {
+	llc, triple, compiler, runner := arm64FPPairRuntimeTools(t)
+	forms, encodings := arm64ScalarSIMDFloatToIntCases(t)
+	var source, mainC, cases strings.Builder
+	sigs := make(map[string]FuncSig, len(forms))
+	mainC.WriteString("#include <stdint.h>\n#include <stdio.h>\n")
+	for index, form := range forms {
+		name := fmt.Sprintf("simdConvert%d", index)
+		word := encodings[index] | 6<<5 | 23
+		fmt.Fprintf(&source, `
+TEXT %s(SB),4,$0-16
 	MOVD input+0(FP), R0
 	MOVD output+8(FP), R1
-	VLD1 (R0), [V1.S4]
-	WORD $0x5ea1b820 // FCVTZS S1, S0
-	VST1 [V0.S4], (R1)
+	VLD1 (R0), [V6.B16]
+	VLD1 (R1), [V23.B16]
+	WORD $%#08x
+	VST1 [V23.B16], (R1)
 	RET
-`
-	requireARM64GoAssemblerResult(t, source, true)
-	file, err := Parse(ArchARM64, source)
+`, name, word)
+		sigs[name] = arm64SM3Signature(name)
+		fmt.Fprintf(&mainC, `
+extern void %s(const uint64_t *, uint64_t *);
+static void native%d(const uint64_t *in, uint64_t *out) {
+  __asm__ volatile("ldr q6,[%%0]\n\tldr q23,[%%1]\n\t%s %s23,%s6\n\tstr q23,[%%1]"
+                   : : "r"(in), "r"(out) : "v6", "v23", "memory");
+}
+`, name, index, form.name, form.register, form.register)
+		fmt.Fprintf(&cases, "  {%s, native%d, %d},\n", name, index, form.bits)
+	}
+	requireARM64GoAssemblerResult(t, source.String(), true)
+	file, err := Parse(ArchARM64, source.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
 	ir, err := Translate(file, Options{
 		TargetTriple: triple,
 		Goarch:       "arm64",
-		Sigs: map[string]FuncSig{"rawscalarvectorfcvtzruntime": {
-			Name: "rawscalarvectorfcvtzruntime", Args: []LLVMType{Ptr, Ptr}, Ret: Void,
-			Frame: FrameLayout{Params: []FrameSlot{
-				{Offset: 0, Type: Ptr, Index: 0, Field: -1},
-				{Offset: 8, Type: Ptr, Index: 1, Field: -1},
-			}},
-		}},
+		Sigs:         sigs,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	const mainC = `
-#include <stdint.h>
-extern void rawscalarvectorfcvtzruntime(const float *, uint32_t *);
-int main(void) {
-  const float input[4] = {3.75f};
-  uint32_t output[4] = {0};
-  rawscalarvectorfcvtzruntime(input, output);
-  return output[0] == 3 ? 0 : 1;
+
+	mainC.WriteString(`
+typedef void (*convert)(const uint64_t *, uint64_t *);
+static const struct { convert translated, native; int bits; } cases[] = {
+`)
+	mainC.WriteString(cases.String())
+	mainC.WriteString(`
+};
+static void set_status(uint64_t value) {
+  __asm__ volatile("msr fpsr,%0" : : "r"(value) : "memory");
 }
-`
-	compileAndRunRuntimeTestForTarget(t, llc, clang, "arm64_raw_scalar_vector_fcvtz", triple, ir, mainC, nil)
+static uint64_t status(void) {
+  uint64_t value;
+  __asm__ volatile("mrs %0,fpsr" : "=r"(value) : : "memory");
+  return value;
+}
+int main(void) {
+  // Even and odd ties, a subnormal, positive infinity and signaling NaN.
+  static const uint64_t values[][3] = {
+    {0x4100, 0x40200000, 0x4004000000000000},
+    {0x4300, 0x40600000, 0x400c000000000000},
+    {0x0001, 0x00000001, 0x0000000000000001},
+    {0x7c00, 0x7f800000, 0x7ff0000000000000},
+    {0x7c01, 0x7f800001, 0x7ff0000000000001},
+  };
+  uint64_t previous = status();
+  for (unsigned i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) {
+    int width = cases[i].bits;
+    int column = width == 16 ? 0 : width == 32 ? 1 : 2;
+    for (unsigned j = 0; j < sizeof(values)/sizeof(values[0]); ++j) {
+      for (uint64_t sign = 0; sign < 2; ++sign) {
+        uint64_t input[] = {values[j][column] | (sign << (width-1)), 0xabcdef0123456789};
+        uint64_t actual[] = {0x9876543210fedcba, 0xfedcba9876543210};
+        uint64_t expected[] = {actual[0], actual[1]};
+        set_status(0x08000000);
+        cases[i].native(input, expected);
+        uint64_t want_status = status();
+        set_status(0x08000000);
+        cases[i].translated(input, actual);
+        uint64_t got_status = status();
+        if (actual[0] != expected[0] || actual[1] != expected[1] || got_status != want_status) {
+          fprintf(stderr, "conversion %u input %u sign %llu: result or FPSR differs\n",
+                  i, j, (unsigned long long)sign);
+          return 1;
+        }
+      }
+    }
+  }
+  set_status(previous);
+  return 0;
+}
+`)
+	compiler = append(compiler, "-march=armv8.2-a+fp16")
+	// Cross runs need a CPU exposing FEAT_FP16. The host run uses its native CPU.
+	if len(runner) != 0 {
+		runner = append(runner, "-cpu", "max")
+	}
+	for _, level := range []int{0, 2} {
+		t.Run(fmt.Sprintf("O%d", level), func(t *testing.T) {
+			compileAndRunRuntimeTestWithCompiler(t, llc, compiler, "arm64_scalar_simd_fcvt", triple, ir, mainC.String(), runner, level)
+		})
+	}
 }
 
 func TestARM64RawScalarVectorFCVTZRejectsAdjacentEncodings(t *testing.T) {
@@ -135,7 +206,7 @@ func TestARM64RawScalarVectorFCVTZRejectsAdjacentEncodings(t *testing.T) {
 		0x5ea1d800, // Scalar FRECPE, not a conversion.
 		0x5ee9b800, // Reserved size/opcode combination.
 	} {
-		if _, ok := decodeARM64RawScalarVectorFCVTZ(word); ok {
+		if _, ok := decodeARM64RawScalarSIMDFloatToInt(word); ok {
 			t.Fatalf("scalar vector FCVTZ decoder accepted adjacent encoding %#08x", word)
 		}
 	}

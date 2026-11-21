@@ -11,7 +11,7 @@ var arm64RawFloatFamilies = [...]arm64RawFamily{
 	arm64RawNoGPOrMemoryForm(decodeARM64RawHalfFMA, (*arm64Ctx).lowerRawHalfFMA),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawFMULByElement, (*arm64Ctx).lowerRawFMULByElement),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarHalfUnary, (*arm64Ctx).lowerRawScalarHalfUnary),
-	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarVectorFCVTZ, (*arm64Ctx).lowerRawScalarVectorFCVTZ),
+	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarSIMDFloatToInt, (*arm64Ctx).lowerRawScalarSIMDFloatToInt),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarFloatBinary, (*arm64Ctx).lowerRawScalarFloatBinary),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawScalarFloatCompare, (*arm64Ctx).lowerRawScalarFloatCompare),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawConditionalCompare, (*arm64Ctx).lowerARM64ConditionalCompare),

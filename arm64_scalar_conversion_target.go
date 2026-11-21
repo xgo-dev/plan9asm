@@ -17,7 +17,7 @@ func arm64RawScalarConversion(word uint32) bool {
 	if _, ok := decodeARM64RawScalarIntToFloat(word); ok {
 		return true
 	}
-	if _, ok := decodeARM64RawScalarVectorFCVTZ(word); ok {
+	if _, ok := decodeARM64RawScalarSIMDFloatToInt(word); ok {
 		return true
 	}
 	return false
