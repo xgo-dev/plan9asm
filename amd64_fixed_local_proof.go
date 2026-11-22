@@ -334,6 +334,9 @@ func fixedLocalInstructionShape(ins Instr) bool {
 		// The typed form owns register identity, including EVEX scalar inputs.
 		return err == nil && !effect.dynamicMemory
 	}
+	if _, known, err := x86AESProperties(ins.Op, ins, "amd64"); known {
+		return err == nil
+	}
 	for _, operand := range ins.Args {
 		if operand.Kind == OpReg && amd64VectorByteWidth(operand.Reg) != 0 {
 			index, valid := amd64VectorRegisterIndex(operand.Reg, 16)
@@ -357,9 +360,6 @@ func fixedLocalInstructionShape(ins Instr) bool {
 	}
 	if _, known, err := x86SHAProperties(ins.Op, ins, "amd64"); known {
 		return err == nil
-	}
-	if form, known, err := x86AESProperties(ins.Op, ins, "amd64"); known {
-		return err == nil && form.byteWidth == 16
 	}
 	if _, known, err := fixedLocalVectorByteEffect(ins); known {
 		return err == nil

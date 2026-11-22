@@ -76,7 +76,7 @@ func GoAMD64FixedLocalFrameBindingNeeded(file *File, goarch string, options ...O
 			} else if form, known, err := x86SHAProperties(ins.Op, ins, goarch); known {
 				memory, eligible = form.memory, err == nil
 			} else if form, known, err := x86AESProperties(ins.Op, ins, goarch); known {
-				memory, eligible = form.memory, err == nil && form.byteWidth == 16
+				memory, eligible = form.memory, err == nil
 			} else if effect, known, err := fixedLocalVectorByteEffect(ins); known {
 				eligible = err == nil
 				for _, operand := range effect.operands {

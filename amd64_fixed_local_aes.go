@@ -5,13 +5,18 @@ func fixedLocalAESByteStep(ins *Instr, state *x86FixedLocalState, proof *x86Fixe
 	if !known {
 		return false, nil
 	}
-	if err != nil || f.byteWidth != 16 {
+	if err != nil {
 		return true, goAMD64FrameContext("fixed local AES shape is not closed")
 	}
-	width := uint64(65535)
+	bytes := int64(f.byteWidth)
+	width := x86CallerVectorByteMask(bytes)
 	source := state.vectors[x86CallerVectorRoot(f.sourceOperand.Reg)] & width
 	if f.memory >= 0 {
-		if _, _, err := fixedLocalReadMemory(ins, f.memory, state, proof, residue, 16, 1); err != nil {
+		alignment := int64(16) // Only legacy AES carries the SSE alignment fault.
+		if f.spec.vector {
+			alignment = 1
+		}
+		if _, _, err := fixedLocalReadMemory(ins, f.memory, state, proof, residue, bytes, alignment); err != nil {
 			return true, err
 		}
 		source = width
