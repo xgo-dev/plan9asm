@@ -110,6 +110,11 @@ func initializedVectorMemoryProbeSequence(goarch string, ins Instr, numericAddre
 		return nil, false, nil
 	}
 	base, valid := initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: memory.Base})
+	if !numericAddress && x86DataBPNativeMemory(ins.Args[memoryIndex], goarch) {
+		if _, known, err := x86FourSourceProperties(ins.Op, ins, goarch); known && err == nil {
+			base, valid = BP, true
+		}
+	}
 	if !valid {
 		return nil, false, nil
 	}

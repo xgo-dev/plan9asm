@@ -13,7 +13,11 @@ func (c *amd64Ctx) lowerFourSource(op Op, ins Instr) (bool, bool, error) {
 	if !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) || form.memory.Kind == OpFP {
 		return true, false, fmt.Errorf("%w: %s needs original x86 four-source memory and exception behavior", ErrProbeNeedsContext, op)
 	}
-	if err := c.validateConflictFunnelMemory(ins, x86PackedBinaryForm{memory: 0, memoryBytes: 16}); err != nil {
+	if c.dataBPSource && x86DataBPNativeMemory(form.memory, c.goarch) {
+		if err := c.scalarFPResultInitialized(); err != nil {
+			return true, false, err
+		}
+	} else if err := c.validateConflictFunnelMemory(ins, x86PackedBinaryForm{memory: 0, memoryBytes: 16}); err != nil {
 		return true, false, err
 	}
 	return true, false, c.emitNativeFourSource(op, ins, form)

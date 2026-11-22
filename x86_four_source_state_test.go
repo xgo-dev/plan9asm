@@ -26,7 +26,7 @@ func TestX86FourSourceEveryActualByteAliasesAndAtomicState(t *testing.T) {
 				ins := x86ScalarLaneInstruction(t, row.instruction())
 				before := x86FourSourceKnownState(arch)
 				state := before.clone()
-				if accepted, known := x86ResultFourSourceStep(ins, &state, nil, arch, true); !accepted || !known || !reflect.DeepEqual(state, before) {
+				if accepted, known := x86ResultFourSourceStep(ins, &state, nil, arch, true, false); !accepted || !known || !reflect.DeepEqual(state, before) {
 					t.Fatal("complete initialized native bytes changed unrelated vectors/GP/FLAGS/DF/K/storage", accepted, known)
 				}
 				active := 64
@@ -42,7 +42,7 @@ func TestX86FourSourceEveryActualByteAliasesAndAtomicState(t *testing.T) {
 						state := before.clone()
 						state.writeVector(register, 64, ^(uint64(1) << uint(missing)), false)
 						initial := state.clone()
-						accepted, known := x86ResultFourSourceStep(ins, &state, nil, arch, true)
+						accepted, known := x86ResultFourSourceStep(ins, &state, nil, arch, true, false)
 						if missing < active {
 							if accepted || !known || !reflect.DeepEqual(initial, state) {
 								t.Fatal("an actual implicit source or old accumulator byte was invented, or failed transfer was non-atomic", role, register, missing)
@@ -103,7 +103,7 @@ func TestX86FourSourceNativeContinuationDoesNotGrantInputsOrOtherRoles(t *testin
 						ins.x86SegmentPrefix = 0x64
 					}
 					before := state.clone()
-					accepted, known := x86ResultFourSourceStep(ins, &state, nil, arch, native)
+					accepted, known := x86ResultFourSourceStep(ins, &state, nil, arch, native, false)
 					if !known || accepted != (mutation == "numeric address") || !reflect.DeepEqual(before, state) {
 						t.Fatal("the paired complete opcode created an unbound input/native/caller/entry role", mutation)
 					}

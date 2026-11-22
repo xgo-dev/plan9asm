@@ -488,7 +488,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultVSIBStep(ins, state, arch, true, c.dataBPSource); known {
 			return accepted // Exact indexed continuation; never an ordinary contiguous native tuple.
 		}
-		if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, true); known {
+		if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, true, c.dataBPSource); known {
 			return accepted // One complete original opcode owns its m128 access and sequential native exceptions.
 		}
 		if accepted, known := x86ResultFMA3Step(ins, state, owned, arch, true); known {

@@ -91,6 +91,26 @@ func x86DataBPSourceScope(fn Func, sig FuncSig, arch string) bool {
 		reflect.DeepEqual(parsed.Funcs[0].Instrs, fn.Instrs)
 }
 
+func x86DataBPNativeMemory(operand Operand, arch string) bool {
+	if arch != "amd64" || operand.Kind != OpMem {
+		return false
+	}
+	memory := operand.Mem
+	return memory.Base == BP && memory.Index != BP && memory.Sym == "" &&
+		memory.OffRaw == "" && memory.Segment == "" && memory.IndexExt == "" &&
+		(memory.Index != "" || memory.Scale == 0) && x86MemoryRegisterEncodingValid(memory, arch)
+}
+
+func x86ResultDataBPNativeAddress(memory MemRef, state *x86ResultState) bool {
+	if !state.shapeOnly && !state.pointerGP[5] {
+		return false
+	}
+	if memory.Index == "" {
+		return true
+	}
+	return x86ResultRead(Operand{Kind: OpReg, Reg: memory.Index}, 8, state, nil, "amd64")
+}
+
 // Project only the grammar query, never the original source or emitted address.
 // AX is an ordinary encoding-equivalent base; the complete displacement/index
 // checks remain with the existing scalar move descriptor. BP as an index is
