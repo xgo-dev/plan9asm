@@ -2,7 +2,6 @@ package plan9asm
 
 import (
 	"fmt"
-	"strings"
 )
 
 // The paired native emitter preserves the exact whole128 opcode, including
@@ -80,13 +79,7 @@ func (c *amd64Ctx) lowerLegacyPackedMoveNative(op Op, form x86LegacyPackedMoveFo
 	} else if pointerType == "ptr addrspace(257)" {
 		segment = "%fs:"
 	}
-	mnemonic := strings.ToLower(string(op))
-	switch strings.ToUpper(string(op)) {
-	case "MOVOU":
-		mnemonic = "movdqu"
-	case "MOVO", "MOVOA":
-		mnemonic = "movdqa"
-	}
+	mnemonic := x86LegacyPackedMoveOpcode(op)
 	if form.memoryWrite {
 		value, err := c.loadX(form.source.Reg)
 		if err != nil {

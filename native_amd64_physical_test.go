@@ -237,6 +237,68 @@ func TestNativeAMD64PhysicalScalarConversionFamilies(t *testing.T) {
 	}
 }
 
+func TestNativeAMD64PhysicalPackedMoveFamilies(t *testing.T) {
+	const frame = "TEXT physical<>(SB),516,$0-0\n"
+	var packed, streaming strings.Builder
+	packed.WriteString(frame)
+	streaming.WriteString(frame)
+	for _, opcode := range []string{"MOVOU", "MOVOA", "MOVO", "MOVUPS", "MOVAPS", "MOVUPD", "MOVAPD"} {
+		fmt.Fprintf(&packed, "%s X3,X4\n%s 16(SP)(BP*4),X8\n%s X8,(BP)\n", opcode, opcode, opcode)
+	}
+	for _, row := range []struct {
+		opcode  string
+		vexOnly bool
+	}{
+		{"VMOVDQA", true}, {"VMOVDQU", true},
+		{"VMOVAPD", false}, {"VMOVAPS", false}, {"VMOVUPD", false}, {"VMOVUPS", false},
+		{"VMOVDQA32", false}, {"VMOVDQA64", false},
+		{"VMOVDQU8", false}, {"VMOVDQU16", false}, {"VMOVDQU32", false}, {"VMOVDQU64", false},
+	} {
+		for _, bank := range []string{"X", "Y", "Z"} {
+			if row.vexOnly && bank == "Z" {
+				continue
+			}
+			src, dst := bank+"3", bank+"9"
+			fmt.Fprintf(&packed, "%s %s,%s\n", row.opcode, src, dst)
+			fmt.Fprintf(&packed, "%s (SP),%s\n%s %s,17(SP)(BP*4)\n", row.opcode, dst, row.opcode, src)
+			if row.vexOnly {
+				continue
+			}
+			high := bank + "28"
+			fmt.Fprintf(&packed, "%s %s,%s\n%s %s,K2,%s\n", row.opcode, src, high, row.opcode, high, dst)
+			fmt.Fprintf(&packed, "%s.Z %s,K7,%s\n", row.opcode, src, dst)
+			fmt.Fprintf(&packed, "%s 17(SP)(BP*1),K1,%s\n%s.Z 17(SP)(BP*8),K4,%s\n", row.opcode, high, row.opcode, high)
+			fmt.Fprintf(&packed, "%s %s,K3,17(SP)(BP*2)\n", row.opcode, high)
+		}
+	}
+	for _, row := range x86NonTemporalNativeOracle {
+		registers := []string{"X3", "X9"}
+		if row.vector {
+			registers = append(registers, "X28", "Y4", "Y30", "Z6", "Z16")
+		}
+		for _, reg := range registers {
+			if row.load {
+				fmt.Fprintf(&streaming, "%s 17(SP)(BP*8),%s\n", row.name, reg)
+			} else {
+				fmt.Fprintf(&streaming, "%s %s,17(SP)(BP*4)\n", row.name, reg)
+			}
+		}
+	}
+	for _, row := range []struct{ name, source string }{
+		{"packed", packed.String()}, {"streaming", streaming.String()},
+	} {
+		for _, goos := range []string{"linux", "darwin"} {
+			t.Run(row.name+"/"+goos, func(t *testing.T) {
+				source := row.source + "RET\n"
+				listing := nativeAMD64OriginalObject(t, goos, source)
+				options := NativeOptions{GOOS: goos, GOARCH: "amd64", PackagePath: "probe"}
+				ir := nativeAMD64PhysicalObjects(t, source, options)
+				nativeAMD64CompareFrameMachineCode(t, goos, listing, ir)
+			})
+		}
+	}
+}
+
 func TestNativeAMD64ManagedFrameMatchesGoAssembler(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		for _, row := range []struct {
@@ -383,6 +445,9 @@ func TestNativeAMD64TypedPhysicalRejectsUnprovedForms(t *testing.T) {
 		"CVTSS2SL X16,SP", "VCVTTSS2SI.RN_SAE X2,SP", "VCVTSS2SI.SAE X2,BP",
 		"VCVTSS2USIL.RZ_SAE (SP),BP", "VCVTSI2SDL.RD_SAE SP,X2,X3",
 		"VCVTUSI2SSQ $1,X2,X3", "VCVTUSI2SSL value+0(FP),X2,X3",
+		"MOVAPS X16,X3", "MOVOU (BP),(SP)", "VMOVDQA Z0,Z1",
+		"VMOVUPS X0,K0,X1", "VMOVAPD.Z X4,X6", "VMOVDQU32 X0,Y1",
+		"VMOVNTDQ X0,K1,(SP)", "VMOVNTDQA X0,(SP)", "VMOVNTPS (SP),X2",
 	} {
 		t.Run(body, func(t *testing.T) {
 			source := "#include \"textflag.h\"\nTEXT physical<>(SB),NOSPLIT|NOFRAME,$0-0\n" + body + "\nRET\n"

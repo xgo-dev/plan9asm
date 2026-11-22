@@ -19,6 +19,17 @@ type x86LegacyPackedMoveForm struct {
 	aligned             bool // Native m128 requires a separate actual-address proof.
 }
 
+func x86LegacyPackedMoveOpcode(op Op) string {
+	switch strings.ToUpper(string(op)) {
+	case "MOVOU":
+		return "movdqu"
+	case "MOVO", "MOVOA":
+		return "movdqa"
+	default:
+		return strings.ToLower(string(op))
+	}
+}
+
 // This is Go operand shape only. In particular, accepting a memory operand
 // does not prove backing, initialization, alignment or caller permissions.
 // These legacy rows reject high X registers in mode32; VEX/EVEX's different

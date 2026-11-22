@@ -14,7 +14,7 @@ func (e *nativeAMD64) emitScalarFloatInteger(out *strings.Builder, ins Instr, f 
 			return err
 		}
 	} else {
-		source = physicalScalarConversionXMM(ins.Args[0])
+		source = nativeAMD64VectorReg(ins.Args[0].Reg, 16)
 	}
 	destination, err := nativeAMD64Reg(ins.Args[1], f.outputBits)
 	if err != nil {
@@ -29,7 +29,7 @@ func (e *nativeAMD64) emitIntegerScalarFloat(out *strings.Builder, ins Instr, f 
 	if err != nil {
 		return err
 	}
-	destination := physicalScalarConversionXMM(ins.Args[f.destination])
+	destination := nativeAMD64VectorReg(ins.Args[f.destination].Reg, 16)
 	opcode := f.attOpcode(unsigned)
 	if f.spec.legacy {
 		fmt.Fprintf(out, "\t%s %s, %s\n", opcode, source, destination)
@@ -39,13 +39,7 @@ func (e *nativeAMD64) emitIntegerScalarFloat(out *strings.Builder, ins Instr, f 
 		rounding := strings.ToLower(strings.ReplaceAll(f.rounding, "_", "-"))
 		source += ", {" + rounding + "}"
 	}
-	fmt.Fprintf(out, "\t%s %s, %s, %s\n", opcode, source, physicalScalarConversionXMM(ins.Args[f.upper]), destination)
+	upper := nativeAMD64VectorReg(ins.Args[f.upper].Reg, 16)
+	fmt.Fprintf(out, "\t%s %s, %s, %s\n", opcode, source, upper, destination)
 	return nil
-}
-
-// The conversion family has already checked the operand and the XMM bank,
-// including whether its encoding can address registers 16 through 31.
-func physicalScalarConversionXMM(operand Operand) string {
-	index, _ := amd64ParseXReg(operand.Reg)
-	return fmt.Sprintf("%%xmm%d", index)
 }

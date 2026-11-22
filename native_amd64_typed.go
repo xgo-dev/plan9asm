@@ -167,6 +167,38 @@ func (e *nativeAMD64) typedInstruction(out *strings.Builder, ins Instr) error {
 		}
 		return e.emitIntegerScalarFloat(out, ins, f.x86SignedIntegerFloatForm, true)
 	}
+	if _, known, err := x86LegacyPackedMoveProperties(ins.Op, ins, "amd64"); known {
+		if err != nil {
+			return err
+		}
+		return e.emitPackedMove(out, ins, x86LegacyPackedMoveOpcode(ins.Op), 16, -1, false)
+	}
+	if f, known, err := amd64PackedVectorMoveProperties(ins, "amd64"); known {
+		if err != nil {
+			return err
+		}
+		if f.undefinedOpcode() {
+			out.WriteString("\tud2\n")
+			return nil
+		}
+		name, _, _ := strings.Cut(strings.ToLower(op), ".")
+		if f.memory < 0 {
+			// Go's VEX/EVEX register-copy rows select the store encoding.
+			// LLVM otherwise prefers the equivalent load encoding.
+			name += ".s"
+		}
+		return e.emitPackedMove(out, ins, name, f.byteWidth, f.mask, f.zeroing)
+	}
+	if f, known, err := x86NonTemporalVectorProperties(ins.Op, ins, "amd64"); known {
+		if err != nil {
+			return err
+		}
+		if f.trap {
+			out.WriteString("\tud2\n")
+			return nil
+		}
+		return e.emitPackedMove(out, ins, f.spec.native, f.move.byteWidth, -1, false)
+	}
 	return bad()
 }
 
@@ -180,21 +212,8 @@ func emitNativeAMD64GPBroadcast(out *strings.Builder, ins Instr, form x86Broadca
 	if err != nil {
 		return err
 	}
-	bank := "xmm"
-	switch form.byteWidth {
-	case 32:
-		bank = "ymm"
-	case 64:
-		bank = "zmm"
-	}
-	index, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
-	destination := fmt.Sprintf("%%%s%d", bank, index)
-	if form.mask >= 0 {
-		destination += " {%" + strings.ToLower(string(ins.Args[form.mask].Reg)) + "}"
-	}
-	if form.zeroing {
-		destination += " {z}"
-	}
+	destination := nativeAMD64VectorReg(ins.Args[form.destination].Reg, form.byteWidth)
+	destination = nativeAMD64DecorateMask(destination, ins, form.mask, form.zeroing)
 	opcode, _, _ := strings.Cut(strings.ToLower(string(ins.Op)), ".")
 	fmt.Fprintf(out, "\t%s %s, %s\n", opcode, source, destination)
 	return nil
