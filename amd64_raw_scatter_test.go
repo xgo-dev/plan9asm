@@ -111,7 +111,7 @@ func TestDecodeX86RawScatterRejectsMalformedForms(t *testing.T) {
 	} {
 		t.Run(variant.name, func(t *testing.T) {
 			code := variant.mutate(append([]byte(nil), valid...))
-			if _, _, matched, err := decodedX86RawScatterInstruction(code, 64); !matched || err == nil {
+			if _, _, matched, err := decodedX86RawVSIBInstruction(code, 64); !matched || err == nil {
 				t.Fatalf("invalid %x: matched=%v err=%v", code, matched, err)
 			}
 		})

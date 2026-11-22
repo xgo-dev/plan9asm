@@ -144,7 +144,7 @@ func TestX86RawVEXGatherRejectsMalformedForms(t *testing.T) {
 		{"high VSIB index on 386", []byte{0xc4, 0x82, 0x6d, 0x90, 0x0c, 0x40}, 32},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, _, matched, err := decodedX86RawGatherInstruction(test.code, test.mode); !matched || err == nil {
+			if _, _, matched, err := decodedX86RawVSIBInstruction(test.code, test.mode); !matched || err == nil {
 				t.Fatalf("invalid %x: matched=%v err=%v", test.code, matched, err)
 			}
 		})
@@ -171,7 +171,7 @@ func TestX86RawEVEXGatherRejectsReservedForms(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			code := test.mutate(append([]byte(nil), valid...))
-			if _, _, matched, err := decodedX86RawGatherInstruction(code, 64); !matched || err == nil {
+			if _, _, matched, err := decodedX86RawVSIBInstruction(code, 64); !matched || err == nil {
 				t.Fatalf("invalid %x: matched=%v err=%v", code, matched, err)
 			}
 		})

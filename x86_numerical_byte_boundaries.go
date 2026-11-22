@@ -83,6 +83,12 @@ func x86NumericalVectorPrefix(code []byte, mode int) bool {
 }
 
 func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
+	if ins, length, known, err := decodedX86RawVSIBInstruction(code, mode); known {
+		if err == nil && mode == 32 {
+			err = x86Mode32VectorRegisterContext(ins, "386")
+		}
+		return length, err
+	}
 	memory := x86RawMemoryDecoder{physicalPC: true}
 	decoders := [...]func([]byte, int, x86RawMemoryDecoder) (Instr, int, bool, error){
 		decodedX86ANDNInstructionWithMemory,

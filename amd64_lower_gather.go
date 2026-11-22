@@ -84,27 +84,20 @@ func (c *amd64Ctx) lowerGather(op Op, ins Instr) error {
 }
 
 func amd64GatherTableAllows(table amd64GatherTable, evex bool, destinationBytes, indexBytes int) bool {
-	allowed := false
-	switch table {
-	case amd64GatherDPS:
-		allowed = (destinationBytes == 16 && indexBytes == 16) ||
-			(destinationBytes == 32 && indexBytes == 32) ||
-			(destinationBytes == 64 && indexBytes == 64)
-	case amd64GatherDPD:
-		allowed = (destinationBytes == 16 && indexBytes == 16) ||
-			(destinationBytes == 32 && indexBytes == 16) ||
-			(destinationBytes == 64 && indexBytes == 32)
-	case amd64GatherQPS:
-		allowed = (destinationBytes == 16 && (indexBytes == 16 || indexBytes == 32)) ||
-			(destinationBytes == 32 && indexBytes == 64)
-	}
-	if !allowed {
+	if destinationBytes <= 0 || indexBytes <= 0 {
 		return false
 	}
-	if !evex {
-		return destinationBytes != 64
+	lengths := 2
+	if evex {
+		lengths = 3
 	}
-	return true
+	for length := 0; length < lengths; length++ {
+		data, index := x86VSIBWidths(table, length)
+		if destinationBytes == data && indexBytes == index {
+			return true
+		}
+	}
+	return false
 }
 
 func amd64GatherRegisterIndex(register Reg, byteWidth int, evex bool, goarch string, index bool) (int, bool) {

@@ -15,6 +15,27 @@ type x86VSIBForm struct {
 	evex, scatter, prefetch bool
 }
 
+// The encoded length selects the larger carrier. Only DPD/DQ and QPS/QD
+// change one axis independently, including the narrowest X/X case.
+func x86VSIBWidths(table amd64GatherTable, length int) (data, index int) {
+	width := 16 << length
+	switch table {
+	case amd64GatherDPS:
+		return width, width
+	case amd64GatherDPD:
+		if width > 16 {
+			return width, width / 2
+		}
+		return width, width
+	case amd64GatherQPS:
+		if width > 16 {
+			return width / 2, width
+		}
+		return width, width
+	}
+	return 0, 0
+}
+
 func x86VSIBProperties(ins Instr, arch string) (x86VSIBForm, bool, error) {
 	name, _, suffix := strings.Cut(strings.ToUpper(string(ins.Op)), ".")
 	f := x86VSIBForm{opcode: Op(name)}
