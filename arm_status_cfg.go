@@ -267,7 +267,17 @@ func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr
 		write = armKernelFlags
 	case "TST", "TEQ":
 		write = armKernelN | armKernelZ
-	case "BL", "CALL", "BX", "DIV", "DIVU", "MOD", "MODU", "DUFFZERO", "DUFFCOPY":
+	case "BL", "CALL":
+		register, indirect, err := armIndirectCallRegister(ins)
+		if err == nil && indirect && state.values.has(armKernelRegBit(register)) {
+			// The native BLX carrier captures APSR on its taken path.
+			// A conditional call keeps only the flags known on its skip path.
+			write = armKernelFlags
+		} else {
+			state.initialized = 0
+		}
+		state.vfpWitness = false
+	case "BX", "DIV", "DIVU", "MOD", "MODU", "DUFFZERO", "DUFFCOPY":
 		state.initialized = 0
 		state.vfpWitness = false
 	case "WORD", "BYTE", "LONG":

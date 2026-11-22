@@ -271,7 +271,7 @@ func TestARMHelperCoverage(t *testing.T) {
 			"trunc i64",
 			`call void @"example.sink"(`,
 			"ret void",
-			"asm sideeffect \"blx $0\"",
+			"asm sideeffect \"blx $1; mrs $0, apsr\"",
 		} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("missing %q in output:\n%s", want, out)

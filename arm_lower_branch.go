@@ -22,32 +22,18 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins Instr, emitBr armEmitB
 	}
 	switch op {
 	case "BL", "CALL":
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("arm %s expects 1 operand: %q", op, ins.Raw)
+		register, indirect, err := armIndirectCallRegister(ins)
+		if err != nil {
+			return true, false, err
 		}
 		emitCall := func() error {
-			switch ins.Args[0].Kind {
-			case OpReg:
-				addr, err := c.loadReg(ins.Args[0].Reg)
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i32 %s)\n", "blx $0", "r,~{cc},~{memory}", addr)
-				c.captureHardwareFlags()
-				return nil
-			case OpMem:
-				addr, _, _, err := c.addrI32(ins.Args[0].Mem, false)
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i32 %s)\n", "blx $0", "r,~{cc},~{memory}", addr)
-				c.captureHardwareFlags()
-				return nil
-			case OpSym:
-				return c.callSym(ins.Args[0])
-			default:
-				return fmt.Errorf("arm %s invalid target: %q", op, ins.Raw)
+			if indirect {
+				return c.emitIndirectCall(register)
 			}
+			if ins.Args[0].Kind == OpSym {
+				return c.callSym(ins.Args[0])
+			}
+			return fmt.Errorf("arm %s invalid target: %q", op, ins.Raw)
 		}
 		if cond != "" {
 			return true, false, c.emitConditionalEffect(cond, emitCall)
@@ -112,6 +98,56 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins Instr, emitBr armEmitB
 		return true, true, nil
 	}
 	return false, false, nil
+}
+
+func armIndirectCallRegister(ins Instr) (Reg, bool, error) {
+	bad := func() (Reg, bool, error) {
+		return "", false, fmt.Errorf("arm indirect call expects (register) with zero displacement: %q", ins.Raw)
+	}
+	if len(ins.Args) != 1 && len(ins.Args) != 2 {
+		return bad()
+	}
+	target := ins.Args[len(ins.Args)-1]
+	if len(ins.Args) == 2 {
+		annotation := ins.Args[0]
+		if target.Kind != OpMem || annotation.Kind != OpReg || !isARMGeneralReg(annotation.Reg) {
+			return bad()
+		}
+	}
+	// Preserve the register operand accepted by existing parsed IR callers.
+	if target.Kind == OpReg && isARMGeneralReg(target.Reg) && target.Reg != PC && target.Reg != "R15" {
+		return target.Reg, true, nil
+	}
+	if target.Kind != OpMem {
+		return "", false, nil
+	}
+	mem := target.Mem
+	if !isARMGeneralReg(mem.Base) || mem.Base == PC || mem.Base == "R15" ||
+		mem.Off != 0 || mem.OffRaw != "" || mem.Sym != "" || mem.Segment != "" ||
+		mem.Index != "" && !isARMGeneralReg(mem.Index) {
+		return bad()
+	}
+	// Go optab 7 emits just BLX Rn. Its optional first register and any
+	// index on the zero-displacement target do not take part in the call.
+	return mem.Base, true, nil
+}
+
+func (c *armCtx) emitIndirectCall(register Reg) error {
+	address, err := c.loadReg(register)
+	if err != nil {
+		return err
+	}
+	// Physical AAPCS volatile registers may be live in LLVM across this
+	// inline-assembly call. Read APSR before any generated code can change it.
+	const clobbers = "~{r0},~{r1},~{r2},~{r3},~{r12},~{lr}," +
+		"~{d0},~{d1},~{d2},~{d3},~{d4},~{d5},~{d6},~{d7}," +
+		"~{d16},~{d17},~{d18},~{d19},~{d20},~{d21},~{d22},~{d23}," +
+		"~{d24},~{d25},~{d26},~{d27},~{d28},~{d29},~{d30},~{d31},~{cc},~{memory}"
+	status := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q(i32 %s)\n",
+		status, "blx $1; mrs $0, apsr", "=r,r,"+clobbers, address)
+	c.storeFlagsFromStatus("%" + status)
+	return nil
 }
 
 func (c *armCtx) castI32RegToArg(v string, to LLVMType) (string, error) {
