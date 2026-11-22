@@ -19,17 +19,52 @@ TEXT eretWord(SB),4,$-8-0
 TEXT drpsWord(SB),516,$0-0
  WORD $0xd6bf03e0
 `
-	requireARM64GoAssemblerResult(t, source, true)
-	file, err := Parse(ArchARM64, source)
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Go asm7 preserves the subsequent RET at its original code offset.
 	words := map[string][]uint32{
 		"eretName": {0xd69f03e0},
 		"eretWord": {0xd69f03e0},
 		"drpsName": {0xd6bf03e0, 0xd65f03c0},
 		"drpsWord": {0xd6bf03e0},
+	}
+	requireARM64PhysicalExceptionObjects(t, source, words)
+}
+
+func TestARM64PrivilegedExceptionKeepsPhysicalEntry(t *testing.T) {
+	const source = `TEXT hypervisor(SB),516,$0-0
+ HVC
+ HVC $61428
+ RET
+TEXT monitor(SB),$0-0
+ SMC $37977
+ WORD $0xd4000003
+ RET
+TEXT halt(SB),516,$0-0
+ HLT $65509
+ RET
+TEXT debugChanges(SB),516,$0-0
+ DCPS1 $11378
+ DCPS2 $10699
+ WORD $0xd4abebe3
+ RET
+TEXT trapTail(SB),516,$0-0
+ WORD $0xd41dfe82
+ UNDEF
+`
+	requireARM64PhysicalExceptionObjects(t, source, map[string][]uint32{
+		"hypervisor":   {0xd4000002, 0xd41dfe82, 0xd65f03c0},
+		"monitor":      {0xd4128b23, 0xd4000003, 0xd65f03c0},
+		"halt":         {0xd45ffca0, 0xd65f03c0},
+		"debugChanges": {0xd4a58e41, 0xd4a53962, 0xd4abebe3, 0xd65f03c0},
+		"trapTail":     {0xd41dfe82, 0},
+	})
+}
+
+func requireARM64PhysicalExceptionObjects(t *testing.T, source string, words map[string][]uint32) {
+	t.Helper()
+	requireARM64GoAssemblerResult(t, source, true)
+	file, err := Parse(ArchARM64, source)
+	if err != nil {
+		t.Fatal(err)
 	}
 	sigs := make(map[string]FuncSig, len(words))
 	for name := range words {
@@ -67,6 +102,27 @@ TEXT drpsWord(SB),516,$0-0
 	for _, ir := range []string{text, module.String(), inGo.Module.String()} {
 		for _, level := range []string{"-O0", "-O2"} {
 			requireARMExceptionReturnObject(t, llc, level, ir, words)
+		}
+	}
+}
+
+func TestARM64PrivilegedExceptionNeedsPhysicalEntry(t *testing.T) {
+	for _, body := range []string{
+		"MOVD $11,R2\n HVC $61428\n RET",
+		"SMC $37977\n MOVD $11,R2\n RET",
+		"WORD $0xd41dfe82\n MOVD $11,R2\n RET",
+	} {
+		source := "TEXT effect(SB),516,$0-0\n " + body + "\n"
+		requireARM64GoAssemblerResult(t, source, true)
+		file, err := Parse(ArchARM64, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Translate(file, Options{Goarch: "arm64", TargetTriple: arm64LinuxGNUTriple,
+			Sigs: map[string]FuncSig{"effect": {Name: "effect", Ret: Void}},
+		})
+		if !errors.Is(err, ErrProbeNeedsContext) {
+			t.Fatalf("unproved privileged continuation in %q: %v", body, err)
 		}
 	}
 }

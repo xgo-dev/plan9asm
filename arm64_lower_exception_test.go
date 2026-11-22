@@ -155,10 +155,7 @@ TEXT eretform(SB),$0-0
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`asm sideeffect "hvc #0"`,
-		`asm sideeffect "hvc #61428"`,
-		`asm sideeffect "smc #0"`,
-		`asm sideeffect "smc #37977"`,
+		`asm sideeffect "hvc #0; hvc #61428; smc #0; smc #37977; ret"`,
 		`asm sideeffect "dcps1 #0"`,
 		`asm sideeffect "dcps1 #11378"`,
 		`asm sideeffect "dcps2 #0"`,
@@ -201,7 +198,7 @@ func TestTranslateARM64RawSMC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(ll, `asm sideeffect "smc #0"`) {
+	if !strings.Contains(ll, `asm sideeffect "smc #0; udf #0"`) {
 		t.Fatalf("ARM64 raw SMC lowering omitted the instruction:\n%s", ll)
 	}
 	llc := findLLVM22Tool("llc")
@@ -212,7 +209,7 @@ func TestTranslateARM64RawSMC(t *testing.T) {
 }
 
 func TestTranslateARM64RawSMCReturnRequiresMonitorContract(t *testing.T) {
-	const source = "TEXT rawsmc(SB),4,$0-0\nWORD $0xd4000003\nRET\n"
+	const source = "TEXT rawsmc(SB),4,$0-0\nWORD $0xd4000003\nMOVD $1,R2\nRET\n"
 	requireARM64GoAssemblerResult(t, source, true)
 	file, err := Parse(ArchARM64, source)
 	if err != nil {

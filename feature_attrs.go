@@ -815,7 +815,7 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 					}
 				}
 				if form, ok := decodeARM64RawException(uint32(ins.Args[0].Imm)); ok {
-					if form.mnemonic == "smc" {
+					if form.needsEL3() {
 						add("+el3")
 					}
 				}

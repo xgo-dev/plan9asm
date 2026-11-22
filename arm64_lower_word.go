@@ -14,7 +14,7 @@ func (c *arm64Ctx) lowerRawWord(ins Instr) error {
 		return family.lower(c, word)
 	}
 	if form, ok := decodeARM64RawException(word); ok {
-		return c.lowerRawException(form)
+		return c.lowerExceptionForm(form)
 	}
 	if form, ok := decodeARM64RawTLBI(word); ok {
 		return c.lowerRawTLBI(form)
