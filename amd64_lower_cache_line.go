@@ -28,6 +28,16 @@ func x86CacheLineWritebackProperties(op Op, ins Instr, arch string) (string, boo
 	return baseOp, true, nil
 }
 
+func x86TypedCacheLineWritebackByteEffect(ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	_, known, err := x86CacheLineWritebackProperties(ins.Op, ins, arch)
+	if !known || err != nil {
+		return x86TypedByteEffect{}, known, err
+	}
+	return x86TypedByteEffect{operands: []x86TypedByteOperand{
+		{index: 0, operand: ins.Args[0], width: 1, read: true, addressOnly: true},
+	}}, true, nil
+}
+
 func x86LoweredCacheLineWritebackStep(ins Instr, state *x86ResultState, owned []bool, arch, triple string) (bool, bool) {
 	_, known, err := x86CacheLineWritebackProperties(ins.Op, ins, arch)
 	if !known || err != nil {

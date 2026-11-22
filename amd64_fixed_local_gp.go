@@ -39,6 +39,9 @@ func fixedLocalGPByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if effect, known, err := x86TypedCompareExchangeByteEffect(ins, "amd64"); known {
 		return effect, true, err
 	}
+	if effect, known, err := x86TypedCacheLineWritebackByteEffect(ins, "amd64"); known {
+		return effect, true, err
+	}
 	if effect, known, err := x86TypedMXCSRByteEffect(ins.Op, ins, "amd64"); known {
 		return effect, true, err
 	}
@@ -333,6 +336,9 @@ func fixedLocalMachineMemory(ins *Instr, operand x86TypedByteOperand, state *x86
 	}
 	if _, err := fixedLocalMemory(ins, operand.index, state, proof, residue, operand.width, alignment, operand.write, true); err != nil {
 		return err
+	}
+	if operand.addressOnly {
+		return nil // The recorded access does not establish any numerical bytes.
 	}
 	for index := offset; index < offset+operand.width; index++ {
 		if state.bytes.has(index) {
