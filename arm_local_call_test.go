@@ -42,8 +42,12 @@ func armLocalCallSignature(name string) FuncSig {
 }
 
 func TestARMNamedLocalCallContinuationObjects(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc is required")
+	}
 	sigs := map[string]FuncSig{"oracle": armLocalCallSignature("oracle")}
-	for _, source := range []string{armLocalCallOracle, `TEXT oracle(SB),4,$0-8
+	for index, source := range []string{armLocalCallOracle, `TEXT oracle(SB),4,$0-8
 	MOVW value+0(FP),R0
 	BL 3(PC)
 	MOVW R0,ret+4(FP)
@@ -61,9 +65,29 @@ setup:
 	MOVW R8,R14
 	MOVW R0,ret+4(FP)
 	RET
+`, `TEXT oracle(SB),4,$0-8
+	MOVW value+0(FP),R0
+	B 0(PC)
+	MOVW R0,ret+4(FP)
+	RET
+`, `TEXT oracle(SB),4,$0-8
+	MOVW value+0(FP),R0
+	BL 0(PC)
+	MOVW R0,ret+4(FP)
+	RET
+`, `TEXT oracle(SB),4,$0-8
+	MOVW value+0(FP),R0
+	CMP $0,R0
+	BL.LE 1(PC)
+	ADD $7,R0
+	MOVW R0,ret+4(FP)
+	RET
 `} {
-		requireARMGoAssemblerResult(t, source, true)
-		translateARMCompleteForms(t, source, sigs)
+		t.Run(fmt.Sprintf("case%d", index), func(t *testing.T) {
+			requireARMGoAssemblerResult(t, source, true)
+			ir := translateARMCompleteForms(t, source, sigs)
+			compileLLVMToObject(t, llc, "armv7-unknown-linux-gnueabihf", "local-call.ll", "local-call.o", ir)
+		})
 	}
 }
 
