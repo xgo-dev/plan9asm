@@ -47,7 +47,7 @@ function requireCompleteRaceDownloads(source) {
     assert.ok(download.includes('name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-' + index + '\n'));
     assert.ok(download.includes('path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-' +
       String(index).padStart(4, '0') + '\n'));
-    if (index >= 16) assert.match(download, /^        if: \$\{\{ !cancelled\(\) && matrix\.flavor == 'race' \}\}$/m);
+    if (index >= 16) assert.match(download, /^        if: \$\{\{ !cancelled\(\) && matrix\.flavor != 'test' \}\}$/m);
     else assert.doesNotMatch(download, /^        if:.*matrix\.flavor/m);
   }
   assert.doesNotMatch(body, /merge-multiple:|pattern:/);
@@ -68,7 +68,7 @@ test('race script selects its complete layout for execution and independent comp
   assert.equal([...script.matchAll(/-shards=\$shards -workers=2/g)].length, 2);
   assert.match(script, /GOMAXPROCS=2/);
   assert.match(script, /test\) timeout=45m ;;/);
-  assert.match(script, /coverage\) timeout=45m; flags=\(-coverprofile=coverage-root\.out\) ;;/);
+  assert.match(script, /coverage\) timeout=45m; flags=\(-coverprofile=coverage-root\.out\); root_partitions=32; shards=64 ;;/);
 });
 
 test('race layout rejects an omitted owner, four-shard owner, masked failure or incomplete readback', () => {

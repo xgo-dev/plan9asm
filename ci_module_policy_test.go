@@ -22,7 +22,7 @@ func TestCIModuleSuitesKeepExhaustiveUnixAndWindowsRoles(t *testing.T) {
 	}{
 		{"test", "test) timeout=45m", 16},
 		{"race", "race) timeout=60m; flags=(-race); root_partitions=32; shards=64", 32},
-		{"coverage", "coverage) timeout=45m; flags=(-coverprofile=coverage-root.out)", 16},
+		{"coverage", "coverage) timeout=45m; flags=(-coverprofile=coverage-root.out); root_partitions=32; shards=64", 32},
 	} {
 		job, found := ciWorkflowJob(string(data), item.job)
 		command := "bash scripts/test-module-ci.sh " + item.job + " execute ${{ matrix.module-owner }} ${{ matrix.root-partition }}"
@@ -66,8 +66,8 @@ func TestCIModuleSuitesKeepExhaustiveUnixAndWindowsRoles(t *testing.T) {
 				(part != 0 && !strings.Contains(download, "if: ${{ !cancelled() }}")) {
 				t.Errorf("every flavor requires original root part %d even after another owner fails", part)
 			}
-		} else if !strings.Contains(download, "if: ${{ !cancelled() && matrix.flavor == 'race' }}") {
-			t.Errorf("only race owns global root part %d", part)
+		} else if !strings.Contains(download, "if: ${{ !cancelled() && matrix.flavor != 'test' }}") {
+			t.Errorf("race and coverage both require root part %d", part)
 		}
 	}
 	for _, required := range []string{"-module -out=", "-shards=$shards -workers=2", "root_partitions=16", "shards=32", "-module-root-partitions=$root_partitions", "-verify-module=_out/module-$flavor-owners", "go run ./cmd/plan9asmtest"} {

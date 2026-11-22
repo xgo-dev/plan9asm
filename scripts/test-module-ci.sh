@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One actual inventory: sixteen root parts (32 for race), profile/rest once.
+# One actual inventory: sixteen test root parts or 32 race/coverage root parts.
 # Every root owner retains two shards. Nested CLIs and Windows run separately.
 flavor=${1:?test, race or coverage required}
 phase=${2:?execute or complete required}
@@ -11,7 +11,7 @@ shards=32
 case "$flavor" in
   test) timeout=45m ;;
   race) timeout=60m; flags=(-race); root_partitions=32; shards=64 ;;
-  coverage) timeout=45m; flags=(-coverprofile=coverage-root.out) ;;
+  coverage) timeout=45m; flags=(-coverprofile=coverage-root.out); root_partitions=32; shards=64 ;;
   *) echo "unknown module suite role" >&2; exit 1 ;;
 esac
 if [[ -n "${GOFLAGS:-}" ]]; then

@@ -17,14 +17,15 @@ function step(body, title) {
 
 function requireOwners(source, name) {
   const body = jobBody(source, name);
-  const roles = Array.from({length: 16}, (_, index) => 'root-' + index).concat('profile', 'other');
+  const parts = name === 'coverage' ? 32 : 16;
+  const roles = Array.from({length: parts}, (_, index) => 'root-' + index).concat('profile', 'other');
   const axis = body.match(/^        module-role: \[([^\]]+)\]$/m);
   assert.ok(axis, name + ': explicit complete scheduling roles');
   assert.deepEqual(axis[1].split(',').map(value => value.trim()), roles);
   assert.deepEqual([...body.matchAll(
     /^          - \{module-role: (root-\d+|profile|other), module-owner: ([012]), root-partition: (-?\d+)\}$/gm,
   )].map(([, role, owner, part]) => [role, Number(owner), Number(part)]), [
-    ...Array.from({length: 16}, (_, index) => ['root-' + index, 0, index]),
+    ...Array.from({length: parts}, (_, index) => ['root-' + index, 0, index]),
     ['profile', 1, -1], ['other', 2, -1],
   ]);
   assert.match(body, /^    needs: ci_policy$/m);
@@ -47,12 +48,12 @@ function requireDownloads(source) {
       String(index).padStart(4, '0') + '\n'));
     if (index > 0 && index < 16) assert.match(download, /^        if: \$\{\{ !cancelled\(\) \}\}$/m);
     if (index < 16) assert.doesNotMatch(download, /^        if:.*matrix\.flavor/m);
-    if (index >= 16) assert.match(download, /^        if: \$\{\{ !cancelled\(\) && matrix\.flavor == 'race' \}\}$/m);
+    if (index >= 16) assert.match(download, /^        if: \$\{\{ !cancelled\(\) && matrix\.flavor != 'test' \}\}$/m);
   }
   assert.doesNotMatch(body, /merge-multiple:|pattern:/);
 }
 
-test('test and coverage retain all roots in sixteen independently budgeted owners', () => {
+test('test and coverage retain all roots in independently budgeted owners', () => {
   requireOwners(workflow, 'test');
   requireOwners(workflow, 'coverage');
 });
@@ -61,7 +62,7 @@ test('Unix root owners use one two-worker wave without raising any original budg
   assert.match(script, /^root_partitions=16$/m);
   assert.match(script, /^shards=32$/m);
   assert.match(script, /test\) timeout=45m ;;/);
-  assert.match(script, /coverage\) timeout=45m; flags=\(-coverprofile=coverage-root\.out\) ;;/);
+  assert.match(script, /coverage\) timeout=45m; flags=\(-coverprofile=coverage-root\.out\); root_partitions=32; shards=64 ;;/);
   assert.match(script, /race\) timeout=60m; flags=\(-race\); root_partitions=32; shards=64 ;;/);
   assert.equal([...script.matchAll(/-shards=\$shards -workers=2/g)].length, 2);
   assert.equal([...script.matchAll(/-module-root-partitions=\$root_partitions/g)].length, 2);
@@ -70,7 +71,7 @@ test('Unix root owners use one two-worker wave without raising any original budg
   assert.match(jobBody(workflow, 'module-completion'), /^    timeout-minutes: 30$/m);
 });
 
-test('all flavors require exact root fragments zero through fifteen before complete readback', () => {
+test('all flavors require their exact root fragments before complete readback', () => {
   requireDownloads(workflow);
 });
 
@@ -99,5 +100,11 @@ test('lost or duplicated owners, stale eight-part readback and relaxed budgets a
       "if: ${{ !cancelled() && matrix.flavor == 'race' }}");
     assert.notEqual(stale, original);
     assert.throws(() => requireDownloads(workflow.replace(original, () => stale)));
+  }
+  for (const index of [16, 31]) {
+    const original = step(complete, 'Download root part ' + index);
+    const raceOnly = original.replace("matrix.flavor != 'test'", "matrix.flavor == 'race'");
+    assert.notEqual(raceOnly, original);
+    assert.throws(() => requireDownloads(workflow.replace(original, () => raceOnly)));
   }
 });

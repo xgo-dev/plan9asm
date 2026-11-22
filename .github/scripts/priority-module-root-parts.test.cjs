@@ -32,7 +32,7 @@ function step(body, name) {
 
 test('every Unix root owner uses one two-shard wave with complete flavor-specific roles', () => {
   for (const name of ['test', 'race', 'coverage']) {
-    const count = name === 'race' ? 32 : 16;
+    const count = name === 'test' ? 16 : 32;
     const roles = [
       ...Array.from({ length: count }, (_, index) => `root-${index}`),
       'profile', 'other',
@@ -60,7 +60,7 @@ test('every Unix root owner uses one two-shard wave with complete flavor-specifi
 test('root job fanout retains original workers, per-command and job budgets', () => {
   assert.match(script, /test\) timeout=45m ;;/);
   assert.match(script, /race\) timeout=60m; flags=\(-race\); root_partitions=32; shards=64 ;;/);
-  assert.match(script, /coverage\) timeout=45m; flags=\(-coverprofile=coverage-root\.out\) ;;/);
+  assert.match(script, /coverage\) timeout=45m; flags=\(-coverprofile=coverage-root\.out\); root_partitions=32; shards=64 ;;/);
   assert.match(script, /-shards=\$shards -workers=2/);
   assert.match(script, /GOMAXPROCS=2/);
   for (const [name, minutes] of [['test', 60], ['race', 75], ['coverage', 60]]) {
@@ -101,7 +101,7 @@ test('actual shell dispatch validates flavor-specific part bounds before launchi
     encoding: 'utf8',
     timeout: 5000,
   });
-  for (const [flavor, count, shards] of [['test', 16, 32], ['coverage', 16, 32], ['race', 32, 64]]) {
+  for (const [flavor, count, shards] of [['test', 16, 32], ['coverage', 32, 64], ['race', 32, 64]]) {
     for (const args of [['execute', '0', String(count - 1)], ['execute', '2', '-1'], ['complete']]) {
       const actual = run(flavor, ...args);
       assert.equal(actual.status, 0, actual.stderr || String(actual.error));
@@ -135,9 +135,9 @@ test('each root part has an exact separate artifact and strict download destinat
       `^          path: _out/module-\\$\\{\\{ matrix\\.flavor \\}\\}-owners/owner-0000/part-${String(part).padStart(4, '0')}$`, 'm',
     ));
     if (part >= 16) {
-      assert.match(download, /if: \$\{\{ !cancelled\(\) && matrix\.flavor == 'race' \}\}/);
+      assert.match(download, /if: \$\{\{ !cancelled\(\) && matrix\.flavor != 'test' \}\}/);
     } else {
-      assert.doesNotMatch(download, /matrix\.flavor ==/);
+      assert.doesNotMatch(download, /^        if:.*matrix\.flavor/m);
     }
   }
   assert.match(step(aggregate, 'Download profile owner'), /-profile$/m);

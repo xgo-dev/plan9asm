@@ -34,9 +34,9 @@ and owner two runs every other package. The two owner-one packages run serially;
 each uses the same exhaustive root partitions and at most two active commands.
 Independent SDK source captures retain their own original budgets and lifetimes,
 while no longer accumulating in a single unfiltered race command.
-CI splits only owner zero into sixteen jobs for test/
-coverage and 32 for race. Part `p` owns global shard indices `i` where
-`i % parts == p`. Test/coverage keep 32 shards; race uses 64 shards. Every
+CI splits only owner zero into sixteen jobs for test and 32 jobs for race
+and coverage. Part `p` owns global shard indices `i` where `i % parts == p`.
+Test uses 32 shards. Race and coverage use 64 shards. Every
 root owner executes exactly two shards in one two-worker wave. Test/coverage
 retain 45-minute command and 60-minute job budgets; race retains 60-minute
 commands and 75-minute jobs. Shared-profile and other packages execute once;

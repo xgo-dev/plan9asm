@@ -158,11 +158,12 @@ func rootSplitCompleteUnionAndCoverage(t *testing.T, parts int, race bool) {
 }
 
 func TestUnixRootPartitionActualCompleteUnionAndCoverage(t *testing.T) {
-	for _, coverage := range []bool{false, true} {
-		t.Run(fmt.Sprintf("coverage-%t", coverage), func(t *testing.T) {
-			rootSplitCompleteUnionLayout(t, 16, 32, false, coverage)
-		})
-	}
+	t.Run("test", func(t *testing.T) {
+		rootSplitCompleteUnionLayout(t, 16, 32, false, false)
+	})
+	t.Run("coverage", func(t *testing.T) {
+		rootSplitCompleteUnionLayout(t, 32, 64, false, true)
+	})
 }
 
 func rootSplitCompleteUnionLayout(t *testing.T, parts, shards int, race, coverage bool) {

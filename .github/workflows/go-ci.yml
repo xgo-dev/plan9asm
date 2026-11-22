@@ -602,7 +602,9 @@ jobs:
       fail-fast: false
       matrix:
         module-role: [root-0, root-1, root-2, root-3, root-4, root-5, root-6, root-7,
-          root-8, root-9, root-10, root-11, root-12, root-13, root-14, root-15, profile, other]
+          root-8, root-9, root-10, root-11, root-12, root-13, root-14, root-15,
+          root-16, root-17, root-18, root-19, root-20, root-21, root-22, root-23,
+          root-24, root-25, root-26, root-27, root-28, root-29, root-30, root-31, profile, other]
         include:
           - {module-role: root-0, module-owner: 0, root-partition: 0}
           - {module-role: root-1, module-owner: 0, root-partition: 1}
@@ -620,6 +622,22 @@ jobs:
           - {module-role: root-13, module-owner: 0, root-partition: 13}
           - {module-role: root-14, module-owner: 0, root-partition: 14}
           - {module-role: root-15, module-owner: 0, root-partition: 15}
+          - {module-role: root-16, module-owner: 0, root-partition: 16}
+          - {module-role: root-17, module-owner: 0, root-partition: 17}
+          - {module-role: root-18, module-owner: 0, root-partition: 18}
+          - {module-role: root-19, module-owner: 0, root-partition: 19}
+          - {module-role: root-20, module-owner: 0, root-partition: 20}
+          - {module-role: root-21, module-owner: 0, root-partition: 21}
+          - {module-role: root-22, module-owner: 0, root-partition: 22}
+          - {module-role: root-23, module-owner: 0, root-partition: 23}
+          - {module-role: root-24, module-owner: 0, root-partition: 24}
+          - {module-role: root-25, module-owner: 0, root-partition: 25}
+          - {module-role: root-26, module-owner: 0, root-partition: 26}
+          - {module-role: root-27, module-owner: 0, root-partition: 27}
+          - {module-role: root-28, module-owner: 0, root-partition: 28}
+          - {module-role: root-29, module-owner: 0, root-partition: 29}
+          - {module-role: root-30, module-owner: 0, root-partition: 30}
+          - {module-role: root-31, module-owner: 0, root-partition: 31}
           - {module-role: profile, module-owner: 1, root-partition: -1}
           - {module-role: other, module-owner: 2, root-partition: -1}
     permissions:
@@ -810,97 +828,97 @@ jobs:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-15
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0015
       - name: Download root part 16
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-16
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0016
       - name: Download root part 17
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-17
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0017
       - name: Download root part 18
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-18
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0018
       - name: Download root part 19
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-19
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0019
       - name: Download root part 20
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-20
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0020
       - name: Download root part 21
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-21
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0021
       - name: Download root part 22
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-22
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0022
       - name: Download root part 23
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-23
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0023
       - name: Download root part 24
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-24
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0024
       - name: Download root part 25
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-25
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0025
       - name: Download root part 26
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-26
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0026
       - name: Download root part 27
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-27
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0027
       - name: Download root part 28
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-28
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0028
       - name: Download root part 29
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-29
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0029
       - name: Download root part 30
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-30
           path: _out/module-${{ matrix.flavor }}-owners/owner-0000/part-0030
       - name: Download root part 31
-        if: ${{ !cancelled() && matrix.flavor == 'race' }}
+        if: ${{ !cancelled() && matrix.flavor != 'test' }}
         uses: actions/download-artifact@v8
         with:
           name: module-${{ matrix.flavor }}-${{ matrix.go-version }}-root-31
