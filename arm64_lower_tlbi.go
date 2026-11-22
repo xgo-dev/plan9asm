@@ -11,33 +11,6 @@ type arm64TLBIOperation struct {
 	hasOperand bool
 }
 
-type arm64RawTLBI struct {
-	operation string
-	register  Reg
-}
-
-func decodeARM64RawTLBI(word uint32) (arm64RawTLBI, bool) {
-	if word&0xffe0001f != 0xd500001f || (word>>12)&15 != 8 {
-		return arm64RawTLBI{}, false
-	}
-	op1 := uint8((word >> 16) & 7)
-	cm := uint8((word >> 8) & 15)
-	op2 := uint8((word >> 5) & 7)
-	register := ZR
-	if word&31 != 31 {
-		register = Reg(fmt.Sprintf("R%d", word&31))
-	}
-	for name, operation := range arm64TLBIOperations {
-		if operation.op1 == op1 && operation.cm == cm && operation.op2 == op2 {
-			if !operation.hasOperand && register != ZR {
-				return arm64RawTLBI{}, false
-			}
-			return arm64RawTLBI{operation: name, register: register}, true
-		}
-	}
-	return arm64RawTLBI{}, false
-}
-
 // arm64TLBIOperations is the TLBI portion of Go's ARM64 sysInstFields table.
 // Keeping the table explicit prevents an arbitrary SYS encoding from being
 // accepted under a TLBI alias.
@@ -92,55 +65,27 @@ func arm64TLBIOperationNames() []string {
 	return names
 }
 
-func (c *arm64Ctx) lowerARM64TLBI(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	if op != "TLBI" {
-		return false, false, nil
-	}
+func parseARM64TLBI(ins Instr) (arm64SystemOperation, bool, error) {
 	if strings.ToUpper(string(ins.Op)) != "TLBI" || len(ins.Args) < 1 || len(ins.Args) > 2 || ins.Args[0].Kind != OpIdent {
-		return true, false, fmt.Errorf("arm64 TLBI expects a Go operation and optional R/ZR operand, with no suffix: %q", ins.Raw)
+		return arm64SystemOperation{}, true, fmt.Errorf("arm64 TLBI expects a Go operation and optional R/ZR operand, with no suffix: %q", ins.Raw)
 	}
 	operation, exists := arm64TLBIOperations[strings.ToUpper(ins.Args[0].Ident)]
 	if !exists {
-		return true, false, fmt.Errorf("arm64 TLBI operation %q is outside Go's sysInstFields table: %q", ins.Args[0].Ident, ins.Raw)
+		return arm64SystemOperation{}, true, fmt.Errorf("arm64 TLBI operation %q is outside Go's sysInstFields table: %q", ins.Args[0].Ident, ins.Raw)
 	}
 	if operation.hasOperand != (len(ins.Args) == 2) {
-		return true, false, fmt.Errorf("arm64 TLBI operation %q operand form is invalid: %q", ins.Args[0].Ident, ins.Raw)
+		return arm64SystemOperation{}, true, fmt.Errorf("arm64 TLBI operation %q operand form is invalid: %q", ins.Args[0].Ident, ins.Raw)
 	}
-	prefix := fmt.Sprintf("sys #%d, c8, c%d, #%d", operation.op1, operation.cm, operation.op2)
-	if !operation.hasOperand {
-		fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", prefix, "~{memory}")
-		return true, false, nil
+	form := arm64SystemOperation{
+		arm64SYSFields: arm64SYSFields{op1: operation.op1, cn: 8, cm: operation.cm, op2: operation.op2},
+		register:       ZR,
 	}
-	if ins.Args[1].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[1].Reg) {
-		return true, false, fmt.Errorf("arm64 TLBI operation %q expects an R/ZR operand: %q", ins.Args[0].Ident, ins.Raw)
+	if operation.hasOperand {
+		operand := ins.Args[1]
+		if operand.Kind != OpReg || !isARM64GeneralOrZeroReg(operand.Reg) {
+			return arm64SystemOperation{}, true, fmt.Errorf("arm64 TLBI operation %q expects an R/ZR operand: %q", ins.Args[0].Ident, ins.Raw)
+		}
+		form.register = operand.Reg
 	}
-	if ins.Args[1].Reg == ZR {
-		fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", prefix+", xzr", "~{memory}")
-		return true, false, nil
-	}
-	value, err := c.loadReg(ins.Args[1].Reg)
-	if err != nil {
-		return true, false, err
-	}
-	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", prefix+", $0", "r,~{memory}", value)
-	return true, false, nil
-}
-
-func (c *arm64Ctx) lowerRawTLBI(form arm64RawTLBI) error {
-	operation := arm64TLBIOperations[form.operation]
-	prefix := fmt.Sprintf("sys #%d, c8, c%d, #%d", operation.op1, operation.cm, operation.op2)
-	if !operation.hasOperand {
-		fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", prefix, "~{memory}")
-		return nil
-	}
-	if form.register == ZR {
-		fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", prefix+", xzr", "~{memory}")
-		return nil
-	}
-	value, err := c.loadReg(form.register)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", prefix+", $0", "r,~{memory}", value)
-	return nil
+	return form, true, nil
 }

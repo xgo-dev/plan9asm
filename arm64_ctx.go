@@ -521,7 +521,7 @@ func (c *arm64Ctx) scanUsedRegs() {
 						markOp(operand)
 					}
 				}
-				if form, ok := decodeARM64RawTLBI(word); ok && form.register != ZR {
+				if form, ok := decodeARM64RawSystemOperation(word); ok && form.register != ZR {
 					markReg(form.register)
 				}
 				if reg, ok := decodeARM64RawICIVAU(word); ok {

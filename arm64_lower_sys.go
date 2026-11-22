@@ -14,6 +14,12 @@ type arm64SYSFields struct {
 	op2 uint8
 }
 
+type arm64SystemOperation struct {
+	arm64SYSFields
+	register Reg
+	read     bool
+}
+
 func decodeARM64SYSArgument(arg int64) (arm64SYSFields, bool) {
 	if arg < 0 || arg&^arm64SYSArgumentMask != 0 {
 		return arm64SYSFields{}, false
@@ -26,58 +32,75 @@ func decodeARM64SYSArgument(arg int64) (arm64SYSFields, bool) {
 	}, true
 }
 
+func decodeARM64RawSystemOperation(word uint32) (arm64SystemOperation, bool) {
+	const sys, sysl = 0xd5080000, 0xd5280000
+	base := word & 0xfff80000
+	if base != sys && base != sysl {
+		return arm64SystemOperation{}, false
+	}
+	fields, _ := decodeARM64SYSArgument(int64(word) & arm64SYSArgumentMask)
+	register := ZR
+	if word&31 != 31 {
+		register = Reg(fmt.Sprintf("R%d", word&31))
+	}
+	return arm64SystemOperation{arm64SYSFields: fields, register: register, read: base == sysl}, true
+}
+
 func (f arm64SYSFields) operandString() string {
 	return fmt.Sprintf("#%d, c%d, c%d, #%d", f.op1, f.cn, f.cm, f.op2)
 }
 
-func (c *arm64Ctx) lowerARM64SYS(op Op, ins Instr) (ok bool, terminated bool, err error) {
+func parseARM64SystemOperation(op Op, ins Instr) (arm64SystemOperation, bool, error) {
+	if op == "TLBI" {
+		return parseARM64TLBI(ins)
+	}
 	if op != "SYS" && op != "SYSL" {
-		return false, false, nil
+		return arm64SystemOperation{}, false, nil
 	}
 	if strings.ToUpper(string(ins.Op)) != string(op) {
-		return true, false, fmt.Errorf("arm64 %s does not accept an instruction suffix: %q", op, ins.Raw)
+		return arm64SystemOperation{}, true, fmt.Errorf("arm64 %s does not accept an instruction suffix: %q", op, ins.Raw)
 	}
 	if len(ins.Args) == 0 || ins.Args[0].Kind != OpImm || ins.Args[0].ImmRaw != "" {
-		return true, false, fmt.Errorf("arm64 %s expects a resolved system-argument constant: %q", op, ins.Raw)
+		return arm64SystemOperation{}, true, fmt.Errorf("arm64 %s expects a resolved system-argument constant: %q", op, ins.Raw)
 	}
 	fields, valid := decodeARM64SYSArgument(ins.Args[0].Imm)
 	if !valid {
-		return true, false, fmt.Errorf("arm64 %s system argument is outside Go's SYSARG4 encoding: %q", op, ins.Raw)
+		return arm64SystemOperation{}, true, fmt.Errorf("arm64 %s system argument is outside Go's SYSARG4 encoding: %q", op, ins.Raw)
 	}
 
-	if op == "SYS" {
-		if len(ins.Args) == 1 {
-			asm := "sys " + fields.operandString() + ", xzr"
-			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", asm, "~{memory}")
-			return true, false, nil
-		}
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[1].Reg) {
-			return true, false, fmt.Errorf("arm64 SYS expects a system argument and optional R/ZR operand: %q", ins.Raw)
-		}
-		if ins.Args[1].Reg == ZR {
-			asm := "sys " + fields.operandString() + ", xzr"
-			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", asm, "~{memory}")
-			return true, false, nil
-		}
-		value, err := c.loadReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		asm := "sys " + fields.operandString() + ", $0"
-		fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", asm, "r,~{memory}", value)
-		return true, false, nil
+	form := arm64SystemOperation{arm64SYSFields: fields, register: ZR, read: op == "SYSL"}
+	if len(ins.Args) > 2 || form.read && len(ins.Args) != 2 {
+		return arm64SystemOperation{}, true, fmt.Errorf("arm64 %s has the wrong number of system operands: %q", op, ins.Raw)
 	}
+	if len(ins.Args) == 2 {
+		operand := ins.Args[1]
+		if operand.Kind != OpReg || !isARM64GeneralOrZeroReg(operand.Reg) {
+			return arm64SystemOperation{}, true, fmt.Errorf("arm64 %s expects an R/ZR operand: %q", op, ins.Raw)
+		}
+		form.register = operand.Reg
+	}
+	return form, true, nil
+}
 
-	if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg || !isARM64GeneralOrZeroReg(ins.Args[1].Reg) {
-		return true, false, fmt.Errorf("arm64 SYSL expects a system argument and one R/ZR destination: %q", ins.Raw)
-	}
-	result := c.newTmp()
-	asm := "sysl $0, " + fields.operandString()
-	fmt.Fprintf(c.b, "  %%%s = call i64 asm sideeffect %q, %q()\n", result, asm, "=r,~{memory}")
-	if ins.Args[1].Reg != ZR {
-		if err := c.storeReg(ins.Args[1].Reg, "%"+result); err != nil {
-			return true, false, err
+func (c *arm64Ctx) lowerARM64SystemOperation(form arm64SystemOperation) error {
+	fields := form.operandString()
+	if form.register == ZR {
+		asm := "sys " + fields + ", xzr"
+		if form.read {
+			asm = "sysl xzr, " + fields
 		}
+		fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", asm, "~{memory}")
+		return nil
 	}
-	return true, false, nil
+	if form.read {
+		result := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i64 asm sideeffect %q, %q()\n", result, "sysl $0, "+fields, "=r,~{memory}")
+		return c.storeReg(form.register, "%"+result)
+	}
+	value, err := c.loadReg(form.register)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", "sys "+fields+", $0", "r,~{memory}", value)
+	return nil
 }

@@ -1225,11 +1225,11 @@ func (c *arm64Ctx) lowerInstr(bi int, ins Instr, emitBr arm64EmitBr, emitCondBr 
 	if ok, term, err := c.lowerARM64CacheMaintenance(op, ins); ok {
 		return term, err
 	}
-	if ok, term, err := c.lowerARM64SYS(op, ins); ok {
-		return term, err
-	}
-	if ok, term, err := c.lowerARM64TLBI(op, ins); ok {
-		return term, err
+	if system, handled, err := parseARM64SystemOperation(op, ins); handled {
+		if err != nil {
+			return false, err
+		}
+		return false, c.lowerARM64SystemOperation(system)
 	}
 	if ok, term, err := c.lowerARM64Prefetch(op, ins); ok {
 		return term, err

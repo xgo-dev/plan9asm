@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -39,7 +40,7 @@ func TestTranslateARM64SYSCompleteGoAssemblerForms(t *testing.T) {
 				`asm sideeffect "sys #3, c7, c5, #1, $0"`,
 				`asm sideeffect "sys #7, c15, c15, #7, xzr"`,
 				`asm sideeffect "sysl $0, #0, c0, c0, #0"`,
-				`asm sideeffect "sysl $0, #7, c15, c15, #7"`,
+				`asm sideeffect "sysl xzr, #7, c15, c15, #7"`,
 			} {
 				if !strings.Contains(ll, want) {
 					t.Fatalf("ARM64 SYS/SYSL lowering omitted %q:\n%s", want, ll)
@@ -51,6 +52,61 @@ func TestTranslateARM64SYSCompleteGoAssemblerForms(t *testing.T) {
 			}
 			compileLLVMToObject(t, llc, triple, "arm64-sys.ll", "arm64-sys.o", ll)
 		})
+	}
+}
+
+func TestARM64RawSystemOperationsShareNamedOperands(t *testing.T) {
+	const source = `TEXT conversion(SB),4,$0-0
+ MOVD $42,R1
+ WORD $0xd5088001
+ WORD $0xd508801f
+ WORD $0xd52c5b0c
+ WORD $0xd52c5b1f
+ WORD $0xd50e853e
+ TLBI RVAE3OS, R30
+ RET
+`
+	requireARM64GoAssemblerResult(t, source, true)
+	file, err := Parse(ArchARM64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
+	}
+	for _, triple := range []string{"arm64-apple-darwin", arm64LinuxGNUTriple, "aarch64-pc-windows-msvc"} {
+		for _, api := range []string{"text", "module", "Go"} {
+			t.Run(triple+"/"+api, func(t *testing.T) {
+				ir, err := arm64ScalarConversionAPI(t, api, source, triple)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, op := range []string{
+					"sys #0, c8, c0, #0, $0",
+					"sys #0, c8, c0, #0, xzr",
+					"sysl $0, #4, c5, c11, #0",
+					"sysl xzr, #4, c5, c11, #0",
+					"sys #6, c8, c5, #1, $0",
+				} {
+					if !strings.Contains(ir, op) {
+						t.Fatalf("missing typed system operation %q", op)
+					}
+				}
+				compileLLVMToObject(t, llc, triple, "raw-system.ll", "raw-system.o", ir)
+			})
+		}
+	}
+	for _, instruction := range file.Funcs[0].Instrs {
+		if instruction.Op == OpWORD && !errors.Is(ProbeInstruction(ArchARM64, "arm64", instruction), ErrProbeNeedsContext) {
+			t.Fatalf("isolated %q acquired privileged execution context", instruction.Raw)
+		}
+	}
+	for _, instruction := range []string{"SYSL $285440,R30", "WORD $0xd52c5b1e"} {
+		source := "TEXT conversion(SB),4,$0-0\n" + instruction + "\nRET\n"
+		if _, err := arm64ScalarConversionAPI(t, "text", source, arm64LinuxGNUTriple); !errors.Is(err, ErrProbeNeedsContext) {
+			t.Fatalf("%q changed the caller's link without a restore: %v", instruction, err)
+		}
 	}
 }
 

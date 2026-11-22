@@ -38,7 +38,7 @@ func TestTranslateARM64TLBICompleteGoAssemblerForms(t *testing.T) {
 		t.Fatalf("TLBI lowering emitted %d system operations, want %d:\n%s", got, want, ll)
 	}
 	for _, want := range []string{
-		`asm sideeffect "sys #0, c8, c3, #0"`,
+		`asm sideeffect "sys #0, c8, c3, #0, xzr"`,
 		`asm sideeffect "sys #0, c8, c3, #1, $0"`,
 		`asm sideeffect "sys #6, c8, c7, #5, $0"`,
 	} {

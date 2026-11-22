@@ -437,6 +437,16 @@ func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
 		if op == "ADR" || op == "ADRP" {
 			return fmt.Errorf("%w: %s requires the final function-local label layout", ErrProbeNeedsContext, ins.Raw)
 		}
+		if op == string(OpWORD) {
+			if word, err := arm64RawWordValue(ins); err == nil {
+				if _, system := decodeARM64RawSystemOperation(word); system {
+					_, _, specialized := decodeARM64RawStateFamily(word)
+					if !specialized {
+						return fmt.Errorf("%w: %s depends on privileged ARM64 execution state", ErrProbeNeedsContext, ins.Raw)
+					}
+				}
+			}
+		}
 		switch op {
 		case "TLBI", "SYS", "SYSL", "DCPS1", "DCPS2", "DCPS3", "DRPS", "ERET", "HLT", "HVC", "SMC":
 			return fmt.Errorf("%w: %s depends on privileged ARM64 execution state", ErrProbeNeedsContext, ins.Raw)

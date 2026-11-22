@@ -350,6 +350,9 @@ func arm64ControlDecode(ins Instr) Instr {
 				decoded.Raw = ins.Raw
 				return decoded
 			}
+			if _, system := decodeARM64RawSystemOperation(uint32(ins.Args[0].Imm)); system {
+				return ins
+			}
 		}
 		if decoded, err := decodeARM64RawWordInstruction(ins); err == nil {
 			return arm64HardwareReturnAsBranch(decoded)
@@ -716,6 +719,10 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 		}
 		return
 	}
+	if form, handled, err := parseARM64SystemOperation(op, ins); handled && err == nil {
+		state.transferSystemOperation(form)
+		return
+	}
 	if op == OpWORD {
 		writes, known := uint32(0), false
 		stores := true
@@ -723,6 +730,9 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 			word := uint32(ins.Args[0].Imm)
 			if effects, ok := arm64RawContinuationEffectsForWord(word); ok {
 				writes, stores, known = effects.gpWrites, effects.stores, true
+			} else if form, ok := decodeARM64RawSystemOperation(word); ok {
+				state.transferSystemOperation(form)
+				return
 			} else if effects, ok := arm64RawSVEEffects(word); ok {
 				writes, stores, known = effects.gpWrites, effects.stores, true
 			} else {
@@ -866,6 +876,16 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 				state.regs[base] = arm64ControlOffset(arm64ControlRead(state.regs, base), operand.Mem.Off)
 			}
 		}
+	}
+}
+
+func (state *arm64ControlState) transferSystemOperation(form arm64SystemOperation) {
+	if form.read && form.register != ZR {
+		state.regs[form.register] = arm64ControlExternal()
+	}
+	// System instructions can change address translation or memory.
+	for key, value := range state.memory {
+		state.memory[key] = arm64ControlUnion(value, arm64ControlExternal())
 	}
 }
 
