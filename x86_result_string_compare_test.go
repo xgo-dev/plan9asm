@@ -87,6 +87,9 @@ func TestX86StringCompareConditionalFactsRequireWholeSource(t *testing.T) {
 			{"not-a-pointer", func(body string) string {
 				return strings.Replace(body, fmt.Sprintf("%s right+%d(FP),DI", move, word), fmt.Sprintf("%s n+%d(FP),DI", move, 2*word), 1)
 			}},
+			{"cursor-is-not-numerical", func(body string) string {
+				return strings.Replace(body, move+" CX,ret+RESULT(FP)", move+" DI,ret+RESULT(FP)", 1)
+			}},
 			{"partial-zero", func(string) string { return "MOVW $0,CX\nREP\nSCASB\n" + move + " $7,ret+RESULT(FP)" }},
 			{"overwritten-zero", func(string) string { return "MOVL $0,CX\nMOVB $1,CL\nREP\nSCASB\n" + move + " $7,ret+RESULT(FP)" }},
 			{"zero-cannot-define-ZF", func(string) string {
@@ -122,7 +125,11 @@ func TestX86StringCompareNumericalContinuationThreeAPIs(t *testing.T) {
 					for _, direction := range []string{"CLD", "STD"} {
 						for _, api := range []string{"text", "module", "Go"} {
 							t.Run(fmt.Sprintf("%s/%s%c/%s/%s/%s", target.triple, stem, width, prefix, direction, api), func(t *testing.T) {
-								body := x86StringCompareResultBody(target.arch, stem+string(width), prefix, direction, prefix == "")
+								op := stem + string(width)
+								body := x86StringCompareResultBody(target.arch, op, prefix, direction, prefix == "")
+								// The second comparison uses the first instruction's
+								// updated cursor, including after a repeat can stop early.
+								body = strings.Replace(body, "\n"+op+"\n", "\n"+op+"\n"+op+"\n", 1)
 								source := x86ResultGPSIMDAdmissionSource(t, target.arch, declaration, body)
 								if ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api); err != nil || ir == "" {
 									t.Fatal("complete comparison/count result rejected", err)

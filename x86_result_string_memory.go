@@ -142,8 +142,9 @@ func (plan *x86ResultStringMemoryPlan) transfer(ordinal int, ins Instr, state *x
 	} else if !x86ResultRead(Operand{Kind: OpReg, Reg: AX}, int64(form.width), state, nil, arch) {
 		return false, true
 	}
-	for _, index := range indexes {
-		if !x86ResultIncomingPointerReadAddressIdentity(Operand{Kind: OpMem, Mem: MemRef{Base: index}}, state, arch) {
+	for _, register := range indexes {
+		index, _, _ := x86ResultGP(register, word, arch)
+		if !state.pointerGP[index] && !state.stringCursorGP[index] {
 			return false, true
 		}
 	}
@@ -151,10 +152,13 @@ func (plan *x86ResultStringMemoryPlan) transfer(ordinal int, ins Instr, state *x
 	for _, register := range indexes {
 		index, _, _ := x86ResultGP(register, word, arch)
 		state.gp[index], state.canonicalGP[index] = 0, 0
-		// The unconditional forms advance by the defined count and direction,
-		// so an actual caller address keeps its role just as after ADD/SUB.
-		// Comparison-controlled exits still revoke the affected pointer role.
-		state.pointerGP[index] = !comparison && state.callerAddressGP[index]
+		if comparison {
+			// Early exits affect the displacement, but a later string helper
+			// can consume the resulting cursor. General memory effects still
+			// require their original independent pointer proof.
+			state.stringCursorGP[index] = state.callerAddressGP[index]
+		}
+		state.pointerGP[index] = !comparison && state.pointerGP[index] && state.callerAddressGP[index]
 		state.resultAddressGP[index] = x86ResultSlotAddress{}
 		if state.boolFrameGP != nil {
 			state.boolFrameGP[index] = x86ResultSlotAddress{}

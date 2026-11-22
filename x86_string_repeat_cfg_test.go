@@ -101,23 +101,13 @@ func x86CheckStringRepeatBackedge(t *testing.T, source, declarations, arch, trip
 	t.Helper()
 	for _, api := range []string{"text", "module", "Go"} {
 		ir, err := x86ScalarFPBitViewAPI(t, source, declarations, arch, triple, api)
-		if row.kind == "scas" || row.kind == "cmps" {
-			// A compare-controlled repeat can leave CX positive on the backedge.
-			if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
-				t.Fatal("compare-controlled repeat accepted an unproven second access", api, err)
-			}
-			continue
-		}
 		if err != nil || !strings.Contains(ir, "@"+x86StringMemoryHelper(row)+"(") {
-			t.Fatal("counted repeat lost its original loop", api, err)
+			t.Fatal("repeat lost its valid cursor on the original loop", api, err)
 		}
-	}
-	if row.kind == "scas" || row.kind == "cmps" {
-		return
 	}
 
-	// A counted move/load/store exhausts CX. Reset it and replace the
-	// caller-derived cursor to exercise an unbound access on the backedge.
+	// Reset CX and overwrite the cursor to force an unbound access on the
+	// backedge, including cases where a comparison has exhausted the count.
 	cursor := "DI"
 	if row.kind == "lods" {
 		cursor = "SI"

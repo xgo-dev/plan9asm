@@ -439,6 +439,14 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		if keptPointer >= 0 {
 			state.callerAddressGP[keptPointer] = true
 		}
+		if state.stringCursorGP != [16]bool{} {
+			if _, stringMemory, _ := x86StringInstructionProperties(ins, arch); !stringMemory {
+				state.stringCursorGP = x86ResultCallerAddressesAfter(ins, state.stringCursorGP, nil, arch)
+			}
+			for index := range state.stringCursorGP {
+				state.stringCursorGP[index] = state.stringCursorGP[index] && state.callerAddressGP[index]
+			}
+		}
 		state.updateLowMasks(ins, arch)
 		if trackCallerOrigins {
 			state.callerAddressOrigin = x86ResultCallerOriginsAfter(ins, origins, state.callerAddressGP, state.callerAddressFP, arch)
@@ -862,8 +870,9 @@ type x86ResultState struct {
 
 	// Incoming pointer identities are not numerical register bytes. This is
 	// only an initialization observation, never a pointee/backing permission.
-	pointerFP map[int64]bool // immutable after deriving the actual ABI0 layout
-	pointerGP [16]bool
+	pointerFP      map[int64]bool // immutable after deriving the actual ABI0 layout
+	pointerGP      [16]bool
+	stringCursorGP [16]bool // Caller-derived indexes usable by the paired string helper.
 	// A separate actual typed-entry address-bit domain. SDK literal/OR
 	// carriers never seed it; no numerical GP or memory facts follow.
 	callerAddressFP        map[int64]bool // immutable shared entry layout
@@ -893,6 +902,7 @@ func (state *x86ResultState) revokeABICallRegisters() {
 	state.nativeMMX = [8]uint8{}
 	state.masks = [8]bool{}
 	state.pointerGP = [16]bool{}
+	state.stringCursorGP = [16]bool{}
 	state.callerAddressGP = [16]bool{}
 	state.callerAddressOrigin = [16]uint16{}
 	state.bitScanPending = x86ResultBitScanPending{}
@@ -1070,6 +1080,9 @@ func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 		merged.canonicalGP[index] &= other.canonicalGP[index]
 		merged.pointerGP[index] = merged.pointerGP[index] && other.pointerGP[index]
 		merged.callerAddressGP[index] = merged.callerAddressGP[index] && other.callerAddressGP[index]
+		merged.stringCursorGP[index] = merged.callerAddressGP[index] && !merged.pointerGP[index] &&
+			(state.pointerGP[index] || state.stringCursorGP[index]) &&
+			(other.pointerGP[index] || other.stringCursorGP[index])
 		if merged.callerAddressOrigin[index] != other.callerAddressOrigin[index] || !merged.callerAddressGP[index] {
 			merged.callerAddressOrigin[index] = 0
 		}
