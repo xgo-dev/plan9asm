@@ -5,17 +5,21 @@ import (
 	"strings"
 )
 
-// ARMMachineReturn describes the physical source continuation, not an LLVM
-// result type. The first closed entry contract supports a source RET through
-// the unchanged incoming LR. Stack-PC resumptions require a separate proof.
+// ARMMachineReturn describes the physical source continuation.
 type ARMMachineReturn uint8
 
 const (
+	// ARMMachineReturnLR returns through the unchanged incoming LR.
 	ARMMachineReturnLR ARMMachineReturn = iota + 1
+	// ARMMachineReturnException enters a single A32 RFE with an incoming
+	// privileged SP pointing to the return PC and an initialized SPSR.
+	ARMMachineReturnException
 )
 
 // ARMMachineEntry is an explicitly requested physical-register interface.
 // It requires NOSPLIT|NOFRAME, zero Go arguments and no implicit source frame.
+// Exception returns use the incoming stack directly without capture options.
+// For LR returns, the following bounds describe the register-capture bridge.
 // StackBelow reserves source-owned bytes below the real incoming SP. A fresh
 // private capture region sits below that range, never in source stack storage.
 // The caller provides ordinary callee-owned stack space below StackBelow; no
@@ -52,10 +56,15 @@ func validateARMMachineEntryArchitecture(file *File, opt Options) error {
 
 func validateARMMachineEntry(fn Func, sig FuncSig, triple string) error {
 	entry := sig.ARMEntry
-	if entry == nil || entry.Return != ARMMachineReturnLR {
+	if entry == nil || entry.Return != ARMMachineReturnLR && entry.Return != ARMMachineReturnException {
 		return fmt.Errorf("ARM machine entry requires an explicit supported return contract")
 	}
-	if !(strings.HasPrefix(triple, "arm") || strings.HasPrefix(triple, "thumb")) ||
+	if entry.Return == ARMMachineReturnException {
+		target := llvmNormalizedTargetTriple(triple)
+		if !armWordFloatNativeTarget(target) || strings.HasPrefix(target, "thumb") {
+			return fmt.Errorf("ARM exception entry needs a little-endian A32 LLVM target: %q", triple)
+		}
+	} else if !(strings.HasPrefix(triple, "arm") || strings.HasPrefix(triple, "thumb")) ||
 		!(strings.Contains(triple, "linux") || strings.Contains(triple, "windows")) {
 		return fmt.Errorf("ARM machine entry needs an explicit supported ARM Linux/Windows target: %q", triple)
 	}
@@ -78,6 +87,19 @@ func validateARMMachineEntry(fn Func, sig FuncSig, triple string) error {
 	flags, ok := parseImmExpr(strings.TrimSpace(expression))
 	if !ok || flags != 4|512 {
 		return fmt.Errorf("ARM machine entry requires exactly NOSPLIT|NOFRAME flags")
+	}
+	if entry.Return == ARMMachineReturnException {
+		if len(fn.Instrs) != 2 || entry.StackBelow != 0 || entry.VFP {
+			return fmt.Errorf("%w: ARM exception entry needs a single RFE in the physical frame", ErrProbeNeedsContext)
+		}
+		matched, err := armExceptionReturnForm(fn.Instrs[1])
+		if err != nil {
+			return err
+		}
+		if !matched {
+			return fmt.Errorf("%w: ARM exception entry needs RFE", ErrProbeNeedsContext)
+		}
+		return nil
 	}
 	if entry.StackBelow > 1<<20 || entry.StackBelow%8 != 0 {
 		return fmt.Errorf("ARM source stack bound must be eight-byte aligned and at most 1MiB")
@@ -189,6 +211,15 @@ func translateFuncARMMachineEntry(b *strings.Builder, fn Func, sig FuncSig, reso
 	if err := validateARMMachineEntry(fn, sig, triple); err != nil {
 		return err
 	}
+	if sig.ARMEntry.Return == ARMMachineReturnException {
+		// RFE reads the architectural SP and SPSR. A compiler frame or the
+		// register-capture bridge would replace that physical entry state.
+		fmt.Fprintf(b, "define void %s() naked noinline {\nentry:\n", llvmGlobal(sig.Name))
+		assembly := fmt.Sprintf(".inst %#08x", armExceptionReturnWord)
+		fmt.Fprintf(b, "  call void asm sideeffect %q, %q()\n", assembly, "~{memory}")
+		b.WriteString("  unreachable\n}\n")
+		return nil
+	}
 	if err := proveARMStatusReads(fn, sig, nil); err != nil {
 		return err
 	}
@@ -244,6 +275,30 @@ func translateFuncARMMachineEntry(b *strings.Builder, fn Func, sig FuncSig, reso
 	}
 	b.WriteString("}\n")
 	return nil
+}
+
+// Go asm5's ARFE row uses this unconditional LDM with writeback and SPSR
+// restore even when the spelling supplies a condition-code suffix.
+const armExceptionReturnWord = 0xe8fd8000
+
+func armExceptionReturnForm(ins Instr) (bool, error) {
+	if ins.Op == OpWORD {
+		return len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" &&
+			!ins.Args[0].ImmIsFloat && uint32(ins.Args[0].Imm) == armExceptionReturnWord, nil
+	}
+	op, _, _ := strings.Cut(strings.ToUpper(string(ins.Op)), ".")
+	if op != "RFE" {
+		return false, nil
+	}
+	if len(ins.Args) != 0 {
+		return true, fmt.Errorf("arm RFE takes no operands: %q", ins.Raw)
+	}
+	for _, suffix := range armInstructionSuffixes(ins) {
+		if !armCondCodes[suffix] {
+			return true, fmt.Errorf("arm RFE does not accept suffix %q: %q", suffix, ins.Raw)
+		}
+	}
+	return true, nil
 }
 
 func (c *armCtx) machinePointer(offset int) string {

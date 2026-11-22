@@ -160,7 +160,13 @@ func (c *armCtx) lowerInstr(bi int, ins Instr, emitBr armEmitBr, emitCondBr armE
 			return term, err
 		}
 		return false, fmt.Errorf("arm: unsupported instruction %s", ins.Op)
-	case string(OpWORD):
+	case "RFE", string(OpWORD):
+		if matched, err := armExceptionReturnForm(ins); matched {
+			if err != nil {
+				return false, err
+			}
+			return false, fmt.Errorf("%w: ARM RFE needs a physical exception entry: %q", ErrProbeNeedsContext, ins.Raw)
+		}
 		if form, ok := decodeARMRawDataForm(ins); ok {
 			return false, form.lower(c)
 		}
