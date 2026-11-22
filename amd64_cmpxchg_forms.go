@@ -135,3 +135,54 @@ func x86CompareExchangeHasREXByteView(form x86CompareExchangeForm) bool {
 	}
 	return false
 }
+
+func x86TypedCompareExchangeByteEffect(ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	form, known, err := x86CompareExchangeProperties(ins.Op, ins, arch)
+	if !known || err != nil {
+		return x86TypedByteEffect{}, known, err
+	}
+	width := int64(form.spec.bits / 8)
+	word := x86ResultPointerWord(arch)
+	destination := x86TypedByteOperand{
+		index: len(ins.Args) - 1, operand: form.destination, width: width, read: true, write: true,
+		numericalGP: form.destination.Kind == OpReg,
+	}
+	accumulator := x86TypedByteOperand{
+		index: -1, operand: Operand{Kind: OpReg, Reg: AX}, width: width, read: true, write: true, numericalGP: true,
+	}
+	// The compare can leave the old native accumulator intact. In particular
+	// a successful dword CAS must retain its old upper half.
+	if width == 4 || form.spec.pair {
+		accumulator.width = word
+	}
+	if width == 4 && destination.operand.Kind == OpReg {
+		destination.width = word // A failed compare retains the entire destination.
+	}
+	if !form.spec.pair {
+		return x86TypedByteEffect{
+			operands: []x86TypedByteOperand{
+				destination,
+				{index: 0, operand: form.source, width: width, read: true, numericalGP: true},
+				accumulator,
+			},
+			flagsDefined: x86ByteFlagsAll,
+		}, true, nil
+	}
+	if width == 16 {
+		// A private frame relocation must preserve native alignment. Ordinary
+		// nonrelocated addresses retain the native #GP on an unaligned access.
+		destination.alignment = 16
+	}
+	highAccumulator := accumulator
+	highAccumulator.operand.Reg = DX
+	return x86TypedByteEffect{
+		operands: []x86TypedByteOperand{
+			destination,
+			accumulator,
+			highAccumulator,
+			{index: -1, operand: Operand{Kind: OpReg, Reg: BX}, width: width / 2, read: true, numericalGP: true},
+			{index: -1, operand: Operand{Kind: OpReg, Reg: CX}, width: width / 2, read: true, numericalGP: true},
+		},
+		flagsDefined: x86ByteFlagZF,
+	}, true, nil
+}

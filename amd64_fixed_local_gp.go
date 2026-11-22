@@ -36,6 +36,9 @@ func fixedLocalGPByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if effect, known, err := x86TypedExchangeAddByteEffect(ins, "amd64"); known {
 		return effect, true, err
 	}
+	if effect, known, err := x86TypedCompareExchangeByteEffect(ins, "amd64"); known {
+		return effect, true, err
+	}
 	if effect, known, err := x86TypedMXCSRByteEffect(ins.Op, ins, "amd64"); known {
 		return effect, true, err
 	}
@@ -200,7 +203,7 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 			}
 			continue
 		}
-		if err := fixedLocalMachineMemory(ins, operand, state, proof, residue, alignment); err != nil {
+		if err := fixedLocalMachineMemory(ins, operand, state, proof, residue, operand.memoryAlignment(alignment)); err != nil {
 			return err
 		}
 	}
@@ -210,7 +213,8 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 		}
 		switch operand.operand.Kind {
 		case OpMem:
-			offset, role, err := fixedLocalMemoryAccess(ins, operand.index, state, proof, residue, operand.width, alignment, true, false)
+			offset, role, err := fixedLocalMemoryAccess(ins, operand.index, state, proof, residue, operand.width,
+				operand.memoryAlignment(alignment), true, false)
 			if err != nil {
 				return err
 			}

@@ -23,6 +23,51 @@ func TestX86CMPXCHGLLVMCompleteNumerical(t *testing.T) {
 	x86CMPXCHGLLVMNumerical(t, x86FloatCompareExecutionTools(t))
 }
 
+func TestX86CMPXCHGDwordRegisterRetainsFailedDestination(t *testing.T) {
+	llc, clang, ok := findLlcAndClang(t)
+	if !ok {
+		t.Fatal("LLVM22 llc/clang required")
+	}
+	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
+	const declaration = "package main\nfunc exchange(expected, previous, desired uint64) uint64\n"
+	const assembly = `TEXT ·exchange(SB),4,$0-32
+MOVQ expected+0(FP),AX
+MOVQ previous+8(FP),DX
+MOVQ desired+16(FP),CX
+CMPXCHGL CX,DX
+MOVQ DX,ret+24(FP)
+RET
+`
+	const cDriver = `
+#include <stdint.h>
+#include <stdio.h>
+extern uint64_t exchange(uint64_t, uint64_t, uint64_t);
+int main(void) {
+    const uint64_t previous = UINT64_C(0xdeadbeef00000007);
+    const uint64_t desired = UINT64_C(0x1555421089abcdef);
+    const uint64_t success = exchange(UINT64_C(0x6555667700000007), previous, desired);
+    const uint64_t failure = exchange(UINT64_C(0x6555667700000008), previous, desired);
+    if (success == UINT64_C(0x89abcdef) && failure == previous) return 0;
+    fprintf(stderr, "success=%016llx failure=%016llx\n",
+            (unsigned long long)success, (unsigned long long)failure);
+    return 1;
+}
+`
+	x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", assembly)
+	for _, api := range []string{"text", "module", "Go"} {
+		t.Run(api, func(t *testing.T) {
+			ir, err := x86OrderingHintTranslateAPI(t, api, assembly, declaration, "amd64", triple)
+			if err != nil {
+				t.Fatal(err)
+			}
+			compiler := []string{clang}
+			compileAndRunRuntimeTestWithCompiler(t, llc, compiler, "cmpxchg-register32-O0", triple, ir, cDriver, nil, 0)
+			compileAndRunRuntimeTestWithCompiler(t, llc, compiler, "cmpxchg-register32-O2", triple,
+				x86DwordProductIROptimize(t, ir), cDriver, nil, 2)
+		})
+	}
+}
+
 func x86CMPXCHGLLVMNumerical(t *testing.T, execution x86FloatCompareExecution) {
 	t.Helper()
 	declarations, source, names := x86CMPXCHGNumericalFixture()

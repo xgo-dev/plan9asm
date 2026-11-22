@@ -59,16 +59,33 @@ func (c *amd64Ctx) lowerScalarCompareExchange(baseOp string, bits int, ins Instr
 
 	var old, success string
 	if destination.Kind == OpReg {
-		old, err = c.evalIntSized(destination, typ)
+		var priorDestination string
+		if typ == I32 && c.goarch == "amd64" {
+			priorDestination, err = c.loadReg(destination.Reg)
+			if err == nil {
+				old = c.truncI64(priorDestination, I32)
+			}
+		} else {
+			old, err = c.evalIntSized(destination, typ)
+		}
 		if err != nil {
 			return true, false, err
 		}
 		equal := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", equal, typ, expected, old)
 		success = "%" + equal
+		resultType, replacement, unchanged := typ, desired, old
+		if priorDestination != "" {
+			// EAX is written on failure. Its separate 32-bit register
+			// destination is written only on success.
+			wide := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", wide, desired)
+			resultType, replacement, unchanged = I64, "%"+wide, priorDestination
+		}
 		selected := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %s, %s %s\n", selected, success, typ, desired, typ, old)
-		if err := c.storeRegSized(destination.Reg, typ, "%"+selected); err != nil {
+		fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %s, %s %s\n",
+			selected, success, resultType, replacement, resultType, unchanged)
+		if err := c.storeRegSized(destination.Reg, resultType, "%"+selected); err != nil {
 			return true, false, err
 		}
 	} else {

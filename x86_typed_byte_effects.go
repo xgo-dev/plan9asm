@@ -13,6 +13,7 @@ type x86TypedByteOperand struct {
 	index          int
 	operand        Operand
 	width          int64
+	alignment      int64 // Required alignment when relocating this memory operand.
 	read           bool
 	write          bool
 	numericalGP    bool   // A GP read requires numerical bytes, not a native or private address.
@@ -20,6 +21,13 @@ type x86TypedByteOperand struct {
 	stackValue     bool   // A full numerical result may temporarily replace SP under a frame proof.
 	requiredBytes  uint64 // Optional vector-register read mask; zero requires the full width.
 	preservedBytes uint64 // Vector bytes within the destination view that retain their previous state.
+}
+
+func (operand x86TypedByteOperand) memoryAlignment(fallback int64) int64 {
+	if operand.alignment > fallback {
+		return operand.alignment
+	}
+	return fallback
 }
 
 type x86TypedByteEffect struct {
