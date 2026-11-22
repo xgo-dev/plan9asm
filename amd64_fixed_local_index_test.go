@@ -119,6 +119,16 @@ func TestGoAMD64FixedLocalNamedIndexedScalarMoveRejectsUnsafeAccess(t *testing.T
 			t.Fatalf("%s acquired private backing: %v", body, err)
 		}
 	}
+	for _, body := range []string{
+		"MOVQ slot-32(SP)(R11*8),DX",
+		"MOVQ $77,slot-32(SP)(R11*8)",
+	} {
+		ins := x86PureGPUnknownInstruction(t, body)
+		state := x86FixedLocalState{constants: map[Reg]int64{"R11": 3}}
+		if err := fixedLocalStep(&ins, &state, FuncSig{}, nil, 0); !errors.Is(err, ErrProbeNeedsContext) {
+			t.Fatalf("indexed move without a frame proof: %s: %v", body, err)
+		}
+	}
 }
 
 type fixedLocalConstantIndexCase struct {

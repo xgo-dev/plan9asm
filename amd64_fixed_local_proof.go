@@ -1235,7 +1235,11 @@ func fixedLocalMove(ins *Instr, state *x86FixedLocalState, sig FuncSig, proof *x
 		return goAMD64FrameContext("unproved fixed local scalar move")
 	}
 	read, write := ins, ins
-	if move, named, err := fixedLocalIndexedScalarMove(*ins, proof.frame); named {
+	frame := int64(0)
+	if proof != nil {
+		frame = proof.frame
+	}
+	if move, named, err := fixedLocalIndexedScalarMove(*ins, frame); named {
 		if err != nil {
 			return err
 		}
