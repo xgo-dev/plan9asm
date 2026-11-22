@@ -10,6 +10,7 @@ func fixedLocalNumericalReadStep(ins *Instr, state *x86FixedLocalState, proof *x
 		if !numericalVectorMapStep(*ins, "amd64", form, state.vectors, state.masks) {
 			return true, goAMD64FrameContext("fixed local numerical vector read needs its complete typed inputs")
 		}
+		state.clearVectorLiterals()
 		return true, nil
 	}
 	effect, valid := x86NumericalReadEffect(*ins, "amd64")

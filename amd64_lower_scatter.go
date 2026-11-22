@@ -30,10 +30,12 @@ func (c *amd64Ctx) lowerScatter(op Op, ins Instr) (ok bool, terminated bool, err
 	if err != nil {
 		return true, false, err
 	}
-	return true, false, c.emitScatter(form.spec, form.memory.Mem, form.mask.Reg, form.data.Reg, form.dataBytes, form.indexBytes)
+	return true, false, c.emitScatter(form)
 }
 
-func (c *amd64Ctx) emitScatter(spec amd64GatherSpec, memory MemRef, mask, data Reg, dataBytes, indexBytes int) error {
+func (c *amd64Ctx) emitScatter(form x86VSIBForm) error {
+	spec, memory, mask := form.spec, form.memory.Mem, form.mask.Reg
+	data, dataBytes, indexBytes := form.data.Reg, form.dataBytes, form.indexBytes
 	dataValue, err := c.loadGatherVector(data, dataBytes)
 	if err != nil {
 		return err
@@ -51,11 +53,6 @@ func (c *amd64Ctx) emitScatter(spec amd64GatherSpec, memory MemRef, mask, data R
 	indexType := fmt.Sprintf("<%d x i%d>", indexLanes, spec.indexBits)
 	indexValues := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i8> %s to %s\n", indexValues, indexBytes, indexValue, indexType)
-	activeLanes := dataLanes
-	if indexLanes < activeLanes {
-		activeLanes = indexLanes
-	}
-
 	maskValue, err := c.loadK(mask)
 	if err != nil {
 		return err
@@ -64,7 +61,7 @@ func (c *amd64Ctx) emitScatter(spec amd64GatherSpec, memory MemRef, mask, data R
 	if err != nil {
 		return err
 	}
-	for lane := 0; lane < activeLanes; lane++ {
+	for lane := 0; lane < form.activeLanes(); lane++ {
 		indexLane := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = extractelement %s %%%s, i32 %d\n", indexLane, indexType, indexValues, lane)
 		wideIndex := "%" + indexLane

@@ -175,6 +175,7 @@ func fixedLocalOrdinaryCallStep(ins Instr, state *x86FixedLocalState, proof *x86
 	for reg := range state.vectors {
 		delete(state.vectors, reg)
 	}
+	state.clearVectorLiterals()
 	for reg := range state.masks {
 		delete(state.masks, reg)
 	}

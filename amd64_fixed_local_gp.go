@@ -214,7 +214,10 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 				if upper == x86TypedVectorUpperZero {
 					known |= ^mask
 				}
-				state.vectors[root] = known
+				state.setVectorBytes(root, known)
+				if state.vectorLiterals != nil {
+					state.observeVectorZero(*ins, root, upper)
+				}
 				continue
 			}
 			root, valid := x86CallerGP(operand.operand.Reg)

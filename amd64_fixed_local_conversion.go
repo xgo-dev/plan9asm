@@ -65,9 +65,9 @@ func fixedLocalConversionStep(ins *Instr, state *x86FixedLocalState, proof *x86F
 	// Narrowing explicitly clears its carrier padding. Legacy preserves
 	// wider aliases; VEX/EVEX clears them. Integer FLAGS remain unchanged.
 	if form.legacy {
-		state.vectors[destination] |= x86CallerVectorByteMask(int64(form.outputBytes))
+		state.setVectorBytes(destination, state.vectors[destination]|x86CallerVectorByteMask(int64(form.outputBytes)))
 	} else {
-		state.vectors[destination] = ^uint64(0)
+		state.setVectorBytes(destination, ^uint64(0))
 	}
 	return true, nil
 }

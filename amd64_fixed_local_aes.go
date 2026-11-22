@@ -23,9 +23,9 @@ func fixedLocalAESByteStep(ins *Instr, state *x86FixedLocalState, proof *x86Fixe
 	destination := x86CallerVectorRoot(ins.Args[f.destination].Reg)
 	defined := x86AESDefinedBytes(f, source, input)
 	if !f.spec.vector {
-		state.vectors[destination] = state.vectors[destination]&^width | defined
+		state.setVectorBytes(destination, state.vectors[destination]&^width|defined)
 	} else {
-		state.vectors[destination] = ^width | defined
+		state.setVectorBytes(destination, ^width|defined)
 	}
 	return true, nil
 }

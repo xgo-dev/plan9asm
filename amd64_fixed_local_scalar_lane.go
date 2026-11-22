@@ -50,7 +50,7 @@ func fixedLocalScalarLaneStep(ins *Instr, state *x86FixedLocalState, proof *x86F
 		}
 		base := state.vectors[x86CallerVectorRoot(ins.Args[form.base].Reg)]
 		destination := x86CallerVectorRoot(ins.Args[form.destination].Reg)
-		state.vectors[destination] = x86ScalarLaneInsertKnown(form, base, selected, state.vectors[destination])
+		state.setVectorBytes(destination, x86ScalarLaneInsertKnown(form, base, selected, state.vectors[destination]))
 		return true, nil
 	}
 	source := state.vectors[x86CallerVectorRoot(ins.Args[form.source].Reg)]

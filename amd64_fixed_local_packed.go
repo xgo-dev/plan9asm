@@ -68,10 +68,17 @@ func fixedLocalPackedMoveStep(ins *Instr, state *x86FixedLocalState, proof *x86F
 	destination := x86CallerVectorRoot(ins.Args[form.destination].Reg)
 	previous := state.vectors[destination]
 	numerical = form.definedActiveBytes(numerical, previous)
+	var literal x86ShiftLiteral
+	if state.vectorLiterals != nil && proof != nil {
+		literal = state.packedMoveLiteral(*ins, form, proof.binding, legacy)
+	}
 	if legacy {
-		state.vectors[destination] = previous&^widthMask | numerical
+		state.setVectorBytes(destination, previous&^widthMask|numerical)
 	} else {
-		state.vectors[destination] = ^widthMask | numerical
+		state.setVectorBytes(destination, ^widthMask|numerical)
+	}
+	if literal.width != 0 {
+		state.vectorLiterals[destination] = literal
 	}
 	return true, nil
 }

@@ -50,6 +50,7 @@ func (source *GoAMD64FrameSource) fixedLocalData(file *File, expanded string, re
 	}
 	data := make(map[string]x86FixedLocalData)
 	requests := x86PackedLogicalLiteralRequests(file, "amd64")
+	fixedLocalVSIBLiteralRequests(file, requests)
 	symbols := make(map[string]string)
 	// BindFixedLocal has already frozen the resolver outside the source lock.
 	// Keep every emitted definition injective, including the complete TEXT set.

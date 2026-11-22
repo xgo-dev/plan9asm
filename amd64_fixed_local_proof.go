@@ -13,11 +13,12 @@ var errFixedLocalLayoutJoin = goAMD64FrameContext("fixed local CFG address ident
 // Local offsets are from the observed post-prologue Go SP, not incoming FP,
 // saved BP/return slots, a caller allocation or an arbitrary native address.
 type x86FixedLocalProof struct {
-	binding  *x86FixedLocalBinding
-	frame    int64
-	function [32]byte
-	accesses map[int]map[int]x86FixedLocalAccess
-	ordinal  int // private builder cursor; never trusted by a consumer
+	binding       *x86FixedLocalBinding
+	frame         int64
+	function      [32]byte
+	accesses      map[int]map[int]x86FixedLocalAccess
+	ordinal       int // private builder cursor; never trusted by a consumer
+	vectorIndices bool
 }
 
 type x86FixedLocalAccess struct {
@@ -33,22 +34,23 @@ type x86FixedLocalAccess struct {
 }
 
 type x86FixedLocalState struct {
-	pointers     map[Reg]int64
-	opaque       map[Reg]x86FixedLocalOrigins
-	opaqueCells  map[int64]x86FixedLocalOrigins
-	booleans     map[Reg]uint8
-	booleanBytes x86FixedLocalByteSet
-	constants    map[Reg]int64
-	ranges       map[Reg]x86UnsignedRange
-	comparison   x86FixedLocalComparison
-	known        map[Reg]uint8
-	vectors      map[Reg]uint64
-	masks        map[Reg]bool
-	bytes        x86FixedLocalByteSet
-	addresses    map[int64]int64
-	results      map[int]bool
-	flags        uint8
-	savedBP      *x86FixedLocalSavedBP // Immutable facts for the active observed leaf call.
+	pointers       map[Reg]int64
+	opaque         map[Reg]x86FixedLocalOrigins
+	opaqueCells    map[int64]x86FixedLocalOrigins
+	booleans       map[Reg]uint8
+	booleanBytes   x86FixedLocalByteSet
+	constants      map[Reg]int64
+	ranges         map[Reg]x86UnsignedRange
+	comparison     x86FixedLocalComparison
+	known          map[Reg]uint8
+	vectors        map[Reg]uint64
+	vectorLiterals map[Reg]x86ShiftLiteral
+	masks          map[Reg]bool
+	bytes          x86FixedLocalByteSet
+	addresses      map[int64]int64
+	results        map[int]bool
+	flags          uint8
+	savedBP        *x86FixedLocalSavedBP // Immutable facts for the active observed leaf call.
 }
 
 func cloneFixedLocalState(input x86FixedLocalState) x86FixedLocalState {
@@ -76,6 +78,12 @@ func cloneFixedLocalState(input x86FixedLocalState) x86FixedLocalState {
 	}
 	clone.known = x86CloneCallerKnown(input.known)
 	clone.vectors, clone.masks = x86CloneCallerVectorState(input.vectors, input.masks)
+	if input.vectorLiterals != nil {
+		clone.vectorLiterals = make(map[Reg]x86ShiftLiteral, len(input.vectorLiterals))
+		for reg, value := range input.vectorLiterals {
+			clone.vectorLiterals[reg] = value
+		}
+	}
 	clone.bytes = append(x86FixedLocalByteSet(nil), input.bytes...)
 	return clone
 }
@@ -132,6 +140,7 @@ func proveX86FixedLocalAttempt(fn Func, sig FuncSig, budget *x86FixedLocalBudget
 	for index := range copyFn.Instrs {
 		copyFn.Instrs[index].Args = append([]Operand(nil), fn.Instrs[index].Args...)
 		copyFn.Instrs[index].x86FixedLocalMemory = nil
+		proof.vectorIndices = proof.vectorIndices || fixedLocalVSIBAddress(copyFn.Instrs[index])
 	}
 	effects, err := fixedLocalEffectPlan(copyFn, proof.binding)
 	if err != nil {
@@ -277,6 +286,10 @@ func fixedLocalRelocationAliases(accesses map[int]map[int]x86FixedLocalAccess) e
 }
 
 func fixedLocalInstructionShape(ins Instr) bool {
+	if fixedLocalVSIBAddress(ins) {
+		form, known, err := x86VSIBProperties(ins, "amd64")
+		return known && err == nil && !form.prefetch
+	}
 	if form, known, err := x86GPSIMDTransferProperties(ins, "amd64"); known {
 		return err == nil && !form.mmx && !form.spec.rawOnly
 	}
@@ -468,6 +481,7 @@ func fixedLocalStateWork(state x86FixedLocalState) int64 {
 		{64, []int{len(state.pointers), len(state.opaque), len(state.opaqueCells), len(state.booleans),
 			len(state.constants), len(state.ranges), len(state.known), len(state.vectors), len(state.masks),
 			len(state.addresses), len(state.results)}},
+		{128, []int{len(state.vectorLiterals)}},
 	} {
 		for _, count := range group.counts {
 			if int64(count) > (limit-bytes)/group.unit {
@@ -577,6 +591,9 @@ func replayX86FixedLocalCFG(fn *Func, sig FuncSig, proof *x86FixedLocalProof, re
 		booleanBytes: newFixedLocalByteSet(proof.frame),
 		vectors:      make(map[Reg]uint64), masks: make(map[Reg]bool),
 		bytes: newFixedLocalByteSet(proof.frame), addresses: make(map[int64]int64), results: make(map[int]bool),
+	}
+	if proof.vectorIndices {
+		state.vectorLiterals = make(map[Reg]x86ShiftLiteral)
 	}
 	// All GP entry bytes except the private SP origin remain unknown. ABI0
 	// does not supply an initialized R14/g value; the observed nonzero-frame
@@ -880,6 +897,7 @@ func mergeFixedLocalState(previous *x86FixedLocalState, current x86FixedLocalSta
 		return false, err
 	}
 	changed = intersectFixedLocalOrigins(previous.constants, current.constants) || changed
+	changed = intersectFixedLocalOrigins(previous.vectorLiterals, current.vectorLiterals) || changed
 	changed = mergeFixedLocalRanges(previous, current) || changed
 	merged, err := mergeFixedLocalOrigins(previous.opaque, current.opaque)
 	if err != nil {
@@ -1032,6 +1050,7 @@ func fixedLocalStepWithGP(ins *Instr, state *x86FixedLocalState, sig FuncSig, pr
 			return err
 		}
 		x86VectorZeroDefinedBytes(form, state.vectors)
+		state.zeroVectorLiterals(form)
 		return nil
 	}
 	if ins.Op == OpRET {
@@ -1061,6 +1080,9 @@ func fixedLocalStepWithGP(ins *Instr, state *x86FixedLocalState, sig FuncSig, pr
 	}
 	if known, err := fixedLocalNumericalReadStep(ins, state, proof, residue); known {
 		return err
+	}
+	if proof != nil && proof.vectorIndices && fixedLocalVSIBAddress(*ins) {
+		return fixedLocalVSIBStep(ins, state, proof, residue)
 	}
 	if known, err := fixedLocalStaticAddressStep(*ins, state, proof); known {
 		return err
@@ -1221,7 +1243,8 @@ func fixedLocalVectorStep(ins *Instr, state *x86FixedLocalState, proof *x86Fixed
 	} else if state.vectors[x86CallerVectorRoot(ins.Args[first].Reg)]&width != width {
 		return goAMD64FrameContext("fixed local vector operation reads undefined source bytes")
 	}
-	state.vectors[x86CallerVectorRoot(ins.Args[destination].Reg)] |= width
+	root := x86CallerVectorRoot(ins.Args[destination].Reg)
+	state.setVectorBytes(root, state.vectors[root]|width)
 	return nil
 }
 

@@ -80,7 +80,7 @@ func (c *amd64Ctx) lowerGather(op Op, ins Instr) error {
 	if form.prefetch {
 		return nil
 	}
-	return c.emitGather(form.spec, form.memory.Mem, form.mask, form.data.Reg, form.dataBytes, form.indexBytes, form.evex)
+	return c.emitGather(form)
 }
 
 func amd64GatherTableAllows(table amd64GatherTable, evex bool, destinationBytes, indexBytes int) bool {
@@ -124,7 +124,9 @@ func amd64GatherRegisterIndex(register Reg, byteWidth int, evex bool, goarch str
 	return registerIndex, registerIndex <= limit
 }
 
-func (c *amd64Ctx) emitGather(spec amd64GatherSpec, memory MemRef, mask Operand, destination Reg, destinationBytes, indexBytes int, evex bool) error {
+func (c *amd64Ctx) emitGather(form x86VSIBForm) error {
+	spec, memory, mask := form.spec, form.memory.Mem, form.mask
+	destination, destinationBytes, indexBytes := form.data.Reg, form.dataBytes, form.indexBytes
 	destinationValue, err := c.loadGatherVector(destination, destinationBytes)
 	if err != nil {
 		return err
@@ -143,9 +145,8 @@ func (c *amd64Ctx) emitGather(spec amd64GatherSpec, memory MemRef, mask Operand,
 	indexType := fmt.Sprintf("<%d x i%d>", indexLanes, spec.indexBits)
 	indexValues := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i8> %s to %s\n", indexValues, indexBytes, indexValue, indexType)
-	activeLanes := destinationLanes
-	if indexLanes < activeLanes {
-		activeLanes = indexLanes
+	activeLanes := form.activeLanes()
+	if activeLanes < destinationLanes {
 		// QPS/QD with an X index has two active dword lanes and architecturally
 		// zeroes the upper two lanes of the X destination.
 		for lane := activeLanes; lane < destinationLanes; lane++ {
@@ -157,7 +158,7 @@ func (c *amd64Ctx) emitGather(spec amd64GatherSpec, memory MemRef, mask Operand,
 
 	var maskValues string
 	var kMask string
-	if evex {
+	if form.evex {
 		kMask, err = c.loadK(mask.Reg)
 	} else {
 		maskBytes, err := c.loadGatherVector(mask.Reg, destinationBytes)
@@ -192,7 +193,7 @@ func (c *amd64Ctx) emitGather(spec amd64GatherSpec, memory MemRef, mask Operand,
 		pointer, pointerType := c.gatherPointer(memory, "%"+address)
 
 		condition := ""
-		if evex {
+		if form.evex {
 			shifted := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", shifted, kMask, lane)
 			bit := c.newTmp()
@@ -235,7 +236,7 @@ func (c *amd64Ctx) emitGather(spec amd64GatherSpec, memory MemRef, mask Operand,
 	if err := c.storePackedMoveOperand(Operand{Kind: OpReg, Reg: destination}, destinationBytes, "%"+bytesResult); err != nil {
 		return err
 	}
-	if evex {
+	if form.evex {
 		return c.storeK(mask.Reg, "0")
 	}
 	return c.storePackedMoveOperand(mask, destinationBytes, "zeroinitializer")
@@ -255,6 +256,9 @@ func (c *amd64Ctx) loadGatherVector(register Reg, byteWidth int) (string, error)
 }
 
 func (c *amd64Ctx) gatherBaseAddress(memory MemRef) (string, error) {
+	if physical, certified := c.fixedMemRoles[memory]; certified {
+		memory = physical
+	}
 	base := "0"
 	if memory.Base != "" {
 		value, err := c.loadReg(memory.Base)

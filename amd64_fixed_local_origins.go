@@ -22,6 +22,7 @@ const fixedLocalOriginPayloadBytes int64 = 64
 
 func fixedLocalOriginStorage(state x86FixedLocalState) int64 {
 	bytes := fixedLocalOriginMapStorage(state.opaque) + fixedLocalOriginMapStorage(state.opaqueCells)
+	bytes += int64(len(state.vectorLiterals)) * 128
 	if state.savedBP != nil {
 		bytes += 2 * fixedLocalOriginPayloadBytes // Includes the immutable saved register facts.
 	}

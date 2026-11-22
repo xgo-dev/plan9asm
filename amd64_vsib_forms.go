@@ -15,6 +15,15 @@ type x86VSIBForm struct {
 	evex, scatter, prefetch bool
 }
 
+func (f x86VSIBForm) activeLanes() int {
+	data := f.dataBytes * 8 / f.spec.elemBits
+	index := f.indexBytes * 8 / f.spec.indexBits
+	if index < data {
+		return index
+	}
+	return data
+}
+
 // The encoded length selects the larger carrier. Only DPD/DQ and QPS/QD
 // change one axis independently, including the narrowest X/X case.
 func x86VSIBWidths(table amd64GatherTable, length int) (data, index int) {

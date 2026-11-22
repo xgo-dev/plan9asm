@@ -40,7 +40,7 @@ func fixedLocalGPSIMDTransferStep(ins *Instr, state *x86FixedLocalState, sig Fun
 	}
 	if form.destinationX {
 		root := x86CallerVectorRoot(ins.Args[1].Reg)
-		state.vectors[root] = form.definedVectorBytes(known, state.vectors[root])
+		state.setVectorBytes(root, form.definedVectorBytes(known, state.vectors[root]))
 		return true, nil
 	}
 	if ins.Args[1].Kind != OpReg && known != low {
