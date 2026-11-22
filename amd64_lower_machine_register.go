@@ -154,13 +154,13 @@ func x86MachineRegister(reg Reg) (class string, index int, ok bool) {
 	if len(name) < 3 {
 		return "", 0, false
 	}
-	prefix := strings.ToLower(name[:2])
-	if prefix != "cr" && prefix != "dr" && prefix != "tr" {
+	prefix := name[:2]
+	if prefix != "CR" && prefix != "DR" && prefix != "TR" {
 		return "", 0, false
 	}
 	index, err := strconv.Atoi(name[2:])
 	if err != nil {
 		return "", 0, false
 	}
-	return prefix, index, true
+	return strings.ToLower(prefix), index, true
 }

@@ -288,6 +288,12 @@ func registerClass(arch Arch, goarch string, reg Reg) string {
 	r := strings.ToUpper(string(reg))
 	if arch == ArchAMD64 {
 		switch {
+		case r == "PC":
+			return "program-counter"
+		case r == "TLS":
+			return "tls-register"
+		case r == "MSW":
+			return "descriptor-register"
 		case strings.HasPrefix(r, "X"):
 			return "xmm"
 		case strings.HasPrefix(r, "Y"):
@@ -307,6 +313,18 @@ func registerClass(arch Arch, goarch string, reg Reg) string {
 		case r == "SP":
 			return "stack-pointer"
 		default:
+			if class, _, ok := x86MachineRegister(Reg(r)); ok {
+				switch class {
+				case "cr":
+					return "control-register"
+				case "dr":
+					return "debug-register"
+				case "tr":
+					return "test-register"
+				default:
+					return "descriptor-register"
+				}
+			}
 			if goarch == "386" {
 				return "gpr32"
 			}
