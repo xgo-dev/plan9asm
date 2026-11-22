@@ -52,16 +52,25 @@ func x86TypedImplicitMaskMoveByteEffect(op Op, ins Instr, arch string) (x86Typed
 	}}, true, nil
 }
 
+func x86RawImplicitVectorMaskMoveSource(ins Instr, arch string) bool {
+	if !ins.x86Encoded || ins.Op != "MASKMOVDQU" && ins.Op != "VMASKMOVDQU" {
+		return false
+	}
+	_, known, err := x86ImplicitMaskMoveProperties(ins.Op, ins, arch)
+	return known && err == nil && x86RawOrdinaryVectorSource(ins, arch)
+}
+
 // MASKMOVQ belongs exclusively to its complete physical MMX/EMMS region.
 // SIMD stores also need the actual paired opcode and incoming DI identity;
 // an encoding, numerical address or zero mask provides neither storage nor
 // initialized bytes. A masked write establishes no new memory facts.
 func x86ResultImplicitMaskMoveStep(ins Instr, state *x86ResultState, arch string, native bool) (bool, bool) {
 	spec, known, err := x86ImplicitMaskMoveProperties(ins.Op, ins, arch)
-	if !known || err != nil || !x86ResultNamedPredicateInstruction(ins) {
+	if !known || err != nil {
 		return false, known
 	}
-	if !native || spec.byteWidth == 8 {
+	if !native || spec.byteWidth == 8 ||
+		!x86ResultNamedPredicateInstruction(ins) && !x86RawImplicitVectorMaskMoveSource(ins, arch) {
 		return false, true
 	}
 	required := x86CallerVectorByteMask(int64(spec.byteWidth))

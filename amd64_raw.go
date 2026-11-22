@@ -919,6 +919,17 @@ func decodeX86RawDirectiveGroupWithOpaque(
 				offset += length
 				continue
 			}
+			if instruction, length, ok, err := decodedX86ImplicitVectorMaskMove(code[offset:], mode); ok {
+				if err != nil {
+					return nil, fmt.Errorf("decode raw x86 implicit vector mask move at instruction %d byte %d: %w: %q", start, offset, err, rawGroup)
+				}
+				if err := markInstruction(offset, length); err != nil {
+					return nil, err
+				}
+				decodedByOffset[offset] = x86RawDecodedInstruction{length: length, instrs: annotate([]Instr{instruction})}
+				offset += length
+				continue
+			}
 			if instruction, length, literal, ok, err := decodeX86RawScalarMoveRIPData(code, offset, mode); ok {
 				if err != nil {
 					return nil, fmt.Errorf("decode raw x86 scalar move literal at instruction %d byte %d: %w: %q", start, offset, err, rawGroup)

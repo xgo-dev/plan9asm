@@ -26,8 +26,9 @@ func (err *x86LoweredVectorEntryAuditError) Unwrap() error {
 func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	fn, sig, arch := c.fpScalarSource, c.sig, c.goarch
 	rawPermute128 := x86Permute128RawReplayRequired(fn, arch)
+	rawMaskMove := x86MaskMoveRawReplayRequired(fn, arch)
 	if x86COMIRawReplayRequired(fn, arch) || x86FloatMinMaxRawReplayRequired(fn, arch) || x86ScalarPrecisionRawReplayRequired(fn, arch) ||
-		x86ExplicitMaskMoveRawReplayRequired(fn, arch) || x86PackedShiftRawReplayRequired(fn, arch) ||
+		rawMaskMove || x86PackedShiftRawReplayRequired(fn, arch) ||
 		x86PackedDotRawReplayRequired(fn, arch) || x86ZeroExtendRawReplayRequired(fn, arch) ||
 		x86PackedPrecisionRawReplayRequired(fn, arch) || rawPermute128 {
 		if err := fn.x86RawReplay.validate(fn, arch); err != nil {
@@ -143,7 +144,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	boundRawTernary := false
 	boundRawFloatMinMax := false
 	boundRawScalarPrecision := false
-	boundRawExplicitMaskMove := false
 	boundRawPackedShift := false
 	boundRawPackedDot := false
 	boundRawZeroExtend := false
@@ -190,12 +190,11 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 			boundRawPackedShift = true
 			continue // Exact physical identity grants no count, data, mask, address or entry fact.
 		}
-		if x86RawExplicitMaskMoveSource(ins, arch) {
-			if !boundRawExplicitMaskMove && (fn.x86RawReplay == nil || fn.x86RawReplay.validate(fn, arch) != nil) {
+		if x86RawExplicitMaskMoveSource(ins, arch) || x86RawImplicitVectorMaskMoveSource(ins, arch) {
+			if !rawMaskMove {
 				return strictErr
 			}
-			boundRawExplicitMaskMove = true
-			continue // Exact VEX source grants no mask, address, memory or entry fact.
+			continue // The replay grants no mask, address, memory or entry fact.
 		}
 		if x86RawFloatMinMaxSource(ins, arch) {
 			if !boundRawFloatMinMax && (fn.x86RawReplay == nil || fn.x86RawReplay.validate(fn, arch) != nil) {

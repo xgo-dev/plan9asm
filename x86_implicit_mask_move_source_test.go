@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,107 @@ import (
 	"strings"
 	"testing"
 )
+
+type x86RawImplicitVectorMaskMoveFixture struct {
+	op         string
+	mask, data int
+	encoding   []byte
+}
+
+func x86RawImplicitVectorMaskMoveFixtures(arch string) []x86RawImplicitVectorMaskMoveFixture {
+	forms := []x86RawImplicitVectorMaskMoveFixture{
+		{"MASKMOVOU", 1, 0, []byte{0x66, 0x0f, 0xf7, 0xc1}},
+		{"VMASKMOVDQU", 1, 0, []byte{0xc5, 0xf9, 0xf7, 0xc1}},
+		{"VMASKMOVDQU", 1, 0, []byte{0xc4, 0xe1, 0xf9, 0xf7, 0xc1}}, // VEX3 with ignored W set
+	}
+	if arch != "amd64" {
+		return forms
+	}
+	// Go's amd64enc.s contains all four register combinations.
+	return append(forms, []x86RawImplicitVectorMaskMoveFixture{
+		{"MASKMOVOU", 2, 2, []byte{0x66, 0x0f, 0xf7, 0xd2}},
+		{"MASKMOVOU", 11, 2, []byte{0x66, 0x41, 0x0f, 0xf7, 0xd3}},
+		{"MASKMOVOU", 2, 11, []byte{0x66, 0x44, 0x0f, 0xf7, 0xda}},
+		{"MASKMOVOU", 11, 11, []byte{0x66, 0x45, 0x0f, 0xf7, 0xdb}},
+		{"VMASKMOVDQU", 2, 2, []byte{0xc5, 0xf9, 0xf7, 0xd2}},
+		{"VMASKMOVDQU", 11, 2, []byte{0xc4, 0xc1, 0x79, 0xf7, 0xd3}},
+		{"VMASKMOVDQU", 2, 11, []byte{0xc5, 0x79, 0xf7, 0xda}},
+		{"VMASKMOVDQU", 11, 11, []byte{0xc4, 0x41, 0x79, 0xf7, 0xdb}},
+	}...)
+}
+
+func (f x86RawImplicitVectorMaskMoveFixture) program(arch, name string, raw bool) (string, string) {
+	source, declaration := x86ImplicitMaskMoveOracleRegisters(arch, f.op, name, f.mask, f.data)
+	if raw {
+		named := fmt.Sprintf("%s X%d,X%d\n", f.op, f.mask, f.data)
+		source = strings.Replace(source, named, x86RawDisplacementDirectives(f.encoding), 1)
+	}
+	return source, declaration
+}
+
+func TestX86RawImplicitVectorMaskMove(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 required for raw implicit mask stores")
+	}
+	for _, target := range x86RawReturnTargets {
+		t.Run(target.triple, func(t *testing.T) {
+			forms := x86RawImplicitVectorMaskMoveFixtures(target.arch)
+			mode := 64
+			if target.arch == "386" {
+				mode = 32
+			}
+			var source, declarations strings.Builder
+			for index, f := range forms {
+				named := fmt.Sprintf("%s X%d,X%d", f.op, f.mask, f.data)
+				encoded := x86AddressOverrideNamedBytes(t, target.arch, named)
+				if f.encoding[0] != 0xc4 || f.encoding[2]&0x80 == 0 {
+					if !bytes.HasPrefix(encoded, f.encoding) {
+						t.Fatalf("Go encoded %s as %x, want %x", named, encoded, f.encoding)
+					}
+				}
+				for _, ins := range x86AddressOverrideDecoded(t, mode, f.encoding) {
+					if ins.Op == OpTEXT || ins.Op == OpRET {
+						continue
+					}
+					want := []Operand{
+						{Kind: OpReg, Reg: Reg(fmt.Sprint("X", f.mask))},
+						{Kind: OpReg, Reg: Reg(fmt.Sprint("X", f.data))},
+					}
+					if !reflect.DeepEqual(ins.Args, want) || ins.x86SourceRaw == nil || ins.x86UnboundAddressOverride {
+						t.Fatalf("raw %x lost its mask/data order or origin: %+v", f.encoding, ins)
+					}
+				}
+				program, declaration := f.program(target.arch, fmt.Sprint("Store", index), true)
+				source.WriteString(program)
+				declarations.WriteString(declaration)
+			}
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run(api, func(t *testing.T) {
+					ir, err := x86ScalarFPBitViewAPI(t, source.String(), declarations.String(), target.arch, target.triple, api)
+					if err != nil || ir == "" {
+						t.Fatalf("initialized physical mask store: %v", err)
+					}
+					for _, content := range []string{ir, x86DwordProductIROptimize(t, ir)} {
+						for index, f := range forms {
+							body := x86StringMemoryFunction(t, content, fmt.Sprint("Store", index))
+							mnemonic := "maskmovdqu"
+							if f.op == "VMASKMOVDQU" {
+								mnemonic = "vmaskmovdqu"
+							}
+							if !strings.Contains(body, "asm sideeffect \""+mnemonic+" ") || !strings.Contains(body, "~{memory}") {
+								t.Fatalf("raw %x lost its non-temporal store: %s", f.encoding, body)
+							}
+						}
+						for _, level := range []string{"-O0", "-O2"} {
+							x86PackedStringCompileObject(t, llc, target.triple, content, level)
+						}
+					}
+				})
+			}
+		})
+	}
+}
 
 var x86ImplicitMaskMoveOracleNames = []string{
 	"MASKMOVQ", "MASKMOVOU", "MASKMOVDQU", "VMASKMOVDQU",

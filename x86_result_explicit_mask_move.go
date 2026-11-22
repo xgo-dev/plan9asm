@@ -21,12 +21,13 @@ func x86RawExplicitMaskMoveSource(ins Instr, arch string) bool {
 		x86RawOrdinaryVectorSourceAt(ins, arch, f.memory) && x86Mode32VectorRegisterContext(ins, arch) == nil
 }
 
-func x86ExplicitMaskMoveRawReplayRequired(fn Func, arch string) bool {
+func x86MaskMoveRawReplayRequired(fn Func, arch string) bool {
 	if fn.x86RawReplay == nil {
 		return false
 	}
 	for _, ins := range fn.x86RawReplay.decoded {
-		if _, known, _ := x86ExplicitMaskMoveProperties(ins.Op, ins, arch); known {
+		_, explicit, _ := x86ExplicitMaskMoveProperties(ins.Op, ins, arch)
+		if explicit || ins.Op == "MASKMOVDQU" || ins.Op == "VMASKMOVDQU" {
 			return true
 		}
 	}

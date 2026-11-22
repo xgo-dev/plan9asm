@@ -516,24 +516,61 @@ func TestX86RawAddressOverrideImplicitMaskedStoreAllRegisterFields(t *testing.T)
 func TestX86RawAddressOverrideUnsupportedImplicitDecoderBoundaries(t *testing.T) {
 	for _, target := range x86RawReturnTargets {
 		t.Run(target.triple, func(t *testing.T) {
-			// Go accepts its named VEX spelling, while the pinned x/arch
-			// generic decoder does not implement this opcode. Do not grant
-			// a legacy/default address interpretation to its raw bytes.
-			x86LEAActualTargetGoObject(t, target.arch, target.triple, "TEXT raw(SB),4,$0-0\nVMASKMOVDQU X0,X1\nRET\n")
+			mode := 64
+			if target.arch == "386" {
+				mode = 32
+			}
 			for _, code := range [][]byte{
-				{0xc5, 0xf9, 0xf7, 0xc1}, {0x67, 0xc5, 0xf9, 0xf7, 0xc1},
 				{0x0f, 0x01, 0xfa}, {0x67, 0x0f, 0x01, 0xfa}, // MONITORX
 			} {
-				mode := 64
-				if target.arch == "386" {
-					mode = 32
-				}
 				if _, err := x86AddressOverrideDecode(mode, code); err == nil {
 					t.Fatalf("unsupported implicit raw decoder acquired a consumer: %x", code)
 				}
 			}
 			requireLEANativeGoObject(t, target.arch, "TEXT raw(SB),4,$0-0\nMONITORX\nRET\n", false)
 		})
+	}
+}
+
+func TestX86RawImplicitVectorMaskMoveContext(t *testing.T) {
+	for _, target := range x86RawReturnTargets {
+		t.Run(target.triple, func(t *testing.T) {
+			program, declaration := x86ImplicitMaskMoveOracleRegisters(target.arch, "VMASKMOVDQU", "Store", 1, 0)
+			_, initialized, _ := strings.Cut(program, "\n")
+			_, tail, _ := strings.Cut(initialized, "\n")
+			for _, form := range []struct {
+				name, source string
+				bytes        []byte
+			}{
+				{"missing-DI", strings.Replace(program, initialized, tail, 1), []byte{0xc5, 0xf9, 0xf7, 0xc1}},
+				{"alternate-address-size", program, []byte{0x67, 0xc5, 0xf9, 0xf7, 0xc1}},
+				{"alternate-segment", program, []byte{0x64, 0xc5, 0xf9, 0xf7, 0xc1}},
+			} {
+				t.Run(form.name, func(t *testing.T) {
+					source := strings.Replace(form.source, "VMASKMOVDQU X1,X0\n", x86RawDisplacementDirectives(form.bytes), 1)
+					for _, api := range []string{"text", "module", "Go"} {
+						ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+						if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+							t.Fatalf("%s raw mask store gained a default DI destination: %v", api, err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestX86RawImplicitVectorMaskMoveInvalidEncoding(t *testing.T) {
+	for _, code := range [][]byte{
+		{0xc5, 0xfd, 0xf7, 0xc1},       // reserved VEX.L
+		{0xc5, 0xf1, 0xf7, 0xc1},       // reserved VEX.vvvv
+		{0xc5, 0xf9, 0xf7, 0x01},       // memory ModRM
+		{0xc4, 0xe1, 0x79, 0xf7},       // truncated
+		{0xc4, 0xc1, 0x79, 0xf7, 0xc1}, // extended r/m in 32-bit mode
+	} {
+		if _, _, matched, err := decodedX86ImplicitVectorMaskMove(code, 32); !matched || err == nil {
+			t.Fatalf("invalid implicit mask store decoded: %x", code)
+		}
 	}
 }
 

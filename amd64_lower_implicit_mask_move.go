@@ -24,7 +24,7 @@ func (c *amd64Ctx) lowerImplicitMaskMove(op Op, ins Instr) (bool, bool, error) {
 		return known, false, err
 	}
 	if spec.byteWidth == 8 || !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) ||
-		!x86ResultNamedPredicateInstruction(ins) {
+		!x86ResultNamedPredicateInstruction(ins) && !x86RawImplicitVectorMaskMoveSource(ins, c.goarch) {
 		return true, false, fmt.Errorf("%w: implicit mask store needs its original native source/target and MMX owner", ErrProbeNeedsContext)
 	}
 	mask, err := c.loadX(ins.Args[0].Reg)
