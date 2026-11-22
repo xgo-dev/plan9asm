@@ -60,7 +60,7 @@ func (c *amd64Ctx) lowerScalarSqrt(ins Instr, f x86FloatBinaryForm) error {
 			return err
 		}
 	}
-	source, err := c.loadFloatBinaryScalar(ins.Args[0], f.bits, mask)
+	source, err := c.loadFloatBinaryScalar(ins, f.first, f.bits, mask)
 	if err != nil {
 		return err
 	}

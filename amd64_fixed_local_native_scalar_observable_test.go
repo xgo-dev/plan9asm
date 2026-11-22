@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -27,6 +26,7 @@ func TestGoAMD64FixedLocalNativeScalarDeadAccesses(t *testing.T) {
 	} {
 		for _, base := range []string{"AX", "BP"} {
 			operation := fmt.Sprintf(row, base)
+			op, _, _ := strings.Cut(operation, " ")
 			t.Run(operation, func(t *testing.T) {
 				body := "MOVQ $1,CX\nMOVQ CX,X1\nMOVQ $0,AX\nMOVQ AX," + base + "\n" +
 					operation + "\nMOVQ $0,AX"
@@ -71,10 +71,11 @@ func TestGoAMD64FixedLocalNativeScalarDeadAccesses(t *testing.T) {
 				stage, cancel := runtimeOracleStageContext(t)
 				defer cancel()
 				bound, err := source.BindFixedLocal(stage, pkg, file, options)
-				if !strings.HasPrefix(operation, "ADD") || strings.HasPrefix(operation, "ADDSS") || strings.HasPrefix(operation, "ADDSD") {
+				switch op {
+				case "SQRTSS", "SQRTSD", "ADDSS", "ADDSD":
 					x86LEAActualTargetGoObject(t, "amd64", triple, assembly)
 					if !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "unregistered instruction shape") {
-						t.Fatal("unregistered scalar floating family acquired a fixed-local owner", err)
+						t.Fatal("unregistered legacy scalar floating family acquired a fixed-local owner", err)
 					}
 					return
 				}
@@ -88,13 +89,25 @@ func TestGoAMD64FixedLocalNativeScalarDeadAccesses(t *testing.T) {
 							t.Fatal("original scalar source did not translate", err)
 						}
 						for _, text := range []string{ir, x86MulDivRoundOptimize(t, ir)} {
-							observable := regexp.MustCompile(`\b(?:load|store) volatile i(?:8|16|32|64)\b`).MatchString(text)
-							for _, line := range strings.Split(text, "\n") {
-								observable = observable || strings.Contains(line, "asm sideeffect") &&
-									strings.Contains(line, "~{memory}") && strings.Contains(line, "*m")
+							var observable bool
+							if strings.HasPrefix(op, "V") {
+								width := 4
+								if strings.HasSuffix(op, "SD") {
+									width = 8
+								}
+								observable = strings.Contains(text, fmt.Sprintf("load volatile <%d x i8>,", width))
+								if strings.HasPrefix(op, "VSQRT") {
+									observable = observable && strings.Contains(text, "asm sideeffect \""+strings.ToLower(op)+" ")
+								} else {
+									intrinsic := fmt.Sprintf("@llvm.experimental.constrained.fadd.f%d(", 8*width)
+									observable = observable && strings.Contains(text, intrinsic) && strings.Contains(text, "fpexcept.strict")
+								}
+							} else {
+								bits := map[string]int{"ADDB": 8, "ADDW": 16, "ADDL": 32, "ADDQ": 64}[op]
+								observable = strings.Contains(text, fmt.Sprintf("load volatile i%d,", bits))
 							}
 							if !observable {
-								t.Fatal("dead scalar native access lost its observable memory effect", operation, api, text)
+								t.Fatal("dead scalar native access lost its exact memory or floating effect", operation, api)
 							}
 							for _, level := range []string{"-O0", "-O2"} {
 								x86PackedStringCompileObject(t, llc, triple, text, level)

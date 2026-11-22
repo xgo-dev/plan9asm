@@ -111,7 +111,7 @@ func (c *amd64Ctx) nativeFloatingCompareSource(source Operand, f x86FloatCompare
 	if source.Kind == OpFP {
 		// Scalar compare observes only the low field. Assemble its checked
 		// bytes as integer data, not a fabricated contiguous native FP pointer.
-		bits, loadErr := c.loadFloatBinaryScalar(source, f.bits, mask)
+		bits, loadErr := c.loadFloatBinaryScalarFP(source, f.bits, mask)
 		if loadErr != nil {
 			return "", "", "", "", loadErr
 		}
