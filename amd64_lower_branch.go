@@ -41,14 +41,11 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 			}
 			return true, false, nil
 		case OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
+			addr, err := c.loadIndirectMemoryAddr(ins.Args[0].Mem)
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
-			fnptr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", fnptr, p)
-			if err := c.callIndirectAddr("%" + fnptr); err != nil {
+			if err := c.callIndirectAddr(addr); err != nil {
 				return true, false, err
 			}
 			return true, false, nil
@@ -169,21 +166,11 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 				break
 			}
 			if op == "JMP" {
-				addr, err := c.addrFromMem(args[0].Mem)
+				addr, err := c.loadIndirectMemoryAddr(args[0].Mem)
 				if err != nil {
 					return true, false, err
 				}
-				p := c.ptrFromAddrI64(addr)
-				fnptr := c.newTmp()
-				if c.goarch == "386" {
-					fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", fnptr, p)
-					wide := c.newTmp()
-					fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", wide, fnptr)
-					fnptr = wide
-				} else {
-					fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", fnptr, p)
-				}
-				if err := c.tailCallIndirectAddrAndRet("%" + fnptr); err != nil {
+				if err := c.tailCallIndirectAddrAndRet(addr); err != nil {
 					return true, false, err
 				}
 				return true, true, nil
@@ -236,6 +223,14 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 	return true, true, nil
 }
 
+func (c *amd64Ctx) loadIndirectMemoryAddr(memory MemRef) (string, error) {
+	address, err := c.addrFromMem(memory)
+	if err != nil {
+		return "", err
+	}
+	return c.loadIndirectBranchPointer(c.ptrFromAddrI64(address)), nil
+}
+
 func (c *amd64Ctx) loadIndirectSymbolAddr(sym string) (string, error) {
 	sym = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(sym), "*"))
 	if !strings.HasSuffix(sym, "(SB)") {
@@ -245,15 +240,21 @@ func (c *amd64Ctx) loadIndirectSymbolAddr(sym string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return c.loadIndirectBranchPointer(ptr), nil
+}
+
+// The 386 encoding reads a four-byte cell. Widen only the resulting value
+// to the internal register width, so the load cannot reach an adjacent cell.
+func (c *amd64Ctx) loadIndirectBranchPointer(ptr string) string {
 	value := c.newTmp()
 	if c.goarch == "386" {
 		fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", value, ptr)
 		wide := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", wide, value)
-		return "%" + wide, nil
+		return "%" + wide
 	}
 	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", value, ptr)
-	return "%" + value, nil
+	return "%" + value
 }
 
 func (c *amd64Ctx) callIndirectAddr(addr string) error {
