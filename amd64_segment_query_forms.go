@@ -51,11 +51,16 @@ func x86TypedSegmentQueryByteEffect(op Op, ins Instr, arch string) (x86TypedByte
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, flagsDefined: x86ByteFlagZF,
-		operands: []x86TypedByteOperand{{index: 0, operand: form.selector, width: 2, read: true}}}
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		flagsDefined:        x86ByteFlagZF,
+		operands: []x86TypedByteOperand{
+			{index: 0, operand: form.selector, width: 2, read: true, numericalGP: form.selector.Kind == OpReg},
+		},
+	}
 	if form.spec.bits != 0 {
 		effect.operands = append(effect.operands, x86TypedByteOperand{
-			index: 1, operand: ins.Args[1], width: int64(form.spec.bits / 8), read: true, write: true,
+			index: 1, operand: ins.Args[1], width: int64(form.spec.bits / 8), read: true, write: true, numericalGP: true,
 		})
 	}
 	return effect, true, nil

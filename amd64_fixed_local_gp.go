@@ -22,6 +22,14 @@ func fixedLocalGPByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if effect, known, err := x86TypedBitScanByteEffect(ins, "amd64"); known {
 		return effect, true, err
 	}
+	if effect, known, err := x86TypedSegmentQueryByteEffect(ins.Op, ins, "amd64"); known {
+		if len(effect.operands) == 2 {
+			// LAR and LSL tie the native result to its entire prior word.
+			// A failed query can retain even the upper half of a dword result.
+			effect.operands[1].width = 8
+		}
+		return effect, true, err
+	}
 	if effect, known, err := x86TypedExchangeAddByteEffect(ins, "amd64"); known {
 		return effect, true, err
 	}
