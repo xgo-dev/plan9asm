@@ -45,8 +45,8 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		if err != nil {
 			return x86TypedByteEffect{}, true, err
 		}
-		if !form.spec.vex || !x86LowVEXVectorOperands(ins) {
-			return x86TypedByteEffect{}, true, goAMD64FrameContext("block-transfer effect requires its separate non-VEX consumer: %s", ins.Op)
+		if form.undefinedOpcode() {
+			return x86TypedByteEffect{}, true, goAMD64FrameContext("zeroing masked extract to memory has no continuation: %s", ins.Op)
 		}
 		return x86BlockTransferDependencyEffect(ins, form), true, nil
 	}
@@ -164,9 +164,13 @@ func x86BlockTransferDependencyEffect(ins Instr, form x86InsertExtractForm) x86T
 	if source.operand.Kind == OpReg {
 		source.requiredBytes = inputBytes
 	}
+	capacity := 3
+	if form.spec.insert && form.mask >= 0 {
+		capacity++
+	}
 	effect := x86TypedByteEffect{
 		vector:   x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
-		operands: make([]x86TypedByteOperand, 0, 3),
+		operands: make([]x86TypedByteOperand, 0, capacity),
 	}
 	effect.operands = append(effect.operands, source)
 	if form.spec.insert {
@@ -176,7 +180,10 @@ func x86BlockTransferDependencyEffect(ins Instr, form x86InsertExtractForm) x86T
 	}
 	effect.operands = append(effect.operands, x86TypedByteOperand{
 		index: form.destination, operand: ins.Args[form.destination], width: int64(form.output), write: true,
+		partialWrite: form.memoryWrite && form.mask >= 0,
 	})
+	// A masked store preserves inactive memory without reading it.
+	effect.addWritemask(ins, form.mask, form.zeroing || form.memoryWrite)
 	return effect
 }
 
