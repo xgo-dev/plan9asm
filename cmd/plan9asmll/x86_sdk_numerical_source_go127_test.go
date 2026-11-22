@@ -247,6 +247,19 @@ func TestCompileOneX86SDKBytealgIndexByteExistingObjects(t *testing.T) {
 	compileX86SDKBytealgExistingObject(t, "indexbyte_amd64.s")
 }
 
+func TestCompileOneX86SDKFixedFrameWithStaticAddress(t *testing.T) {
+	for _, source := range []struct{ pkg, file string }{
+		{"crypto/internal/fips140/aes/gcm", "gcm_amd64.s"},
+		{"crypto/internal/fips140/sha256", "sha256block_amd64.s"},
+		{"crypto/sha1", "sha1block_amd64.s"},
+		{"vendor/golang.org/x/crypto/chacha20poly1305", "chacha20poly1305_amd64.s"},
+	} {
+		t.Run(source.pkg, func(t *testing.T) {
+			compileX86SDKExistingObjectWithProfile(t, source.pkg, source.file, "explicit")
+		})
+	}
+}
+
 func compileX86SDKBytealgExistingObject(t *testing.T, name string) {
 	t.Helper()
 	compileX86SDKExistingObject(t, "internal/bytealg", name)
@@ -254,13 +267,18 @@ func compileX86SDKBytealgExistingObject(t *testing.T, name string) {
 
 func compileX86SDKExistingObject(t *testing.T, packagePath, name string) {
 	t.Helper()
-	setX86SDKNumericalCLIProfile(t, "effective-defaults")
+	compileX86SDKExistingObjectWithProfile(t, packagePath, name, "effective-defaults")
+}
+
+func compileX86SDKExistingObjectWithProfile(t *testing.T, packagePath, name, profile string) {
+	t.Helper()
+	setX86SDKNumericalCLIProfile(t, profile)
 	ctx := arm64PrivateCLIContext(t)
 	dir := filepath.Join(runtime.GOROOT(), "src", filepath.FromSlash(packagePath))
-	actual, err := packages.Load(&packages.Config{Context: ctx, Dir: dir, Env: os.Environ(),
+	actual, err := packages.Load(&packages.Config{Context: ctx, Env: os.Environ(),
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
 			packages.NeedModule | packages.NeedDeps | packages.NeedImports | packages.NeedTypes | packages.NeedTypesSizes,
-	}, ".")
+	}, packagePath)
 	if err != nil || len(actual) != 1 || len(actual[0].Errors) != 0 {
 		t.Fatalf("original SDK %s load: %v, %+v", packagePath, err, actual)
 	}

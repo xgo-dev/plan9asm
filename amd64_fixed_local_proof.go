@@ -327,6 +327,9 @@ func fixedLocalInstructionShape(ins Instr) bool {
 	if _, known := amd64MaskMoveSpecs[ins.Op]; known {
 		return amd64MaskMoveOperandsValid(ins, "amd64")
 	}
+	if _, address := fixedLocalStaticAddress(ins); address {
+		return true // Static addresses have the same priority here as in the transfer.
+	}
 	if effect, known, err := fixedLocalGPByteEffect(ins); known {
 		// The typed form owns register identity, including EVEX scalar inputs.
 		return err == nil && !effect.dynamicMemory
@@ -351,9 +354,6 @@ func fixedLocalInstructionShape(ins Instr) bool {
 	}
 	if x86RawReturnScalarMoveBytes(x86SourceMoveInstruction(ins, "amd64").Op) != 0 {
 		return len(ins.Args) == 2
-	}
-	if _, address := fixedLocalStaticAddress(ins); address {
-		return true
 	}
 	if _, known, err := x86SHAProperties(ins.Op, ins, "amd64"); known {
 		return err == nil
