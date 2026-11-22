@@ -655,6 +655,15 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 	if ins.x86UnboundAddressOverride {
 		return false, fmt.Errorf("%w: %s physical address-size %d memory override has no bound ordinary consumer: %q", ErrProbeNeedsContext, c.goarch, ins.x86AddressBits, ins.Raw)
 	}
+	if c.dataBPSource && !c.dataBPReadProved && x86DataBPPackedRead(ins, c.goarch) >= 0 {
+		if err := c.scalarFPResultInitialized(); err != nil {
+			return false, err
+		}
+		if c.fpScalarCheckErr != nil {
+			return false, c.fpScalarCheckErr
+		}
+		c.dataBPReadProved = true
+	}
 	// Arithmetic uses the ordinary scalar emitters, but its bound global
 	// source remains an observable exact-width read even for a dead result.
 	// Scope the role to this original instruction, never the next/raw read.

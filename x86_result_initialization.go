@@ -60,6 +60,7 @@ type x86ABI0ResultEntry struct {
 	direction   x86ResultDirection
 	vectors     map[int]int
 	mode32Calls map[string]x86Mode32FrameCall
+	dataBPReads bool
 }
 
 func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch string,
@@ -121,7 +122,9 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 		}
 		resultOffset = int64(frame)
 	}
-	initial := x86ResultState{fp: make([]bool, frame), pointerFP: make(map[int64]bool)}
+	initial := x86ResultState{
+		fp: make([]bool, frame), pointerFP: make(map[int64]bool), dataBPReads: entry.dataBPReads,
+	}
 	if !strings.HasSuffix(fn.Sym, "<>") {
 		initial.direction = entry.direction
 	}
@@ -872,6 +875,7 @@ type x86ResultState struct {
 	// only an initialization observation, never a pointee/backing permission.
 	pointerFP      map[int64]bool // immutable after deriving the actual ABI0 layout
 	pointerGP      [16]bool
+	dataBPReads    bool     // Immutable whole-source scope for the paired packed reader.
 	stringCursorGP [16]bool // Caller-derived indexes usable by the paired string helper.
 	// A separate actual typed-entry address-bit domain. SDK literal/OR
 	// carriers never seed it; no numerical GP or memory facts follow.
@@ -1303,7 +1307,7 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 	if accepted, known := x86ResultXLATStep(ins, state, owned, arch, false); known {
 		return accepted
 	}
-	if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, false, false); known {
+	if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, false); known {
 		return accepted
 	}
 	if accepted, known := x86ResultFMA3Step(ins, state, owned, arch, false); known {

@@ -83,6 +83,9 @@ func (c *amd64Ctx) nativeMemoryOperand(ins Instr, index int) bool {
 	if x86OrdinaryNativeMemoryOperand(ins.Args[index], c.goarch) {
 		return true
 	}
+	if c.dataBPReadProved && x86DataBPPackedRead(ins, c.goarch) == index {
+		return true
+	}
 	if access, found := ins.x86FixedLocalMemory[index]; !found || !access.nativeInput {
 		return false
 	}

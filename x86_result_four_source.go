@@ -3,7 +3,7 @@ package plan9asm
 // Numerical availability only: the paired whole original opcode owns the
 // ambient FP state, precise fault and complete m128 access obligations. No
 // backing, caller, frame, native-entry or subsequent-read authority follows.
-func x86ResultFourSourceStep(ins Instr, state *x86ResultState, owned []bool, arch string, native, dataBP bool) (bool, bool) {
+func x86ResultFourSourceStep(ins Instr, state *x86ResultState, owned []bool, arch string, native bool) (bool, bool) {
 	form, known, err := x86FourSourceProperties(ins.Op, ins, arch)
 	if !known || err != nil {
 		return false, known
@@ -17,11 +17,7 @@ func x86ResultFourSourceStep(ins Instr, state *x86ResultState, owned []bool, arc
 			return false, true
 		}
 	}
-	if native && dataBP && x86DataBPNativeMemory(form.memory, arch) {
-		if !x86ResultDataBPNativeAddress(form.memory.Mem, state) {
-			return false, true
-		}
-	} else if !x86ResultReadWithNativeContinuation(ins, form.memory, 16, state, owned, arch, native) {
+	if !x86ResultReadWithNativeContinuation(ins, form.memory, 16, state, owned, arch, native) {
 		return false, true
 	}
 	required := x86CallerVectorByteMask(form.inputBytes())

@@ -488,7 +488,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultVSIBStep(ins, state, arch, true, c.dataBPSource); known {
 			return accepted // Exact indexed continuation; never an ordinary contiguous native tuple.
 		}
-		if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, true, c.dataBPSource); known {
+		if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, true); known {
 			return accepted // One complete original opcode owns its m128 access and sequential native exceptions.
 		}
 		if accepted, known := x86ResultFMA3Step(ins, state, owned, arch, true); known {
@@ -951,6 +951,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	}
 	entry := x86ABI0ResultEntry{
 		direction: c.abi0EntryDirection, mode32Calls: c.mode32FrameCalls(fn),
+		dataBPReads: c.dataBPSource,
 	}
 	if err := checkX86ABI0ResultInitializationWithEntry(fn, sig, arch, transfer, true, false, true, entry); err != nil {
 		if !vectorEntry || x86ResultHasIndexOnlyVSIB(fn, arch) || !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
@@ -1008,8 +1009,15 @@ func x86ResultReadWithNativeAddress(ins Instr, source Operand, width int64, stat
 	}
 	if !(conditionalNativeRead && source.Kind == OpMem && source.Mem.Sym == "" &&
 		ins.x86NumericalRead == nil && !ins.x86Encoded && ins.x86SourceRaw == nil && ins.x86RawNearReturn == nil &&
-		ins.x86AddressBits == 0 && !ins.x86UnboundAddressOverride && ins.x86SegmentPrefix == 0 &&
-		x86OrdinaryNativeMemoryOperand(source, arch)) {
+		ins.x86AddressBits == 0 && !ins.x86UnboundAddressOverride && ins.x86SegmentPrefix == 0) {
+		return false
+	}
+	if state.dataBPReads && x86DataBPNativeMemory(source, arch) {
+		index := x86DataBPPackedRead(ins, arch)
+		return index >= 0 && ins.Args[index].Mem == source.Mem &&
+			x86ResultDataBPNativeAddress(source.Mem, state)
+	}
+	if !x86OrdinaryNativeMemoryOperand(source, arch) {
 		return false
 	}
 	if segmentRead {

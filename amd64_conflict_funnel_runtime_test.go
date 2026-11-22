@@ -31,7 +31,15 @@ func x86ConflictFunnelPortableRuntime(t *testing.T, llc, clang, name, triple, ir
 	}
 }
 
-func x86ConflictFunnelWholeByteRuntime(t *testing.T, bank string) {
+type x86ConflictFunnelRuntimeInput uint8
+
+const (
+	conflictFunnelRegister x86ConflictFunnelRuntimeInput = iota
+	conflictFunnelBPMemory
+	conflictFunnelBPBroadcast
+)
+
+func x86ConflictFunnelWholeByteRuntime(t *testing.T, bank string, input x86ConflictFunnelRuntimeInput) {
 	t.Helper()
 	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
 		t.Skip("portable whole-byte oracle requires its native 64-bit host counterpart")
@@ -42,8 +50,23 @@ func x86ConflictFunnelWholeByteRuntime(t *testing.T, bank string) {
 	}
 	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
 	var source, declarations, prototypes, metadata strings.Builder
+	frame, address, setup := 0, bank+"0", ""
+	if input != conflictFunnelRegister {
+		// Keep the array start as the effective address while exercising
+		// both the incoming pointer provenance and the separate GP index.
+		frame, address = 8, "-20(BP)(R8*4)"
+		setup = "MOVQ AX,BP\nMOVQ $5,R8\n"
+	}
+	broadcast := 0
+	wantRows := 42
+	if input == conflictFunnelBPBroadcast {
+		broadcast, wantRows = 1, 30
+	}
 	count := 0
 	for _, row := range x86ConflictFunnelRows() {
+		if broadcast != 0 && row.bits == 16 {
+			continue // The official word forms have no broadcast operand.
+		}
 		for mode, suffix := range []string{"", "", ".Z"} {
 			name := fmt.Sprint("Whole", count)
 			mask := ""
@@ -56,14 +79,18 @@ func x86ConflictFunnelWholeByteRuntime(t *testing.T, bank string) {
 			} else if bank == "Y" {
 				selector = row.bits // The immediate wraps modulo the lane width.
 			}
-			instruction := x86ConflictFunnelInstruction(row.op+suffix, bank, bank+"0", mask, row.unary, row.variable)
+			if broadcast != 0 {
+				suffix = ".BCST" + suffix
+			}
+			instruction := x86ConflictFunnelInstruction(row.op+suffix, bank, address, mask, row.unary, row.variable)
 			instruction = strings.Replace(instruction, "$255,", fmt.Sprintf("$%d,", selector), 1)
 			fmt.Fprintf(&declarations, "func %s(out *[257]byte,a,b,old *[64]byte,mask uint64)\n", name)
-			fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-40\n"+
+			fmt.Fprintf(&source, "TEXT ·%s(SB),4,$%d-40\n"+
 				"MOVQ out+0(FP),DI\nMOVQ a+8(FP),AX\nMOVQ b+16(FP),BX\nMOVQ old+24(FP),DX\n"+
+				"%s"+
 				"VMOVUPS (AX),Z0\nVMOVUPS (BX),Z1\nVMOVUPS (DX),Z2\nVMOVUPS (DX),Z3\n"+
 				"KMOVQ mask+32(FP),K1\nSTC\n%s\n"+
-				"VMOVUPS Z2,0(DI)\nVMOVUPS Z0,64(DI)\nVMOVUPS Z1,128(DI)\nVMOVUPS Z3,192(DI)\nSETCS 256(DI)\nRET\n", name, instruction)
+				"VMOVUPS Z2,0(DI)\nVMOVUPS Z0,64(DI)\nVMOVUPS Z1,128(DI)\nVMOVUPS Z3,192(DI)\nSETCS 256(DI)\nRET\n", name, frame, setup, instruction)
 			fmt.Fprintf(&prototypes, "extern void %s(uint8_t *,const uint8_t *,const uint8_t *,const uint8_t *,uint64_t);\n", name)
 			kind, left := 0, 0
 			if !row.unary {
@@ -75,13 +102,13 @@ func x86ConflictFunnelWholeByteRuntime(t *testing.T, bank string) {
 					left = 1
 				}
 			}
-			fmt.Fprintf(&metadata, "{%s,%d,%d,%d,%d,%d,%d},\n", name, kind, row.bits,
-				amd64VectorByteWidth(Reg(bank+"0")), left, mode, selector)
+			fmt.Fprintf(&metadata, "{%s,%d,%d,%d,%d,%d,%d,%d},\n", name, kind, row.bits,
+				amd64VectorByteWidth(Reg(bank+"0")), left, mode, selector, broadcast)
 			count++
 		}
 	}
-	if count != 42 {
-		t.Fatal("incomplete independent whole-byte numerical union", count)
+	if count != wantRows {
+		t.Fatalf("whole-byte numerical rows = %d, want %d", count, wantRows)
 	}
 	x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", source.String())
 	ir, err := x86ScalarFPBitViewAPI(t, source.String(), declarations.String(), "amd64", triple, "text")
@@ -94,7 +121,7 @@ func x86ConflictFunnelWholeByteRuntime(t *testing.T, bank string) {
 #include <string.h>
 ` + prototypes.String() + `
 typedef void (*Kernel)(uint8_t *,const uint8_t *,const uint8_t *,const uint8_t *,uint64_t);
-typedef struct { Kernel run; int kind,bits,width,left,mode,selector; } Row;
+typedef struct { Kernel run; int kind,bits,width,left,mode,selector,broadcast; } Row;
 static const Row rows[] = {
 ` + metadata.String() + `
 };
@@ -132,10 +159,12 @@ int main(void) {
       memcpy(want+192,old,64);
       want[256]=1;
       for(int lane=0;lane<lanes;lane++) {
-        uint64_t first=read_lane(a+lane*bytes,bytes),second=read_lane(b+lane*bytes,bytes);
+        int first_lane=row->broadcast?0:lane;
+        uint64_t first=read_lane(a+first_lane*bytes,bytes),second=read_lane(b+lane*bytes,bytes);
         uint64_t previous=read_lane(old+lane*bytes,bytes),result=0;
         if(row->kind==0) {
-          for(int prior=0;prior<lane;prior++) if(first==read_lane(a+prior*bytes,bytes)) result|=UINT64_C(1)<<prior;
+          for(int prior=0;prior<lane;prior++)
+            if(first==read_lane(a+(row->broadcast?0:prior)*bytes,bytes)) result|=UINT64_C(1)<<prior;
         } else {
           unsigned count=(row->kind==2?(unsigned)first:(unsigned)row->selector)&(row->bits-1);
           uint64_t base=row->kind==2?previous:second,other=row->kind==2?second:first;
@@ -160,13 +189,24 @@ int main(void) {
 }
 
 func TestX86ConflictFunnelWholeXByteSemantics(t *testing.T) {
-	x86ConflictFunnelWholeByteRuntime(t, "X")
+	x86ConflictFunnelWholeByteRuntime(t, "X", conflictFunnelRegister)
 }
 
 func TestX86ConflictFunnelWholeYByteSemantics(t *testing.T) {
-	x86ConflictFunnelWholeByteRuntime(t, "Y")
+	x86ConflictFunnelWholeByteRuntime(t, "Y", conflictFunnelRegister)
 }
 
 func TestX86ConflictFunnelWholeZByteSemantics(t *testing.T) {
-	x86ConflictFunnelWholeByteRuntime(t, "Z")
+	x86ConflictFunnelWholeByteRuntime(t, "Z", conflictFunnelRegister)
+}
+
+func TestX86PackedDataBPConflictFunnelRuntime(t *testing.T) {
+	for _, bank := range []string{"X", "Y", "Z"} {
+		t.Run(bank+"/memory", func(t *testing.T) {
+			x86ConflictFunnelWholeByteRuntime(t, bank, conflictFunnelBPMemory)
+		})
+		t.Run(bank+"/broadcast", func(t *testing.T) {
+			x86ConflictFunnelWholeByteRuntime(t, bank, conflictFunnelBPBroadcast)
+		})
+	}
 }

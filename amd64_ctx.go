@@ -108,6 +108,7 @@ type amd64Ctx struct {
 	fpScalarTrapOnly  bool // Complete private logical-shadow proof: every path ends in an exact trap.
 	fpMixedBoolBytes  bool // Ordinary tuple inputs/canonical bool passed; result audit is separate.
 	dataBPSource      bool // Complete named leaf's private opaque-pointer holder, never physical BP.
+	dataBPReadProved  bool // Complete reaching-state proof for the selected packed reads.
 
 	fpStaticAddressValues *x86StaticAddressValues // No dereference capability.
 	nativeMMXRegion       *x86NativeMMXRegion     // Whole source/NUM proof paired to the actual emitted MMX region.
