@@ -149,6 +149,24 @@ func (e *nativeAMD64) typedInstruction(out *strings.Builder, ins Instr) error {
 		}
 		return emitNativeAMD64GPBroadcast(out, ins, f)
 	}
+	if f, known, err := x86ScalarFloatIntegerProperties(ins, "amd64"); known {
+		if err != nil {
+			return err
+		}
+		return e.emitScalarFloatInteger(out, ins, f)
+	}
+	if f, known, err := x86SignedIntegerFloatProperties(ins, "amd64"); known {
+		if err != nil {
+			return err
+		}
+		return e.emitIntegerScalarFloat(out, ins, f, false)
+	}
+	if f, known, err := x86UnsignedIntegerFloatProperties(ins, "amd64"); known {
+		if err != nil {
+			return err
+		}
+		return e.emitIntegerScalarFloat(out, ins, f.x86SignedIntegerFloatForm, true)
+	}
 	return bad()
 }
 

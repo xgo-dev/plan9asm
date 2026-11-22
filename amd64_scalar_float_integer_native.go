@@ -5,10 +5,7 @@ import (
 	"strings"
 )
 
-// LLVM fptosi/fptoui produce poison outside the result domain. Even constrained
-// conversions do not specify x86's indefinite integer or complete MXCSR effect.
-// Execute one original-class instruction, including when its GP result is dead.
-func (c *amd64Ctx) emitNativeScalarFloatInteger(ins Instr, f x86ScalarFloatIntegerForm) error {
+func (f x86ScalarFloatIntegerForm) attOpcode() string {
 	mnemonic := "cvt"
 	if f.spec.truncating {
 		mnemonic += "t"
@@ -38,7 +35,13 @@ func (c *amd64Ctx) emitNativeScalarFloatInteger(ins Instr, f x86ScalarFloatInteg
 		rounding := strings.ToLower(strings.ReplaceAll(f.suffix, "_", "-"))
 		mnemonic += " {" + rounding + "},"
 	}
+	return mnemonic
+}
 
+// LLVM fptosi/fptoui produce poison outside the result domain. Even constrained
+// conversions do not specify x86's indefinite integer or complete MXCSR effect.
+// Execute one original-class instruction, including when its GP result is dead.
+func (c *amd64Ctx) emitNativeScalarFloatInteger(ins Instr, f x86ScalarFloatIntegerForm) error {
 	source := ins.Args[0]
 	var value, typ, constraint, operand string
 	if source.Kind == OpReg || source.Kind == OpFP {
@@ -69,6 +72,6 @@ func (c *amd64Ctx) emitNativeScalarFloatInteger(ins Instr, f x86ScalarFloatInteg
 	result := c.newTmp()
 	outputType := amd64IntegerTypeForBits(f.outputBits)
 	fmt.Fprintf(c.b, "  %%%s = call %s asm sideeffect %q, %q(%s %s)\n", result, outputType,
-		mnemonic+" "+operand+", $0", "=r,"+constraint+",~{memory},~{fpsr}", typ, value)
+		f.attOpcode()+" "+operand+", $0", "=r,"+constraint+",~{memory},~{fpsr}", typ, value)
 	return c.storeRegSized(ins.Args[1].Reg, outputType, "%"+result)
 }

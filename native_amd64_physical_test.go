@@ -182,6 +182,61 @@ func TestNativeAMD64PhysicalGPBroadcastFamily(t *testing.T) {
 	}
 }
 
+func TestNativeAMD64PhysicalScalarConversionFamilies(t *testing.T) {
+	var floatToInteger, integerToFloat strings.Builder
+	const frame = "TEXT physical<>(SB),516,$0-0\n"
+	floatToInteger.WriteString(frame + "MOVQ SP,R11\n")
+	integerToFloat.WriteString(frame)
+	rounding := []string{".RN_SAE", ".RD_SAE", ".RU_SAE", ".RZ_SAE"}
+	for _, opcode := range x86ScalarFloatIntegerOracleNames() {
+		for _, source := range []string{"X2", "(SP)", "16(BP)(R13*4)", "8"} {
+			fmt.Fprintf(&floatToInteger, "%s %s,BP\n", opcode, source)
+		}
+		if strings.HasPrefix(opcode, "V") {
+			fmt.Fprintf(&floatToInteger, "%s X28,SP\nMOVQ R11,SP\n", opcode)
+			suffixes := rounding
+			if strings.HasPrefix(opcode, "VCVTT") {
+				suffixes = []string{".SAE"}
+			}
+			for _, suffix := range suffixes {
+				fmt.Fprintf(&floatToInteger, "%s%s X17,R15\n", opcode, suffix)
+			}
+		}
+	}
+	for _, precision := range []string{"SS", "SD"} {
+		for _, width := range []string{"L", "Q"} {
+			for _, source := range []string{"SP", "BP", "16(SP)(R13*4)", "8"} {
+				fmt.Fprintf(&integerToFloat, "CVTS%s2%s %s,X2\n", width, precision, source)
+				fmt.Fprintf(&integerToFloat, "VCVTSI2%s%s %s,X0,X1\n", precision, width, source)
+				fmt.Fprintf(&integerToFloat, "VCVTUSI2%s%s %s,X9,X3\n", precision, width, source)
+			}
+			for _, integer := range []string{"SI", "USI"} {
+				opcode := "VCVT" + integer + "2" + precision + width
+				fmt.Fprintf(&integerToFloat, "%s BP,X0,X29\n%s (SP),X25,X2\n", opcode, opcode)
+				if precision == "SS" || width == "Q" {
+					for _, suffix := range rounding {
+						fmt.Fprintf(&integerToFloat, "%s%s R13,X7,X18\n", opcode, suffix)
+					}
+				}
+			}
+		}
+	}
+	for _, row := range []struct{ name, body string }{
+		{"float_to_integer", floatToInteger.String()},
+		{"integer_to_float", integerToFloat.String()},
+	} {
+		for _, goos := range []string{"linux", "darwin"} {
+			t.Run(row.name+"/"+goos, func(t *testing.T) {
+				source := row.body + "RET\n"
+				listing := nativeAMD64OriginalObject(t, goos, source)
+				options := NativeOptions{GOOS: goos, GOARCH: "amd64", PackagePath: "probe"}
+				ir := nativeAMD64PhysicalObjects(t, source, options)
+				nativeAMD64CompareFrameMachineCode(t, goos, listing, ir)
+			})
+		}
+	}
+}
+
 func TestNativeAMD64ManagedFrameMatchesGoAssembler(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		for _, row := range []struct {
@@ -325,6 +380,9 @@ func TestNativeAMD64TypedPhysicalRejectsUnprovedForms(t *testing.T) {
 		"MOVQ 1(R8)(SP*2),AX", "ADDQ.Z AX,BX",
 		"VPBROADCASTD.Z SP,Y2", "VPBROADCASTW SP,K0,X0", "VPBROADCASTQ AH,Z0",
 		"VPBROADCASTB SP,K8,X23", "VPBROADCASTD SP,16(BP)",
+		"CVTSS2SL X16,SP", "VCVTTSS2SI.RN_SAE X2,SP", "VCVTSS2SI.SAE X2,BP",
+		"VCVTSS2USIL.RZ_SAE (SP),BP", "VCVTSI2SDL.RD_SAE SP,X2,X3",
+		"VCVTUSI2SSQ $1,X2,X3", "VCVTUSI2SSL value+0(FP),X2,X3",
 	} {
 		t.Run(body, func(t *testing.T) {
 			source := "#include \"textflag.h\"\nTEXT physical<>(SB),NOSPLIT|NOFRAME,$0-0\n" + body + "\nRET\n"

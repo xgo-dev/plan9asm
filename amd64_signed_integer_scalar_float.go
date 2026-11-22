@@ -25,6 +25,25 @@ type x86SignedIntegerFloatForm struct {
 	rounding                               string
 }
 
+func (f x86SignedIntegerFloatForm) attOpcode(unsigned bool) string {
+	opcode := "cvt"
+	if !f.spec.legacy {
+		opcode = "v" + opcode
+	}
+	if unsigned {
+		opcode += "u"
+	}
+	if f.spec.resultBits == 64 {
+		opcode += "si2sd"
+	} else {
+		opcode += "si2ss"
+	}
+	if f.sourceBits == 64 {
+		return opcode + "q"
+	}
+	return opcode + "l"
+}
+
 func x86SignedIntegerFloatProperties(ins Instr, goarch string) (x86SignedIntegerFloatForm, bool, error) {
 	base, _, _ := strings.Cut(strings.ToUpper(string(ins.Op)), ".")
 	spec, recognized := x86SignedIntegerFloatSpecs[Op(base)]
