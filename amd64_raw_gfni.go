@@ -9,6 +9,10 @@ import (
 // affine/inverse pair (0F3A CE/CF, W1). Its VEX rows are X/Y; EVEX adds Z,
 // masks, zeroing and, only for the affine matrix source, qword broadcast.
 func decodedX86GFNIInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86GFNIInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86GFNIInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, ok := decodeX86RawVectorEncoding(code)
 	if !ok {
 		return Instr{}, 0, false, nil
@@ -37,7 +41,7 @@ func decodedX86GFNIInstruction(code []byte, mode int) (Instr, int, bool, error) 
 	if immediate {
 		laneBits = 64
 	}
-	instruction, length, _, err := decodedX86BinaryVectorOperands(code, p, mode, op, laneBits)
+	instruction, length, _, err := decodedX86BinaryVectorOperandsWithMemory(code, p, mode, op, laneBits, memory)
 	if err != nil {
 		return Instr{}, 0, true, err
 	}

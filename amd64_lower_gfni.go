@@ -63,9 +63,12 @@ func (c *amd64Ctx) lowerGFNI(op Op, ins Instr) (ok bool, terminated bool, err er
 		computed = c.emitGF2P8Affine(byteWidth, firstBytes, secondBytes, form.immediate)
 	}
 	if form.mask >= 0 {
-		old, loadErr := c.loadPackedCompareBytes(destination, byteWidth)
-		if loadErr != nil {
-			return true, false, loadErr
+		old := "zeroinitializer"
+		if !form.zeroing {
+			old, err = c.loadPackedCompareBytes(destination, byteWidth)
+			if err != nil {
+				return true, false, err
+			}
 		}
 		computed = amd64ApplyIntegerLaneMask(c, byteWidth, 8, computed, old, mask, form.zeroing)
 	}

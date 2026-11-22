@@ -27,6 +27,9 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 	if form, known, err := x86ByteShuffleProperties(op, ins, arch); known {
 		return x86UnmaskedVEXBinaryEffect(ins, form, true, err)
 	}
+	if form, known, err := x86GFNIProperties(op, ins, arch); known {
+		return x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
+	}
 	if form, known, err := x86CLMULProperties(op, ins, arch); known {
 		if err != nil {
 			return x86TypedByteEffect{}, true, err
