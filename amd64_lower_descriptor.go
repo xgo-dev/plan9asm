@@ -37,23 +37,23 @@ func x86DescriptorTableOpcode(op string) bool {
 	}
 }
 
-func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, bool, error) {
-	base, suffix, dotted := strings.Cut(strings.ToUpper(string(op)), ".")
-	if base == "" {
+func x86DescriptorProperties(opcode Op, ins Instr, arch string) (x86DescriptorForm, bool, error) {
+	op, suffix, dotted := strings.Cut(strings.ToUpper(string(opcode)), ".")
+	if op == "" {
 		return x86DescriptorForm{}, false, nil
 	}
-	table := x86DescriptorTableOpcode(base)
+	table := x86DescriptorTableOpcode(op)
 	width, write := int64(2), false
-	stem := base
+	stem := op
 	switch {
 	case table:
-		write = base[0] == 'S'
+		write = op[0] == 'S'
 		width = 2 + x86ResultPointerWord(arch)
-	case base == "LLDT", base == "LTR", base == "LMSW":
+	case op == "LLDT", op == "LTR", op == "LMSW":
 	default:
 		var widthSuffix byte
 		var known bool
-		stem, widthSuffix, known = x86DescriptorWriteOpcode(base)
+		stem, widthSuffix, known = x86DescriptorWriteOpcode(op)
 		if !known {
 			return x86DescriptorForm{}, false, nil
 		}
@@ -66,7 +66,7 @@ func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, 
 		}
 	}
 	fail := func(reason string) (x86DescriptorForm, bool, error) {
-		return x86DescriptorForm{}, true, fmt.Errorf("%s %s %s: %q", arch, base, reason, ins.Raw)
+		return x86DescriptorForm{}, true, fmt.Errorf("%s %s %s: %q", arch, op, reason, ins.Raw)
 	}
 	if len(ins.Args) != 1 {
 		return fail("requires one descriptor operand")
@@ -75,14 +75,14 @@ func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, 
 		return fail("is illegal in 32-bit mode")
 	}
 	operand := ins.Args[0]
-	mnemonic := base
+	mnemonic := op
 	if dotted {
 		// Preserve the raw prefix independently of the mode's memory
 		// width. In legacy mode it changes the base loaded by LGDT/LIDT.
-		if !table || suffix != "W" || op != ins.Op || !x86RawDescriptorOrigin(ins, arch) {
+		if !table || suffix != "W" || opcode != ins.Op || !x86RawDescriptorOrigin(ins, arch) {
 			return fail("requires the original unsuffixed Go form or a decoded operand-size override")
 		}
-		mnemonic = "data16; " + base
+		mnemonic = "data16; " + op
 	}
 	if operand.Kind == OpReg {
 		if table || !isX86YrlRegisterForArch(operand.Reg, arch) {

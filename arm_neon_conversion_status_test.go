@@ -177,9 +177,12 @@ func TestARMNEONConversionNativeTargetAndInvalidSourceBoundary(t *testing.T) {
 				if err := armWordFloatBoundaryAPI(t, api, source, triple); !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatalf("%s %s %#x did not require native state: %v", api, triple, fixture.word, err)
 				}
+				// The single-word 0xffffffff encoding is a physical trap.
+				// Use malformed directive arity to test source-error precedence.
+				const malformed = "WORD $0xffffffff,$0"
 				for _, body := range []string{
-					fmt.Sprintf("WORD $%#x\nWORD $0xffffffff", fixture.word),
-					fmt.Sprintf("RET\nWORD $0xffffffff\nWORD $%#x", fixture.word),
+					fmt.Sprintf("WORD $%#x\n%s", fixture.word, malformed),
+					fmt.Sprintf("RET\n%s\nWORD $%#x", malformed, fixture.word),
 				} {
 					source := "TEXT conversion(SB),4,$0-0\n" + body + "\nRET\n"
 					if err := armWordFloatBoundaryAPI(t, api, source, triple); err == nil || errors.Is(err, ErrProbeNeedsContext) {

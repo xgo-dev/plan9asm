@@ -467,9 +467,9 @@ func TestScanPackagesProbesARMRawUndefinedInstruction(t *testing.T) {
 	if len(parseErrs) != 0 {
 		t.Fatalf("parse errors = %#v", parseErrs)
 	}
-	stat := forms["WORD immediate"]
+	stat := forms["WORD immediate.a32-undefined"]
 	if stat == nil || stat.Count != 1 || stat.SupportedCount != 1 || stat.UnsupportedCount != 0 {
-		t.Fatalf("ARM WORD stats = %#v; want one supported probe", stat)
+		t.Fatalf("ARM undefined WORD stats = %#v; want one supported probe", stat)
 	}
 }
 
