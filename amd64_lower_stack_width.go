@@ -233,6 +233,11 @@ func (c *amd64Ctx) lowerStackWidth(op Op, ins Instr) (ok bool, terminated bool, 
 		if operand.Kind == OpMem && !x86MemoryRegistersValidForArch(operand.Mem, c.goarch) {
 			return true, false, fmt.Errorf("%s %s memory source uses an out-of-range address register: %q", c.goarch, baseOp, ins.Raw)
 		}
+		// PUSHQ encodes at most 32 immediate bits. Both immediate
+		// encodings sign-extend their payload to the full stack word.
+		if spec.bits == 64 && operand.Kind == OpImm {
+			operand.Imm = int64(int32(operand.Imm))
+		}
 		value, err := c.loadStackValue(operand, spec.bits)
 		if err != nil {
 			return true, false, err

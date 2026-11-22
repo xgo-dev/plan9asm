@@ -80,6 +80,26 @@ func x86StackFixtureValueProgram(arch string) (string, string, string) {
 		fmt.Fprintf(&declarations, "func %s(value uint%d) uint%d\n", name, word*8, word*8)
 		fmt.Fprintf(&driver, "extern word %s(word);\n", name)
 	}
+	immediates := []struct {
+		width   string
+		literal int64
+		expect  string
+	}{
+		{"W", 61731, "0xf123"},
+		{suffix, -128, "0xffffffffffffff80"},
+		{suffix, 128, "0x80"},
+		{suffix, 2147483647, "0x7fffffff"},
+		{suffix, 2147483648, "0xffffffff80000000"},
+		{suffix, 4045620583, "0xfffffffff1234567"},
+		{suffix, 4294967295, "0xffffffffffffffff"},
+	}
+	for index, row := range immediates {
+		fmt.Fprintf(&source, "TEXT ·PrivateImmediate%d(SB),4,$0-%d\nMOV%s $0,AX\n"+
+			"PUSH%s $%d\nPOP%s AX\nMOV%s AX,ret+0(FP)\nRET\n",
+			index, word, suffix, row.width, row.literal, row.width, suffix)
+		fmt.Fprintf(&declarations, "func PrivateImmediate%d() uint%d\n", index, word*8)
+		fmt.Fprintf(&driver, "extern word PrivateImmediate%d(void);\n", index)
+	}
 	driver.WriteString("int main(void) {\n" +
 		"    const word values[] = {0, 1, 65535, 65536, (word)UINT64_MAX,\n" +
 		"        (word)UINT64_C(0x1122334455667788), (word)UINT64_C(0x8000000080008000)};\n" +
@@ -88,7 +108,12 @@ func x86StackFixtureValueProgram(arch string) (string, string, string) {
 		fmt.Fprintf(&driver, "        if (PrivateValue%s(values[i]) != values[i]) {\n"+
 			"            fprintf(stderr, \"private-stack %s row=%%u\\n\", i);\n            return 1;\n        }\n", width, width)
 	}
-	driver.WriteString("    }\n    return 0;\n}\n")
+	driver.WriteString("    }\n")
+	for index, row := range immediates {
+		fmt.Fprintf(&driver, "    if (PrivateImmediate%d() != (word)UINT64_C(%s)) return %d;\n",
+			index, row.expect, 10+index)
+	}
+	driver.WriteString("    return 0;\n}\n")
 	return source.String(), declarations.String(), driver.String()
 }
 
