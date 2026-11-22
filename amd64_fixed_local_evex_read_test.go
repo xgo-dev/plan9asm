@@ -17,10 +17,10 @@ func fixedLocalEVEXReadAssembly(name, operation string, destination Reg) string 
 		fmt.Fprintf(&source, "MOVQ AX,%d(SP)\n", offset)
 	}
 	source.WriteString("VMOVUPS (SP),Z0\n")
-	for _, reg := range []int{1, 2, 9, 14, 16, 17, 18, 19} {
+	for _, reg := range []int{1, 2, 3, 9, 14, 16, 17, 18, 19} {
 		fmt.Fprintf(&source, "VMOVUPS Z0,Z%d\n", reg)
 	}
-	source.WriteString("KMOVQ AX,K1\nKMOVQ AX,K2\nKMOVQ AX,K7\nMOVQ $1,BP\n")
+	source.WriteString("KMOVQ AX,K1\nKMOVQ AX,K2\nKMOVQ AX,K4\nKMOVQ AX,K7\nMOVQ $1,BP\n")
 	fmt.Fprintf(&source, "%s\nVMOVUPS %s,64(SP)\nMOVQ 64(SP),AX\nMOVQ AX,ret+8(FP)\nRET\n", operation, destination)
 	return source.String()
 }
@@ -34,6 +34,8 @@ func TestGoAMD64FixedLocalEVEXReadOriginalObjects(t *testing.T) {
 		{"VPADDQ 17(SP),Y0,K1,Y9", "Y9"},
 		{"VPMINUD 17(SP)(BP*8),Y17,K2,Y14", "Y14"},
 		{"VPSRAW 17(SP)(BP*1),X19,K7,X1", "X1"},
+		{"VANDNPS 17(SP)(BP*1),X18,K7,X18", "X18"},
+		{"VPANDQ 17(SP)(BP*4),Z19,K4,Z3", "Z3"},
 	}
 	for index, row := range rows {
 		name := fmt.Sprintf("Value%d", index)
@@ -62,6 +64,7 @@ func TestGoAMD64FixedLocalEVEXReadOfficialRows(t *testing.T) {
 		goasmrules.X86PackedAverageMultiplyRows,
 		goasmrules.X86PackedUniformByteShiftRows,
 		goasmrules.X86PackedPerLaneShiftRows,
+		goasmrules.X86PackedLogicalRows,
 	} {
 		rows, err := family(legacy, avx)
 		if err != nil {
@@ -153,6 +156,8 @@ func TestGoAMD64FixedLocalEVEXReadBroadcastTuple(t *testing.T) {
 		{"VPMINUD.BCST 84(SP),Y17,K2,Y14", 0, 4},
 		{"VPSRAVD.BCST 84(SP),Y17,K2,Y14", 0, 4},
 		{"VPSRAD.BCST $3,84(SP),K2,Y14", 1, 4},
+		{"VANDPD.BCST 80(SP),Y17,K2,Y14", 0, 8},
+		{"VPXORD.BCST 84(SP),Y17,K2,Y14", 0, 4},
 	} {
 		t.Run(row.operation, func(t *testing.T) {
 			assembly := fixedLocalEVEXReadAssembly("Value", row.operation, "Y14")
@@ -182,6 +187,45 @@ func TestGoAMD64FixedLocalEVEXReadBroadcastTuple(t *testing.T) {
 			}
 			if _, err := proveX86FixedLocal(file.Funcs[0], sig); !errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatal("full memory tuple borrowed undefined bytes", err)
+			}
+		})
+	}
+}
+
+func TestGoAMD64FixedLocalEVEXLogicalDependencies(t *testing.T) {
+	const source = "TEXT ·Value(SB),4,$0-0\n"
+	for _, row := range []struct {
+		name, operation  string
+		first, second    uint64
+		old              uint64
+		mask, shouldPass bool
+	}{
+		{name: "zero idiom uses independent mask", operation: "VPXORD.Z Z9,Z9,K2,Z7", mask: true, shouldPass: true},
+		{name: "zero idiom requires mask", operation: "VPXORD.Z Z9,Z9,K2,Z7"},
+		{name: "merge requires old destination", operation: "VPANDQ Z9,Z18,K2,Z7", first: ^uint64(0), second: ^uint64(0), mask: true},
+		{name: "zeroing ignores old destination", operation: "VPANDQ.Z Z9,Z18,K2,Z7", first: ^uint64(0), second: ^uint64(0), mask: true, shouldPass: true},
+		{name: "merge retains initialized destination", operation: "VPANDQ Z9,Z18,K2,Z7", first: ^uint64(0), second: ^uint64(0), old: ^uint64(0), mask: true, shouldPass: true},
+		{name: "zeroing requires all source bytes", operation: "VPANDQ.Z Z9,Z18,K2,Z7", first: 0xffff, second: ^uint64(0), mask: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			file, err := Parse(ArchAMD64, source+row.operation+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := x86FixedLocalState{
+				vectors: map[Reg]uint64{"Z9": row.first, "Z18": row.second, "Z7": row.old},
+				masks:   map[Reg]bool{"K2": row.mask},
+				flags:   x86ByteFlagsAll,
+			}
+			err = fixedLocalVectorStep(&file.Funcs[0].Instrs[1], &state, nil, 0)
+			if !row.shouldPass {
+				if !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal("unproved input acquired a vector effect", err)
+				}
+				return
+			}
+			if err != nil || state.vectors["Z7"] != ^uint64(0) || state.flags != x86ByteFlagsAll {
+				t.Fatalf("complete logical operation did not define the vector and preserve FLAGS: %v", err)
 			}
 		})
 	}

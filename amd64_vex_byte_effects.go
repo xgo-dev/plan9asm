@@ -2,9 +2,8 @@ package plan9asm
 
 import "strings"
 
-// The fixed-local consumer also admits EVEX read forms for the integer
-// arithmetic and shift families. The same typed operands describe both
-// encodings; other effects keep their existing consumers.
+// Each participating family projects VEX and EVEX forms from its typed
+// operands. Families with a narrower fixed-local contract validate it here.
 func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
 	if !strings.HasPrefix(strings.ToUpper(string(op)), "V") {
 		return x86TypedByteEffect{}, false, nil
@@ -19,8 +18,7 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		return x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
 	}
 	if form, known, err := x86PackedLogicalProperties(ins, arch); known {
-		effect, known, err := x86UnmaskedVEXBinaryEffect(ins, form.x86PackedBinaryForm,
-			form.spec.encoding != x86PackedLogicalEVEX, err)
+		effect, known, err := x86VectorBinaryDependencyEffect(ins, form.x86PackedBinaryForm, err)
 		if err == nil {
 			effect = x86PackedLogicalZeroDependencies(ins, form, effect)
 		}

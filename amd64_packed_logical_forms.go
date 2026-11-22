@@ -120,7 +120,10 @@ func x86TypedLegacyLogicalByteEffect(op Op, ins Instr, arch string) (x86TypedByt
 func x86PackedLogicalZeroDependencies(ins Instr, form x86PackedLogicalForm, effect x86TypedByteEffect) x86TypedByteEffect {
 	if x86PackedLogicalDefinedBytes(ins, form, 0, 0, 0) != 0 {
 		for index := range effect.operands {
-			effect.operands[index].read = false
+			operand := &effect.operands[index]
+			if operand.index == form.first || operand.index == form.second {
+				operand.read = false
+			}
 		}
 	}
 	return effect
