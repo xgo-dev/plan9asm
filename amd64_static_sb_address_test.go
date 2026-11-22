@@ -64,6 +64,52 @@ func x86StaticSBBodyNames(bodies map[string]string) []string {
 	return names
 }
 
+func TestGo386OriginalSymbolMemoryObjects(t *testing.T) {
+	// cmd/asm's 386.s tests the encoding without owning the referenced
+	// storage. Keep each original instruction and give it a complete leaf.
+	rows := []struct{ operation, before, after string }{
+		{"SETCC foo+4(SB)", "CMPL AX,AX\n", ""},
+		{"DIVB foo+4(SB)", "", ""},
+		{"SUBB $1, foo+4(SB)", "", ""},
+		{"SUBB BX, foo+4(SB)", "", ""},
+		{"CMPB foo+4(SB), $4", "", "SETEQ AL\n"},
+		{"CMPB foo+4(SB), BX", "", "SETEQ AL\n"},
+		{"SHLL $4, foo+4(SB)", "", ""},
+		{"SHLL $4, foo+4(SB):AX", "", ""},
+		{"CMPPD foo+4(SB), X1, 4", "PXOR X1,X1\n", "PEXTRD $0,X1,AX\n"},
+	}
+	var source, declarations strings.Builder
+	source.WriteString("GLOBL foo(SB),16,$32\nDATA foo+4(SB)/4,$0x01010101\n")
+	names := make([]string, 0, len(rows))
+	for i, row := range rows {
+		name := fmt.Sprintf("Value%d", i)
+		names = append(names, name)
+		fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-4\nMOVL $1,AX\nMOVL $2,BX\n", name)
+		source.WriteString(row.before + row.operation + "\n" + row.after)
+		source.WriteString("MOVL AX,result+0(FP)\nRET\n")
+		fmt.Fprintf(&declarations, "func %s() uint32\n", name)
+	}
+	goAssemblerOracleOutput(t, "386", source.String(), "", true)
+
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc required")
+	}
+	for _, triple := range []string{"i386-unknown-linux-gnu", "i686-pc-windows-msvc"} {
+		for _, api := range []string{"text", "module", "Go"} {
+			t.Run(triple+"/"+api, func(t *testing.T) {
+				ir, err := x86ScalarFPBitViewAPI(t, source.String(), declarations.String(), "386", triple, api)
+				if err != nil {
+					t.Fatal(err)
+				}
+				x86CompactExpandRequireAllDefinitions(t, ir, names)
+				x86PackedStringCompileObject(t, llc, triple, ir, "-O0")
+				x86PackedStringCompileObject(t, llc, triple, x86DwordProductIROptimize(t, ir), "-O2")
+			})
+		}
+	}
+}
+
 func TestX86StaticSBAnnotationActualGoRoles(t *testing.T) {
 	bodies := x86StaticSBReadBodies("386")
 	for _, offset := range []string{"0", "16", "(2*8)", "-16"} {

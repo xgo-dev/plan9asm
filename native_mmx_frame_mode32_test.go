@@ -14,12 +14,14 @@ func mode32MMXFrameCopy(setup, body string) string {
 }
 
 func TestMode32NativeMMXFrameOriginalOperands(t *testing.T) {
-	const pair = "MOVQ (AX), M0\nMOVQ M0, 8(SP)\nMOVQ 8(SP), M0\nMOVQ M0, (BX)"
+	const loadAndSpill = "MOVQ (AX), M0\nMOVQ M0, 8(SP)\nMOVQ 8(SP), M0\n"
+	const pair = loadAndSpill + "MOVQ M0, (BX)"
+	const official = loadAndSpill + "MOVQ M0, (AX)\nMOVQ M0, (BX)"
 	cases := []struct {
 		name   string
 		source string
 	}{
-		{"official 386enc.s", mode32MMXFrameCopy("", pair)},
+		{"official 386enc.s", mode32MMXFrameCopy("", official)},
 		{"logical AUTO", mode32MMXFrameCopy("", strings.ReplaceAll(pair, "8(SP)", "spill-8(SP)"))},
 		{"typed derived SP", mode32MMXFrameCopy("LEAL 8(SP),DX\n", strings.Replace(pair, "MOVQ 8(SP), M0", "MOVQ (DX), M0", 1))},
 		{"dword memory", mode32MMXFrameCopy("", "MOVL (AX), M0\nMOVL M0, 12(SP)\nMOVL 12(SP), M0\nMOVL M0, (BX)")},
