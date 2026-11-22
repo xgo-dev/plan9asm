@@ -390,33 +390,41 @@ func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string,
 	if err != nil {
 		return translation{}, false, err
 	}
-	ll, err := plan9asm.Translate(file, plan9asm.Options{
+	options := plan9asm.Options{
 		TargetTriple:   targetTriple(goos, goarch),
 		ResolveSym:     resolve,
 		Sigs:           sigs,
 		Goarch:         goarch,
 		AnnotateSource: annotate,
-	})
+	}
+	ll, err := plan9asm.Translate(file, options)
 	if err != nil {
-		if errors.Is(err, plan9asm.ErrProbeNeedsContext) && sdkfrontend.NumericalOwnerRequested(sdkPackageView(pkg), file, goos+"/"+goarch) {
-			var selected *sdkfrontend.Selection
-			if len(selections) == 1 {
-				selected = selections[0]
-			}
+		if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+			return translation{}, false, err
+		}
+		var selected *sdkfrontend.Selection
+		if len(selections) == 1 {
+			selected = selections[0]
+		}
+		target := goos + "/" + goarch
+		if sdkfrontend.NumericalOwnerRequested(sdkPackageView(pkg), file, target) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			tr, err := translateSDKSource(ctx, pkg, selected, file, asmPath, goos+"/"+goarch, annotate)
+			tr, err := translateSDKSource(ctx, pkg, selected, file, asmPath, target, annotate)
 			return tr, err == nil, err
 		}
-		if errors.Is(err, plan9asm.ErrProbeNeedsContext) && len(pkg.Syntax) != 0 &&
-			(goarch == "386" || goarch == "amd64" || goarch == "arm64") {
-			// Preserve the original successful hot path and SDK source route.
-			// This is at most one non-recursive second pass over the complete
-			// original source, using only the already-loaded typed declarations.
-			tr, err := translateLoadedGoModule(pkg, originalSource, asmPath, goos, goarch, annotate)
+		if len(pkg.Syntax) == 0 || (goarch != "386" && goarch != "amd64" && goarch != "arm64") {
+			return translation{}, false, err
+		}
+		tr, err := translateLoadedGoModule(pkg, originalSource, asmPath, goos, goarch, annotate)
+		if !errors.Is(err, plan9asm.ErrProbeNeedsContext) ||
+			!plan9asm.GoAMD64FixedLocalFrameBindingNeeded(file, goarch, options) {
 			return tr, err == nil, err
 		}
-		return translation{}, false, err
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		tr, err = translateAMD64FixedLocal(ctx, pkg, selected, src, asmPath, target, options)
+		return tr, err == nil, err
 	}
 	fns := collectFunctionInfo(file, sigs, resolve)
 	return translation{LLVMIR: ll, Functions: fns}, true, nil
@@ -516,11 +524,13 @@ func targetTriple(goos, goarch string) string {
 }
 
 func loadPackage(pkgPath, goos, goarch string) (*loadedPackage, error) {
-	environment, err := sdkfrontend.OrdinaryEnvironment(goos, goarch, os.Environ())
+	directory, err := sdkfrontend.WorkingDirectory("")
 	if err != nil {
 		return nil, err
 	}
-	directory, err := sdkfrontend.WorkingDirectory("")
+	// Go may use PWD when it names the same directory as Config.Dir.
+	// Keep the loaded package and frame observer on its physical spelling.
+	environment, err := sdkfrontend.OrdinaryEnvironment(goos, goarch, append(os.Environ(), "PWD="+directory))
 	if err != nil {
 		return nil, err
 	}
