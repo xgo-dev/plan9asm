@@ -9,6 +9,10 @@ import (
 // memory moves. Register-only 0F 12/16 forms are the separate VMOVHLPS and
 // VMOVLHPS family and are decoded before this function.
 func decodedX86RawVectorHalfMemoryInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86RawVectorHalfMemoryInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86RawVectorHalfMemoryInstructionWithMemory(code []byte, mode int, decoder x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, ok := decodeX86RawVectorEncoding(code)
 	if !ok || p.mapNumber != 1 || (p.pp != 0 && p.pp != 1) {
 		return Instr{}, 0, false, nil
@@ -45,9 +49,9 @@ func decodedX86RawVectorHalfMemoryInstruction(code []byte, mode int) (Instr, int
 	var consumed int
 	var err error
 	if p.evex {
-		memory, consumed, err = decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, "X", 8)
+		memory, consumed, err = decoder.evex(code[p.modRM:], mode, p.b, p.x, p.segment, "X", 8)
 	} else {
-		memory, consumed, err = decodedX86VEXVectorRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, "X")
+		memory, consumed, err = decoder.vex(code[p.modRM:], mode, p.b, p.x, p.segment, "X")
 	}
 	if err != nil {
 		return Instr{}, 0, true, err

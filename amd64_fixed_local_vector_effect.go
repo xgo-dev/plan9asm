@@ -26,6 +26,8 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 		x86TypedScalarPrecisionByteEffect,
 		x86TypedPackedPrecisionByteEffect,
 		x86TypedNamedHalfByteEffect,
+		x86TypedMoveHalfByteEffect,
+		x86TypedDuplicateMoveByteEffect,
 	} {
 		if known {
 			break

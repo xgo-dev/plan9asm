@@ -109,6 +109,7 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		decodedX86MaskMoveInstructionWithMemory,
 		decodedX86PackedMoveInstructionWithMemory,
 		decodedX86EVEXPackedIntegerMoveInstructionWithMemory,
+		decodedX86NumericalLaneMoveBoundary,
 		decodedX86VEXNonTemporalMoveInstructionWithMemory,
 		decodedX86VEXPackedFloatLogicalInstructionWithMemory,
 		decodedX86VEXPackedIntegerLogicalInstructionWithMemory,
@@ -196,6 +197,26 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		return length, err
 	}
 	return 0, numericalSBContext("unregistered or truncated whole native VEX/EVEX encoding")
+}
+
+func decodedX86NumericalLaneMoveBoundary(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
+	p, known := decodeX86RawVectorEncoding(code)
+	if !known || p.mapNumber != 1 {
+		return Instr{}, 0, false, nil
+	}
+	switch p.opcode {
+	case 0x12, 0x16:
+		if p.pp >= 2 {
+			return decodedX86DuplicateMoveInstructionWithMemory(code, mode, memory)
+		}
+		if ins, size, known, err := decodedX86RawVectorHighLowMoveInstruction(code, mode); known || err != nil {
+			return ins, size, known, err
+		}
+	case 0x13, 0x17:
+	default:
+		return Instr{}, 0, false, nil
+	}
+	return decodedX86RawVectorHalfMemoryInstructionWithMemory(code, mode, memory)
 }
 
 // VPERMB/W uses the same two-source physical shape as the indexed family.

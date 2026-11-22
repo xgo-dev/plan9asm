@@ -100,11 +100,14 @@ func x86TypedMoveHalfByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffe
 		return x86TypedByteEffect{}, known, err
 	}
 	effect := x86TypedByteEffect{requiresResultProof: true}
-	if form.spec.registerOnly {
-		effect.vector.upperWrite = x86TypedVectorUpperPreserve
-		if form.spec.vector {
-			effect.vector.upperWrite = x86TypedVectorUpperZero
-		}
+	switch {
+	case form.undocumentedPDRegister: // The accepted Go encoding supplies no vector effect.
+	case form.store:
+		effect.vector = x86TypedVectorEffect{x86TypedVectorNoWrite, 1}
+	case form.spec.vector:
+		effect.vector = x86TypedVectorEffect{x86TypedVectorUpperZero, 1}
+	default:
+		effect.vector = x86TypedVectorEffect{x86TypedVectorUpperPreserve, 1}
 	}
 	for index, operand := range ins.Args {
 		width := int64(16)
@@ -115,12 +118,14 @@ func x86TypedMoveHalfByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffe
 			index: index, operand: operand, width: width,
 			read: index == form.source || index == form.base, write: index == form.destination,
 		}
-		if form.spec.registerOnly {
-			if index == form.source {
+		if !form.undocumentedPDRegister {
+			if index == form.source && operand.Kind == OpReg {
 				entry.requiredBytes = uint64(0xff) << uint(form.sourceLane*8)
-			}
-			if index == form.base {
+			} else if index == form.base {
 				entry.requiredBytes = uint64(0xff) << uint((1-form.outputLane)*8)
+				if entry.write {
+					entry.preservedBytes = entry.requiredBytes
+				}
 			}
 		}
 		effect.operands = append(effect.operands, entry)

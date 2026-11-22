@@ -75,6 +75,36 @@ func (form x86DuplicateMoveForm) sourceMask() uint64 {
 	return mask
 }
 
+func x86TypedDuplicateMoveByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	form, known, err := x86DuplicateMoveProperties(op, ins, arch)
+	if !known || err != nil {
+		return x86TypedByteEffect{}, known, err
+	}
+	width := int64(form.byteWidth)
+	source := x86TypedByteOperand{index: 0, operand: form.source, width: width, read: true}
+	if form.memory >= 0 {
+		source.width = int64(form.memoryBytes)
+	} else {
+		source.requiredBytes = form.sourceMask()
+	}
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		operands: []x86TypedByteOperand{
+			source,
+			{index: form.destination, operand: ins.Args[form.destination], width: width, write: true},
+		},
+	}
+	if form.legacy {
+		effect.vector.upperWrite = x86TypedVectorUpperPreserve
+		if form.memoryBytes == 16 {
+			effect.vector.memoryAlignment = 16
+		}
+	}
+	effect.addWritemask(ins, form.mask, form.zeroing)
+	return effect, true, nil
+}
+
 func x86ResultDuplicateMoveStep(ins Instr, state *x86ResultState, owned []bool, arch string, nativeRead bool) (bool, bool) {
 	form, known, err := x86DuplicateMoveProperties(ins.Op, ins, arch)
 	if !known || err != nil || !x86ResultNamedPredicateInstruction(ins) {
