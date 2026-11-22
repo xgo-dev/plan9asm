@@ -52,8 +52,12 @@ func TestGoAMD64FixedLocalAlignedOriginalAddresses(t *testing.T) {
 		{"VMOVAPS (BP), K4, Y3", "LEAQ 128(CX),BP\n"},
 		{"VMOVDQA32 X3, K4, -17(BP)(SI*1)", "LEAQ 144(CX),BP\nMOVQ $1,SI\n"},
 		{"VMOVDQA64 17(SP)(BP*1), K1, X0", "LEAQ 110(CX),R10\nMOVQ R10,SP\nMOVQ $1,BP\n"},
+		{"VMOVDQA64 17(SP)(BP*4), K1, Y30", "LEAQ 107(CX),R10\nMOVQ R10,SP\nMOVQ $1,BP\n"},
 		{"VMOVDQA64 17(SP)(BP*8), K1, Y30", "LEAQ 103(CX),R10\nMOVQ R10,SP\nMOVQ $1,BP\n"},
+		{"VMOVNTPS Z6, 17(SP)(BP*4)", "LEAQ 107(CX),R10\nMOVQ R10,SP\nMOVQ $1,BP\n"},
 		{"VMOVNTPS Z6, 17(SP)(BP*8)", "LEAQ 103(CX),R10\nMOVQ R10,SP\nMOVQ $1,BP\n"},
+		{"VMOVNTPS Z16, 17(SP)(BP*4)", "LEAQ 107(CX),R10\nMOVQ R10,SP\nMOVQ $1,BP\n"},
+		{"VMOVNTPS Z16, 17(SP)(BP*8)", "LEAQ 103(CX),R10\nMOVQ R10,SP\nMOVQ $1,BP\n"},
 	}
 	var assembly, declarations strings.Builder
 	for index, row := range rows {
