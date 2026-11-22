@@ -263,7 +263,7 @@ func translateIRTextWithFixedLocalResult(file *File, opt Options, fixedLocalResu
 	if file == nil {
 		return "", fmt.Errorf("nil file")
 	}
-	file = normalizeX86GroupedDirectBranches(file, opt.Goarch)
+	file = normalizeX86DirectSourceBranches(file, opt.Goarch)
 	if err := opt.goReadOnlyStorage.verify(); err != nil {
 		return "", err
 	}

@@ -275,7 +275,7 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 			return nil, err
 		}
 	}
-	file = normalizeX86GroupedDirectBranches(file, opt.GOARCH)
+	file = normalizeX86DirectSourceBranches(file, opt.GOARCH)
 	virtualPackage := pkg
 	virtualPackage.Path = pkgPath
 	virtualArguments, err := bindAMD64GoVirtualArguments(virtualPackage, file, originalSource, originalSourceDigest, opt, resolve)

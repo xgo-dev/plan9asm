@@ -21,7 +21,7 @@ func TranslateModuleInContext(ctx llvm.Context, file *File, opt Options) (result
 	if err := validateBackendSourceGoarch(file, opt); err != nil {
 		return llvm.Module{}, err
 	}
-	file = normalizeX86GroupedDirectBranches(file, opt.Goarch)
+	file = normalizeX86DirectSourceBranches(file, opt.Goarch)
 	if GoARMSDKABI0TailCandidate(file) {
 		return llvm.Module{}, fmt.Errorf("%w: ARM global tail needs the original Go ABI0 caller frame", ErrProbeNeedsContext)
 	}

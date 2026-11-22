@@ -47,42 +47,67 @@ func x86SymbolIndexedControlError(ins Instr) error {
 	return nil
 }
 
+type x86SourceBranchTarget struct {
+	symbol string
+	addend int64
+}
+
 // Go progedit changes grouped SB operands of CALL/JMP/RET to TYPE_BRANCH.
-// CALL retains the relocation addend. JMP and the symbolic RET epilogue use
-// the symbol entry even when the source supplies an addend. A grouped leading
-// '*' has already become TYPE_MEM in cmd/asm; it is not an indirect call.
-func x86GroupedDirectBranch(ins Instr, goarch string) (string, bool) {
+// CALL retains its relocation addend. JMP and the symbolic RET epilogue
+// select the symbol's entry, with or without a register group.
+func x86DirectSourceBranch(ins Instr, goarch string) (x86SourceBranchTarget, bool) {
 	if ins.x86Encoded || ins.x86SourceRaw != nil ||
 		ins.Op != OpCALL && ins.Op != OpJMP && ins.Op != OpRET ||
-		len(ins.Args) != 1 || ins.Args[0].Kind != OpMem {
-		return "", false
+		len(ins.Args) != 1 {
+		return x86SourceBranchTarget{}, false
 	}
-	memory := ins.Args[0].Mem
+	operand := ins.Args[0]
+	var address string
+	switch operand.Kind {
+	case OpSym:
+		address = strings.TrimSpace(operand.Sym)
+		if !strings.HasSuffix(address, "(SB)") || strings.HasPrefix(address, "*") || strings.HasPrefix(address, "$") {
+			return x86SourceBranchTarget{}, false
+		}
+	case OpMem:
+		// A grouped leading '*' is TYPE_MEM in cmd/asm. An ungrouped
+		// leading '*' remains indirect and was excluded above.
+		if !x86GroupedSourceBranchOperand(ins, operand.Mem, goarch) {
+			return x86SourceBranchTarget{}, false
+		}
+		address = operand.Mem.Sym
+	default:
+		return x86SourceBranchTarget{}, false
+	}
+	symbol, addend, valid := parseSBRef(address)
+	if ins.Op != OpCALL {
+		addend = 0
+	}
+	return x86SourceBranchTarget{symbol: symbol, addend: addend}, valid
+}
+
+func x86GroupedSourceBranchOperand(ins Instr, memory MemRef, goarch string) bool {
 	if !strings.HasSuffix(memory.Sym, "(SB)") || memory.Off != 0 || memory.OffRaw != "" ||
 		memory.IndexExt != "" || memory.Segment != "" || memory.Base == "" && memory.Index == "" {
-		return "", false
+		return false
 	}
 	if memory.Base != "" && !x86SymbolGoRegisterName(string(memory.Base)) ||
 		memory.Index != "" && !x86SymbolGoRegisterName(string(memory.Index)) ||
 		goarch == "386" && x86SymbolGIndex.MatchString(ins.Raw) {
-		return "", false
+		return false
 	}
 	if memory.Index == "" && memory.Scale != 0 ||
 		memory.Scale != 0 && memory.Scale != 1 && memory.Scale != 2 && memory.Scale != 4 && memory.Scale != 8 {
-		return "", false
+		return false
 	}
 	// The encoder can still emit a segment prefix from Index. Keep these
 	// forms on their physical-prefix path until that contract is available.
-	if x86IsSegmentRegister(memory.Index) || memory.Index == TLS {
-		return "", false
-	}
-	symbol, addend, valid := parseSBRef(memory.Sym)
-	return symbol, valid && (ins.Op != OpCALL || addend == 0)
+	return !x86IsSegmentRegister(memory.Index) && memory.Index != TLS
 }
 
 // Derive the ordinary direct branch before declaration and ABI0 analysis.
 // Retain the original operands in the parse result for source inventory.
-func normalizeX86GroupedDirectBranches(file *File, goarch string) *File {
+func normalizeX86DirectSourceBranches(file *File, goarch string) *File {
 	if file == nil || file.Arch != ArchAMD64 || goarch != "" && goarch != "386" && goarch != "amd64" {
 		return file
 	}
@@ -93,17 +118,21 @@ func normalizeX86GroupedDirectBranches(file *File, goarch string) *File {
 		}
 		var instructions []Instr
 		for ordinal, ins := range fn.Instrs {
-			target, ok := x86GroupedDirectBranch(ins, goarch)
-			if !ok {
+			target, ok := x86DirectSourceBranch(ins, goarch)
+			if !ok || target.addend != 0 {
 				continue
 			}
-			if strings.HasSuffix(target, "<>") && !x86GroupedBranchOwnsStaticText(file, target) {
+			spelling := target.symbol + "(SB)"
+			if ins.Args[0].Kind == OpSym && ins.Args[0].Sym == spelling {
+				continue
+			}
+			if strings.HasSuffix(target.symbol, "<>") && !x86SourceBranchOwnsStaticText(file, target.symbol) {
 				continue
 			}
 			if instructions == nil {
 				instructions = append([]Instr(nil), fn.Instrs...)
 			}
-			ins.Args = []Operand{{Kind: OpSym, Sym: target + "(SB)"}}
+			ins.Args = []Operand{{Kind: OpSym, Sym: spelling}}
 			instructions[ordinal] = ins
 		}
 		if instructions == nil {
@@ -119,7 +148,7 @@ func normalizeX86GroupedDirectBranches(file *File, goarch string) *File {
 	return result
 }
 
-func x86GroupedBranchOwnsStaticText(file *File, symbol string) bool {
+func x86SourceBranchOwnsStaticText(file *File, symbol string) bool {
 	for _, fn := range file.Funcs {
 		if fn.Sym == symbol {
 			return true

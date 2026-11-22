@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -325,6 +326,7 @@ func TestX86SymbolIndexedControlThreeAPIsRequireEntryContract(t *testing.T) {
 }
 
 func TestX86GroupedDirectBranchesUseOrdinaryEntry(t *testing.T) {
+	entryReloc := regexp.MustCompile(`(?m)^[\t ]*rel[\t ]+1\+4[\t ]+t=(R_CALL|7)[\t ]+(literal|"")\.target\+0[\t ]*\r?$`)
 	for _, arch := range []string{"386", "amd64"} {
 		pkg := x86AddSubLiteralPackage(t, arch, "func entry()\nfunc target()\n")
 		for _, tc := range []struct {
@@ -332,6 +334,8 @@ func TestX86GroupedDirectBranchesUseOrdinaryEntry(t *testing.T) {
 		}{
 			{"CALL", "·target+0(SB)(AX*4)"},
 			{"CALL", "*·target(SB)(BP)(CX*2)"},
+			{"JMP", "·target+4(SB)"},
+			{"RET", "·target-4(SB)"},
 			{"JMP", "·target+4(SB)(R11*4)"},
 			{"RET", "*·target-4(SB)(BP)"},
 		} {
@@ -341,11 +345,18 @@ func TestX86GroupedDirectBranchesUseOrdinaryEntry(t *testing.T) {
 					source += "RET\n"
 				}
 				source += "TEXT ·target(SB),516,$0-0\nRET\n"
-				requireX86GoAssemblerResult(t, arch, source, true)
+				listing, err := x86ScalarLiteralGoListing(t, arch, source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !entryReloc.MatchString(listing) {
+					t.Fatalf("official relocation does not select the exact entry:\n%s", listing)
+				}
 				file, err := Parse(ArchAMD64, source)
 				if err != nil {
 					t.Fatal(err)
 				}
+				original := file.Funcs[0].Instrs[1].Args[0]
 				resolve := func(sym string) string { return strings.Replace(sym, "·", "literal.", 1) }
 				sigs, err := goSigsForAsmFile(pkg, file, resolve, arch, nil, nil, nil)
 				if err != nil {
@@ -379,7 +390,7 @@ func TestX86GroupedDirectBranchesUseOrdinaryEntry(t *testing.T) {
 				}
 				defer fromGo.Module.Dispose()
 				check(fromGo.Module.String())
-				if file.Funcs[0].Instrs[1].Args[0].Kind != OpMem {
+				if !reflect.DeepEqual(file.Funcs[0].Instrs[1].Args[0], original) {
 					t.Fatal("translation changed the source operand used by the coverage scanner")
 				}
 			})
