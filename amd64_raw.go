@@ -9747,10 +9747,7 @@ func decodedX86GoSyntax(inst x86asm.Inst, encoding []byte) (string, error) {
 			return "", fmt.Errorf("raw %s has unsupported destination width %d", inst.Op, bits)
 		}
 		replaceOp(inst.Op.String() + width)
-	case x86asm.SLDT, x86asm.STR, x86asm.SMSW:
-		// x/arch prints the unsuffixed Intel names, while Go's descriptor
-		// grammar selects the destination width in the mnemonic. Memory
-		// destinations are always the architectural 16-bit selector/status.
+	case x86asm.LGDT, x86asm.LIDT, x86asm.SGDT, x86asm.SIDT, x86asm.SLDT, x86asm.STR, x86asm.SMSW:
 		for _, prefix := range inst.Prefix {
 			switch prefix & 0xff {
 			case x86asm.PrefixLOCK:
@@ -9761,6 +9758,14 @@ func decodedX86GoSyntax(inst x86asm.Inst, encoding []byte) (string, error) {
 				}
 			}
 		}
+		if x86DescriptorTableOpcode(inst.Op.String()) {
+			if inst.DataSize == 16 {
+				replaceOp(inst.Op.String() + ".W")
+			}
+			break
+		}
+		// Go's selector-store mnemonic includes the destination width.
+		// Memory destinations always contain the 16-bit selector/status.
 		bits := 0
 		switch destination := inst.Args[0].(type) {
 		case x86asm.Mem:

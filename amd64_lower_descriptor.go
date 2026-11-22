@@ -28,18 +28,28 @@ func x86DescriptorWriteOpcode(op string) (stem string, suffix byte, known bool) 
 	return stem, suffix, strings.ContainsRune(x86DescriptorWriteWidths[stem], rune(suffix))
 }
 
+func x86DescriptorTableOpcode(op string) bool {
+	switch op {
+	case "LGDT", "LIDT", "SGDT", "SIDT":
+		return true
+	default:
+		return false
+	}
+}
+
 func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, bool, error) {
-	base, _, suffix := strings.Cut(strings.ToUpper(string(op)), ".")
+	base, suffix, dotted := strings.Cut(strings.ToUpper(string(op)), ".")
 	if base == "" {
 		return x86DescriptorForm{}, false, nil
 	}
-	width, table, write := int64(2), false, false
+	table := x86DescriptorTableOpcode(base)
+	width, write := int64(2), false
 	stem := base
-	switch base {
-	case "LGDT", "LIDT", "SGDT", "SIDT":
-		table, write = true, base[0] == 'S'
+	switch {
+	case table:
+		write = base[0] == 'S'
 		width = 2 + x86ResultPointerWord(arch)
-	case "LLDT", "LTR", "LMSW":
+	case base == "LLDT", base == "LTR", base == "LMSW":
 	default:
 		var widthSuffix byte
 		var known bool
@@ -58,14 +68,22 @@ func x86DescriptorProperties(op Op, ins Instr, arch string) (x86DescriptorForm, 
 	fail := func(reason string) (x86DescriptorForm, bool, error) {
 		return x86DescriptorForm{}, true, fmt.Errorf("%s %s %s: %q", arch, base, reason, ins.Raw)
 	}
-	if suffix || len(ins.Args) != 1 {
-		return fail("requires one unsuffixed descriptor operand")
+	if len(ins.Args) != 1 {
+		return fail("requires one descriptor operand")
 	}
 	if arch == "386" && width == 8 {
 		return fail("is illegal in 32-bit mode")
 	}
 	operand := ins.Args[0]
 	mnemonic := base
+	if dotted {
+		// Preserve the raw prefix independently of the mode's memory
+		// width. In legacy mode it changes the base loaded by LGDT/LIDT.
+		if !table || suffix != "W" || op != ins.Op || !x86RawDescriptorOrigin(ins, arch) {
+			return fail("requires the original unsuffixed Go form or a decoded operand-size override")
+		}
+		mnemonic = "data16; " + base
+	}
 	if operand.Kind == OpReg {
 		if table || !isX86YrlRegisterForArch(operand.Reg, arch) {
 			return fail("has no matching GP register form")
@@ -173,7 +191,7 @@ func x86LoweredSystemStep(ins Instr, state *x86ResultState, owned []bool, result
 func x86LoweredSystemOperandStep(ins Instr, effect x86TypedByteOperand, state *x86ResultState,
 	owned []bool, resultOffset int64, arch, triple string) bool {
 	if !x86ScalarFloatIntegerNativeTarget(arch, triple) ||
-		!(x86ResultNamedPredicateInstruction(ins) || x86RawDescriptorWriteOrigin(ins, arch)) {
+		!(x86ResultNamedPredicateInstruction(ins) || x86RawDescriptorOrigin(ins, arch)) {
 		return false
 	}
 	operand := effect.operand
@@ -199,20 +217,22 @@ func x86LoweredSystemOperandStep(ins Instr, effect x86TypedByteOperand, state *x
 		x86ResultNativeNumericAddress(operand, state, arch)
 }
 
-// The decoder's SLDT/SMSW/STR alias keeps the exact register width or m16
-// destination. The origin does not supply an initialized address or frame.
-func x86RawDescriptorWriteOrigin(ins Instr, arch string) bool {
+// Match descriptor table operands and decoded SLDT/SMSW/STR destinations.
+// The origin does not supply an initialized address or frame.
+func x86RawDescriptorOrigin(ins Instr, arch string) bool {
 	origin := ins.x86SourceRaw
 	if origin == nil || ins.Op != origin.op || len(ins.Args) != 1 ||
 		origin.addressBits != 0 || ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride ||
 		ins.x86SegmentPrefix != 0 || ins.x86RawNearReturn != nil || ins.x86RIPLiteral {
 		return false
 	}
-	if _, _, known := x86DescriptorWriteOpcode(string(ins.Op)); !known || !reflect.DeepEqual(origin.args, ins.Args) {
+	base, _, _ := strings.Cut(string(ins.Op), ".")
+	_, _, selectorStore := x86DescriptorWriteOpcode(string(ins.Op))
+	if (!selectorStore && !x86DescriptorTableOpcode(base)) || !reflect.DeepEqual(origin.args, ins.Args) {
 		return false
 	}
 	operand := ins.Args[0]
-	return operand.Kind == OpReg ||
+	return selectorStore && operand.Kind == OpReg ||
 		x86RegisterAddressedNativeMemoryOperand(operand, arch) && operand.Mem.Segment == ""
 }
 

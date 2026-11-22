@@ -309,7 +309,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if x86RawMOVBESource(ins, arch) {
 			continue // Decoder identity grants neither native input bytes nor a destination pointer.
 		}
-		if x86RawDescriptorWriteOrigin(ins, arch) {
+		if x86RawDescriptorOrigin(ins, arch) {
 			if !boundRawDescriptor && (fn.x86RawReplay == nil || fn.x86RawReplay.validate(fn, arch) != nil) {
 				return strictErr
 			}

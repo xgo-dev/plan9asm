@@ -48,6 +48,66 @@ func TestX86RawDescriptorStoreAliases(t *testing.T) {
 	}
 }
 
+func TestX86RawDescriptorTableOperandSize(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
+	}
+	for _, target := range x86RawReturnTargets {
+		t.Run(target.triple, func(t *testing.T) {
+			word, move := 8, "MOVQ"
+			if target.arch == "386" {
+				word, move = 4, "MOVL"
+			}
+			var source, declarations strings.Builder
+			for i, mnemonic := range []string{"sgdt", "sidt", "lgdt", "lidt"} {
+				for _, prefix := range []bool{false, true} {
+					name := fmt.Sprintf("%s%t", mnemonic, prefix)
+					fmt.Fprintf(&declarations, "func %s(address *byte)\n", name)
+					fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-%d\n%s address+0(FP),BX\n", name, word, move)
+					if prefix {
+						source.WriteString("BYTE $0x66\n")
+					}
+					fmt.Fprintf(&source, "BYTE $0x0f\nBYTE $0x01\nBYTE $%#02x\nRET\n", i<<3|3)
+				}
+			}
+			requireX86GoAssemblerResult(t, target.arch, source.String(), true)
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run(api, func(t *testing.T) {
+					ir, err := x86ScalarFPBitViewAPI(t, source.String(), declarations.String(), target.arch, target.triple, api)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, mnemonic := range []string{"sgdt", "sidt", "lgdt", "lidt"} {
+						override := "data16; " + mnemonic
+						if strings.Count(ir, `"`+mnemonic+` $0"`) != 1 || strings.Count(ir, `"`+override+` $0"`) != 1 {
+							t.Fatalf("%s lost its operand-size layout in %s", mnemonic, target.arch)
+						}
+					}
+					memoryType := fmt.Sprintf("elementtype([%d x i8])", word+2)
+					if strings.Count(ir, memoryType) != 8 {
+						t.Fatalf("%s descriptor access width changed", target.arch)
+					}
+					compileLLVMToObject(t, llc, target.triple, "raw-table.ll", "raw-table.o", ir)
+				})
+			}
+			for _, row := range []struct {
+				body string
+				code error
+			}{
+				{"BYTE $0x66\nBYTE $0x0f\nBYTE $0x01\nBYTE $0x13\nRET\n", ErrProbeNeedsContext},
+				{move + " address+0(FP),BX\nLGDT.W (BX)\nRET\n", nil},
+			} {
+				head := fmt.Sprintf("TEXT ·descriptor(SB),4,$0-%d\n", word)
+				ir, err := x86ScalarFPBitViewAPI(t, head+row.body, "func descriptor(address *byte)", target.arch, target.triple, "text")
+				if ir != "" || err == nil || row.code != nil && !errors.Is(err, row.code) {
+					t.Fatalf("%s accepted a missing descriptor address or a fabricated prefix: %v", target.arch, err)
+				}
+			}
+		})
+	}
+}
+
 func TestX86RawDescriptorStoreCompiles(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
