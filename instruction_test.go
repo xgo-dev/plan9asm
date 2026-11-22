@@ -166,6 +166,35 @@ func TestDescribeInstructionClassifiesOperands(t *testing.T) {
 	}
 }
 
+func TestDescribeX86SegmentRegisterForms(t *testing.T) {
+	const program = `TEXT f(SB),4,$0-0
+PUSHL CS
+PUSHL DS
+PUSHL ES
+PUSHL SS
+POPL FS
+POPL GS
+POPL SS
+POPL AX
+RET
+`
+	requireX86GoAssemblerResult(t, "386", program, true)
+	file, err := Parse(ArchAMD64, program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := file.Funcs[0].Instrs
+	for _, ins := range instructions[1 : len(instructions)-1] {
+		want := string(ins.Op) + " segment-register"
+		if ins.Args[0].Reg == AX {
+			want = "POPL gpr32"
+		}
+		if form := DescribeInstruction(ArchAMD64, "386", ins).Form; form != want {
+			t.Errorf("%s: got %q, want %q", ins.Raw, form, want)
+		}
+	}
+}
+
 func TestProbeInstructionChecksFormsThroughLowerer(t *testing.T) {
 	cases := []Instr{
 		{Op: "PUNPCKLQDQ", Raw: "PUNPCKLQDQ X0, X0", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpReg, Reg: "X0"}}},

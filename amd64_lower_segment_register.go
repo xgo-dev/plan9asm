@@ -95,10 +95,11 @@ func x86SegmentMoveSuffixAccepted(rawOp string) bool {
 }
 
 func x86SegmentRegisterOperand(operand Operand) bool {
-	if operand.Kind != OpReg {
-		return false
-	}
-	switch operand.Reg {
+	return operand.Kind == OpReg && x86IsSegmentRegister(operand.Reg)
+}
+
+func x86IsSegmentRegister(reg Reg) bool {
+	switch reg {
 	case ES, CS, SS, DS, FS, GS:
 		return true
 	default:
