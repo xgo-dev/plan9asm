@@ -94,23 +94,23 @@ func fixedLocalNumericalStore(state *x86FixedLocalState, offset, width int64, co
 // Full-word private addresses never become mask values. Local reads/writes
 // retain the same byte envelope and owner as every other fixed-frame access.
 func fixedLocalMaskMoveStep(ins *Instr, state *x86FixedLocalState, proof *x86FixedLocalProof, residue int) (bool, error) {
-	bits, known := amd64MaskMoveSpecs[ins.Op]
+	form, known, err := x86MaskMoveProperties(ins.Op, *ins, "amd64")
 	if !known {
 		return false, nil
 	}
 	fail := func() (bool, error) {
 		return true, goAMD64FrameContext("fixed local mask move has unproved shape or numerical bytes")
 	}
-	if !amd64MaskMoveOperandsValid(*ins, "amd64") {
+	if err != nil {
 		return fail()
 	}
-	width := int64(bits / 8)
+	width := int64(form.bits / 8)
 	source, destination := ins.Args[0], ins.Args[1]
 	if source.Kind == OpMem || source.Kind == OpSym {
 		if _, _, err := fixedLocalReadMemory(ins, 0, state, proof, residue, width, 1); err != nil {
 			return true, err
 		}
-	} else if amd64IsKOperand(source) {
+	} else if form.source == x86MaskMoveK {
 		if !state.masks[source.Reg] {
 			return fail()
 		}
@@ -127,7 +127,7 @@ func fixedLocalMaskMoveStep(ins *Instr, state *x86FixedLocalState, proof *x86Fix
 		}
 		return true, nil
 	}
-	if amd64IsKOperand(destination) {
+	if form.destination == x86MaskMoveK {
 		state.masks[destination.Reg] = true
 		return true, nil
 	}

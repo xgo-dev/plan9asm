@@ -37,6 +37,14 @@ func GoAMD64FixedLocalFrameBindingNeeded(file *File, goarch string, options ...O
 			if indexed := fixedLocalVSIBOperand(ins); indexed >= 0 {
 				form, known, err := x86VSIBProperties(ins, goarch)
 				memory, eligible = indexed, known && err == nil && !form.prefetch
+			} else if form, known, err := x86MaskMoveProperties(ins.Op, ins, goarch); known {
+				eligible, physicalOnly = err == nil, true
+				switch {
+				case form.source == x86MaskMoveMemory:
+					memory = 0
+				case form.destination == x86MaskMoveMemory:
+					memory = 1
+				}
 			} else if _, _, known, err := x86SwapProperties(ins, goarch); known {
 				eligible, physicalOnly = err == nil, true
 				for index, operand := range ins.Args {
