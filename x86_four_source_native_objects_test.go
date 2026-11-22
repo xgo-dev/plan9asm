@@ -10,18 +10,15 @@ import (
 	"testing"
 )
 
-func TestX86FourSourceIsolatedMinimumISAProfiles(t *testing.T) {
+func TestX86FourSourceIsolatedLLVM22RegisterFeatures(t *testing.T) {
 	for _, arch := range []string{"386", "amd64"} {
 		for _, member := range x86FourSourceOracle {
 			t.Run(arch+"/"+member.op, func(t *testing.T) {
 				row := x86FourSourceOracleRow{op: member.op, scalar: member.scalar, dot: member.dot, first: 2, dest: 6, mode: "plain"}
 				ins := x86ScalarLaneInstruction(t, row.instruction())
-				want := "+avx5124fmaps,+avx512f"
-				if member.dot {
-					want = "+avx5124vnniw,+avx512f"
-				}
+				const want = "+avx512f"
 				if got := inferFuncTargetFeaturesForGOARCH(ArchAMD64, arch, Func{Instrs: []Instr{ins}}); got != want {
-					t.Fatal("isolated four-source opcode borrowed a producer's feature or the sibling rare ISA", got, want)
+					t.Fatalf("isolated four-source LLVM features = %q, want %q", got, want)
 				}
 			})
 		}
@@ -39,7 +36,7 @@ func x86FourSourceNativeObjectListing(t *testing.T, llc, objdump, triple, level,
 	output, err := runtimeOracleCombinedOutput(stage, exec.CommandContext(stage, llc,
 		level, "-mtriple="+triple, "-filetype=obj", input, "-o", object))
 	cancel()
-	if err != nil {
+	if err != nil || len(output) != 0 {
 		t.Fatalf("actual four-source machine object: %v\n%s", err, output)
 	}
 	stage, cancel = runtimeOracleStageContext(t)

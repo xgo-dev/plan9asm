@@ -268,7 +268,14 @@ func initializedVectorOperands(goarch string, ins Instr) ([]Operand, int64, bool
 		}
 		return ins.Args, int64(form.byteWidth), true
 	}
-	inputs := append([]Operand(nil), ins.Args...)
+	inputs := make([]Operand, 0, len(ins.Args)+len(effect.operands))
+	for _, operand := range ins.Args {
+		// The typed effects below already enumerate the actual register
+		// reads of four-source ranges, including the encoded alignment.
+		if operand.Kind != OpRegList {
+			inputs = append(inputs, operand)
+		}
+	}
 	var memoryBytes int64
 	for _, input := range effect.operands {
 		if input.operand.Kind == OpMem || input.operand.Kind == OpSym {

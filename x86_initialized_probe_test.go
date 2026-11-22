@@ -152,6 +152,56 @@ func TestInitializedX86SharedVectorFamilyRegisters(t *testing.T) {
 	}, InitializedVectorRegisterProbeSequence)
 }
 
+func TestInitializedX86FourSourceMemoryUsesEncodedRegisterRange(t *testing.T) {
+	for _, form := range []struct {
+		op, bank string
+	}{
+		{"V4FMADDPS", "Z"}, {"V4FMADDSS", "X"},
+		{"V4FNMADDPS", "Z"}, {"V4FNMADDSS", "X"},
+		{"VP4DPWSSD", "Z"}, {"VP4DPWSSDS", "Z"},
+	} {
+		for _, mode := range []struct {
+			arch, suffix, mask string
+		}{
+			{"386", "", ""}, {"amd64", "", ""},
+			{"amd64", "", ",K3"}, {"amd64", ".Z", ",K3"},
+		} {
+			source := fmt.Sprintf("%s%s -17(BX)(SI*4),[%s1-%s4]%s,%s7",
+				form.op, mode.suffix, form.bank, form.bank, mode.mask, form.bank)
+			t.Run(mode.arch+"/"+source, func(t *testing.T) {
+				ins := x86ScalarLaneInstruction(t, source)
+				sequence, known, err := InitializedVectorMemoryProbeSequence(mode.arch, ins)
+				if err != nil || !known || len(sequence) < 2 {
+					t.Fatalf("missing initialized memory probe: %v, err=%v", known, err)
+				}
+				if !reflect.DeepEqual(sequence[len(sequence)-1], ins) {
+					t.Fatal("probe changed the exact four-source instruction")
+				}
+				if _, width, valid := initializedVectorOperands(mode.arch, ins); !valid || width != 16 {
+					t.Fatalf("memory tuple = %d bytes, valid=%v, want 16 bytes", width, valid)
+				}
+				writes := make(map[Reg]bool)
+				for _, setup := range sequence[:len(sequence)-1] {
+					if dst := setup.Args[len(setup.Args)-1]; dst.Kind == OpReg {
+						writes[dst.Reg] = true
+					}
+				}
+				// Go's encoding selects the aligned block [0-3], even
+				// though the source lists [1-4]. The old destination
+				// also supplies the accumulator on masked zeroing forms.
+				for _, reg := range []string{"0", "1", "2", "3", "7"} {
+					if !writes[Reg(form.bank+reg)] {
+						t.Errorf("probe did not initialize %s%s", form.bank, reg)
+					}
+				}
+				if writes[Reg(form.bank+"4")] || writes["K3"] != (mode.mask != "") || !writes[BX] || !writes[SI] {
+					t.Fatalf("wrong written register set: %v", writes)
+				}
+			})
+		}
+	}
+}
+
 func TestInitializedX86VectorTransferMemoryWidths(t *testing.T) {
 	for _, test := range []struct {
 		arch, source string

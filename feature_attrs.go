@@ -105,13 +105,10 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 			if _, terminal, err := x86UndefinedTrapProperties(ins.Op, ins, moveArch); terminal && err == nil {
 				continue // Exact UD2 does not execute this source opcode or require its input ISA.
 			}
-			if form, known, err := x86FourSourceProperties(ins.Op, ins, moveArch); known && err == nil {
-				add("+avx512f") // Exact physical carriers, including scalar SS and isolated mode32.
-				if form.spec.mode == amd64FourSourceFMA {
-					add("+avx5124fmaps")
-				} else {
-					add("+avx5124vnniw")
-				}
+			if _, known, err := x86FourSourceProperties(ins.Op, ins, moveArch); known && err == nil {
+				// LLVM 22 recognizes the exact inline asm mnemonics. Its
+				// feature table exposes AVX512F for the register carriers.
+				add("+avx512f")
 			}
 			if form, known, err := x86ScalarPrecisionProperties(ins.Op, ins, moveArch); known && err == nil {
 				switch {
