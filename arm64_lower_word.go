@@ -46,11 +46,8 @@ func (c *arm64Ctx) lowerRawWord(ins Instr) error {
 	if family, _, ok := decodeARM64RawVectorFamily(word); ok {
 		return family.lower(c, word)
 	}
-	if form, ok := decodeARM64RawStructureLane(word); ok {
-		return c.lowerRawStructureLane(form)
-	}
-	if form, ok := decodeARM64RawLDnR(word); ok {
-		return c.lowerRawLDnR(form)
+	if form, ok := decodeARM64RawStructureMemory(word); ok {
+		return c.lowerStructureMemory(form.memoryForm())
 	}
 	if form, ok := decodeARM64RawMoveWide(word); ok {
 		return c.lowerRawMoveWide(form)

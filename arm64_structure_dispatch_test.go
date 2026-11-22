@@ -194,7 +194,7 @@ func TestARM64StructureDispatchRawReplicateProducer(t *testing.T) {
 					canonical := arm64StructureDispatchInstruction(t, string(op)+suffix+" "+memory+","+arm64TestVectorList(30, count, arrangement))
 					want := arm64StructureDispatchIR(t, op, post, canonical, canonical, false)
 					c, output := newARM64CtxWithFuncForTest(t, Func{Instrs: []Instr{canonical}}, FuncSig{Ret: Void}, nil)
-					if err := c.lowerRawLDnR(form); err != nil {
+					if err := c.lowerStructureMemory(form.memoryForm()); err != nil {
 						t.Fatal(err)
 					}
 					if output.String() != want {

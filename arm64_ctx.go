@@ -296,7 +296,18 @@ func (c *arm64Ctx) scanUsedRegs() {
 				markOp(op)
 			}
 			if ins.Op == OpWORD && len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
-				if form, ok := decodeARM64RawSystemRegister(uint32(ins.Args[0].Imm)); ok && form.reg != 31 {
+				word := uint32(ins.Args[0].Imm)
+				if form, ok := decodeARM64RawStructureMemory(word); ok {
+					markReg(form.baseRegister())
+					if index := form.indexRegister(); index != "" {
+						markReg(index)
+					}
+					for i := 0; i < form.count; i++ {
+						c.usedVRegs[(form.firstRegister+i)%32] = true
+					}
+					continue
+				}
+				if form, ok := decodeARM64RawSystemRegister(word); ok && form.reg != 31 {
 					markReg(Reg(fmt.Sprintf("R%d", form.reg)))
 				}
 				if form, ok := decodeARM64RawCASP(uint32(ins.Args[0].Imm)); ok {
@@ -320,7 +331,6 @@ func (c *arm64Ctx) scanUsedRegs() {
 						markOp(op)
 					}
 				}
-				word := uint32(ins.Args[0].Imm)
 				if decoded, ok := decodeARM64RawSVECharacterMatch(word); ok {
 					for _, operand := range decoded.Args {
 						markOp(operand)
@@ -546,19 +556,6 @@ func (c *arm64Ctx) scanUsedRegs() {
 						markReg(Reg(fmt.Sprintf("R%d", form.index)))
 					}
 				}
-				if form, ok := decodeARM64RawStructureLane(word); ok {
-					if form.base == 31 {
-						markReg(SP)
-					} else {
-						markReg(Reg(fmt.Sprintf("R%d", form.base)))
-					}
-					if form.post && form.postRegister != 31 {
-						markReg(Reg(fmt.Sprintf("R%d", form.postRegister)))
-					}
-					for i := 0; i < form.count; i++ {
-						markReg(Reg(fmt.Sprintf("V%d", (form.firstRegister+i)%32)))
-					}
-				}
 				if form, ok := decodeARM64RawAES(word); ok {
 					markReg(Reg(fmt.Sprintf("V%d", form.source)))
 					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
@@ -685,19 +682,6 @@ func (c *arm64Ctx) scanUsedRegs() {
 				if form, ok := decodeARM64RawUSHLL(word); ok {
 					markReg(Reg(fmt.Sprintf("V%d", form.source)))
 					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
-				}
-				if form, ok := decodeARM64RawLDnR(word); ok {
-					for i := 0; i < form.count; i++ {
-						markReg(Reg(fmt.Sprintf("V%d", (form.firstRegister+i)%32)))
-					}
-					if form.base == 31 {
-						markReg(SP)
-					} else {
-						markReg(Reg(fmt.Sprintf("R%d", form.base)))
-					}
-					if form.post && form.postRegister != 31 {
-						markReg(Reg(fmt.Sprintf("R%d", form.postRegister)))
-					}
 				}
 				if form, ok := decodeARM64RawUMLAL(word); ok {
 					markReg(Reg(fmt.Sprintf("V%d", form.destReg)))

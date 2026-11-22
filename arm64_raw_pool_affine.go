@@ -479,6 +479,15 @@ func (flow *arm64RawPoolValues) affineIntervalProof(at int, expression arm64Pool
 }
 
 func arm64PoolAffineDefinition(word uint32) (int, arm64PoolAffine, bool) {
+	if form, ok := decodeARM64RawStructureMemory(word); ok && form.load && form.post && form.base != 31 {
+		value := arm64PoolRegisterExpression(form.base)
+		if form.postRegister == 31 {
+			value.constant = uint64(form.width())
+		} else {
+			value.coefficient[form.postRegister]++
+		}
+		return form.base, value, true
+	}
 	var code [4]byte
 	binary.LittleEndian.PutUint32(code[:], word)
 	ins, err := arm64asm.Decode(code[:])

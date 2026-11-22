@@ -21,6 +21,15 @@ func TestARM64RawPoolBoundedOffsets(t *testing.T) {
 		{"scalar-post-index", "ldr x0, [x9], #8\nldr x1, [x9]", true},
 		{"scalar-pre-index", "ldr x0, [x9, #-16]!\nldr x1, [x9]", true},
 		{"pair-post-index", "ldp q0, q1, [x9], #16\nldp q2, q3, [x9]", true},
+		{"structure-post-index", "ld3 {v0.8b, v1.8b, v2.8b}, [x9], #24\nld3 {v3.8b, v4.8b, v5.8b}, [x9]", true},
+		{"structure-lane-post-index", "ld3 {v0.h, v1.h, v2.h}[7], [x9], #6\nldrh w2, [x9]", true},
+		{"structure-replicate-post-index", "ld4r {v0.2d, v1.2d, v2.2d, v3.2d}, [x9], #32\nldr x2, [x9]", true},
+		{"structure-post-index-overrun", "ld3 {v0.8b, v1.8b, v2.8b}, [x9], #24\nld4 {v3.8b, v4.8b, v5.8b, v6.8b}, [x9]", false},
+		{"structure-runtime-post-index", "ld1 {v0.8b}, [x9], x7\nldr x2, [x9]", false},
+		{"structure-bounded-register-post-index", "mov x7, #8\nld1 {v0.8b}, [x9], x7\nldr x2, [x9]", true},
+		{"structure-register-post-index-overrun", "mov x7, #48\nld1 {v0.8b}, [x9], x7\nldr x2, [x9]", false},
+		{"structure-address-as-index", "ld1 {v0.8b}, [x7], x9\nldr x2, [x9]", false},
+		{"structure-store-to-pool", "st1 {v0.8b}, [x9], #8\nldr x2, [x9]", false},
 		{"pair-pre-index", "ldp q0, q1, [x9, #16]!", true},
 		{"post-index-transient-before-pool", "ldr x0, [x9], #-32\nadd x9, x9, #32\nldr x1, [x9]", true},
 		{"post-index-underrun", "ldr x0, [x9], #-32\nldr x1, [x9]", false},
@@ -189,8 +198,60 @@ func TestARM64RawPoolOffsetLLVM(t *testing.T) {
 	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc"} {
 		t.Run(triple, func(t *testing.T) {
 			compileLLVMToObject(t, llc, triple, "pool_offset.ll", "pool_offset.o", arm64RawPoolOffsetIR(t, triple))
+			source := arm64RawPoolStructureSource(t)
+			compileLLVMToObject(t, llc, triple, "pool_structure.ll", "pool_structure.o", arm64RawPoolStructureIR(t, source, triple))
 		})
 	}
+}
+
+func arm64RawPoolStructureSource(t *testing.T) string {
+	t.Helper()
+	lines := []string{
+		"",
+		"ld3 {v0.8b, v1.8b, v2.8b}, [x9], #24",
+		"st1 {v0.8b, v1.8b, v2.8b}, [x0], #24",
+		"movi v3.16b, #0xa5", "movi v4.16b, #0xa5",
+		"ld2 {v3.h, v4.h}[7], [x9], #4",
+		"st1 {v3.16b, v4.16b}, [x0], #32",
+		"mov x7, #8", "ld2r {v5.2s, v6.2s}, [x9], x7",
+		"st1 {v5.8b, v6.8b}, [x0], #16",
+		"ldr x10, [x9]", "str x10, [x0]", "mov x9, xzr",
+		"b #52", // 12 pool words and the branch itself.
+	}
+	lines[0] = fmt.Sprintf("adr x9, #%d", len(lines)*4)
+	var source strings.Builder
+	source.WriteString("TEXT ·poolStructure(SB),516,$0-8\nMOVD out+0(FP),R0\n")
+	for _, word := range assembleARM64LLVMWords(t, lines, "+neon") {
+		fmt.Fprintf(&source, "WORD $%#08x\n", word)
+	}
+	for i := 0; i < 12; i++ {
+		// Keep the data distinguishable at every byte position. Several
+		// words resemble instructions, requiring the real pool proof.
+		fmt.Fprintf(&source, "WORD $%#08x\n", uint32(0x04030201+i*0x04040404))
+	}
+	source.WriteString("RET\n")
+	requireARM64GoAssemblerResult(t, source.String(), true)
+	return source.String()
+}
+
+func arm64RawPoolStructureIR(t *testing.T, source, triple string) string {
+	t.Helper()
+	file, err := Parse(ArchARM64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{
+		Goarch: "arm64", TargetTriple: triple,
+		ResolveSym: func(symbol string) string { return strings.TrimPrefix(symbol, "·") },
+		Sigs: map[string]FuncSig{"poolStructure": {
+			Name: "poolStructure", Args: []LLVMType{Ptr}, Ret: Void,
+			Frame: FrameLayout{Params: []FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ir
 }
 
 const arm64RawPoolOffsetMain = `

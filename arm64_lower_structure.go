@@ -51,41 +51,43 @@ func (c *arm64Ctx) lowerARM64StructureLoadStore(op Op, postInc bool, ins Instr) 
 	if postInc != form.post {
 		return true, false, fmt.Errorf("arm64 %s inconsistent post-index dispatch: %q", op, ins.Raw)
 	}
+	return true, false, c.lowerStructureMemory(form)
+}
+
+func (c *arm64Ctx) lowerStructureMemory(form arm64StructureMemoryForm) error {
 	if form.lane >= 0 {
-		return true, false, c.lowerStructureLane(form)
+		return c.lowerStructureLane(form)
 	}
 	registers, arrangement := form.registers, form.arrangement
 	addr, increment, err := c.structureAddress(form)
 	if err != nil {
-		return true, false, err
+		return err
 	}
 	if form.replicate {
 		for registerIndex, reg := range registers {
 			elementOffset := int64(registerIndex * arrangement.elementBits / 8)
 			element, err := c.arm64LoadStructureElement(addr, elementOffset, arrangement.elementBits)
 			if err != nil {
-				return true, false, err
+				return err
 			}
 			value := c.arm64VDUPSplat(arrangement, element)
 			if err := c.storeARM64VectorInteger(reg, arrangement, value); err != nil {
-				return true, false, err
+				return err
 			}
 		}
-	} else if op == "VLD1" || op == "VST1" {
+	} else if !form.interleaved {
 		if err := c.lowerContiguousStructureTransfer(form, addr); err != nil {
-			return true, false, err
+			return err
 		}
 	} else {
 		if err := c.lowerInterleavedStructureTransfer(form, addr); err != nil {
-			return true, false, err
+			return err
 		}
 	}
-	if postInc {
-		if err := c.arm64UpdatePostIncrement(form.memory.Mem.Base, increment); err != nil {
-			return true, false, err
-		}
+	if form.post {
+		return c.arm64UpdatePostIncrement(form.memory.Mem.Base, increment)
 	}
-	return true, false, nil
+	return nil
 }
 
 // LD/ST1 concatenate whole registers, unlike LD/ST2-4's interleaved lanes.

@@ -9,11 +9,11 @@ import (
 // extent is the encoded transfer, not the width of LLVM's vector backing or
 // (for VLD2-4) necessarily the number of registers written in Go's C_LIST.
 type arm64StructureMemoryForm struct {
-	op              Op
 	memory          Operand
 	registers       []Reg
 	arrangement     arm64VectorArrangement
 	load, replicate bool
+	interleaved     bool
 	lane            int // -1 means a whole-register or replicate transfer
 	post            bool
 	increment       int64
@@ -21,9 +21,13 @@ type arm64StructureMemoryForm struct {
 }
 
 func (f arm64StructureMemoryForm) width() int64 {
-	width := int64(f.arrangement.elementBits / 8 * len(f.registers))
-	if f.lane < 0 && !f.replicate {
-		width *= int64(f.arrangement.lanes)
+	return arm64StructureTransferBytes(f.arrangement, len(f.registers), f.lane >= 0 || f.replicate)
+}
+
+func arm64StructureTransferBytes(arrangement arm64VectorArrangement, count int, elementOnly bool) int64 {
+	width := int64(arrangement.elementBits / 8 * count)
+	if !elementOnly {
+		width *= int64(arrangement.lanes)
 	}
 	return width
 }
@@ -31,15 +35,12 @@ func (f arm64StructureMemoryForm) width() int64 {
 func parseARM64StructureMemory(ins Instr) (form arm64StructureMemoryForm, handled bool, err error) {
 	if ins.Op == OpWORD && len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
 		word := uint32(ins.Args[0].Imm)
-		if raw, valid := decodeARM64RawStructureLane(word); valid {
-			return raw.memoryForm(), true, nil
-		}
 		if word&0xbf000000 == 0x0c000000 || word&0xbf000000 == 0x0d000000 {
-			decoded, err := decodeARM64RawWordInstruction(ins)
-			if err != nil {
-				return form, true, err
+			raw, valid := decodeARM64RawStructureMemory(word)
+			if !valid {
+				return form, true, fmt.Errorf("reserved ARM64 structure WORD %#08x: %q", word, ins.Raw)
 			}
-			return parseARM64StructureMemory(decoded)
+			return raw.memoryForm(), true, nil
 		}
 	}
 	op := arm64ControlOp(ins)
@@ -47,7 +48,10 @@ func parseARM64StructureMemory(ins Instr) (form arm64StructureMemoryForm, handle
 	if !handled {
 		return form, false, nil
 	}
-	form.op, form.load, form.replicate, form.lane = op, strings.HasPrefix(string(op), "VLD"), strings.HasSuffix(string(op), "R"), -1
+	form.load = strings.HasPrefix(string(op), "VLD")
+	form.replicate = strings.HasSuffix(string(op), "R")
+	form.interleaved = !form.replicate && op != "VLD1" && op != "VST1"
+	form.lane = -1
 	suffix := strings.TrimPrefix(string(ins.Op), string(op))
 	if (suffix != "" && suffix != ".P") || len(ins.Args) != 2 {
 		return form, true, fmt.Errorf("arm64 %s requires memory/vector operands and only optional .P: %q", op, ins.Raw)
@@ -148,29 +152,6 @@ func parseARM64StructureMemory(ins Instr) (form arm64StructureMemoryForm, handle
 	mem.Off, mem.Index = 0, ""
 	form.memory.Mem = mem
 	return form, true, nil
-}
-
-func (raw arm64RawStructureLane) memoryForm() arm64StructureMemoryForm {
-	base := Reg(fmt.Sprintf("R%d", raw.base))
-	if raw.base == 31 {
-		base = SP
-	}
-	form := arm64StructureMemoryForm{
-		memory: Operand{Kind: OpMem, Mem: MemRef{Base: base}},
-		load:   raw.load, lane: raw.lane, post: raw.post,
-		arrangement: arm64VectorArrangement{elementBits: raw.elementBits, lanes: 128 / raw.elementBits},
-	}
-	for i := 0; i < raw.count; i++ {
-		form.registers = append(form.registers, Reg(fmt.Sprintf("V%d", (raw.firstRegister+i)%32)))
-	}
-	if raw.post {
-		if raw.postRegister == 31 {
-			form.increment = form.width()
-		} else {
-			form.index = Reg(fmt.Sprintf("R%d", raw.postRegister))
-		}
-	}
-	return form
 }
 
 func (c *arm64Ctx) structureAddress(form arm64StructureMemoryForm) (address, increment string, err error) {

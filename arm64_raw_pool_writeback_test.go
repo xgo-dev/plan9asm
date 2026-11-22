@@ -3,6 +3,7 @@ package plan9asm
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"testing"
 
 	"golang.org/x/arch/arm64/arm64asm"
@@ -35,6 +36,49 @@ func TestARM64RawPoolWritebackFootprints(t *testing.T) {
 					memory = fmt.Sprintf("[x9, #%d]!", delta)
 				}
 				cases = append(cases, form{load.operands + ", " + memory, load.bytes, delta, pre})
+			}
+		}
+	}
+	// Advance exactly one transfer for each of the whole-vector, lane and
+	// replicate load groups. The assembler independently checks the encodings.
+	for count := 1; count <= 4; count++ {
+		for _, element := range []struct {
+			suffix string
+			bytes  int64
+		}{{"b", 1}, {"h", 2}, {"s", 4}, {"d", 8}} {
+			vectors := func(lanes int64) string {
+				var registers []string
+				for i := 0; i < count; i++ {
+					arrangement := element.suffix
+					if lanes != 0 {
+						arrangement = fmt.Sprint(lanes) + arrangement
+					}
+					registers = append(registers, fmt.Sprintf("v%d.%s", (30+i)%32, arrangement))
+				}
+				return "{" + strings.Join(registers, ", ") + "}"
+			}
+			bytes := int64(count) * element.bytes
+			cases = append(cases, form{
+				line:  fmt.Sprintf("ld%d %s[%d], [x9], #%d", count, vectors(0), 16/element.bytes-1, bytes),
+				bytes: bytes, delta: bytes,
+			})
+			for _, vectorBytes := range []int64{8, 16} {
+				arrangement := vectors(vectorBytes / element.bytes)
+				cases = append(cases, form{
+					line:  fmt.Sprintf("ld%dr %s, [x9], #%d", count, arrangement, bytes),
+					bytes: bytes, delta: bytes,
+				})
+				width := int64(count) * vectorBytes
+				cases = append(cases, form{
+					line:  fmt.Sprintf("ld1 %s, [x9], #%d", arrangement, width),
+					bytes: width, delta: width,
+				})
+				if count > 1 && vectorBytes != element.bytes {
+					cases = append(cases, form{
+						line:  fmt.Sprintf("ld%d %s, [x9], #%d", count, arrangement, width),
+						bytes: width, delta: width,
+					})
+				}
 			}
 		}
 	}

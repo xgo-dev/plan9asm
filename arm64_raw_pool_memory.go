@@ -49,6 +49,10 @@ func arm64RawPoolReplicateLoad(word uint32) (Instr, bool) {
 }
 
 func arm64RawPoolLoadInBounds(ins arm64asm.Inst, word uint32, memory arm64asm.MemImmediate, offset, size int64) bool {
+	if form, ok := decodeARM64RawStructureMemory(word); ok {
+		return form.load && (!form.post || form.postRegister == 31) &&
+			arm64RawPoolContains(offset, form.width(), size)
+	}
 	displacement, _, ok := arm64PoolImmediateAddress(memory)
 	if !ok {
 		return false
@@ -100,6 +104,12 @@ func arm64PoolImmediateAddress(memory arm64asm.MemImmediate) (int64, int64, bool
 }
 
 func arm64PoolLoadWriteback(ins arm64asm.Inst, word uint32) (int, int64, bool) {
+	if form, ok := decodeARM64RawStructureMemory(word); ok {
+		if form.load && form.post && form.postRegister == 31 && form.base != 31 {
+			return form.base, form.width(), true
+		}
+		return 0, 0, false
+	}
 	if !arm64RawPoolReadOnlyLoad(ins.Op) || arm64RawPoolLoadBytes(ins, word) == 0 {
 		return 0, 0, false
 	}
@@ -160,19 +170,10 @@ func arm64RawPoolLoadBytes(ins arm64asm.Inst, word uint32) int64 {
 			bytes *= 2
 		}
 		return bytes
-	case arm64asm.LD1R, arm64asm.LD2R, arm64asm.LD3R, arm64asm.LD4R:
-		if form, ok := decodeARM64RawLDnR(word); ok && !form.post {
-			return int64(form.count * form.arrangement.elementBits / 8)
-		}
-	case arm64asm.LD1, arm64asm.LD2, arm64asm.LD3, arm64asm.LD4:
-		if form, ok := decodeARM64RawStructureLane(word); ok && form.load && !form.post {
-			return int64(form.count * form.elementBits / 8)
-		}
-		// x/arch already validated this multiple-structure instruction.
-		// Restrict to no writeback, then use opcode's register count and Q.
-		if word&0xbfff0000 == 0x0c400000 {
-			count := map[uint32]int64{0: 4, 2: 4, 4: 3, 6: 3, 7: 1, 8: 2, 10: 2}[word>>12&15]
-			return count * (8 << (word >> 30 & 1))
+	case arm64asm.LD1, arm64asm.LD2, arm64asm.LD3, arm64asm.LD4,
+		arm64asm.LD1R, arm64asm.LD2R, arm64asm.LD3R, arm64asm.LD4R:
+		if form, ok := decodeARM64RawStructureMemory(word); ok && form.load {
+			return form.width()
 		}
 	}
 	return 0

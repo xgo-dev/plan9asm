@@ -2,39 +2,23 @@ package plan9asm
 
 import "fmt"
 
-// arm64RawStructureLane describes the Advanced SIMD load/store single
-// structure encodings. These are the LD1/ST1 through LD4/ST4 forms that move
-// one selected lane in each consecutive vector register, rather than the
-// whole-register structure forms accepted by Go's named VLDn/VSTn syntax.
-type arm64RawStructureLane struct {
-	load          bool
-	count         int
-	elementBits   int
-	lane          int
-	firstRegister int
-	base          int
-	post          bool
-	postRegister  int // 31 selects the architecture-defined fixed increment.
-}
-
-func decodeARM64RawStructureLane(word uint32) (arm64RawStructureLane, bool) {
+func decodeARM64RawStructureLane(word uint32) (arm64RawStructureMemory, bool) {
 	// Advanced SIMD load/store single structure. Q, L, R, opcode, S, size,
 	// Rm, Rn, and Rt are decoded below. Bit 23 distinguishes no-offset from
 	// post-indexed forms. In the no-offset form Rm is reserved and must be zero.
 	if word&0xbf000000 != 0x0d000000 {
-		return arm64RawStructureLane{}, false
+		return arm64RawStructureMemory{}, false
 	}
-	post := word&(1<<23) != 0
-	postRegister := int(word>>16) & 31
-	if !post && postRegister != 0 {
-		return arm64RawStructureLane{}, false
+	form, valid := arm64RawStructureAddress(word)
+	if !valid {
+		return arm64RawStructureMemory{}, false
 	}
 
 	q := int(word>>30) & 1
 	s := int(word>>12) & 1
 	size := int(word>>10) & 3
 	opcode := int(word>>13) & 7
-	count := 1 + (int(word>>21) & 1) + 2*(opcode&1)
+	form.count = 1 + (int(word>>21) & 1) + 2*(opcode&1)
 
 	elementBits := 0
 	lane := 0
@@ -44,7 +28,7 @@ func decodeARM64RawStructureLane(word uint32) (arm64RawStructureLane, bool) {
 		lane = q<<3 | s<<2 | size
 	case 1: // H: index = UInt(Q:S:size<1>), size<0> is reserved.
 		if size&1 != 0 {
-			return arm64RawStructureLane{}, false
+			return arm64RawStructureMemory{}, false
 		}
 		elementBits = 16
 		lane = q<<2 | s<<1 | size>>1
@@ -56,27 +40,16 @@ func decodeARM64RawStructureLane(word uint32) (arm64RawStructureLane, bool) {
 			elementBits = 64
 			lane = q
 		} else {
-			return arm64RawStructureLane{}, false
+			return arm64RawStructureMemory{}, false
 		}
 	default:
 		// opcode<2:1> == 11 is the load-and-replicate family.
-		return arm64RawStructureLane{}, false
+		return arm64RawStructureMemory{}, false
 	}
 
-	return arm64RawStructureLane{
-		load:          word&(1<<22) != 0,
-		count:         count,
-		elementBits:   elementBits,
-		lane:          lane,
-		firstRegister: int(word) & 31,
-		base:          int(word>>5) & 31,
-		post:          post,
-		postRegister:  postRegister,
-	}, true
-}
-
-func (c *arm64Ctx) lowerRawStructureLane(form arm64RawStructureLane) error {
-	return c.lowerStructureLane(form.memoryForm())
+	form.arrangement = arm64VectorArrangement{elementBits: elementBits, lanes: 128 / elementBits}
+	form.lane = lane
+	return form, true
 }
 
 func (c *arm64Ctx) lowerStructureLane(form arm64StructureMemoryForm) error {

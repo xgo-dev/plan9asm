@@ -192,7 +192,48 @@ func TestCrossLinuxRuntimeMatrixARM64RawPoolLoop(t *testing.T) {
 	runARM64LocalRegisterGoOracle(t, source, arm64RawPoolLoopGoMain, len(runner) != 0)
 	ir := arm64RawPoolLoopIR(t, triple)
 	compileAndRunRuntimeTestWithCompiler(t, llc, compiler, "pool_loop_oracle", triple, ir, arm64RawPoolLoopMain, runner)
+	t.Run("NEONStructureWriteback", func(t *testing.T) {
+		source := arm64RawPoolStructureSource(t)
+		runARM64LocalRegisterGoOracle(t, source, arm64RawPoolStructureGoMain, len(runner) != 0)
+		ir := arm64RawPoolStructureIR(t, source, triple)
+		compileAndRunRuntimeTestWithCompiler(t, llc, compiler, "pool_structure", triple, ir, arm64RawPoolStructureMain, runner)
+	})
 }
+
+var arm64RawPoolStructureExpected = [80]byte{
+	1, 4, 7, 10, 13, 16, 19, 22, 2, 5, 8, 11, 14, 17, 20, 23, 3, 6, 9, 12, 15, 18, 21, 24,
+	165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 25, 26,
+	165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 27, 28,
+	29, 30, 31, 32, 29, 30, 31, 32, 33, 34, 35, 36, 33, 34, 35, 36,
+	37, 38, 39, 40, 41, 42, 43, 44,
+}
+
+var arm64RawPoolStructureGoMain = fmt.Sprintf(`package main
+func poolStructure(*byte)
+func main() {
+	var data [82]byte
+	data[0], data[81] = 91, 197
+	poolStructure(&data[1])
+	expected := %#v
+	for i, value := range expected {
+		if data[i+1] != value { panic("Go NEON structure pool value") }
+	}
+	if data[0] != 91 || data[81] != 197 { panic("Go NEON structure pool canary") }
+}
+`, arm64RawPoolStructureExpected)
+
+var arm64RawPoolStructureMain = fmt.Sprintf(`
+#include <string.h>
+extern void poolStructure(unsigned char *);
+int main(void) {
+  unsigned char data[82] = {0};
+  const unsigned char expected[80] = %s;
+  data[0] = 91;
+  data[81] = 197;
+  poolStructure(data + 1);
+  return data[0] != 91 || data[81] != 197 || memcmp(data + 1, expected, 80);
+}
+`, strings.TrimPrefix(fmt.Sprintf("%#v", arm64RawPoolStructureExpected), "[80]uint8"))
 
 func TestARM64RawPoolLoopLLVM(t *testing.T) {
 	llc := findLLVM22Tool("llc")

@@ -93,7 +93,7 @@ func TestARM64RawStructureLaneDecoderCoversCompleteArchitectureFamily(t *testing
 						} else if post == arm64RawStructureLaneRegisterPost {
 							wantPostRegister = 17
 						}
-						if !ok || form.load != load || form.count != count || form.elementBits != elementBits ||
+						if !ok || form.load != load || form.count != count || form.arrangement.elementBits != elementBits ||
 							form.lane != lane || form.firstRegister != 31 || form.base != 31 ||
 							form.post != (post != arm64RawStructureLaneNoPost) || form.postRegister != wantPostRegister {
 							t.Fatalf("decode load=%v count=%d bits=%d lane=%d post=%d word=%#08x: form=%#v ok=%v",

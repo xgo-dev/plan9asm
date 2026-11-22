@@ -342,6 +342,25 @@ func arm64RawAddressOnlyLoadedWithinPool(instructions []Instr, at, end int, retu
 			next(i + 1)
 			continue
 		}
+		if form, ok := decodeARM64RawStructureMemory(word); ok {
+			tracked := int(register - arm64asm.X0)
+			if form.post && form.postRegister == tracked {
+				return false // A pool pointer cannot serve as an integer increment.
+			}
+			if form.base == tracked {
+				if !form.load || form.post && (bounds == nil || !bounds.symbolic) {
+					return false
+				}
+				offset, proven := bounds.offsetAt(i, register, offset)
+				if !proven || bounds != nil && (!arm64RawPoolContains(offset.low, form.width(), bounds.size) ||
+					!arm64RawPoolContains(offset.high, form.width(), bounds.size)) {
+					return false
+				}
+				loaded = true
+			}
+			next(i + 1)
+			continue
+		}
 		// x/arch does not decode SVE. Consult validated typed grammars for
 		// vector-only effects and explicit unrelated scalar/memory operands.
 		// Unknown effects and any use of this address still fail below.
