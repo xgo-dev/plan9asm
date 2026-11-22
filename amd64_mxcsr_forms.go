@@ -39,3 +39,36 @@ func x86TypedMXCSRByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect,
 		{index: 0, operand: ins.Args[0], width: 4, read: !write, write: write},
 	}}, true, nil // All six integer status bits and DF are unaffected.
 }
+
+// Both _yvldmxcsr rows use VEX.L0.0F AE, with a fixed ModRM extension and
+// no encoded vector operand. The memory policy remains owned by the caller.
+func decodedX86VEXMXCSRInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
+	p, known := decodeX86RawVectorEncoding(code)
+	if !known || p.evex || p.mapNumber != 1 || p.pp != 0 || p.opcode != 0xae {
+		return Instr{}, 0, false, nil
+	}
+	if len(code) <= p.modRM {
+		return Instr{}, 0, true, fmt.Errorf("MXCSR is missing its ModRM byte")
+	}
+	modRM := code[p.modRM]
+	op := Op("VLDMXCSR")
+	switch modRM >> 3 & 7 {
+	case 2:
+	case 3:
+		op = "VSTMXCSR"
+	default:
+		return Instr{}, 0, false, nil
+	}
+	if mode != 32 && mode != 64 || p.addressOverride || p.vectorLength != 0 || p.upper != 0 ||
+		p.r != 0 || modRM>>6 == 3 || mode == 32 && (p.x != 0 || p.b != 0) {
+		return Instr{}, 0, true, fmt.Errorf("%s requires its original VEX m32 encoding", op)
+	}
+	operand, length, err := memory.scalar(code[p.modRM:], mode, p.b, p.x, p.segment, 1)
+	if err != nil {
+		return Instr{}, 0, true, err
+	}
+	instruction := Instr{
+		Op: op, Args: []Operand{operand}, Raw: string(op) + " " + operand.String(), x86Encoded: true,
+	}
+	return instruction, p.modRM + length, true, nil
+}

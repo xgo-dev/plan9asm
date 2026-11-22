@@ -20,7 +20,7 @@ func (c *amd64Ctx) lowerMXCSR(op Op, ins Instr) (ok bool, terminated bool, err e
 	}
 	baseOp := strings.ToUpper(string(op))
 	if memory := ins.Args[0]; memory.Kind == OpMem && memory.Mem.Sym == "" &&
-		c.nativeMemoryOperand(ins, 0) {
+		(c.nativeMemoryOperand(ins, 0) || c.fixedLocalMemoryCertified(ins, 0)) {
 		pointer, pointerType, err := c.ptrFromMem(memory.Mem)
 		if err != nil {
 			return true, false, err

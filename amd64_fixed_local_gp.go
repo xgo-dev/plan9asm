@@ -16,6 +16,12 @@ func fixedLocalGPByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if effect, known, err := x86TypedScalarFloatIntegerByteEffect(ins.Op, ins, "amd64"); known {
 		return effect, true, err
 	}
+	if effect, known, err := x86TypedCRC32ByteEffect(ins.Op, ins, "amd64"); known {
+		return effect, true, err
+	}
+	if effect, known, err := x86TypedMXCSRByteEffect(ins.Op, ins, "amd64"); known {
+		return effect, true, err
+	}
 	if form, known, err := x86MOVNTIProperties(ins.Op, ins, "amd64"); known {
 		if err != nil {
 			return x86TypedByteEffect{}, true, err
