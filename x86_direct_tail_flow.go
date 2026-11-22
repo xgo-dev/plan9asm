@@ -51,7 +51,8 @@ func (graph *x86DirectTailGraph) root(root int, byName map[string]int, limit int
 			}
 			hasCalls = hasCalls || ins.Op == OpCALL
 			name, offset, valid := parseSBRef(ins.Args[0].Sym)
-			if !valid || offset != 0 {
+			_, interior := graph.interiorEntries[x86SourceBranchTarget{name, offset}]
+			if !valid || offset != 0 && (ins.Op != OpCALL || !interior) {
 				return nil, x86DirectTailContext("indirect/external/missing/offset tail target: %s", ins.Raw)
 			}
 			if !graph.helpers[name] {
@@ -72,6 +73,10 @@ func (graph *x86DirectTailGraph) root(root int, byName map[string]int, limit int
 	}
 	view := &x86DirectTailRoot{graph: graph, text: root}
 	starts := make(map[int]int)
+	var entries map[x86DirectTailPoint]int
+	if len(graph.interiorEntries) != 0 {
+		entries = make(map[x86DirectTailPoint]int)
+	}
 	labels := make(map[int]map[string]int)
 	order := []int{root}
 	for index := range members {
@@ -107,7 +112,11 @@ func (graph *x86DirectTailGraph) root(root int, byName map[string]int, limit int
 				labels[index][label] = len(view.points)
 				continue
 			}
-			view.points = append(view.points, x86DirectTailPoint{text: index, instruction: ordinal})
+			point := x86DirectTailPoint{text: index, instruction: ordinal}
+			if entries != nil {
+				entries[point] = len(view.points)
+			}
+			view.points = append(view.points, point)
 			view.instructions = append(view.instructions, ins)
 			view.ordinals = append(view.ordinals, ordinal)
 		}
@@ -154,10 +163,15 @@ func (graph *x86DirectTailGraph) root(root int, byName map[string]int, limit int
 					continue // No graph successor: ordinary typed call+return.
 				}
 				index, exists := byName[name]
-				if !valid || !exists || !members[index] || !graph.helpers[name] || offset != 0 {
+				if !valid || !exists || !members[index] || !graph.helpers[name] {
 					return nil, x86DirectTailContext("unbound private tail node")
 				}
 				target, found = starts[index], true
+				if offset != 0 {
+					point, bound := graph.interiorEntries[x86SourceBranchTarget{name, offset}]
+					target, found = entries[point]
+					found = found && bound && ins.Op == OpCALL
+				}
 			}
 			if !found || target >= len(view.points) || view.points[target].text != view.points[pc].text &&
 				!((ins.Op == OpJMP || ins.Op == OpCALL) && arg.Kind == OpSym) {

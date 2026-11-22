@@ -5,6 +5,32 @@ import (
 	"strings"
 )
 
+func x86DirectTailInteriorCallFixture() (source, declarations string) {
+	return `TEXT ·Entry(SB),516,$0-4
+ CALL helper<>(SB)
+ MOVL AX,ret+0(FP)
+ RET
+TEXT ·Interior(SB),516,$0-4
+ CALL helper<>+6(SB)
+ MOVL AX,ret+0(FP)
+ RET
+TEXT ·Grouped(SB),516,$0-4
+ CALL helper<>+6(SB)(AX*4)
+ MOVL AX,ret+0(FP)
+ RET
+TEXT ·Starred(SB),516,$0-4
+ CALL *helper<>+6(SB)(AX*4)
+ MOVL AX,ret+0(FP)
+ RET
+TEXT helper<>(SB),516,$0-0
+ MOVL $11,AX
+ RET
+alternate:
+ MOVL $73,AX
+ RET
+`, "func Entry() uint32\nfunc Interior() uint32\nfunc Grouped() uint32\nfunc Starred() uint32\n"
+}
+
 // One complete ordinary source file composes the three independent roles.
 // Two differently typed roots share a helper and retain distinct result slots.
 func x86DirectTailFollowupFixture(arch string) (source, declarations string) {

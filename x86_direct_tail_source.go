@@ -24,6 +24,7 @@ type x86DirectTailGraph struct {
 	helpers         map[string]bool
 	roots           map[string]*x86DirectTailRoot
 	texts           map[string]int // Immutable original TEXT lookup; no expanded views.
+	interiorEntries map[x86SourceBranchTarget]x86DirectTailPoint
 	numerical       *GoX86NumericalReadBinding
 	fixedLocal      *x86FixedLocalBinding
 	goPackage       *GoPackage // Same request source, never supplied through public signatures.
@@ -359,6 +360,9 @@ func newX86DirectTailGraph(file *File, options Options, helpers map[string]bool,
 	if !reflect.DeepEqual(graph.original, x86DirectTailSnapshot(file)) || !reflect.DeepEqual(graph.signatures, options.Sigs) {
 		return nil, nil, x86DirectTailContext("resolver changed complete source or signatures")
 	}
+	if err := graph.bindInteriorCallEntries(options.TargetTriple); err != nil {
+		return nil, nil, err
+	}
 	if err := graph.auditReferences(); err != nil {
 		return nil, nil, err
 	}
@@ -393,7 +397,9 @@ func (graph *x86DirectTailGraph) auditReferences() error {
 				if !valid || !graph.helpers[base] {
 					continue
 				}
-				if ins.Op != OpJMP && ins.Op != OpCALL || len(ins.Args) != 1 || arg.Kind != OpSym || offset != 0 || strings.HasPrefix(text, "$") {
+				_, interior := graph.interiorEntries[x86SourceBranchTarget{base, offset}]
+				if ins.Op != OpJMP && ins.Op != OpCALL || len(ins.Args) != 1 || arg.Kind != OpSym ||
+					offset != 0 && (ins.Op != OpCALL || !interior) || strings.HasPrefix(text, "$") {
 					return x86DirectTailContext("helper address/call/offset escape in %s: %s", fn.Sym, ins.Raw)
 				}
 			}

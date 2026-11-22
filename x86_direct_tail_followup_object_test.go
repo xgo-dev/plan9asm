@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,50 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestX86DirectTailInteriorCallSource(t *testing.T) {
+	source, declarations := x86DirectTailInteriorCallFixture()
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM22 llc required")
+	}
+	for _, target := range x86RawReturnTargets {
+		t.Run(target.triple, func(t *testing.T) {
+			goAssemblerOracleOutput(t, target.arch, source, "", true)
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source, declarations, target.arch, target.triple, api)
+				if err != nil {
+					t.Fatal(api, err)
+				}
+				if !strings.Contains(ir, "i32 73") || !strings.Contains(ir, "i32 11") {
+					t.Fatal(api, "both real source entry bodies must be lowered", ir)
+				}
+				dir := t.TempDir()
+				input := filepath.Join(dir, "entries.ll")
+				if err := os.WriteFile(input, []byte(ir), 0600); err != nil {
+					t.Fatal(err)
+				}
+				for _, level := range []string{"-O0", "-O2"} {
+					output := filepath.Join(dir, "entries"+level+".o")
+					x86FloatCompareCaptureCommand(t, exec.Command(llc, level, "-mtriple="+target.triple, "-filetype=obj", input, "-o", output))
+					if info, err := os.Stat(output); err != nil || info.Size() == 0 {
+						t.Fatalf("%s/%s missing real LLVM object: %v", api, level, err)
+					}
+				}
+				for _, offset := range []string{"+1", "+12", "-1"} {
+					changed := strings.ReplaceAll(source, "+6(SB)", offset+"(SB)")
+					if _, err := x86ScalarFPBitViewAPI(t, changed, declarations, target.arch, target.triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+						t.Fatal(api, offset, "unbound byte entry was accepted", err)
+					}
+				}
+				changed := strings.Replace(source, "MOVL $11,AX", "MOVL datum<>(SB),AX", 1)
+				if _, err := x86ScalarFPBitViewAPI(t, changed, declarations, target.arch, target.triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatal(api, "global relocation layout was assumed", err)
+				}
+			}
+		})
+	}
+}
 
 func TestX86DirectTailPCCompleteGoBranchRowsAndAliases(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src/cmd/internal/obj/x86/asm6.go"))

@@ -103,6 +103,61 @@ int main(void) {
 					t.Log(api, level, strings.TrimSpace(want))
 				}
 			}
+			t.Run("InteriorByteEntry", func(t *testing.T) {
+				x86DirectTailInteriorCallRuntime(t, arch, execution)
+			})
 		})
+	}
+}
+
+func x86DirectTailInteriorCallRuntime(t *testing.T, arch string, execution x86FloatCompareExecution) {
+	source, declarations := x86DirectTailInteriorCallFixture()
+	const goMain = `
+func main() {
+ if Entry() != 11 || Interior() != 73 || Grouped() != 73 || Starred() != 73 {
+  panic("incorrect original byte entry")
+ }
+ fmt.Println("four byte entries passed")
+}
+`
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod":                 "module privateentries\n\ngo 1.20\n",
+		"main.go":                "package main\nimport \"fmt\"\n" + declarations + goMain,
+		"entries_" + arch + ".s": source,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := filepath.Join(dir, "original")
+	command := exec.Command("go", "build", "-p=1", "-o", original, ".")
+	command.Dir = dir
+	command.Env = append(os.Environ(), "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
+	x86FloatCompareCaptureCommand(t, command)
+	const want = "four byte entries passed\n"
+	if output := execution.run(t, original); string(output) != want {
+		t.Fatalf("incomplete original Go: %s", output)
+	}
+	const cMain = `#include <stdint.h>
+#include <stdio.h>
+extern uint32_t Entry(void), Interior(void), Grouped(void), Starred(void);
+int main(void) {
+ if (Entry() != 11 || Interior() != 73 || Grouped() != 73 || Starred() != 73) return 1;
+ puts("four byte entries passed");
+ return 0;
+}
+`
+	for _, api := range []string{"text", "module", "Go"} {
+		ir, err := x86ScalarFPBitViewAPI(t, source, declarations, arch, execution.triple, api)
+		if err != nil {
+			t.Fatal(api, err)
+		}
+		for _, level := range []string{"-O0", "-O2"} {
+			if output := execution.compileAndRunLLVM(t, "private-entries", ir, cMain, level); string(output) != want {
+				t.Fatalf("%s/%s incomplete LLVM: %s", api, level, output)
+			}
+		}
 	}
 }

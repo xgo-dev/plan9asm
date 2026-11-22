@@ -119,10 +119,17 @@ func normalizeX86DirectSourceBranches(file *File, goarch string) *File {
 		var instructions []Instr
 		for ordinal, ins := range fn.Instrs {
 			target, ok := x86DirectSourceBranch(ins, goarch)
-			if !ok || target.addend != 0 {
+			if !ok {
 				continue
 			}
-			spelling := target.symbol + "(SB)"
+			spelling := target.symbol
+			if target.addend != 0 {
+				if !strings.HasSuffix(target.symbol, "<>") {
+					continue
+				}
+				spelling += fmt.Sprintf("%+d", target.addend)
+			}
+			spelling += "(SB)"
 			if ins.Args[0].Kind == OpSym && ins.Args[0].Sym == spelling {
 				continue
 			}
