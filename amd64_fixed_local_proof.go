@@ -678,6 +678,9 @@ func replayX86FixedLocalCFG(fn *Func, sig FuncSig, proof *x86FixedLocalProof, re
 			// Transfer a private instruction copy: provisional loop states must
 			// never publish accesses, including certificates from another residue.
 			ins := fn.Instrs[instructions[pc]]
+			if _, backed := current.pointers[SP]; !backed && !fixedLocalStackValueContinuation(ins) {
+				return goAMD64FrameContext("fixed local %s uses an unbacked stack before restoration", ins.Op)
+			}
 			ins.x86FixedLocalMemory = nil
 			proof.ordinal = instructions[pc]
 			var err error
@@ -1029,6 +1032,22 @@ func fixedLocalRecordAccess(ins *Instr, index int, proof *x86FixedLocalProof, re
 
 func fixedLocalStep(ins *Instr, state *x86FixedLocalState, sig FuncSig, proof *x86FixedLocalProof, residue int) error {
 	return fixedLocalStepWithGP(ins, state, sig, proof, residue, nil)
+}
+
+// While SP only holds a value, register copies can observe it or restore the
+// original pointer. Only local branches and non-faulting GP copies can execute
+// before that restoration. Memory, FP slots, calls and returns require backing.
+func fixedLocalStackValueContinuation(ins Instr) bool {
+	if ins.Op == OpJMP || isAMD64ConditionalBranch(ins.Op) {
+		return true
+	}
+	if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg ||
+		x86RawReturnScalarMoveBytes(x86SourceMoveInstruction(ins, "amd64").Op) == 0 {
+		return false
+	}
+	_, source := x86CallerGP(ins.Args[0].Reg)
+	_, destination := x86CallerGP(ins.Args[1].Reg)
+	return source && destination
 }
 
 func fixedLocalStepWithGP(ins *Instr, state *x86FixedLocalState, sig FuncSig, proof *x86FixedLocalProof, residue int,

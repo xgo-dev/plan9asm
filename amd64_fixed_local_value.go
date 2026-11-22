@@ -47,6 +47,12 @@ func fixedLocalReadValue(ins *Instr, index int, state *x86FixedLocalState, sig F
 	case OpReg:
 		value.address, value.pointer = state.pointers[source.Reg]
 		value.identity, value.opaque = state.opaque[source.Reg]
+		if source.Reg == SP && !value.pointer {
+			if state.known[SP] != 255 || x86CallerByteMask(SP, width) == 0 {
+				return value, fail()
+			}
+			return value, nil // Only register transport can consume the temporary numerical SP.
+		}
 		if value.opaque && !value.identity.valid() {
 			return value, fail()
 		}

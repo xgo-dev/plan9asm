@@ -102,3 +102,110 @@ func TestGoAMD64FixedLocalScalarFloatIntegerInputBounds(t *testing.T) {
 		})
 	}
 }
+
+func fixedLocalScalarFloatIntegerStackResult(name, operation string) string {
+	return fixedLocalScalarFloatIntegerAssembly(name,
+		"MOVQ SP,R11\n"+operation+"\nMOVQ SP,AX\nMOVQ R11,SP")
+}
+
+const fixedLocalFloatIntegerRegisterOnly = `TEXT ·%s(SB),4,$64-16
+MOVQ a+0(FP),AX
+MOVQ AX,X1
+MOVQ SP,R11
+CVTSS2SL X1,SP
+MOVQ SP,AX
+MOVQ R11,SP
+MOVQ AX,ret+8(FP)
+RET
+`
+
+func TestGoAMD64FixedLocalScalarFloatIntegerStackResultObjects(t *testing.T) {
+	var assembly, declarations strings.Builder
+	count := 0
+	add := func(source string, stackResult bool) {
+		name := fmt.Sprintf("Value%d", count)
+		if stackResult {
+			assembly.WriteString(fixedLocalScalarFloatIntegerStackResult(name, source))
+		} else {
+			assembly.WriteString(fixedLocalScalarFloatIntegerAssembly(name, source))
+		}
+		fmt.Fprintf(&declarations, "func %s(a uint64) uint64\n", name)
+		count++
+	}
+	for _, name := range x86ScalarFloatIntegerOracleNames() {
+		for _, source := range []string{"12(SP)(BP*2)", "X1"} {
+			add(fmt.Sprintf("%s %s,SP", name, source), true)
+		}
+		if strings.HasPrefix(name, "V") {
+			add(fmt.Sprintf("%s X17,SP", name), true)
+		}
+	}
+
+	// Use the original Go operands even when the same native register supplies
+	// both base and index. The input is the caller's complete machine word.
+	for _, name := range []string{"VCVTSD2USIL", "VCVTTSS2USIL"} {
+		add("MOVQ a+0(FP),R15\n"+name+" 99(R15)(R15*4),R14\nMOVQ R14,AX", false)
+		add("MOVQ a+0(FP),R15\n"+name+" 99(R15)(R15*4),SP", true)
+		add("MOVQ a+0(FP),DX\n"+name+" 15(DX),SP", true)
+	}
+	add("VCVTSS2USIL 17(SP)(BP*1),SP", true)
+	add("LEAQ 32(SP),CX\nMOVQ $1,DX\nMOVQ AX,33(SP)\nVCVTSS2USIL -7(CX)(DX*8),SP", true)
+	if count != 72 {
+		t.Fatal("incomplete scalar float-to-integer stack-result matrix", count)
+	}
+	name := fmt.Sprintf("Value%d", count)
+	assembly.WriteString(fmt.Sprintf(fixedLocalFloatIntegerRegisterOnly, name))
+	fmt.Fprintf(&declarations, "func %s(a uint64) uint64\n", name)
+	count++
+	fixedLocalCompleteVectorObjects(t, assembly.String(), declarations.String(), count)
+}
+
+func TestGoAMD64FixedLocalScalarFloatIntegerStackResultBoundaries(t *testing.T) {
+	_, _, sig, _ := x86ResultInitializationFixture(t, "amd64", "func Value(a uint64) uint64", "RET")
+	base := fixedLocalScalarFloatIntegerStackResult("Value", "CMPQ AX,$0\nVCVTSS2USIL 4(SP),SP")
+	for _, row := range []struct {
+		name, old, replacement string
+		valid                  bool
+	}{
+		{"restored", "", "", true},
+		{"dead result", "MOVQ SP,AX\n", "", true},
+		{"uninitialized conversion", "4(SP),SP", "8(SP),SP", false},
+		{"missing restore", "MOVQ R11,SP\n", "", false},
+		{"numerical restore", "MOVQ R11,SP", "MOVQ AX,SP", false},
+		{"clobbered saved SP", "MOVQ SP,AX", "MOVQ SP,AX\nMOVQ $0,R11", false},
+		{"load through temporary SP", "MOVQ SP,AX", "MOVQ 0(SP),AX", false},
+		{"load through saved SP", "MOVQ SP,AX", "MOVQ 0(R11),AX", false},
+		{"access to FP slot", "MOVQ SP,AX", "MOVQ a+0(FP),AX", false},
+		{"call with temporary SP", "MOVQ SP,AX", "CALL ·External(SB)\nMOVQ SP,AX", false},
+		{"branch restores both paths", "MOVQ SP,AX\nMOVQ R11,SP", "JEQ restore\nMOVQ SP,AX\nrestore:\nMOVQ R11,SP", true},
+		{"branch bypasses restore", "MOVQ R11,SP", "JEQ exit\nMOVQ R11,SP\nexit:", false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			source := base
+			if row.old != "" {
+				source = strings.Replace(source, row.old, row.replacement, 1)
+			}
+			file, err := Parse(ArchAMD64, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = proveX86FixedLocal(file.Funcs[0], sig)
+			if row.valid && err != nil || !row.valid && !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatalf("valid=%t: %v", row.valid, err)
+			}
+		})
+	}
+}
+
+func TestGoAMD64FixedLocalScalarFloatIntegerStackResultNeedsFrameBinding(t *testing.T) {
+	source := fmt.Sprintf(fixedLocalFloatIntegerRegisterOnly, "Value")
+	for _, body := range []string{source, strings.Replace(source, "MOVQ R11,SP\n", "", 1)} {
+		file, err := Parse(ArchAMD64, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !GoAMD64FixedLocalFrameBindingNeeded(file, "amd64") {
+			t.Fatal("register-only conversion to SP must be independently checked")
+		}
+	}
+}

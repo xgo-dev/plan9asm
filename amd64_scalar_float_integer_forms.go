@@ -97,7 +97,7 @@ func x86TypedScalarFloatIntegerByteEffect(op Op, ins Instr, arch string) (x86Typ
 		vector:              x86TypedVectorEffect{x86TypedVectorNoWrite, 1},
 		operands: []x86TypedByteOperand{
 			{index: 0, operand: ins.Args[0], width: int64(f.spec.inputBits / 8), read: true},
-			{index: 1, operand: ins.Args[1], width: int64(f.outputBits / 8), write: true},
+			{index: 1, operand: ins.Args[1], width: int64(f.outputBits / 8), write: true, stackValue: ins.Args[1].Reg == SP},
 		},
 	}, true, nil // Integer FLAGS are unchanged, independently of MXCSR.
 }

@@ -17,6 +17,7 @@ type x86TypedByteOperand struct {
 	write          bool
 	numericalGP    bool   // A GP read requires numerical bytes, not a native or private address.
 	partialWrite   bool   // A conditional memory write may leave any byte in its span unchanged.
+	stackValue     bool   // A full numerical result may temporarily replace SP under a frame proof.
 	requiredBytes  uint64 // Optional vector-register read mask; zero requires the full width.
 	preservedBytes uint64 // Vector bytes within the destination view that retain their previous state.
 }

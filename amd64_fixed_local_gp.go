@@ -224,8 +224,9 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 			mask := x86CallerByteMask(operand.operand.Reg, operand.width)
 			_, private := state.pointers[root]
 			origin, opaque := state.opaque[root]
-			if !valid || root == SP || mask == 0 ||
-				private && operand.width != 8 {
+			stackValue := root == SP && operand.stackValue && (operand.width == 4 || operand.width == 8)
+			if !valid || mask == 0 || root == SP && !stackValue ||
+				private && operand.width != 8 && !stackValue {
 				return fail()
 			}
 			if opaque && fixedLocalOriginOwners(origin, proof) {
