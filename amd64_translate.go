@@ -523,6 +523,10 @@ type x86FunctionSource struct {
 }
 
 func translateFuncX86(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, goarch, targetTriple string, x87Mode X87Mode, annotateSource bool, sources ...x86FunctionSource) error {
+	if text := x86PhysicalSegmentStackText(fn, sig, goarch, targetTriple); text != nil {
+		fn.X86RawText = text
+		return emitX86AddressSensitiveRawText(b, fn, sig)
+	}
 	fmt.Fprintf(b, "define %s %s(", sig.Ret, llvmGlobal(sig.Name))
 	for i, t := range sig.Args {
 		if i > 0 {

@@ -41,23 +41,31 @@ func nativeTextFrame(fn Func, target NativeOptions) (nativeFramePlan, error) {
 	}
 	plan.local = spec.frameSize
 	hasCall := false
-	var stackDelta int64
+	var stackDelta, physicalDelta int64
 	for _, ins := range fn.Instrs {
 		hasCall = hasCall || ins.Op == "CALL"
 		if stack, known, err := x86StackWidthProperties(ins, "amd64"); known {
 			if err != nil {
 				return plan, err
 			}
-			if stack.mode == amd64StackPushValue || stack.mode == amd64StackPushFlags {
-				stackDelta += int64(stack.bits / 8)
-			} else {
-				stackDelta -= int64(stack.bits / 8)
+			sourceBytes, physicalBytes := stack.bits/8, stack.bits/8
+			if len(ins.Args) == 1 {
+				physicalBytes = stack.operandBits(ins.Args[0], "amd64") / 8
 			}
+			if stack.mode == amd64StackPopValue || stack.mode == amd64StackPopFlags {
+				sourceBytes, physicalBytes = -sourceBytes, -physicalBytes
+			}
+			stackDelta += int64(sourceBytes)
+			physicalDelta += int64(physicalBytes)
 		} else if ins.Op == "ADJSP" && len(ins.Args) != 0 && ins.Args[0].Kind == OpImm {
 			stackDelta += ins.Args[0].Imm
+			physicalDelta += ins.Args[0].Imm
 		}
 		if ins.Op == OpRET && stackDelta != 0 {
 			return plan, fmt.Errorf("native TEXT has unbalanced PUSH/POP: %s", fn.Sym)
+		}
+		if ins.Op == OpRET && physicalDelta != 0 {
+			return plan, fmt.Errorf("native TEXT has unbalanced physical PUSH/POP: %s", fn.Sym)
 		}
 	}
 	plan.saveBP = !flags["NOFRAME"] && (plan.local != 0 || hasCall)

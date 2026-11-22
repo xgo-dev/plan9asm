@@ -21,6 +21,13 @@ type amd64StackWidthSpec struct {
 	segmentNativeWidth bool
 }
 
+func (spec amd64StackWidthSpec) operandBits(operand Operand, arch string) int {
+	if spec.segmentNativeWidth && x86SegmentRegisterOperand(operand) {
+		return int(x86ResultPointerWord(arch)) * 8
+	}
+	return spec.bits
+}
+
 type amd64StackSegmentSet uint8
 
 const (
@@ -185,10 +192,7 @@ func (c *amd64Ctx) lowerStackWidth(op Op, ins Instr) (ok bool, terminated bool, 
 		if !spec.segments.contains(operand.Reg) {
 			return true, false, fmt.Errorf("%s %s does not accept segment register %s in Go 1.27's ymovtab: %q", c.goarch, baseOp, operand.Reg, ins.Raw)
 		}
-		bits := spec.bits
-		if spec.segmentNativeWidth {
-			bits = c.x86NativeStackBits()
-		}
+		bits := spec.operandBits(operand, c.goarch)
 		if spec.mode == amd64StackPushValue {
 			selector := c.loadX86SegmentSelector(operand.Reg)
 			value := selector
@@ -274,13 +278,6 @@ func validateX86OrdinaryStackWidthMode(arch, op string, bits int, ins Instr) err
 		return fmt.Errorf("%s requires GOARCH=386: %q", op, ins.Raw)
 	}
 	return nil
-}
-
-func (c *amd64Ctx) x86NativeStackBits() int {
-	if c.goarch == "386" {
-		return 32
-	}
-	return 64
 }
 
 func (set amd64StackSegmentSet) contains(reg Reg) bool {
