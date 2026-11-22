@@ -10,12 +10,17 @@ type wasmResumeJump struct {
 	pc, entry int
 }
 
+type wasmGoCallPC struct {
+	returnPC        int
+	propagateUnwind bool
+}
+
 // A Go label names a logical PC. BrTable selects the region containing that
 // PC, so even a label in the middle of a region jumps to the region's entry.
 type wasmResumePlan struct {
 	starts  []int       // first logical PC in each region, including entry
 	entries map[int]int // source RESUMEPOINT or CALL index to first PC
-	calls   map[int]int // source call index to the packed return PC
+	calls   map[int]wasmGoCallPC
 	jumps   map[int]wasmResumeJump
 }
 
@@ -33,11 +38,16 @@ func wasmLocalJumpLabel(ins Instr, op string) string {
 	return ""
 }
 
+func wasmSigpanicCall(ins Instr) bool {
+	return len(ins.Args) == 1 && ins.Args[0].Kind == OpSym &&
+		ins.Args[0].Sym == "runtime·sigpanic<ABIInternal>(SB)"
+}
+
 func planWASMResume(fn Func) (*wasmResumePlan, error) {
 	plan := &wasmResumePlan{
 		starts:  []int{0},
 		entries: make(map[int]int),
-		calls:   make(map[int]int),
+		calls:   make(map[int]wasmGoCallPC),
 		jumps:   make(map[int]wasmResumeJump),
 	}
 
@@ -49,6 +59,7 @@ func planWASMResume(fn Func) (*wasmResumePlan, error) {
 	depth := 0
 	labels := make(map[string]int)
 	var pendingLabels []string
+	nonResumableCall := -1
 	for i, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
 		if op == "LABEL" {
@@ -82,19 +93,43 @@ func planWASMResume(fn Func) (*wasmResumePlan, error) {
 			labels[label] = pc
 		}
 		pendingLabels = pendingLabels[:0]
+		if nonResumableCall >= 0 {
+			// Go saves call.Link.Pc. An explicit RESUMEPOINT increments
+			// before assigning its own PC, unlike Nop or CALLNORESUME.
+			call := plan.calls[nonResumableCall]
+			call.returnPC = pc
+			if call.propagateUnwind {
+				call.returnPC-- // sigpanic's caller expects PC at the call.
+			}
+			plan.calls[nonResumableCall] = call
+			nonResumableCall = -1
+		}
 		switch op {
 		case "CALL":
 			// The Go preprocessor inserts a resume point after CALL.
 			pc++
 			plan.entries[i] = pc
 			plan.starts = append(plan.starts, pc)
-			plan.calls[i] = pc
+			returnPC := pc
+			if wasmSigpanicCall(ins) {
+				returnPC--
+			}
+			plan.calls[i] = wasmGoCallPC{returnPC: returnPC, propagateUnwind: true}
 		case "CALLNORESUME":
 			pc++
-			plan.calls[i] = pc
+			if wasmSigpanicCall(ins) {
+				// Go allocates an extra logical PC so Caller can subtract
+				// one while still reporting the original callsite.
+				pc++
+				plan.calls[i] = wasmGoCallPC{propagateUnwind: true}
+			}
+			nonResumableCall = i
 		case "NOP":
 			pc++
 		}
+	}
+	if nonResumableCall >= 0 {
+		return nil, fmt.Errorf("CALLNORESUME requires a following instruction")
 	}
 	if pc >= 1<<16 {
 		return nil, fmt.Errorf("wasm logical PC exceeds 16 bits")

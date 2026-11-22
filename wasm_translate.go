@@ -47,6 +47,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			}
 			needsResumePlan = true
 		}
+		if useGoStack && (op == "CALL" || op == "CALLNORESUME") {
+			needsResumePlan = true
+		}
 		bulkMemory = bulkMemory || op == "MEMORYCOPY" || op == "MEMORYFILL"
 		form, found, err := parseWASMMemory(ins, op)
 		if err != nil {
@@ -784,12 +787,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		push(wasmValue{typ: retType, val: "%" + name})
 		return nil
 	}
-	emitGoCall := func(arg Operand, pcID int, resumeLabel string, canResume bool) error {
+	emitGoCall := func(arg Operand, call wasmGoCallPC, continueLabel string) error {
 		if !useGoStack {
 			return fmt.Errorf("Go ABI CALL requires the Go WebAssembly ABI")
-		}
-		if canResume && resumeLabel == "" {
-			return errors.New("resumable Go ABI CALL is missing its resume label")
 		}
 		callee := ""
 		calleeSig := FuncSig{}
@@ -851,9 +851,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		pcBase := newTmp()
 		fmt.Fprintf(b, "  %%%s = shl i64 %%%s, 16\n", pcBase, pcFunc)
 		pc := "%" + pcBase
-		if pcID != 0 {
+		if call.returnPC != 0 {
 			pcValue := newTmp()
-			fmt.Fprintf(b, "  %%%s = or i64 %%%s, %d\n", pcValue, pcBase, pcID)
+			fmt.Fprintf(b, "  %%%s = or i64 %%%s, %d\n", pcValue, pcBase, call.returnPC)
 			pc = "%" + pcValue
 		}
 		fmt.Fprintf(b, "  store i64 %s, ptr %s, align 1\n", pc, callerAddr.val)
@@ -862,16 +862,16 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		isUnwind := newTmp()
 		fmt.Fprintf(b, "  %%%s = icmp ne i32 %%%s, 0\n", isUnwind, unwind)
 		unwindLabel := "wasm_call_unwind_" + newTmp()
-		if canResume {
-			fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n", isUnwind, unwindLabel, resumeLabel)
-		} else {
-			continueLabel := "wasm_call_continue_" + newTmp()
-			fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n", isUnwind, unwindLabel, continueLabel)
-			fmt.Fprintf(b, "%s:\n  unreachable\n%s:\n", unwindLabel, continueLabel)
-			blockTerminated = false
-			return nil
+		if continueLabel == "" {
+			continueLabel = "wasm_call_continue_" + newTmp()
 		}
-		fmt.Fprintf(b, "%s:\n  ret i32 1\n%s:\n", unwindLabel, resumeLabel)
+		fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n%s:\n", isUnwind, unwindLabel, continueLabel, unwindLabel)
+		if call.propagateUnwind && goABI {
+			b.WriteString("  ret i32 1\n")
+		} else {
+			b.WriteString("  unreachable\n")
+		}
+		fmt.Fprintf(b, "%s:\n", continueLabel)
 		blockTerminated = false
 		return nil
 	}
@@ -1150,20 +1150,6 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		return nil
 	}
 
-	resumeLabels := make(map[int]string)
-	callPCs := make(map[int]int)
-	if resumePlan != nil {
-		callPCs = resumePlan.calls
-	} else if useGoStack {
-		pcID := 0
-		for i, ins := range fn.Instrs {
-			switch normalizeInstructionOpcode(ins.Op) {
-			case "CALL", "CALLNORESUME":
-				pcID++
-				callPCs[i] = pcID
-			}
-		}
-	}
 	var goABIOuter *strings.Builder
 	if goABI {
 		// Build the function body separately so the entry dispatch can contain
@@ -1194,7 +1180,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			fmt.Fprintf(b, "  ; %s\n", strings.ReplaceAll(ins.Raw, "\n", " "))
 		}
 		if blockTerminated && op != "ELSE" && op != "END" && op != "LABEL" && op != "RESUMEPOINT" {
-			if resumePlan != nil && op == "CALL" {
+			if goABI && resumePlan != nil && op == "CALL" {
 				// The skipped call can still be followed by an independently
 				// reachable continuation in the original dispatcher.
 				stack = nil
@@ -1691,13 +1677,17 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			if len(ins.Args) == 1 {
 				target = ins.Args[0]
 			}
+			if resumePlan == nil {
+				return fmt.Errorf("%s requires the Go WebAssembly ABI", op)
+			}
 			// Only the Go ABI entry has a PC_B resume switch. Native helpers
 			// still use the linear Go stack for calls, but continue directly
 			// after a normally returning callee.
+			resumeLabel := ""
 			if op == "CALL" && goABI {
-				resumeLabels[insIndex] = wasmResumeLabel(callPCs[insIndex])
+				resumeLabel = wasmResumeLabel(resumePlan.entries[insIndex])
 			}
-			if err := emitGoCall(target, callPCs[insIndex], resumeLabels[insIndex], op == "CALL" && goABI); err != nil {
+			if err := emitGoCall(target, resumePlan.calls[insIndex], resumeLabel); err != nil {
 				return err
 			}
 		case "CALLINDIRECT":
@@ -1757,7 +1747,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		return fmt.Errorf("%d unterminated wasm control blocks", len(controls)-1)
 	}
 	if !blockTerminated {
-		if resumePlan != nil {
+		if goABI && resumePlan != nil {
 			b.WriteString("  unreachable\n")
 		} else if useGoStack && sig.WASMNative && physicalRet != Void {
 			// Native helpers such as gcWriteBarrier end in an infinite Loop.
@@ -1786,13 +1776,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if resumePlan != nil {
 			resumePlan.emitDispatch(b)
 		} else {
-			b.WriteString("  switch i32 %pc_b, label %wasm_entry_body [")
-			for i := range fn.Instrs {
-				if label := resumeLabels[i]; label != "" {
-					fmt.Fprintf(b, " i32 %d, label %%%s", callPCs[i], label)
-				}
-			}
-			b.WriteString(" ]\n")
+			b.WriteString("  br label %wasm_entry_body\n")
 		}
 		b.WriteString(body)
 	}
