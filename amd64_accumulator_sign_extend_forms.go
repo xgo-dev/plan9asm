@@ -47,7 +47,7 @@ func x86TypedAccumulatorSignExtendByteEffect(op Op, ins Instr, arch string) (x86
 		return x86TypedByteEffect{}, known, err
 	}
 	return x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: -1, operand: Operand{Kind: OpReg, Reg: AX}, width: spec.sourceBytes, read: true},
+		{index: -1, operand: Operand{Kind: OpReg, Reg: AX}, width: spec.sourceBytes, read: true, numericalGP: true},
 		{index: -1, operand: Operand{Kind: OpReg, Reg: spec.destination}, width: spec.destinationBytes, write: true},
 	}}, true, nil
 }
