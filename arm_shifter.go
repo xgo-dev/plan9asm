@@ -26,7 +26,7 @@ func validateARMShifter(source Operand) error {
 	return nil
 }
 
-func (c *armCtx) evalARMShifter(source Operand) (result, carry string, err error) {
+func (c *armCtx) evalARMShifter(source Operand, encoded bool) (result, carry string, err error) {
 	if err := validateARMShifter(source); err != nil {
 		return "", "", err
 	}
@@ -36,7 +36,7 @@ func (c *armCtx) evalARMShifter(source Operand) (result, carry string, err error
 	}
 	op := map[ShiftOp]string{ShiftLeft: "SLL", ShiftRight: "SRL", ShiftArith: "SRA", ShiftRotate: "ROR"}[source.ShiftOp]
 	if source.ShiftReg == "" {
-		if source.ShiftAmount == 0 {
+		if source.ShiftAmount == 0 && !encoded {
 			return value, c.loadFlagValue(c.flagsCSlot), nil
 		}
 		result, carry = c.emitARMImmediateShift(op, value, uint32(source.ShiftAmount))
@@ -54,7 +54,7 @@ func (c *armCtx) evalARMShifter(source Operand) (result, carry string, err error
 // the shifted register afterwards would silently use the new register value.
 func (c *armCtx) evalARMLogicalOperand(op string, source Operand) (value, carry string, err error) {
 	if source.Kind == OpRegShift {
-		return c.evalARMShifter(source)
+		return c.evalARMShifter(source, false)
 	}
 	value, err = c.eval32(source, false)
 	return value, armLogicalImmediateCarry(op, source), err

@@ -151,12 +151,29 @@ func TestCrossLinuxRuntimeMatrixARMZeroShiftMemoryOffsets(t *testing.T) {
  MOVW R2,R0->0(R4)
  ADD $8,R4
  MOVW R2,R0@>0(R4)
+ ADD $8,R4
+ WORD $0xe7842020 // STR R2,[R4,R0,LSR #32].
+ ADD $8,R4
+ WORD $0xe7842040 // STR R2,[R4,R0,ASR #32].
+ ADD $8,R4
+ MOVW R4,R3
+ CMP $5,R0
+ WORD $0xe6842060 // STR R2,[R4],R0,RRX.
+ SUB R3,R4,R4
+ MOVW R4,4(R3)
  RET
 `
 	runARMGoSourceOracle(t, source, `package main
 import "fmt"
-func oracle(value,amount,lhs,status uint32,out *[6]uint32)
-func main(){var out [6]uint32;oracle(4,0,123,0,&out);want:=[6]uint32{0,123,0,123,0,123};if out!=want{panic(fmt.Sprint(out))};fmt.Println("Go canonicalized memory zero-shift offsets passed")}
+func oracle(value, amount, lhs, status uint32, out *[12]uint32)
+func main() {
+	var out [12]uint32
+	oracle(4, 0, 123, 0, &out)
+	want := [12]uint32{0, 123, 0, 123, 0, 123, 123, 0, 123, 0, 123, 2}
+	if out != want {
+		panic(fmt.Sprint(out))
+	}
+}
 `)
 	file, err := Parse(ArchARM, source)
 	if err != nil {
@@ -170,7 +187,18 @@ func main(){var out [6]uint32;oracle(4,0,123,0,&out);want:=[6]uint32{0,123,0,123
 		`#include <stdint.h>
 #include <stdio.h>
 extern void oracle(uint32_t,uint32_t,uint32_t,uint32_t,uint32_t*);
-int main(void){uint32_t out[6]={0};oracle(4,0,123,0,out);for(unsigned i=0;i<6;i++)if(out[i]!=(i&1?123u:0u)){fprintf(stderr,"zero-shift offset lane=%u got=%u\n",i,out[i]);return 1;}return 0;}
+int main(void) {
+	uint32_t out[12] = {0};
+	const uint32_t want[12] = {0, 123, 0, 123, 0, 123, 123, 0, 123, 0, 123, 2};
+	oracle(4, 0, 123, 0, out);
+	for (unsigned i = 0; i < 12; i++) {
+		if (out[i] != want[i]) {
+			fprintf(stderr, "zero-shift offset lane=%u got=%u want=%u\n", i, out[i], want[i]);
+			return 1;
+		}
+	}
+	return 0;
+}
 `, []string{"qemu-arm", "-L", "/usr/arm-linux-gnueabihf"})
 }
 

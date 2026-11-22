@@ -213,7 +213,7 @@ func (c *armCtx) eval32(op Operand, postInc bool) (string, error) {
 }
 
 func (c *armCtx) evalShift(op Operand) (string, error) {
-	value, _, err := c.evalARMShifter(op)
+	value, _, err := c.evalARMShifter(op, false)
 	return value, err
 }
 

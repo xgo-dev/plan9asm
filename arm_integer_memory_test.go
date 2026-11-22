@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"math/bits"
 	"os"
@@ -10,6 +11,69 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestARMRawIntegerMemoryCompleteForms(t *testing.T) {
+	const prologue = "TEXT scaled(SB),NOSPLIT,$0-0\nMOVW $256,R5\nMOVW $8,R2\nMOVW $128,R7\nCMP R2,R7\n"
+	for _, tc := range []struct {
+		word uint32
+		want []string
+	}{
+		{0xe7957082, []string{"shl i32", "load i32"}},              // LDR, LSL #1.
+		{0xe75570a2, []string{"lshr i32", "sub i32", "load i8"}},   // LDRB, subtract LSR #1.
+		{0xe7555022, []string{"sub i32", ", 0", "load i8"}},        // LDRB, subtract LSR #32.
+		{0xe7b57042, []string{"ashr i32", ", 31", "load i32"}},     // LDR, ASR #32 and writeback.
+		{0xe6857062, []string{"shl i32", ", 31", "lshr i32"}},      // STR, post-indexed RRX.
+		{0x115570d3, []string{"cond_5feffect", "sext i8"}},         // LDRSB.NE with negative immediate.
+		{0x55555555, []string{"cond_5feffect", "1365", "zext i8"}}, // LDRB.PL with negative immediate, Go arm.s.
+		{0xe0d570b8, []string{"load i16", "zext i16"}},             // LDRH, post-indexed immediate.
+		{0xe13570f2, []string{"sub i32", "sext i16"}},              // LDRSH, subtract register with writeback.
+		{0xe00570b2, []string{"sub i32", "store i16"}},             // STRH, post-indexed subtract register.
+	} {
+		t.Run(fmt.Sprintf("%08x", tc.word), func(t *testing.T) {
+			src := fmt.Sprintf("%sWORD $%#08x\nRET\n", prologue, tc.word)
+			ir := translateARMForTest(t, src, map[string]FuncSig{
+				"example.scaled": {Name: "example.scaled", Ret: Void},
+			})
+			for _, want := range tc.want {
+				if !strings.Contains(ir, want) {
+					t.Errorf("raw memory instruction lacks %q:\n%s", want, ir)
+				}
+			}
+		})
+	}
+}
+
+func TestARMRawIntegerMemoryRequiresOriginalState(t *testing.T) {
+	for _, tc := range []struct {
+		word uint32
+		want string
+	}{
+		{0xe7d57062, "carry"},              // RRX index needs a reaching C write.
+		{0xe6f57002, "unprivileged"},       // LDRBT needs an access-mode contract.
+		{0xe59f7000, "instruction layout"}, // An immediate PC-relative literal load.
+		{0xe49df004, "control-flow"},       // LDR PC with SP writeback is a physical return.
+		{0xe4b55001, "unprivileged"},       // Unprivileged transfer stays distinguishable.
+		{0xe4955001, "writeback"},          // LDR with base also the destination.
+	} {
+		t.Run(fmt.Sprintf("%08x", tc.word), func(t *testing.T) {
+			src := fmt.Sprintf("TEXT scaled(SB),NOSPLIT,$0-0\nWORD $%#08x\nRET\n", tc.word)
+			file, err := Parse(ArchARM, src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				Goarch: "arm", TargetTriple: "armv7-unknown-linux-gnueabihf",
+				Sigs: map[string]FuncSig{"scaled": {Name: "scaled", Ret: Void}},
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("raw memory instruction error = %v, want %q", err, tc.want)
+			}
+			if tc.want != "writeback" && !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatalf("raw memory instruction error lost source context identity: %v", err)
+			}
+		})
+	}
+}
 
 func TestARMIntegerMemoryShiftEffects(t *testing.T) {
 	for _, op := range []string{"MOVW", "MOVB", "MOVBS", "MOVBU", "MOVH", "MOVHS", "MOVHU"} {

@@ -21,14 +21,15 @@ var armIntegerMemorySpecs = map[string]armIntegerMemorySpec{
 }
 
 type armIntegerMemoryForm struct {
-	spec      armIntegerMemorySpec
-	base, reg Reg
-	offset    Operand
-	displace  int64
-	load      bool
-	postIndex bool
-	writeback bool
-	subtract  bool
+	spec         armIntegerMemorySpec
+	base, reg    Reg
+	offset       Operand
+	displace     int64
+	load         bool
+	postIndex    bool
+	writeback    bool
+	subtract     bool
+	encodedShift bool
 }
 
 type armIntegerSymbolForm struct {
@@ -224,7 +225,12 @@ func (c *armCtx) integerMemoryAddress(f armIntegerMemoryForm) (address, updated 
 	if err != nil {
 		return "", "", err
 	}
-	delta, err := c.eval32(f.offset, false)
+	var delta string
+	if f.encodedShift {
+		delta, _, err = c.evalARMShifter(f.offset, true)
+	} else {
+		delta, err = c.eval32(f.offset, false)
+	}
 	if err != nil {
 		return "", "", err
 	}
@@ -262,7 +268,11 @@ func (c *armCtx) lowerIntegerMemoryMove(op, cond string, ins Instr) (bool, bool,
 	if err != nil {
 		return true, false, err
 	}
-	err = c.emitConditionalEffect(cond, func() error {
+	return true, false, c.lowerARMIntegerMemory(f, cond)
+}
+
+func (c *armCtx) lowerARMIntegerMemory(f armIntegerMemoryForm, cond string) error {
+	return c.emitConditionalEffect(cond, func() error {
 		address, updated, err := c.integerMemoryAddress(f)
 		if err != nil {
 			return err
@@ -289,5 +299,4 @@ func (c *armCtx) lowerIntegerMemoryMove(op, cond string, ins Instr) (bool, bool,
 		}
 		return nil
 	})
-	return true, false, err
 }

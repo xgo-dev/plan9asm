@@ -7,6 +7,7 @@ package plan9asm
 type armRawDataForm struct {
 	family    string
 	condition string
+	flagReads armKernelState
 	gpWrites  armKernelState
 	lower     func(*armCtx) error
 }
@@ -52,6 +53,26 @@ func decodeARMRawDataForm(ins Instr) (armRawDataForm, bool) {
 					return err
 				}
 				return c.lowerARMRawPairMemory(form)
+			},
+		}, true
+	}
+	if form, matched, err := decodeARMRawIntegerMemory(word); matched {
+		writes := armRawDirectionWrites(form.address.load, form.transfer)
+		writes |= armRawDirectionWrites(form.address.writeback, form.base)
+		var flags armKernelState
+		if form.address.encodedShift && form.address.offset.ShiftOp == ShiftRotate && form.address.offset.ShiftAmount == 0 {
+			flags = armKernelC // Encoded ROR #0 is RRX.
+		}
+		return armRawDataForm{
+			family:    "IntegerLoadStore",
+			condition: form.condition,
+			flagReads: flags,
+			gpWrites:  writes,
+			lower: func(c *armCtx) error {
+				if err != nil {
+					return err
+				}
+				return c.lowerARMIntegerMemory(form.address, form.condition)
 			},
 		}, true
 	}

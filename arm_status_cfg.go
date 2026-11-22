@@ -123,7 +123,7 @@ func armFunctionUsesModeledFlags(fn Func) bool {
 
 func armInstructionFlagInputs(ins Instr) armKernelState {
 	if form, ok := decodeARMRawDataForm(ins); ok {
-		return armKernelConditionBits(form.condition)
+		return armKernelConditionBits(form.condition) | form.flagReads
 	}
 	if ins.Op == OpWORD && len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
 		if form, ok := decodeARMRawVFPCompare(uint32(ins.Args[0].Imm)); ok {
@@ -166,6 +166,9 @@ func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr
 		predicate := armKernelConditionBits(form.condition)
 		if check && predicate != 0 && !state.initialized.has(predicate) {
 			return state, fmt.Errorf("%w: ARM raw %s in %q has no initialized %s predicate: %s", ErrProbeNeedsContext, form.family, name, form.condition, ins.Raw)
+		}
+		if check && form.flagReads != 0 && !state.initialized.has(form.flagReads) {
+			return state, fmt.Errorf("%w: ARM raw %s in %q has no source-defined carry input: %s", ErrProbeNeedsContext, form.family, name, ins.Raw)
 		}
 		// These exact typed data forms leave APSR unchanged. GP outputs cannot
 		// acquire a source-value witness from zero-initialized vector slots or
