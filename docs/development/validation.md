@@ -343,6 +343,11 @@ the K-register logical family. Use `scalar-memory` for fixed-width GP
 memory effects with the same explicit pointer fixture. It also initializes
 reaching FLAGS and any implicit accumulator inputs required by the form.
 Dynamic bit strings and private stack effects require separate validation.
+Use `scalar-numeric-memory` for arithmetic and logical reads where the same
+GP register is the address base and either the index or the old destination.
+The fixture supplies one machine-word integer for those overlapping roles,
+keeps the original displacement and operand widths, and leaves execution
+unverified.
 For AMD64 EVEX integer arithmetic and shifts with private stack reads,
 `TestGoAMD64FixedLocalEVEXRead` covers the Go table's operand formats and
 observed instruction boundaries. Exact Go source fixtures with SP and an

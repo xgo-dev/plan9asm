@@ -509,6 +509,17 @@ func initializedX86GPInputs(goarch string, ins Instr) (x86TypedByteEffect, bool)
 // argument and the typed GP/FLAGS inputs of a fixed-width memory form. The
 // fixture establishes neither original-source storage nor a safe divisor.
 func InitializedScalarMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
+	return initializedScalarMemoryProbeSequence(goarch, ins, false)
+}
+
+// InitializedScalarNumericMemoryProbeSequence supplies a machine-word address
+// when a native arithmetic read shares its base with another numerical input.
+// The caller must supply a valid effective address to execute the fixture.
+func InitializedScalarNumericMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
+	return initializedScalarMemoryProbeSequence(goarch, ins, true)
+}
+
+func initializedScalarMemoryProbeSequence(goarch string, ins Instr, numericAddress bool) ([]Instr, bool, error) {
 	if goarch != "386" && goarch != "amd64" || !x86ResultNamedPredicateInstruction(ins) {
 		return nil, false, nil
 	}
@@ -523,7 +534,17 @@ func InitializedScalarMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 	var index Reg
 	if memory.Index != "" {
 		index, valid = initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: memory.Index})
-		if !valid || index == base {
+		if !valid || !numericAddress && index == base {
+			return nil, false, nil
+		}
+	}
+	if numericAddress {
+		form, known, err := x86ScalarArithmeticNativeReadProperties(ins, goarch)
+		if !known || err != nil {
+			return nil, false, nil
+		}
+		destination, valid := initializedX86GPRegister(goarch, form.destination)
+		if !valid || base != destination && base != index {
 			return nil, false, nil
 		}
 	}
@@ -602,8 +623,11 @@ func InitializedScalarMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 			continue
 		}
 		root, valid := initializedX86GPRegister(goarch, input.operand)
-		if !valid || root == base {
+		if !valid || !numericAddress && root == base {
 			return nil, false, nil
+		}
+		if root == base {
+			continue // The final machine-word argument load supplies these same bits.
 		}
 		value := int64(0x01020202)
 		switch {
@@ -617,7 +641,7 @@ func InitializedScalarMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 	if !hasMemory {
 		return nil, false, nil
 	}
-	if index != "" {
+	if index != "" && index != base {
 		seed(index, 1)
 	}
 	if effect.flagsRead != 0 {

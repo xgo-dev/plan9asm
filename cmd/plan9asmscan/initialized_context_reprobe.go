@@ -65,6 +65,7 @@ var initializedContextProfiles = map[string]func(string, plan9asm.Instr) ([]plan
 	"mask-logical":          plan9asm.InitializedMaskLogicalProbeSequence,
 	"scalar-register":       plan9asm.InitializedScalarRegisterProbeSequence,
 	"scalar-memory":         plan9asm.InitializedScalarMemoryProbeSequence,
+	"scalar-numeric-memory": plan9asm.InitializedScalarNumericMemoryProbeSequence,
 	"vector-memory":         plan9asm.InitializedVectorMemoryProbeSequence,
 	"vector-numeric-memory": plan9asm.InitializedVectorNumericMemoryProbeSequence,
 	"vector-register":       plan9asm.InitializedVectorRegisterProbeSequence,
@@ -142,7 +143,7 @@ func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, l
 		}
 		source.Initialization = sequence[:len(sequence)-1]
 		source.MemoryPointerArgument = profile == "vector-memory" || profile == "scalar-memory"
-		source.NumericAddressArgument = profile == "vector-numeric-memory"
+		source.NumericAddressArgument = profile == "vector-numeric-memory" || profile == "scalar-numeric-memory"
 		if goarch == "amd64" && source.MemoryPointerArgument {
 			for _, ins := range source.Initialization {
 				if ins.Op == "MOVQ" && len(ins.Args) == 2 && ins.Args[0].Kind == plan9asm.OpFP &&

@@ -807,7 +807,7 @@ func TestInitializedContextReprobeScalarMemory(t *testing.T) {
 	}
 }
 
-func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
+func TestInitializedContextReprobeOfficial386Forms(t *testing.T) {
 	const arch = "386"
 	_, forms, parseErrors, _, err := scanGoAssemblerTestdataWithContexts(runtime.GOROOT(), plan9asm.ArchAMD64, arch, true)
 	if err != nil || len(parseErrors) != 0 {
@@ -815,10 +815,12 @@ func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
 	}
 	for _, test := range []struct {
 		profile string
+		file    string
 		want    []string
 	}{
-		{"vector-register", []string{"CMPPD X0, X1, 4"}},
-		{"scalar-register", []string{"SETCC AX", "DIVB AX", "IMULL AX"}},
+		{"vector-register", "386.s", []string{"CMPPD X0, X1, 4"}},
+		{"scalar-register", "386.s", []string{"SETCC AX", "DIVB AX", "IMULL AX"}},
+		{"scalar-numeric-memory", "386enc.s", []string{"ADDL 2147483648(AX), AX", "ADDL -2147483648(AX), AX"}},
 	} {
 		t.Run(test.profile, func(t *testing.T) {
 			evidence, err := runInitializedContextReprobe(forms, test.profile, arch, "")
@@ -826,7 +828,7 @@ func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
 				t.Fatal(err)
 			}
 			if evidence.Status != "pass" || len(evidence.ObjectBatches) == 0 {
-				t.Fatalf("official 386 register forms lack LLVM object evidence: %s", evidence.Status)
+				t.Fatalf("official 386 forms lack LLVM object evidence: %s", evidence.Status)
 			}
 			compiled := make(map[string]bool)
 			for _, row := range evidence.Cases {
@@ -834,13 +836,62 @@ func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
 					row.LLVMObjectCompilation.Status != "pass" || row.RuntimeExecution.Status != "not_run" {
 					t.Fatalf("wrong evidence for official source occurrence: %+v", row)
 				}
-				if row.Source.File == "386.s" {
+				if row.Source.File == test.file {
 					compiled[strings.Join(strings.Fields(row.OriginalInstruction.Raw), " ")] = true
 				}
 			}
 			for _, instruction := range test.want {
 				if !compiled[instruction] {
 					t.Errorf("missing initialized LLVM object for original %q", instruction)
+				}
+			}
+		})
+	}
+}
+
+func TestInitializedContextReprobeScalarNumericMemory(t *testing.T) {
+	for _, mode := range []struct {
+		arch   string
+		widths string
+	}{{"386", "BWL"}, {"amd64", "BWLQ"}} {
+		t.Run(mode.arch, func(t *testing.T) {
+			forms := make(map[string]*formStat)
+			line := 0
+			add := func(raw string) {
+				ins := compactProbeInstructions(t, raw)[0]
+				form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, mode.arch, ins).Form
+				if forms[form] == nil {
+					forms[form] = &formStat{}
+				}
+				line++
+				captureContextSource(forms, plan9asm.ArchAMD64, mode.arch, ins,
+					initializedContextSource{File: "arithmetic.s", Function: "probe", Line: line}, plan9asm.ErrProbeNeedsContext)
+			}
+			for _, stem := range []string{"ADD", "SUB", "ADC", "SBB", "AND", "OR", "XOR"} {
+				for _, width := range mode.widths {
+					destination := "AX"
+					if width == 'B' {
+						destination = "AH"
+					}
+					for _, address := range []string{"3(AX)", "-5(AX)(SI*2)", "7(BX)(BX*4)"} {
+						add(stem + string(width) + " " + address + "," + destination)
+					}
+				}
+			}
+			want := line
+			for _, raw := range []string{"ADDL (BX),AX", "ADDL AX,(AX)", "PUSHL (AX)", "CMPB (AX),AL", "ADDL 4(SP),AX"} {
+				add(raw)
+			}
+			evidence, err := runInitializedContextReprobe(forms, "scalar-numeric-memory", mode.arch, "")
+			if err != nil || evidence.Status != "pass" || evidence.EligibleCases != want ||
+				len(evidence.UnregisteredCases) != line-want {
+				t.Fatalf("scalar numeric profile: %d/%d selected, status=%s, err=%v",
+					evidence.EligibleCases, want, evidence.Status, err)
+			}
+			for _, row := range evidence.Cases {
+				if !row.NumericAddressArgument || row.MemoryPointerArgument ||
+					row.LLVMObjectCompilation.Status != "pass" || row.RuntimeExecution.Status != "not_run" {
+					t.Fatalf("wrong scalar numeric evidence: %+v", row)
 				}
 			}
 		})
