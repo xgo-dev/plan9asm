@@ -3,7 +3,7 @@ package plan9asm
 // VSIB numerical continuation requires the actual index, mask and merge/data
 // inputs. A paired indexed access may supply active loaded bytes on normal
 // continuation; it creates no contiguous extent, frame or later-read fact.
-func x86ResultVSIBStep(ins Instr, state *x86ResultState, arch string, native bool) (bool, bool) {
+func x86ResultVSIBStep(ins Instr, state *x86ResultState, arch string, native, dataBP bool) (bool, bool) {
 	form, known, err := x86VSIBProperties(ins, arch)
 	if !known || err != nil {
 		return false, known
@@ -36,10 +36,7 @@ func x86ResultVSIBStep(ins Instr, state *x86ResultState, arch string, native boo
 			return false, true
 		}
 	}
-	if !native || !x86OrdinaryNativeMemoryOperand(form.memory, arch) {
-		return false, true
-	}
-	if !x86ResultVSIBAddress(form.memory, state, arch) {
+	if !native || !x86ResultVSIBAddress(form.memory, state, arch, dataBP) {
 		return false, true
 	}
 	if !form.scatter {
@@ -56,9 +53,20 @@ func x86ResultVSIBStep(ins Instr, state *x86ResultState, arch string, native boo
 // With no encoded GP base, the initialized vector index and displacement
 // supply the full numerical address. This proves only the architectural
 // inputs to the paired predicated access. In particular, the access may fault.
-func x86ResultVSIBAddress(address Operand, state *x86ResultState, arch string) bool {
+func x86ResultVSIBAddress(address Operand, state *x86ResultState, arch string, dataBP bool) bool {
+	if address.Mem.Segment != "" {
+		return false
+	}
 	if address.Mem.Base == "" {
-		return address.Mem.Segment == ""
+		return true
+	}
+	if arch == "amd64" && address.Mem.Base == BP {
+		// Only the saved-BP leaf scope may use its reaching pointer fact.
+		// SP and the physical entry BP retain their independent frame roles.
+		return dataBP && (state.shapeOnly || state.pointerGP[5])
+	}
+	if !x86OrdinaryNativeMemoryOperand(address, arch) {
+		return false
 	}
 	address.Mem.Index, address.Mem.Scale = "", 0
 	return x86ResultIncomingPointerAddressIdentity(address, state, arch)

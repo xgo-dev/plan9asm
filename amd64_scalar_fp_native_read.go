@@ -485,7 +485,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultRoundStep(ins, state, owned, arch, true); known {
 			return accepted // Scalar active bytes and copied upper bytes remain distinct.
 		}
-		if accepted, known := x86ResultVSIBStep(ins, state, arch, true); known {
+		if accepted, known := x86ResultVSIBStep(ins, state, arch, true, c.dataBPSource); known {
 			return accepted // Exact indexed continuation; never an ordinary contiguous native tuple.
 		}
 		if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, true); known {

@@ -68,6 +68,65 @@ func TestAMD64SourceDefinedDataBPInitializedProgramsThreeAPIs(t *testing.T) {
 	}
 }
 
+func TestAMD64SourceDefinedDataBPVSIB(t *testing.T) {
+	const declaration = "func Value(p *[64]byte)\n"
+	const importBP = "MOVQ p+0(FP),BP"
+	const mask = "VPXOR X0,X0,X0\nVPCMPEQD X0,X0,X0\n"
+	const vex = "VPXOR X1,X1,X1\n" + mask + "VPXOR X2,X2,X2\nVPGATHERQQ X0, 16(BP)(X1*1), X2"
+	const evex = "VPXORD Z4,Z4,Z4\nVPXORD Z22,Z22,Z22\nMOVL $-1,AX\nKMOVD AX,K7\n"
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc required")
+	}
+	for _, row := range []struct{ name, body, access string }{
+		{"VEX-gather", vex, "load volatile i64"},
+		{"EVEX-gather", evex + "VGATHERDPD (BP)(X4*2), K7, Y22", "load volatile i64"},
+		{"EVEX-scatter", evex + "VPSCATTERDD Y22, K7, (BP)(Y4*2)", "store volatile i32"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			source := amd64DataBPSource(8, importBP, row.body)
+			for _, triple := range []string{"x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"} {
+				t.Run(triple, func(t *testing.T) {
+					x86LEAActualTargetGoObject(t, "amd64", triple, source)
+					for _, api := range []string{"text", "module", "Go"} {
+						t.Run(api, func(t *testing.T) {
+							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", triple, api)
+							if err != nil || !strings.Contains(ir, row.access) {
+								t.Fatalf("source-defined BP must retain its indexed lane accesses: %v\n%s", err, ir)
+							}
+							x86PackedStringCompileObject(t, llc, triple, ir, "-O0")
+							x86PackedStringCompileObject(t, llc, triple, ir, "-O2")
+						})
+					}
+				})
+			}
+		})
+	}
+
+	for _, row := range []struct {
+		name, setup, body string
+		frame             int
+	}{
+		{"entry-BP", "NOP", vex, 8},
+		{"reassigned-BP", importBP + "\nMOVL $7,BP", vex, 8},
+		{"frameless-BP", importBP, vex, 0},
+		{"unknown-index", importBP, strings.ReplaceAll(vex, "VPXOR X1,X1,X1\n", ""), 8},
+		{"unknown-mask", importBP, strings.ReplaceAll(vex, mask, ""), 8},
+		{"unknown-destination", importBP, strings.ReplaceAll(vex, "VPXOR X2,X2,X2\n", ""), 8},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			source := amd64DataBPSource(row.frame, row.setup, row.body)
+			goAssemblerOracleOutput(t, "amd64", source, "", true)
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "amd64", "x86_64-unknown-linux-gnu", api)
+				if ir != "" || !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatalf("%s admitted an unproved BP or VSIB input: %v", api, err)
+				}
+			}
+		})
+	}
+}
+
 func TestAMD64SourceDefinedDataBPDoesNotGrantMissingInputsOrFrameRoles(t *testing.T) {
 	for _, row := range []struct {
 		name, setup, body string

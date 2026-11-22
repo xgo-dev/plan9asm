@@ -34,6 +34,7 @@ type initializedContextCase struct {
 	Initialization         []plan9asm.Instr         `json:"initialization"`
 	MemoryPointerArgument  bool                     `json:"memory_pointer_argument,omitempty"`
 	NumericAddressArgument bool                     `json:"numeric_address_argument,omitempty"`
+	FrameSize              int64                    `json:"frame_size,omitempty"`
 	IRTextGeneration       scanEvidenceStage        `json:"ir_text_generation"`
 	LLVMObjectCompilation  scanEvidenceStage        `json:"llvm_object_compilation"`
 	RuntimeExecution       scanEvidenceStage        `json:"runtime_execution"`
@@ -142,6 +143,16 @@ func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, l
 		source.Initialization = sequence[:len(sequence)-1]
 		source.MemoryPointerArgument = profile == "vector-memory" || profile == "scalar-memory"
 		source.NumericAddressArgument = profile == "vector-numeric-memory"
+		if goarch == "amd64" && source.MemoryPointerArgument {
+			for _, ins := range source.Initialization {
+				if ins.Op == "MOVQ" && len(ins.Args) == 2 && ins.Args[0].Kind == plan9asm.OpFP &&
+					ins.Args[1].Kind == plan9asm.OpReg && ins.Args[1].Reg == "BP" {
+					// The complete NOSPLIT function must preserve its caller BP.
+					source.FrameSize = 8
+					break
+				}
+			}
+		}
 		result.Cases = append(result.Cases, source)
 	}
 	result.EligibleCases = len(result.Cases)
@@ -226,7 +237,7 @@ func (test initializedContextCase) probe(goarch string) error {
 
 func (test initializedContextCase) function(name, goarch string) (plan9asm.Func, plan9asm.FuncSig) {
 	sequence := append(test.sequence(), plan9asm.Instr{Op: "RET", Raw: "RET"})
-	fn := plan9asm.Func{Sym: name, Instrs: sequence}
+	fn := plan9asm.Func{Sym: name, FrameSize: test.FrameSize, Instrs: sequence}
 	sig := plan9asm.FuncSig{Name: name, Ret: plan9asm.Void}
 	if test.MemoryPointerArgument || test.NumericAddressArgument {
 		fn.ArgSize = 8
@@ -242,6 +253,10 @@ func (test initializedContextCase) function(name, goarch string) (plan9asm.Func,
 		}
 		sig.Args = []plan9asm.LLVMType{argType}
 		sig.Frame.Params = []plan9asm.FrameSlot{{Name: "memory", Type: argType, Field: -1}}
+	}
+	if test.FrameSize != 0 {
+		header := plan9asm.Instr{Op: plan9asm.OpTEXT, Raw: fmt.Sprintf("TEXT %s(SB),4,$%d-%d", name, fn.FrameSize, fn.ArgSize)}
+		fn.Instrs = append([]plan9asm.Instr{header}, fn.Instrs...)
 	}
 	return fn, sig
 }

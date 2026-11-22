@@ -86,11 +86,11 @@ func TestX86VSIBMode32NumericalRegisterRoles(t *testing.T) {
 						}
 						baseline := state.clone()
 						low := x86VSIBModeRoleInstruction(t, original, 2, 1)
-						if accepted, recognized := x86ResultVSIBStep(low, &baseline, arch, true); !accepted || !recognized {
+						if accepted, recognized := x86ResultVSIBStep(low, &baseline, arch, true, false); !accepted || !recognized {
 							t.Fatal("complete low-bank numerical input must precede the guard")
 						}
 						before := state.clone()
-						accepted, recognized := x86ResultVSIBStep(ins, &state, arch, true)
+						accepted, recognized := x86ResultVSIBStep(ins, &state, arch, true, false)
 						want := arch == "amd64" || bank < 8
 						if !recognized || accepted != want {
 							t.Fatal("numerical bank availability differs from source format", accepted, want)

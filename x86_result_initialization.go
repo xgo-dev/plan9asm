@@ -1282,7 +1282,7 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 	if accepted, known := x86ResultRoundStep(ins, state, owned, arch, false); known {
 		return accepted
 	}
-	if accepted, known := x86ResultVSIBStep(ins, state, arch, false); known {
+	if accepted, known := x86ResultVSIBStep(ins, state, arch, false, false); known {
 		return accepted
 	}
 	if accepted, known := x86ResultImplicitMaskMoveStep(ins, state, arch, false); known {

@@ -670,6 +670,9 @@ func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
 		{"amd64", "VGATHERDPS X2, (R13)(X7*2), X1", true, true},
 		{"amd64", "VGATHERDPS 360(R15)(X30*2), K6, X20", true, false},
 		{"amd64", "VPSCATTERDD X2, K5, (AX)(X21*2)", true, false},
+		{"amd64", "VGATHERDPS X2, (BP)(X7*2), X1", true, true},
+		{"amd64", "VGATHERDPD (BP)(X10*2), K3, X6", true, false},
+		{"amd64", "VPSCATTERDD Y22, K7, (BP)(Y4*2)", true, false},
 		{"amd64", "VGATHERDPS (SP)(Z4*2), K2, Z20", false, false},
 		{"amd64", "VGATHERDPS X3, 8(X4*1), X6", true, true},
 		{"amd64", "VPGATHERQQ Y0, 0(Y1*1), Y2", true, true},
@@ -703,9 +706,13 @@ func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
 			}
 			test := evidence.Cases[0]
 			var indexOnly plan9asm.Reg
+			var frameSize int64
 			for _, arg := range ins.Args {
 				if arg.Kind == plan9asm.OpMem && arg.Mem.Base == "" {
 					indexOnly = arg.Mem.Index
+				}
+				if row.arch == "amd64" && arg.Kind == plan9asm.OpMem && arg.Mem.Base == "BP" {
+					frameSize = 8
 				}
 			}
 			activeVEX, loadedIndex := false, false
@@ -719,7 +726,7 @@ func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
 					loadedIndex = true
 				}
 			}
-			if !test.MemoryPointerArgument || activeVEX != row.activeVEX ||
+			if !test.MemoryPointerArgument || test.FrameSize != frameSize || activeVEX != row.activeVEX ||
 				loadedIndex != (indexOnly != "") ||
 				!reflect.DeepEqual(test.OriginalInstruction, ins) ||
 				test.LLVMObjectCompilation.Status != "pass" || test.RuntimeExecution.Status != "not_run" {

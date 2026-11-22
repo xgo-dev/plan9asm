@@ -83,7 +83,7 @@ func initializedVectorMemoryProbeSequence(goarch string, ins Instr, numericAddre
 			return nil, false, nil
 		}
 		memory := form.memory.Mem
-		if memory.OffRaw != "" || memory.Segment != "" || memory.IndexExt != "" ||
+		if memory.Base == SP || memory.OffRaw != "" || memory.Segment != "" || memory.IndexExt != "" ||
 			!x86MemoryDisplacementValid(memory.Off, goarch) {
 			return nil, false, nil
 		}
@@ -109,6 +109,10 @@ func initializedVectorMemoryProbeSequence(goarch string, ins Instr, numericAddre
 	if memoryIndex < 0 || numericAddress != (memory.Base == memory.Index) {
 		return nil, false, nil
 	}
+	base, valid := initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: memory.Base})
+	if !valid {
+		return nil, false, nil
+	}
 	inputs, memoryBytes, valid := initializedVectorOperands(goarch, ins)
 	if !valid || memoryBytes < 1 || memoryBytes > 64 {
 		return nil, false, nil
@@ -128,14 +132,10 @@ func initializedVectorMemoryProbeSequence(goarch string, ins Instr, numericAddre
 	if memory.Index != "" && !numericAddress {
 		registers = append(registers, Operand{Kind: OpReg, Reg: memory.Index})
 	}
-	return initializedVectorMemorySequence(goarch, ins, memory.Base, registers, "")
+	return initializedVectorMemorySequence(goarch, ins, base, registers, "")
 }
 
-func initializedVectorMemorySequence(goarch string, ins Instr, addressBase Reg, registers []Operand, activeMask Reg) ([]Instr, bool, error) {
-	base, valid := initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: addressBase})
-	if !valid {
-		return nil, false, nil
-	}
+func initializedVectorMemorySequence(goarch string, ins Instr, base Reg, registers []Operand, activeMask Reg) ([]Instr, bool, error) {
 	for _, input := range registers {
 		if root, valid := initializedX86GPRegister(goarch, input); valid && root == base {
 			return nil, false, nil // The base and an independent numeric input cannot share a register.
