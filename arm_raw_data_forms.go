@@ -40,6 +40,21 @@ func decodeARMRawDataForm(ins Instr) (armRawDataForm, bool) {
 		return armRawDataForm{}, false
 	}
 	word := uint32(ins.Args[0].Imm)
+	if form, matched, err := decodeARMRawPairMemory(word); matched {
+		writes := armRawDirectionWrites(form.address.load, form.first, form.first+1)
+		writes |= armRawDirectionWrites(form.address.writeback, form.base)
+		return armRawDataForm{
+			family:    "LDRD/STRD",
+			condition: form.condition,
+			gpWrites:  writes,
+			lower: func(c *armCtx) error {
+				if err != nil {
+					return err
+				}
+				return c.lowerARMRawPairMemory(form)
+			},
+		}, true
+	}
 	if form, ok := decodeARMRawNEONStructureFourMultiple(word); ok {
 		return armRawDataForm{
 			family:    "StructureFourMultiple",

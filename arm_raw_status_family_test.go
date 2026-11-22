@@ -24,6 +24,7 @@ type armRawStatusCase struct {
 // its complete operand fields, reserved encodings and arithmetic semantics.
 func armRawStatusFamilies() []armRawStatusCase {
 	return []armRawStatusCase{
+		{family: "LDRD/STRD", instruction: "ldrd r0,r1,[r4,#24]", conditional: true},
 		{family: "StructureFourMultiple", instruction: "vld4.8 {d0,d1,d2,d3},[r4]!"},
 		{family: "ModifiedImmediate", instruction: "vmov.i8 q0,#18"},
 		{family: "CoreLaneMove", instruction: "vmov.32 r0,d0[0]", conditional: true},
