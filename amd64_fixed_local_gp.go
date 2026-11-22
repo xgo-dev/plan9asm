@@ -156,14 +156,30 @@ func fixedLocalGPAddressOnly(ins Instr, index int) bool {
 	return true
 }
 
+func fixedLocalGPFootprintSupported(ins Instr, effect x86TypedByteEffect) bool {
+	if !effect.dynamicMemory {
+		return true
+	}
+	_, _, bitString := amd64BitTestProperties(string(ins.Op))
+	return bitString && len(ins.Args) == 2 && ins.Args[1].Kind == OpMem && x86ResultNamedPredicateInstruction(ins)
+}
+
 func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig, proof *x86FixedLocalProof, residue int,
 	effect x86TypedByteEffect) error {
 	fail := func() error {
 		return goAMD64FrameContext("fixed local typed effect lacks numerical bytes, FLAGS or private storage: %s", ins.Op)
 	}
-	if effect.dynamicMemory || state.flags&effect.flagsRead != effect.flagsRead {
+	if state.flags&effect.flagsRead != effect.flagsRead || !fixedLocalGPFootprintSupported(*ins, effect) {
 		return fail()
 	}
+	if effect.dynamicMemory {
+		if err := fixedLocalRegisterBitStringStep(ins, state, proof, residue, effect.operands[0], effect.operands[1]); err != nil {
+			return err
+		}
+		fixedLocalApplyFlags(state, effect)
+		return nil
+	}
+
 	alignment := int64(1)
 	upper := effect.vector.upperWrite
 	switch upper {
@@ -226,18 +242,9 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 					fixedLocalNumericalStore(state, offset, operand.width, false)
 					continue
 				}
-				// An integer RMW drops an overlapping native-address role,
-				// but its untouched actual machine bytes remain initialized.
-				for start := offset - 7; start < offset+operand.width; start++ {
-					origin, found := state.opaqueCells[start]
-					if found && fixedLocalOriginOwners(origin, proof) {
-						if start < 0 || start > proof.frame-8 {
-							return fail()
-						}
-						state.bytes.setRange(start, 8, true)
-					}
+				if err := fixedLocalMachineBytesStore(state, proof, offset, operand.width); err != nil {
+					return err
 				}
-				fixedLocalNumericalStore(state, offset, operand.width, true)
 			}
 		case OpReg:
 			if amd64IsKOperand(operand.operand) {
@@ -287,11 +294,15 @@ func fixedLocalTypedByteStep(ins *Instr, state *x86FixedLocalState, sig FuncSig,
 			return fail() // FP transport and external stores have separate owners.
 		}
 	}
+	fixedLocalApplyFlags(state, effect)
+	return nil
+}
+
+func fixedLocalApplyFlags(state *x86FixedLocalState, effect x86TypedByteEffect) {
 	state.flags = state.flags&^effect.flagsKilled | effect.flagsDefined
 	if effect.flagsKilled|effect.flagsDefined != 0 {
 		state.comparison = x86FixedLocalComparison{}
 	}
-	return nil
 }
 
 // Integer effects consume machine bits. Native addresses have all eight bytes;
@@ -340,7 +351,11 @@ func fixedLocalMachineMemory(ins *Instr, operand x86TypedByteOperand, state *x86
 	if operand.addressOnly {
 		return nil // The recorded access does not establish any numerical bytes.
 	}
-	for index := offset; index < offset+operand.width; index++ {
+	return fixedLocalMachineBytesRead(state, proof, offset, operand.width)
+}
+
+func fixedLocalMachineBytesRead(state *x86FixedLocalState, proof *x86FixedLocalProof, offset, width int64) error {
+	for index := offset; index < offset+width; index++ {
 		if state.bytes.has(index) {
 			continue
 		}
@@ -358,5 +373,21 @@ func fixedLocalMachineMemory(ins *Instr, operand x86TypedByteOperand, state *x86
 			return goAMD64FrameContext("fixed local machine read contains undefined or relocated private bytes")
 		}
 	}
+	return nil
+}
+
+func fixedLocalMachineBytesStore(state *x86FixedLocalState, proof *x86FixedLocalProof, offset, width int64) error {
+	// A numerical write drops any overlapping native-address role.
+	// Preserve the initialized machine bytes outside the written span.
+	for start := offset - 7; start < offset+width; start++ {
+		origin, found := state.opaqueCells[start]
+		if found && fixedLocalOriginOwners(origin, proof) {
+			if start < 0 || start > proof.frame-8 {
+				return goAMD64FrameContext("fixed local native address spill crosses storage")
+			}
+			state.bytes.setRange(start, 8, true)
+		}
+	}
+	fixedLocalNumericalStore(state, offset, width, true)
 	return nil
 }

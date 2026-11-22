@@ -332,7 +332,7 @@ func fixedLocalInstructionShape(ins Instr) bool {
 	}
 	if effect, known, err := fixedLocalGPByteEffect(ins); known {
 		// The typed form owns register identity, including EVEX scalar inputs.
-		return err == nil && !effect.dynamicMemory
+		return err == nil && fixedLocalGPFootprintSupported(ins, effect)
 	}
 	if _, known, err := x86AESProperties(ins.Op, ins, "amd64"); known {
 		return err == nil
@@ -957,16 +957,22 @@ func fixedLocalMemory(ins *Instr, index int, state *x86FixedLocalState, proof *x
 	if !found {
 		return 0, goAMD64FrameContext("fixed local access has unknown/escaping address provenance")
 	}
-	if offset < 0 || offset > proof.frame || width > proof.frame-offset || alignment <= 0 ||
+	if err := fixedLocalRecordPrivateMemory(ins, index, state, proof, residue, offset, width, alignment, write, pointer); err != nil {
+		return 0, err
+	}
+	return offset, nil
+}
+
+func fixedLocalRecordPrivateMemory(ins *Instr, index int, state *x86FixedLocalState, proof *x86FixedLocalProof,
+	residue int, offset, width, alignment int64, write, pointer bool) error {
+	if offset < 0 || offset > proof.frame || width <= 0 || width > proof.frame-offset || alignment <= 0 ||
 		(int64(residue*8)+offset)%alignment != 0 {
-		return 0, goAMD64FrameContext("fixed local access crosses storage or has residue-dependent native alignment")
+		return goAMD64FrameContext("fixed local access crosses storage or has residue-dependent native alignment")
 	}
-	if !write && !pointer {
-		if !state.bytes.all(offset, width) {
-			return 0, goAMD64FrameContext("fixed local native read contains uninitialized or address bytes")
-		}
+	if !write && !pointer && !state.bytes.all(offset, width) {
+		return goAMD64FrameContext("fixed local native read contains uninitialized or address bytes")
 	}
-	return offset, fixedLocalRecordAccess(ins, index, proof, residue, width, write, false, offset)
+	return fixedLocalRecordAccess(ins, index, proof, residue, width, write, false, offset)
 }
 
 // Native input addresses retain ordinary faulting memory semantics. Their Go

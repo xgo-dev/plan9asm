@@ -36,6 +36,12 @@ func (state *x86FixedLocalState) revokeRange(reg Reg) {
 // Called around the existing typed GP transfer, never as a second executor.
 // Other writes revoke bounds at the same shared register-write boundaries.
 func fixedLocalRangeEffect(ins Instr, effect x86TypedByteEffect, state *x86FixedLocalState) (Reg, x86UnsignedRange, x86FixedLocalComparison) {
+	if ins.Op == "ANDQ" && len(effect.operands) == 2 {
+		mask, destination := effect.operands[0].operand, effect.operands[1].operand
+		if mask.Kind == OpImm && mask.Imm >= 0 && destination.Kind == OpReg {
+			return destination.Reg, x86UnsignedRange{maximum: uint64(mask.Imm)}, x86FixedLocalComparison{}
+		}
+	}
 	// The existing effect distinguishes read-only comparisons from GP writes;
 	// unrelated arithmetic never re-enters the complete comparison grammar.
 	if len(effect.operands) == 2 && !effect.operands[0].write && !effect.operands[1].write {

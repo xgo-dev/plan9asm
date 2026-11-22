@@ -89,7 +89,7 @@ func GoAMD64FixedLocalFrameBindingNeeded(file *File, goarch string, options ...O
 			} else if form, known, err := x86ConditionalMoveProperties(ins.Op, ins, goarch); known {
 				memory, eligible = 0, err == nil && form.source.Kind == OpMem
 			} else if effect, known, err := fixedLocalGPByteEffect(ins); known {
-				eligible, physicalOnly = err == nil && !effect.dynamicMemory, true
+				eligible, physicalOnly = err == nil && fixedLocalGPFootprintSupported(ins, effect), true
 				for _, operand := range effect.operands {
 					if operand.operand.Kind == OpMem && (operand.read || operand.write) {
 						memory = operand.index
