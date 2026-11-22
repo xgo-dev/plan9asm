@@ -113,16 +113,30 @@ func TestGoAMD64FixedLocalVEXLogicalZeroConsumers(t *testing.T) {
 }
 
 func TestGoAMD64FixedLocalVEXLogicalZeroKeepsMemoryAndEncodingRoles(t *testing.T) {
-	for _, row := range []string{
-		"VPXOR 16(SP),Y0,Y0", "VANDNPS 16(SP),Y0,Y0",
-		"VXORPS X16,X16,X16", "VXORPS Y16,Y16,Y16", "VXORPS Z0,Z0,Z0",
-		"KMOVQ AX,K1\nVXORPS X0,X0,K1,X1", "KMOVQ AX,K1\nVXORPS.Z X0,X0,K1,X1",
+	for _, row := range []struct {
+		operation string
+		result    Reg
+	}{
+		{"VPXOR 16(SP),Y0,Y0", ""},
+		{"VANDNPS 16(SP),Y0,Y0", ""},
+		{"VXORPS X16,X16,X16", "Z16"},
+		{"VXORPS Y16,Y16,Y16", "Z16"},
+		{"VXORPS Z0,Z0,Z0", "Z0"},
+		{"VXORPS.Z X0,X0,K1,X1", ""},
+		{"KMOVQ AX,K1\nVXORPS X0,X0,K1,X1", ""},
+		{"KMOVQ AX,K1\nVXORPS.Z X0,X0,K1,X1", "Z1"},
 	} {
-		t.Run(row, func(t *testing.T) {
-			fn, sig, source := fixedLocalGPFixture(t, row+"\nMOVQ $0,AX")
+		t.Run(row.operation, func(t *testing.T) {
+			observe := "MOVQ $0,AX"
+			if row.result != "" {
+				// Observe every alias byte of the defined EVEX destination.
+				observe = fmt.Sprintf("VMOVUPS %s,(SP)\nMOVQ 56(SP),AX", row.result)
+			}
+			fn, sig, source := fixedLocalGPFixture(t, row.operation+"\n"+observe)
 			requireX86GoAssemblerResult(t, "amd64", source, true)
-			if _, err := proveX86FixedLocal(fn, sig); !errors.Is(err, ErrProbeNeedsContext) {
-				t.Fatal("logical zero granted memory, mask or high-bank authority", err)
+			_, err := proveX86FixedLocal(fn, sig)
+			if row.result != "" && err != nil || row.result == "" && !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatal("logical zero confused a register identity with memory or mask authority", err)
 			}
 		})
 	}
