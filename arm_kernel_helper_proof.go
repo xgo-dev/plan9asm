@@ -208,17 +208,20 @@ func armKernelTransfer(name string, sig FuncSig, state armKernelState, ins Instr
 	switch op {
 	case "TEXT", "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", "NOP", "DMB", "RET", "UNDEF":
 		return state, nil
-	case "ADD", "SUB", "AND", "ORR", "EOR", "BIC", "RSB", "MUL", "SRL", "SLL", "SRA", "ROR":
+	case "ADD", "SUB", "AND", "ORR", "EOR", "BIC", "RSB", "ADC", "SBC", "RSC", "MVN", "MUL", "SRL", "SLL", "SRA", "ROR":
 		if len(ins.Args) >= 2 && ins.Args[len(ins.Args)-1].Kind == OpReg {
 			destination := armKernelRegBit(ins.Args[len(ins.Args)-1].Reg)
-			known := len(ins.Args) != 2 || state.has(destination)
+			known := op == "MVN" || len(ins.Args) != 2 || state.has(destination)
+			if armInstructionConsumesCarry(ins, op) {
+				known = known && state.has(armKernelC)
+			}
 			for _, arg := range ins.Args[:len(ins.Args)-1] {
 				known = known && armKernelValueDefined(arg, sig, state)
 			}
 			assign(destination, known)
 			if setFlags {
 				mask := armKernelFlags
-				if op != "ADD" && op != "SUB" && op != "RSB" {
+				if op != "ADD" && op != "SUB" && op != "RSB" && op != "ADC" && op != "SBC" && op != "RSC" {
 					mask = armKernelN | armKernelZ
 					state &^= armKernelC
 				}

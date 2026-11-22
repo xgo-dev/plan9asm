@@ -359,7 +359,7 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins Instr) error {
 		if dst.Kind != OpReg {
 			return fmt.Errorf("arm %s dst must be reg: %q", op, ins.Raw)
 		}
-		src, shifterCarry, err = c.evalARMLogicalOperand(op, ins.Args[0])
+		src, shifterCarry, err = c.evalARMLogicalOperand(op, ins.Args[0], ins.armOperand2)
 		if err != nil {
 			return err
 		}
@@ -372,7 +372,7 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins Instr) error {
 		if dst.Kind != OpReg {
 			return fmt.Errorf("arm %s dst must be reg: %q", op, ins.Raw)
 		}
-		src, shifterCarry, err = c.evalARMLogicalOperand(op, ins.Args[0])
+		src, shifterCarry, err = c.evalARMLogicalOperand(op, ins.Args[0], ins.armOperand2)
 		if err != nil {
 			return err
 		}
@@ -421,10 +421,6 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins Instr) error {
 }
 
 func (c *armCtx) lowerARMCompare(op string, ins Instr) error {
-	return c.lowerARMCompareWithCarry(op, ins, "")
-}
-
-func (c *armCtx) lowerARMCompareWithCarry(op string, ins Instr, rawCarry string) error {
 	if err := validateARMDataProcessing(op, ins, false); err != nil {
 		return err
 	}
@@ -436,15 +432,12 @@ func (c *armCtx) lowerARMCompareWithCarry(op string, ins Instr, rawCarry string)
 		unconditional := ins
 		unconditional.Op = Op(op)
 		return c.emitConditionalEffect(condition, func() error {
-			return c.lowerARMCompareWithCarry(op, unconditional, rawCarry)
+			return c.lowerARMCompare(op, unconditional)
 		})
 	}
-	src, shifterCarry, err := c.evalARMLogicalOperand(op, ins.Args[0])
+	src, shifterCarry, err := c.evalARMLogicalOperand(op, ins.Args[0], ins.armOperand2)
 	if err != nil {
 		return err
-	}
-	if rawCarry != "" {
-		shifterCarry = rawCarry
 	}
 	lhs, err := c.eval32(ins.Args[1], false)
 	if err != nil {
@@ -487,13 +480,13 @@ func (c *armCtx) lowerARMMVN(cond string, setFlags bool, ins Instr) error {
 	var dst Operand
 	var err error
 	if len(ins.Args) == 2 {
-		src, shifterCarry, err = c.evalARMLogicalOperand("MVN", ins.Args[0])
+		src, shifterCarry, err = c.evalARMLogicalOperand("MVN", ins.Args[0], ins.armOperand2)
 		if err != nil {
 			return err
 		}
 		dst = ins.Args[1]
 	} else {
-		src, shifterCarry, err = c.evalARMLogicalOperand("MVN", ins.Args[1])
+		src, shifterCarry, err = c.evalARMLogicalOperand("MVN", ins.Args[1], ins.armOperand2)
 		if err != nil {
 			return err
 		}
@@ -517,6 +510,12 @@ func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins Instr) error
 	if len(ins.Args) != 2 && len(ins.Args) != 3 {
 		return fmt.Errorf("arm %s expects 2 or 3 operands: %q", op, ins.Raw)
 	}
+	if setFlags && cond != "" && cond != "AL" {
+		// The carry override must use the same predicate as the NZCV write.
+		return c.emitConditionalEffect(cond, func() error {
+			return c.lowerARMADCSBC(op, "", setFlags, ins)
+		})
+	}
 	if op == "RSC" {
 		source := ins.Args[0]
 		sourceOK := source.Kind == OpImm ||
@@ -539,7 +538,7 @@ func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins Instr) error
 		if dst.Kind != OpReg {
 			return fmt.Errorf("arm %s dst must be reg: %q", op, ins.Raw)
 		}
-		src, err = c.eval32(ins.Args[0], false)
+		src, _, err = c.evalARMLogicalOperand(op, ins.Args[0], ins.armOperand2)
 		if err != nil {
 			return err
 		}
@@ -552,7 +551,7 @@ func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins Instr) error
 		if dst.Kind != OpReg {
 			return fmt.Errorf("arm %s dst must be reg: %q", op, ins.Raw)
 		}
-		src, err = c.eval32(ins.Args[0], false)
+		src, _, err = c.evalARMLogicalOperand(op, ins.Args[0], ins.armOperand2)
 		if err != nil {
 			return err
 		}

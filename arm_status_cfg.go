@@ -122,6 +122,9 @@ func armFunctionUsesModeledFlags(fn Func) bool {
 }
 
 func armInstructionFlagInputs(ins Instr) armKernelState {
+	if data, ok := decodeARMRawOperand2(ins); ok {
+		return armInstructionFlagInputs(data)
+	}
 	if form, ok := decodeARMRawDataForm(ins); ok {
 		return armKernelConditionBits(form.condition) | form.flagReads
 	}
@@ -141,10 +144,15 @@ func armInstructionFlagInputs(ins Instr) armKernelState {
 		condition = op[1:]
 	}
 	inputs := armKernelConditionBits(condition)
-	if op == "ADC" || op == "SBC" || op == "RSC" {
+	if armInstructionConsumesCarry(ins, op) {
 		inputs |= armKernelC
 	}
 	return inputs
+}
+
+func armInstructionConsumesCarry(ins Instr, op string) bool {
+	return op == "ADC" || op == "SBC" || op == "RSC" ||
+		len(ins.Args) != 0 && ins.armOperand2.readsCarry(ins.Args[0])
 }
 
 func armInstructionReadsStatus(ins Instr) bool {
@@ -162,6 +170,9 @@ func armInstructionReadsStatus(ins Instr) bool {
 }
 
 func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr, check bool) (armStatusState, error) {
+	if data, ok := decodeARMRawOperand2(ins); ok {
+		return armStatusTransfer(name, sig, state, data, check)
+	}
 	if form, ok := decodeARMRawDataForm(ins); ok {
 		predicate := armKernelConditionBits(form.condition)
 		if check && predicate != 0 && !state.initialized.has(predicate) {
@@ -227,8 +238,7 @@ func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr
 	if check && readsStatus && !state.initialized.has(armKernelFlags) {
 		return state, fmt.Errorf("%w: ARM CPSR read in %q needs source-defined NZCV on every path or an explicit native-entry state bridge: %s", ErrProbeNeedsContext, name, ins.Raw)
 	}
-	consumesCarry := op == "ADC" || op == "SBC" || op == "RSC"
-	if check && consumesCarry && !state.initialized.has(armKernelC) {
+	if check && armInstructionConsumesCarry(ins, op) && !state.initialized.has(armKernelC) {
 		return state, fmt.Errorf("%w: ARM source carry input in %q has no source definition or typed native-entry bridge: %s", ErrProbeNeedsContext, name, ins.Raw)
 	}
 	values, _ := armKernelTransfer(name, sig, state.values, ins, false)
@@ -263,13 +273,6 @@ func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr
 	case "WORD", "BYTE", "LONG":
 		keep := false
 		if len(ins.Args) == 1 && ins.Args[0].Kind == OpImm {
-			if decoded, carry, ok := decodeARMRawTST(uint32(ins.Args[0].Imm), ins.Raw); ok {
-				state, err := armStatusTransfer(name, sig, state, decoded, check)
-				if carry != "" {
-					state.initialized |= armKernelC
-				}
-				return state, err
-			}
 			form, ok := decodeARMRawVFPStatusTransfer(uint32(ins.Args[0].Imm))
 			keep = ok && form.toFlags && state.vfpWitness
 		}
@@ -296,7 +299,8 @@ func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr
 						}
 					}
 				}
-				if op == "MOVW" && len(ins.Args) == 2 && (ins.Args[0].Kind == OpReg || ins.Args[0].Kind == OpRegShift) && ins.Args[1].Kind == OpReg {
+				if op == "MOVW" && len(ins.Args) == 2 && ins.Args[1].Kind == OpReg &&
+					(ins.Args[0].Kind == OpReg || ins.Args[0].Kind == OpRegShift || ins.armOperand2 != armNamedOperand2) {
 					write = armKernelN | armKernelZ
 				}
 				if write == 0 {
@@ -314,8 +318,12 @@ func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr
 	}
 	if predicate == 0 {
 		state.initialized |= write
-		if logical && len(ins.Args) != 0 && (armLogicalImmediateCarry(op, ins.Args[0]) != "" || armShifterDefinesCarry(ins.Args[0])) {
-			state.initialized |= armKernelC
+		if logical && len(ins.Args) != 0 {
+			source := ins.Args[0]
+			if ins.armOperand2.definesCarry(source) || ins.armOperand2 == armNamedOperand2 &&
+				(armLogicalImmediateCarry(op, source) != "" || armShifterDefinesCarry(source)) {
+				state.initialized |= armKernelC
+			}
 		}
 		if setFlags && (op == "SLL" || op == "SRL" || op == "SRA") && len(ins.Args) != 0 && ins.Args[0].Kind == OpImm && ins.Args[0].Imm != 0 && (op != "SLL" || uint32(ins.Args[0].Imm)&31 != 0) {
 			state.initialized |= armKernelC

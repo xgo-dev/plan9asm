@@ -67,7 +67,7 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins Instr) (ok bool, t
 		if src.Kind == OpMem {
 			v, err = c.loadMem(src.Mem, 32, postInc, false)
 		} else {
-			v, shifterCarry, err = c.evalARMLogicalOperand("MOVW", src)
+			v, shifterCarry, err = c.evalARMLogicalOperand("MOVW", src, ins.armOperand2)
 		}
 		if err != nil {
 			return true, false, err
@@ -76,7 +76,7 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins Instr) (ok bool, t
 			return true, false, err
 		}
 		_, _, _, setFlags := armDecodeOp(string(ins.Op))
-		if setFlags && (src.Kind == OpReg || src.Kind == OpRegShift) && dst.Kind == OpReg {
+		if setFlags && (src.Kind == OpReg || src.Kind == OpRegShift || ins.armOperand2 != armNamedOperand2) && dst.Kind == OpReg {
 			return true, false, c.setARMLogicalFlags(cond, v, shifterCarry)
 		}
 		return true, false, nil

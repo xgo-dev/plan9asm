@@ -858,6 +858,8 @@ type Instr struct {
 	// A decoded A64 UDF keeps its encoded imm16 while reusing UNDEF's
 	// terminating semantics. Textual Go UNDEF remains operand-free/#0.
 	arm64RawUndefinedImmediate uint16
+	// Physical A32 Operand2 retains the encoding's shift and carry rules.
+	armOperand2 armOperand2Encoding
 	// Set only after validating a closed, source-local Linux native helper.
 	armKernelCall *armKernelCall
 	// Set only by a validated machine-code decoder. Physical operands need

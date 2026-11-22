@@ -138,6 +138,9 @@ func main(){for _,v:=range []uint32{0,1,0xffffffff}{var out [2]uint32;oracle(v,0
 extern void oracle(uint32_t,uint32_t,uint32_t,uint32_t,uint32_t*);
 int main(void){const uint32_t values[]={0,1,0xffffffffu};for(unsigned i=0;i<3;i++){uint32_t out[2]={0},want[2]={3,1};if((values[i]&1)==0){want[0]=7;want[1]=5;}oracle(values[i],0,0,0,out);if(out[0]!=want[0]||out[1]!=want[1]){fprintf(stderr,"raw carry got=%u,%u want=%u,%u\n",out[0],out[1],want[0],want[1]);return 1;}}return 0;}
 `, []string{"qemu-arm", "-L", "/usr/arm-linux-gnueabihf"})
+	t.Run("Operand2Continuation", func(t *testing.T) {
+		testARMRawOperand2ContinuationRuntime(t, llc)
+	})
 }
 
 func TestCrossLinuxRuntimeMatrixARMZeroShiftMemoryOffsets(t *testing.T) {

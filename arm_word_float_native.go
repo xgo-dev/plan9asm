@@ -105,10 +105,7 @@ func armWordFloatPreflightSpecializedRaw(ins Instr) bool {
 	if word == 0xe320f001 { // YIELD, the remaining operand-free raw hint.
 		return true
 	}
-	if _, ok := decodeARMRawVFPCompare(word); ok {
-		return true
-	}
-	_, _, ok := decodeARMRawTST(word, ins.Raw)
+	_, ok := decodeARMRawVFPCompare(word)
 	return ok
 }
 

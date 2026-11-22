@@ -52,12 +52,12 @@ func (c *armCtx) evalARMShifter(source Operand, encoded bool) (result, carry str
 
 // Capture the shifter carry before writing an aliased destination. Re-reading
 // the shifted register afterwards would silently use the new register value.
-func (c *armCtx) evalARMLogicalOperand(op string, source Operand) (value, carry string, err error) {
+func (c *armCtx) evalARMLogicalOperand(op string, source Operand, encoding armOperand2Encoding) (value, carry string, err error) {
 	if source.Kind == OpRegShift {
-		return c.evalARMShifter(source, false)
+		return c.evalARMShifter(source, encoding == armShiftedOperand2)
 	}
 	value, err = c.eval32(source, false)
-	return value, armLogicalImmediateCarry(op, source), err
+	return value, encoding.immediateCarry(op, source), err
 }
 
 func (c *armCtx) emitARMRotate(value, amount string) string {
@@ -97,7 +97,7 @@ func validateARMDataProcessing(op string, ins Instr, setFlags bool) error {
 			return fmt.Errorf("ARM %s data-processing input/destination must be a general register: %s", op, ins.Raw)
 		}
 	}
-	if (op == "MOVW" || op == "MVN") && setFlags && source.Kind == OpImm {
+	if (op == "MOVW" || op == "MVN") && setFlags && source.Kind == OpImm && ins.armOperand2 == armNamedOperand2 {
 		return fmt.Errorf("ARM %s immediate .S is absent from Go asm5: %s", op, ins.Raw)
 	}
 	if op == "CMP" || op == "CMN" || op == "TST" || op == "TEQ" {

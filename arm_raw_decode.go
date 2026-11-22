@@ -40,6 +40,9 @@ func decodeARMRawWordInstruction(ins Instr) (Instr, error) {
 		// Semantic readers see a terminator. The WORD lowering retains bytes.
 		return Instr{Op: "UNDEF", Raw: fmt.Sprintf("UNDEF /* decoded from %s */", ins.Raw)}, nil
 	}
+	if data, ok := decodeARMRawOperand2(ins); ok {
+		return data, nil
+	}
 	var code [4]byte
 	binary.LittleEndian.PutUint32(code[:], word)
 	decoded, err := armasm.Decode(code[:], armasm.ModeARM)
