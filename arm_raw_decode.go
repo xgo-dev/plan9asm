@@ -8,6 +8,20 @@ import (
 	"golang.org/x/arch/arm/armasm"
 )
 
+// A32 permanently undefined instructions retain their entire word. The
+// immediate is ignored by the CPU but may identify a debugger breakpoint.
+func armRawUndefinedEncoding(ins Instr) (uint32, bool) {
+	if ins.Op != OpWORD || len(ins.Args) != 1 || ins.Args[0].Kind != OpImm ||
+		ins.Args[0].ImmRaw != "" || ins.Args[0].ImmIsFloat {
+		return 0, false
+	}
+	word := uint32(ins.Args[0].Imm)
+	// DDI 0406C tables A5-16 and A5-24: the AL UDF and the corresponding
+	// permanently undefined unconditional space have the same payload.
+	// DDI 0487B.a table F4-16: cond=1111 in the SVC group is unallocated.
+	return word, word&0xeff000f0 == 0xe7f000f0 || word>>24 == 0xff
+}
+
 // decodeARMRawWordInstruction recovers the Go assembler spelling for an ARM
 // WORD using Go's architecture decoder. The returned instruction is not
 // considered supported until the ordinary ARM semantic lowerer accepts it.
@@ -22,11 +36,8 @@ func decodeARMRawWordInstruction(ins Instr) (Instr, error) {
 		}
 		return decoded, nil
 	}
-	// A32 UDF has 16 immediate bits split around its fixed low nibble. Go's
-	// runtime uses UDF #16 as a GDB-recognized breakpoint; external assembly
-	// also uses UDF #0 as a terminating tail guard. x/arch does not decode
-	// these forms, but all immediates share Go's operand-free UNDEF semantics.
-	if word&0xfff000f0 == 0xe7f000f0 {
+	if _, undefined := armRawUndefinedEncoding(ins); undefined {
+		// Semantic readers see a terminator. The WORD lowering retains bytes.
 		return Instr{Op: "UNDEF", Raw: fmt.Sprintf("UNDEF /* decoded from %s */", ins.Raw)}, nil
 	}
 	var code [4]byte

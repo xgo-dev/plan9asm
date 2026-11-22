@@ -38,7 +38,7 @@ func TestARMScalarCompareNativeTargetBoundary(t *testing.T) {
 					t.Errorf("%s %s %q needs native FPSCR target: %v", api, body, triple, err)
 				}
 			}
-			for _, invalid := range []string{"CMPF R0", "CMPD.S F0", "WORD $0xffffffff"} {
+			for _, invalid := range []string{"CMPF R0", "CMPD.S F0", "WORD $0xf7f000e0"} {
 				for _, dead := range []string{"", "RET\n"} {
 					source := "TEXT conversion(SB),4,$0-0\n" + body + "\n" + dead + invalid + "\nRET\n"
 					if err := armWordFloatBoundaryAPI(t, api, source, ""); err == nil || errors.Is(err, ErrProbeNeedsContext) {

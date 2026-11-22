@@ -161,6 +161,11 @@ func (c *armCtx) lowerInstr(bi int, ins Instr, emitBr armEmitBr, emitCondBr armE
 		}
 		return false, fmt.Errorf("arm: unsupported instruction %s", ins.Op)
 	case "RFE", string(OpWORD):
+		if word, undefined := armRawUndefinedEncoding(ins); undefined {
+			fmt.Fprintf(c.b, "  call void asm sideeffect \".inst %#08x\", \"~{memory}\"()\n", word)
+			c.b.WriteString("  unreachable\n")
+			return true, nil
+		}
 		if matched, err := armExceptionReturnForm(ins); matched {
 			if err != nil {
 				return false, err

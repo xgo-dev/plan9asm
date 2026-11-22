@@ -33,7 +33,6 @@ func TestProbeARMContextDependentOfficialDirectives(t *testing.T) {
 		source string
 	}{
 		{name: "return-from-exception", source: "RFE"},
-		{name: "undefined-raw-word", source: "WORD $4294967295"},
 		{name: "pc-relative-raw-word", source: "WORD $2863311530"},
 		{name: "stateful-raw-word", source: "WORD $1431655765"},
 	}

@@ -70,7 +70,7 @@ func TestARMWordFloatNativeTargetBoundary(t *testing.T) {
 
 func TestARMWordFloatNativeTargetDoesNotReclassifyInvalidSource(t *testing.T) {
 	for _, api := range []string{"text", "module", "Go"} {
-		for _, body := range []string{"MOVWF R0,R1", "MOVDW S0,F1", "MOVFW.P F0,F1", "WORD $0xffffffff"} {
+		for _, body := range []string{"MOVWF R0,R1", "MOVDW S0,F1", "MOVFW.P F0,F1", "WORD $0xf7f000e0"} {
 			source := "TEXT conversion(SB),4,$0-0\n" + body + "\nRET\n"
 			if err := armWordFloatBoundaryAPI(t, api, source, ""); err == nil || errors.Is(err, ErrProbeNeedsContext) {
 				t.Fatalf("%s %s invalid source became native-target context: %v", api, body, err)
@@ -96,10 +96,10 @@ func TestARMWordFloatNativeTargetKeepsMixedRawErrors(t *testing.T) {
 	for _, api := range []string{"text", "module", "Go"} {
 		for _, triple := range []string{"", "x86_64-unknown-linux-gnu", "armv7-unknown-linux-gnueabihf"} {
 			for _, body := range []string{
-				"MOVFW F0,F1\nWORD $0xffffffff",
-				"WORD $0xffffffff\nMOVFW F0,F1",
-				"MOVFW F0,F1\nRET\nWORD $0xffffffff",
-				"RET\nWORD $0xffffffff\nMOVFW F0,F1",
+				"MOVFW F0,F1\nWORD $0xf7f000e0",
+				"WORD $0xf7f000e0\nMOVFW F0,F1",
+				"MOVFW F0,F1\nRET\nWORD $0xf7f000e0",
+				"RET\nWORD $0xf7f000e0\nMOVFW F0,F1",
 			} {
 				t.Run(api+"/"+triple+"/"+body, func(t *testing.T) {
 					source := "TEXT conversion(SB),4,$0-0\nMOVD $1.5,F0\n" + body + "\nRET\n"
@@ -128,10 +128,10 @@ func TestARMWordFloatNativeTargetPreservesSpecializedRawRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := validateARMWordFloatNativeTarget(file, Options{}); !errors.Is(err, ErrProbeNeedsContext) {
+		if err := validateARMNativeWordTarget(file, Options{}); !errors.Is(err, ErrProbeNeedsContext) {
 			t.Fatalf("registered raw %s became invalid source: %v", variants[index].family, err)
 		}
-		if err := validateARMWordFloatNativeTarget(file, Options{Goarch: "arm", TargetTriple: "armv7-unknown-linux-gnueabihf"}); err != nil {
+		if err := validateARMNativeWordTarget(file, Options{Goarch: "arm", TargetTriple: "armv7-unknown-linux-gnueabihf"}); err != nil {
 			t.Fatalf("registered raw %s rejected by native conversion preflight: %v", variants[index].family, err)
 		}
 	}

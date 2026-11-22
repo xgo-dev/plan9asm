@@ -48,6 +48,9 @@ func armSplitBlocks(fn Func) []armBlock {
 		if ins.Op == OpRET {
 			return true
 		}
+		if _, undefined := armRawUndefinedEncoding(ins); undefined {
+			return localCalls // Same CFG boundary as named UNDEF.
+		}
 		baseOp, _, _, _ := armDecodeOp(string(ins.Op))
 		switch baseOp {
 		case "RET", "UNDEF":

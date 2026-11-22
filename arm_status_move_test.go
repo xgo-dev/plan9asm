@@ -108,7 +108,7 @@ func TestARMStatusMoveKeepsConditionalSaveAndClobberFailures(t *testing.T) {
 	for _, body := range []string{
 		"MOVW $0,R0\n CMP R0,R0\n MOVW.EQ CPSR,R7\n MOVW R7,CPSR",
 		"MOVW $0,R0\n CMP R0,R0\n WORD $0x010f7000\n MOVW R7,CPSR",
-		"MOVW $0,R0\n CMP R0,R0\n MOVW CPSR,R7\n WORD $0xffffffff\n MOVW R7,CPSR",
+		"MOVW $0,R0\n CMP R0,R0\n MOVW CPSR,R7\n WORD $0xf7f000e0\n MOVW R7,CPSR",
 		"B done\n MOVW.F R0,CPSR\ndone:",
 	} {
 		source := "TEXT status(SB),4,$0-0\n " + body + "\n RET\n"

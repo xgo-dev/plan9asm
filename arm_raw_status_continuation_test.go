@@ -46,7 +46,7 @@ func TestARMRawVectorDoesNotInventPredicates(t *testing.T) {
 		"WORD $0x1e300a00", // Conditional scalar VFP.
 		"WORD $0x1ee00b10", // Conditional core VDUP.
 		"WORD $0xf2200842\n B.NE done\ndone:",
-		"CMP R0,R0\n WORD $0xffffffff\n B.NE done\ndone:",
+		"CMP R0,R0\n WORD $0xf7f000e0\n B.NE done\ndone:",
 		"CMP R0,R0\n WORD $0xeef1fa10\n B.NE done\ndone:",
 		"B join\n CMP R0,R0\njoin:\n WORD $0xf2200842\n B.NE done\ndone:",
 	} {
@@ -70,7 +70,7 @@ func TestARMRawDataStatusCFGAndGPOutputGuards(t *testing.T) {
 		accepted   bool
 	}{
 		{name: "diamond", body: "CMP R0,R0\n B.EQ alternate\n WORD $0xf2200842\n B join\nalternate:\n WORD $0xf3066150\njoin:\n MOVW CPSR,R0", accepted: true},
-		{name: "unknown_join", body: "CMP R0,R0\n B.EQ alternate\n WORD $0xf2200842\n B join\nalternate:\n WORD $0xffffffff\njoin:\n MOVW CPSR,R0"},
+		{name: "unknown_join", body: "CMP R0,R0\n B.EQ alternate\n WORD $0xf2200842\n B join\nalternate:\n WORD $0xf7f000e0\njoin:\n MOVW CPSR,R0"},
 		{name: "call_flags", body: "CMP R0,R0\n WORD $0xf2200842\n BL other<>(SB)\n B.NE done\ndone:"},
 		{name: "partial_NZ", body: "TST R0,R0\n WORD $0xf2200842\n B.HI done\ndone:"},
 		{name: "lane_GP_output", body: "CMP R0,R0\n WORD $0xee100b10\n MOVW R0,CPSR"},

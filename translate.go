@@ -324,7 +324,7 @@ func translateIRTextWithFixedLocalResult(file *File, opt Options, fixedLocalResu
 	if err := validateARMMachineEntryArchitecture(file, opt); err != nil {
 		return "", err
 	}
-	if err := validateARMWordFloatNativeTarget(file, opt); err != nil {
+	if err := validateARMNativeWordTarget(file, opt); err != nil {
 		return "", err
 	}
 	if err := validateARM64NativeTargets(file, opt); err != nil {

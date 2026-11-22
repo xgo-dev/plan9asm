@@ -27,6 +27,11 @@ func DescribeInstruction(arch Arch, goarch string, ins Instr) InstructionDescrip
 	for i, arg := range ins.Args {
 		operands[i] = operandClass(arch, goarch, arg)
 	}
+	if arch == ArchARM {
+		if _, undefined := armRawUndefinedEncoding(ins); undefined {
+			operands[0] = "immediate.a32-undefined"
+		}
+	}
 	// Keep rejected and accepted control spellings separate. The base opcode
 	// remains the family key; it is not the complete source-form identity.
 	return InstructionDescriptor{

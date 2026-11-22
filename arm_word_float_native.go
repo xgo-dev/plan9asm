@@ -20,16 +20,20 @@ func armWordFloatNativeTarget(triple string) bool {
 	}
 }
 
-func validateARMWordFloatNativeTarget(file *File, options Options) error {
+func validateARMNativeWordTarget(file *File, options Options) error {
 	if file == nil || file.Arch != ArchARM {
 		return nil
 	}
-	needsNative := false
+	needsNative, needsA32 := false, false
 	var rawError error
 	for _, function := range file.Funcs {
 		for _, source := range function.Instrs {
 			instruction := source
 			if instruction.Op == OpWORD {
+				if _, undefined := armRawUndefinedEncoding(instruction); undefined {
+					needsA32 = true
+					continue
+				}
 				if len(instruction.Args) == 1 && instruction.Args[0].Kind == OpImm && instruction.Args[0].ImmRaw == "" {
 					if _, ok := decodeARMRawVFPCompare(uint32(instruction.Args[0].Imm)); ok {
 						needsNative = true
@@ -71,6 +75,13 @@ func validateARMWordFloatNativeTarget(file *File, options Options) error {
 	// functions on their existing ordinary validation path.
 	if needsNative && rawError != nil {
 		return rawError
+	}
+	triple := options.TargetTriple
+	if needsA32 && (!armWordFloatNativeTarget(triple) || strings.HasPrefix(triple, "thumb") ||
+		strings.Contains(triple, "-windows") || strings.Contains(triple, "-win32") ||
+		options.Goarch != "" && options.Goarch != "arm") {
+		return fmt.Errorf("%w: ARM raw trap needs an explicit A32 target, got %q/%q",
+			ErrProbeNeedsContext, options.Goarch, triple)
 	}
 	if needsNative && (!armWordFloatNativeTarget(options.TargetTriple) || options.Goarch != "" && options.Goarch != "arm") {
 		return fmt.Errorf("%w: ARM scalar VFP operation requires an explicit native 32-bit little-endian ARM/Thumb FPSCR target, got %q/%q", ErrProbeNeedsContext, options.Goarch, options.TargetTriple)
