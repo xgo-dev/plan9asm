@@ -170,6 +170,56 @@ func TestX86GoImportedTailPublicModule(t *testing.T) {
 	}
 }
 
+func TestX86GoImportedTailEntryRelocation(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			pkg := importedTailPackage(t, arch)
+			source := strings.NewReplacer(
+				"syscall·Syscall(SB)", "syscall·Syscall+1(SB)",
+				"syscall·Syscall6(SB)", "syscall·Syscall6-4(SB)",
+			).Replace(importedTailAssembly(arch, "Syscall"))
+			listing, _ := x86ScalarLiteralGoListing(t, arch, source)
+			var targets []string
+			for _, line := range strings.Split(listing, "\n") {
+				if fields := strings.Fields(line); len(fields) == 4 && fields[0] == "rel" {
+					targets = append(targets, fields[3])
+				}
+			}
+			if len(targets) != 2 || targets[0] != "syscall.Syscall+0" || targets[1] != "syscall.Syscall6+0" {
+				t.Fatalf("Go JMP must select both imported entry relocations: %v\n%s", targets, listing)
+			}
+			triple := "x86_64-unknown-linux-gnu"
+			if arch == "386" {
+				triple = "i386-unknown-linux-gnu"
+			}
+			translated, err := TranslateGoModule(pkg, []byte(source), GoModuleOptions{
+				GOOS: "linux", GOARCH: arch, TargetTriple: triple, ResolveSym: testResolveSym(pkg.Path),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer translated.Module.Dispose()
+			for _, entry := range []struct{ root, callee string }{{"Forward", "syscall.Syscall"}, {"Forward6", "syscall.Syscall6"}} {
+				function := translated.Module.NamedFunction(pkg.Path + "." + entry.root)
+				if function.IsNil() {
+					t.Fatalf("missing translated function %s", entry.root)
+				}
+				var callees []string
+				for _, block := range function.BasicBlocks() {
+					for inst := block.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+						if inst.InstructionOpcode() == llvm.Call {
+							callees = append(callees, inst.CalledValue().Name())
+						}
+					}
+				}
+				if len(callees) != 1 || callees[0] != entry.callee {
+					t.Fatalf("%s must call the imported entry %s: %v", entry.root, entry.callee, callees)
+				}
+			}
+		})
+	}
+}
+
 type importedTailFixtureImporter map[string]*types.Package
 
 func (imports importedTailFixtureImporter) Import(path string) (*types.Package, error) {
@@ -412,7 +462,6 @@ func TestX86GoImportedTailShapeGuards(t *testing.T) {
 		{"frame", "$0-56", "$8-56"},
 		{"arguments small", "$0-56", "$0-48"},
 		{"arguments large", "$0-56", "$0-64"},
-		{"offset", "syscall·Syscall(SB)", "syscall·Syscall+1(SB)"},
 		{"unknown", "syscall·Syscall(SB)", "syscall·Unknown(SB)"},
 		{"side effect", "JMP syscall·Syscall(SB)", "ADDQ $1, AX\nJMP syscall·Syscall(SB)"},
 		{"native target", "syscall·Syscall(SB)", "syscall·Syscall<ABIInternal>(SB)"},
