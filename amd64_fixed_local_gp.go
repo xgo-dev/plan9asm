@@ -19,6 +19,9 @@ func fixedLocalGPByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if effect, known, err := x86TypedCRC32ByteEffect(ins.Op, ins, "amd64"); known {
 		return effect, true, err
 	}
+	if effect, known, err := x86TypedExchangeAddByteEffect(ins, "amd64"); known {
+		return effect, true, err
+	}
 	if effect, known, err := x86TypedMXCSRByteEffect(ins.Op, ins, "amd64"); known {
 		return effect, true, err
 	}

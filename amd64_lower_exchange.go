@@ -50,6 +50,33 @@ func x86SwapProperties(ins Instr, arch string) (amd64ExchangeForm, int64, bool, 
 	return form, int64(spec.bits / 8), true, err
 }
 
+func x86TypedExchangeAddByteEffect(ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	name := Op(strings.ToUpper(string(ins.Op)))
+	spec, known := amd64ExchangeSpecs[name]
+	if !known || spec.kind != amd64ExchangeAdd {
+		return x86TypedByteEffect{}, false, nil
+	}
+	form, err := parseAMD64ExchangeForm(arch, name, spec, ins)
+	if err != nil {
+		return x86TypedByteEffect{}, true, err
+	}
+	width := int64(spec.bits / 8)
+	source := x86TypedByteOperand{
+		index: 0, operand: form.register, width: width, read: true, write: true, numericalGP: true,
+	}
+	destination := x86TypedByteOperand{
+		index: 1, operand: form.other, width: width, read: true, write: true,
+		numericalGP: form.other.Kind == OpReg,
+	}
+	operands := []x86TypedByteOperand{source, destination}
+	if form.other.Kind != OpReg {
+		// The native memory operation uses the address before writing
+		// the old memory value back to the source register.
+		operands[0], operands[1] = destination, source
+	}
+	return x86TypedByteEffect{operands: operands, flagsDefined: x86ByteFlagsAll}, true, nil
+}
+
 func parseAMD64ExchangeForm(goarch string, op Op, spec amd64ExchangeSpec, ins Instr) (amd64ExchangeForm, error) {
 	invalid := func(reason string) (amd64ExchangeForm, error) {
 		return amd64ExchangeForm{}, fmt.Errorf("%s %s %s: %q", goarch, op, reason, ins.Raw)
