@@ -271,15 +271,22 @@ func decodedX86NumericalConversionBoundary(code []byte, mode int, memory x86RawM
 		return ins, length, known, err
 	}
 	p, known := decodeX86RawVectorEncoding(code)
-	if known && p.mapNumber == 1 {
-		switch {
-		case p.opcode == 0x51 && p.pp < 2:
-			return decodedX86SameWidthConversionInstructionWithMemory(code, mode, memory)
-		case p.opcode == 0x5b && p.pp == 0:
-			return decodedX86SameWidthConversionInstructionWithMemory(code, mode, memory)
-		case p.opcode == 0xe6 && p.pp == 2:
-			return decodedX86PackedDoubleDwordInstructionWithMemory(code, mode, memory)
-		}
+	if !known {
+		return Instr{}, 0, false, nil
+	}
+	switch {
+	case p.mapNumber == 2 && p.opcode == 0x13, p.mapNumber == 3 && p.opcode == 0x1d:
+		return decodedX86PackedHalfConversionInstructionWithMemory(code, mode, memory)
+	case p.mapNumber != 1:
+		return Instr{}, 0, false, nil
+	case p.opcode == 0x5a && p.pp < 2:
+		return decodedX86PackedPrecisionConvertInstructionWithMemory(code, mode, memory)
+	case p.opcode == 0x5a:
+		return decodedX86ScalarPrecisionConvertInstructionWithMemory(code, mode, memory)
+	case p.opcode == 0x51 && p.pp < 2, p.opcode == 0x5b && p.pp == 0:
+		return decodedX86SameWidthConversionInstructionWithMemory(code, mode, memory)
+	case p.opcode == 0xe6 && p.pp == 2:
+		return decodedX86PackedDoubleDwordInstructionWithMemory(code, mode, memory)
 	}
 	return Instr{}, 0, false, nil
 }

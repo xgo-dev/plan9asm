@@ -91,19 +91,31 @@ func x86TypedScalarPrecisionByteEffect(op Op, ins Instr, arch string) (x86TypedB
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true}
-	for index, operand := range ins.Args {
-		width := int64(16)
-		if index == 0 {
-			width = int64(form.spec.inputBits / 8)
-		} else if index == form.mask {
-			width = 8
-		}
-		effect.operands = append(effect.operands, x86TypedByteOperand{
-			index: index, operand: operand, width: width,
-			read:  index != form.destination || form.spec.legacy || form.mask >= 0 && !form.zeroing,
-			write: index == form.destination,
-		})
+	active := x86CallerVectorByteMask(int64(form.spec.outputBits / 8))
+	upper := uint64(0xffff) &^ active
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		operands:            make([]x86TypedByteOperand, 0, 4),
 	}
+	effect.operands = append(effect.operands, x86TypedByteOperand{
+		index: 0, operand: ins.Args[0], width: int64(form.spec.inputBits / 8), read: true,
+	})
+	destination := x86TypedByteOperand{
+		index: form.destination, operand: ins.Args[form.destination], width: 16, write: true,
+	}
+	if form.spec.legacy {
+		effect.vector.upperWrite = x86TypedVectorUpperPreserve
+		destination.read, destination.requiredBytes, destination.preservedBytes = true, upper, upper
+	} else {
+		effect.operands = append(effect.operands, x86TypedByteOperand{
+			index: form.second, operand: ins.Args[form.second], width: 16, read: true, requiredBytes: upper,
+		})
+		if form.mask >= 0 && !form.zeroing {
+			destination.requiredBytes = active
+		}
+	}
+	effect.operands = append(effect.operands, destination)
+	effect.addWritemask(ins, form.mask, form.zeroing)
 	return effect, true, nil
 }

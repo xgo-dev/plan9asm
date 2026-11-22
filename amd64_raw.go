@@ -4612,6 +4612,10 @@ func decodedX86VPERMQInstruction(code []byte, mode int) (instruction Instr, leng
 // handles EVEX high X registers, memory, masks, zeroing, SAE, and all four
 // embedded rounding modes. x/arch v0.14 can split VCVTSD2SS into POP/ROLL.
 func decodedX86ScalarPrecisionConvertInstruction(code []byte, mode int) (instruction Instr, length int, ok bool, err error) {
+	return decodedX86ScalarPrecisionConvertInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86ScalarPrecisionConvertInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (instruction Instr, length int, ok bool, err error) {
 	if mode != 32 && mode != 64 {
 		return Instr{}, 0, false, nil
 	}
@@ -4651,7 +4655,7 @@ func decodedX86ScalarPrecisionConvertInstruction(code []byte, mode int) (instruc
 			if mode == 32 && destinationNumber >= 8 {
 				return Instr{}, 0, true, fmt.Errorf("extended destination register in 32-bit mode")
 			}
-			source, consumed, decodeErr := decodedX86VEXVectorRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, "X")
+			source, consumed, decodeErr := memory.vex(code[modRMIndex:], mode, bExt, xExt, segment, "X")
 			if decodeErr != nil {
 				return Instr{}, 0, true, decodeErr
 			}
@@ -4706,7 +4710,7 @@ func decodedX86ScalarPrecisionConvertInstruction(code []byte, mode int) (instruc
 		opcodeIndex := i + vexLength
 		modRMIndex := opcodeIndex + 1
 		modRM := code[modRMIndex]
-		first, consumed, decodeErr := decodedX86VEXVectorRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, "X")
+		first, consumed, decodeErr := memory.vex(code[modRMIndex:], mode, bExt, xExt, segment, "X")
 		if decodeErr != nil {
 			return Instr{}, 0, true, decodeErr
 		}
@@ -4787,7 +4791,7 @@ func decodedX86ScalarPrecisionConvertInstruction(code []byte, mode int) (instruc
 	rHighExt := int(^p0>>4) & 1
 	xExt := int(^p0>>6) & 1
 	bExt := int(^p0>>5) & 1
-	first, consumed, decodeErr := decodedX86EVEXRMOperand(code[modRMIndex:], mode, bExt, xExt, segment, "X", inputBytes)
+	first, consumed, decodeErr := memory.evex(code[modRMIndex:], mode, bExt, xExt, segment, "X", inputBytes)
 	if decodeErr != nil {
 		return Instr{}, 0, true, decodeErr
 	}

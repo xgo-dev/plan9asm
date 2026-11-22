@@ -69,13 +69,24 @@ func x86TypedPackedPrecisionByteEffect(op Op, ins Instr, arch string) (x86TypedB
 	if form.memory >= 0 {
 		width = form.memoryBytes
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: 0, operand: ins.Args[0], width: int64(width), read: true},
-		{index: form.destination, operand: ins.Args[form.destination], width: int64(form.shape.destinationBytes),
-			read: form.mask >= 0 && !form.properties.zeroing, write: true},
-	}}
-	if form.mask >= 0 {
-		effect.operands = append(effect.operands, x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true})
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		operands: []x86TypedByteOperand{
+			{index: 0, operand: ins.Args[0], width: int64(width), read: true},
+			{index: form.destination, operand: ins.Args[form.destination], width: int64(form.shape.destinationBytes), write: true},
+		},
+	}
+	if form.spec.legacy {
+		effect.vector.upperWrite = x86TypedVectorUpperPreserve
+		if form.memoryBytes == 16 {
+			effect.vector.memoryAlignment = 16
+		}
+	}
+	effect.addWritemask(ins, form.mask, form.properties.zeroing)
+	if effect.operands[1].read {
+		active := int64(form.shape.lanes * form.spec.destinationBits / 8)
+		effect.operands[1].requiredBytes = x86CallerVectorByteMask(active)
 	}
 	return effect, true, nil
 }

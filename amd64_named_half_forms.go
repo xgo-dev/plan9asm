@@ -150,11 +150,26 @@ func x86TypedNamedHalfByteEffect(op Op, ins Instr, arch string) (x86TypedByteEff
 	if f.undefinedOpcode() {
 		return x86TypedByteEffect{}, true, fmt.Errorf("%w: half EVEX.z memory encoding has no ordinary byte continuation", ErrProbeNeedsContext)
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: f.source, operand: ins.Args[f.source], width: int64(f.inputBytes), read: true},
-		{index: f.destination, operand: ins.Args[f.destination], width: int64(f.outputBytes),
-			read: f.mask >= 0 && !f.zeroing && f.memory != f.destination, write: true},
-	}}
+	destination := x86TypedByteOperand{
+		index: f.destination, operand: ins.Args[f.destination], width: int64(f.outputBytes), write: true,
+	}
+	if f.memory == f.destination {
+		destination.partialWrite = f.mask >= 0
+	} else {
+		destination.width = int64(f.destinationBytes)
+		if f.mask >= 0 && !f.zeroing {
+			destination.read = true
+			destination.requiredBytes = x86CallerVectorByteMask(int64(f.outputBytes))
+		}
+	}
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		operands: []x86TypedByteOperand{
+			{index: f.source, operand: ins.Args[f.source], width: int64(f.inputBytes), read: true},
+			destination,
+		},
+	}
 	if f.mask >= 0 {
 		effect.operands = append(effect.operands, x86TypedByteOperand{index: f.mask, operand: ins.Args[f.mask], width: 8, read: true})
 	}

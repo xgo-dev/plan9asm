@@ -14,7 +14,7 @@ func (c *amd64Ctx) lowerPackedPrecisionConvert(op Op, ins Instr) (bool, bool, er
 	if !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) {
 		return true, false, fmt.Errorf("%w: %s needs its matching native x86 MXCSR target", ErrProbeNeedsContext, op)
 	}
-	if c.fpScalarSource.x86SourceStack != nil || c.fpScalarSource.x86FixedLocal != nil {
+	if c.fpScalarSource.x86SourceStack != nil {
 		return true, false, fmt.Errorf("%w: %s retains its separate source/frame owner", ErrProbeNeedsContext, op)
 	}
 	source := ins.Args[0]
@@ -27,7 +27,7 @@ func (c *amd64Ctx) lowerPackedPrecisionConvert(op Op, ins Instr) (bool, bool, er
 				return true, false, fmt.Errorf("%w: %s cannot use opaque pointer bits as floating input", ErrProbeNeedsContext, op)
 			}
 		}
-	} else if form.memory >= 0 && !c.nativeMemoryOperand(ins, form.memory) {
+	} else if form.memory >= 0 && !c.nativeMemoryOperand(ins, form.memory) && !c.fixedLocalMemoryCertified(ins, form.memory) {
 		return true, false, fmt.Errorf("%w: %s needs its original native source address", ErrProbeNeedsContext, op)
 	}
 	base, _, _ := strings.Cut(strings.ToLower(string(op)), ".")

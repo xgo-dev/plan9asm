@@ -17,7 +17,7 @@ func (c *amd64Ctx) lowerNamedHalfConversion(op Op, ins Instr) (bool, bool, error
 	if !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) {
 		return true, false, fmt.Errorf("%w: %s needs its matching native x86 MXCSR target", ErrProbeNeedsContext, op)
 	}
-	if c.fpScalarSource.x86SourceStack != nil || c.fpScalarSource.x86FixedLocal != nil {
+	if c.fpScalarSource.x86SourceStack != nil {
 		return true, false, fmt.Errorf("%w: %s retains its independent frame/native source owner", ErrProbeNeedsContext, op)
 	}
 	if f.memory >= 0 {
@@ -31,7 +31,7 @@ func (c *amd64Ctx) lowerNamedHalfConversion(op Op, ins Instr) (bool, bool, error
 					return true, false, fmt.Errorf("%w: %s cannot convert opaque pointer bits", ErrProbeNeedsContext, op)
 				}
 			}
-		} else if !c.nativeMemoryOperand(ins, f.memory) {
+		} else if !c.nativeMemoryOperand(ins, f.memory) && !c.fixedLocalMemoryCertified(ins, f.memory) {
 			return true, false, fmt.Errorf("%w: %s requires its original native address", ErrProbeNeedsContext, op)
 		}
 	}

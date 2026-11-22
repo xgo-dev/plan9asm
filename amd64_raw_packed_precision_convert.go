@@ -10,6 +10,10 @@ import (
 // forms under VCVTPS2PD and VCVTPD2PSX/Y (or unsuffixed Z). Scalar F2/F3 5A
 // belongs to the separate scalar-precision grammar.
 func decodedX86PackedPrecisionConvertInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86PackedPrecisionConvertInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86PackedPrecisionConvertInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || p.mapNumber != 1 || p.opcode != 0x5a || (p.pp != 0 && p.pp != 1) {
 		return Instr{}, 0, false, nil
@@ -107,9 +111,9 @@ func decodedX86PackedPrecisionConvertInstruction(code []byte, mode int) (Instr, 
 	var consumed int
 	var err error
 	if p.evex {
-		source, consumed, err = decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, sourcePrefix, memoryScale)
+		source, consumed, err = memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, sourcePrefix, memoryScale)
 	} else {
-		source, consumed, err = decodedX86VEXVectorRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, sourcePrefix)
+		source, consumed, err = memory.vex(code[p.modRM:], mode, p.b, p.x, p.segment, sourcePrefix)
 	}
 	if err != nil {
 		return Instr{}, 0, true, err

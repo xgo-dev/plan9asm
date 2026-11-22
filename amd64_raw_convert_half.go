@@ -24,6 +24,10 @@ var x86RawHalfConversionForms = [...]x86RawHalfConversionForm{
 }
 
 func decodedX86PackedHalfConversionInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86PackedHalfConversionInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86PackedHalfConversionInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, recognized := decodeX86RawVectorEncoding(code)
 	if !recognized || p.pp != 1 {
 		return Instr{}, 0, false, nil
@@ -116,9 +120,9 @@ func decodedX86PackedHalfConversionInstruction(code []byte, mode int) (Instr, in
 			if form.rawOnly && p.broadcast && !registerSource {
 				width = amd64HalfConversionSpecs[string(form.op)].inputBits / 8
 			}
-			return decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, prefix, width)
+			return memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, prefix, width)
 		}
-		return decodedX86VEXVectorRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, prefix)
+		return memory.vex(code[p.modRM:], mode, p.b, p.x, p.segment, prefix)
 	}
 
 	args := make([]Operand, 0, 4)

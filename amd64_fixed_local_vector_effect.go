@@ -23,6 +23,9 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 		x86TypedTernaryLogicByteEffect,
 		x86TypedPackedDotByteEffect,
 		x86TypedCOMIByteEffect,
+		x86TypedScalarPrecisionByteEffect,
+		x86TypedPackedPrecisionByteEffect,
+		x86TypedNamedHalfByteEffect,
 	} {
 		if known {
 			break
@@ -37,7 +40,7 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 		return x86TypedByteEffect{}, true, goAMD64FrameContext("fixed local vector form is not closed: %v", err)
 	}
 	upper := effect.vector.upperWrite
-	valid := upper == x86TypedVectorUpperPreserve && effect.vector.memoryAlignment == 16 ||
+	valid := upper == x86TypedVectorUpperPreserve && (effect.vector.memoryAlignment == 1 || effect.vector.memoryAlignment == 16) ||
 		(upper == x86TypedVectorUpperZero || upper == x86TypedVectorNoWrite) && effect.vector.memoryAlignment == 1
 	for _, operand := range effect.operands {
 		switch operand.operand.Kind {
