@@ -22,7 +22,10 @@ func (c *amd64Ctx) lowerMOVNTI(op Op, ins Instr) (ok bool, terminated bool, err 
 		return true, false, fmt.Errorf("%w: MOVNTI needs its original named x86 target and address size", ErrProbeNeedsContext)
 	}
 	if !c.nativeMemoryOperand(ins, 1) {
-		return true, false, fmt.Errorf("%w: MOVNTI needs native storage, not logical FP/AUTO bytes", ErrProbeNeedsContext)
+		access, valid := c.fixedLocalMemoryAccess(ins, 1)
+		if !valid || !access.write || access.width != int64(form.bits/8) {
+			return true, false, fmt.Errorf("%w: MOVNTI needs native storage, not logical FP/AUTO bytes", ErrProbeNeedsContext)
+		}
 	}
 	return true, false, c.emitMOVNTI(form)
 }

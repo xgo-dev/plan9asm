@@ -16,6 +16,19 @@ func fixedLocalGPByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	if effect, known, err := x86TypedScalarFloatIntegerByteEffect(ins.Op, ins, "amd64"); known {
 		return effect, true, err
 	}
+	if form, known, err := x86MOVNTIProperties(ins.Op, ins, "amd64"); known {
+		if err != nil {
+			return x86TypedByteEffect{}, true, err
+		}
+		if form.destination.Kind != OpMem {
+			return x86TypedByteEffect{}, true, goAMD64FrameContext("fixed local MOVNTI requires a native memory destination")
+		}
+		width := int64(form.bits / 8)
+		return x86TypedByteEffect{operands: []x86TypedByteOperand{
+			{index: 0, operand: form.source, width: width, read: true},
+			{index: 1, operand: form.destination, width: width, write: true},
+		}}, true, nil
+	}
 	form, known, err := x86ScalarCompareProperties(ins.Op, ins, "amd64")
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err

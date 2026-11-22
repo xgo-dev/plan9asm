@@ -1,8 +1,8 @@
 package plan9asm
 
 // Reuse the complete scalar-lane grammar, including Go's GP-number spellings.
-// This owner binds only low physical X registers and ordinary memory. Logical
-// FP fields and EVEX high banks retain their independent entry contracts.
+// The grammar enforces the legacy and EVEX register banks. Logical FP fields
+// retain their independent entry contract.
 func fixedLocalScalarLaneProperties(ins Instr) (x86ScalarLaneForm, bool, error) {
 	form, known, err := x86ScalarLaneProperties(ins, "amd64")
 	if !known {
@@ -12,18 +12,6 @@ func fixedLocalScalarLaneProperties(ins Instr) (x86ScalarLaneForm, bool, error) 
 	if valid && form.memory >= 0 {
 		kind := ins.Args[form.memory].Kind
 		valid = kind == OpMem || kind == OpSym
-	}
-	if valid {
-		vectors := [2]int{form.source, -1}
-		if form.insert {
-			vectors = [2]int{form.base, form.destination}
-		}
-		for _, index := range vectors {
-			if index >= 0 {
-				register, physical := amd64ParseXReg(ins.Args[index].Reg)
-				valid = valid && physical && register < 16
-			}
-		}
 	}
 	if !valid {
 		return form, true, goAMD64FrameContext("fixed local scalar-lane form lacks a bound physical role: %s", ins.Op)

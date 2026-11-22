@@ -235,7 +235,7 @@ func TestGoAMD64FixedLocalScalarLaneBoundaries(t *testing.T) {
 		"PEXTRB $0,X7,AX", "PINSRB $0,AX,X7\nPEXTRB $1,X7,AX",
 		"PINSRB $0,AX,X7\nMOVOU X7,128(BP)", "PEXTRQ $0,X1,SP", "PEXTRD $0,X1,BP",
 		"PINSRW $0,M0,X1", "PEXTRW $0,X1,M0", "VPINSRB $0,M0,X1,X2",
-		"VPINSRB $0,AX,X1,X16", "VPEXTRB $0,X16,AX", "VPINSRD $0,AX,X1,K1,X2",
+		"VPINSRB $0,AX,X7,X16\nVPEXTRB $1,X16,AX", "VPEXTRB $0,X16,AX", "VPINSRD $0,AX,X1,K1,X2",
 	} {
 		t.Run(row, func(t *testing.T) {
 			fn, sig, source := fixedLocalVEXFixture(t, row)
