@@ -89,6 +89,9 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 
 	for _, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
+		if err := validateWASMRawReturn(ins, op); err != nil {
+			return FuncSig{}, err
+		}
 		// Validate typed source formats even when the instruction is dead,
 		// matching translateFuncWASM's prepass. Retain these descriptors for
 		// live stack inference instead of parsing them again.

@@ -27,6 +27,24 @@ type wasmControlFrame struct {
 	inElse     bool
 }
 
+func validateWASMRawReturn(ins Instr, op string) error {
+	// Go accepts one- and two-operand source spellings and emits the same
+	// return instruction. These operands do not supply the stack result.
+	if op == "WASMRETURN" && len(ins.Args) > 2 {
+		return fmt.Errorf("Return accepts at most two ignored source operands: %q", ins.Raw)
+	}
+	return nil
+}
+
+func wasmPhysicalStackType(typ LLVMType) LLVMType {
+	switch typ {
+	case I1, I8, I16, Ptr:
+		return I32
+	default:
+		return typ
+	}
+}
+
 // translateFuncWASM lowers WebAssembly Plan 9 stack instructions into ordinary
 // LLVM SSA. The direct ABI maps FP operands through FuncSig.Frame. The Go ABI
 // instead recreates the official compiler's linear-memory stack, register
@@ -41,6 +59,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	needsResumePlan := false
 	for i, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
+		if err := validateWASMRawReturn(ins, op); err != nil {
+			return err
+		}
 		if op == "RESUMEPOINT" || wasmLocalJumpLabel(ins, op) != "" {
 			if !goABI {
 				return fmt.Errorf("%s requires the Go WebAssembly ABI", op)
@@ -620,6 +641,10 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		v, err := pop("Return")
 		if err != nil {
 			return err
+		}
+		want := wasmPhysicalStackType(physicalRet)
+		if v.stackAddr || wasmPhysicalStackType(v.typ) != want {
+			return fmt.Errorf("Return expects a %s stack value, got %s", want, v.typ)
 		}
 		v, err = cast(v, physicalRet, false)
 		if err != nil {
@@ -1641,11 +1666,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return err
 			}
 		case "WASMRETURN":
-			if useGoStack {
-				if err := emitRawReturn(); err != nil {
-					return err
-				}
-			} else if err := emitReturn(); err != nil {
+			if err := emitRawReturn(); err != nil {
 				return err
 			}
 		case "JMP":
