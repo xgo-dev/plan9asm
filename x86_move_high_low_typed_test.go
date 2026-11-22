@@ -235,7 +235,14 @@ func TestX86HighLowMoveCompleteTypedByteEffects(t *testing.T) {
 					} else if index == 1 {
 						required = baseMask
 					}
-					if operand.index != index || !reflect.DeepEqual(operand.operand, ins.Args[index]) || operand.width != 16 || operand.read != (index < 2) || operand.write != (index == destination) || operand.requiredBytes != required {
+					preserved := uint64(0)
+					if !row.vector && index == destination {
+						preserved = baseMask
+					}
+					if operand.index != index || operand.operand.Kind != OpReg ||
+						!reflect.DeepEqual(operand.operand, ins.Args[index]) || operand.width != 16 ||
+						operand.read != (index < 2) || operand.write != (index == destination) ||
+						operand.requiredBytes != required || operand.preservedBytes != preserved {
 						t.Fatal("selected halves/base/write were conflated", index, operand)
 					}
 				}
@@ -243,8 +250,10 @@ func TestX86HighLowMoveCompleteTypedByteEffects(t *testing.T) {
 				if row.vector {
 					upper = x86TypedVectorUpperZero
 				}
-				if effect.vector.upperWrite != upper || effect.vector.memoryAlignment != 0 {
-					t.Fatal("register move acquired memory alignment or wrong upper rule", effect.vector)
+				// Alignment 1 is neutral for typed transfers. Every operand
+				// above must still be a register with its exact byte roles.
+				if effect.vector.upperWrite != upper || effect.vector.memoryAlignment != 1 {
+					t.Fatal("register move has the wrong upper-byte rule or alignment default", effect.vector)
 				}
 			})
 		}
