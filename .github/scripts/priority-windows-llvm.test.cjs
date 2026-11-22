@@ -92,7 +92,8 @@ test('all three bootstrap attempts explicitly own distinct fresh runner-temp loc
     return location;
   });
   assert.equal(new Set(locations).size, 3);
-  assert.doesNotMatch(action, /release: false|Remove-Item|rm\s+-[rf]|SigLevel\s*=|--nosignature|--skippgpcheck/);
+  assert.doesNotMatch(bootstrapSteps().join('\n'), /release: false|Remove-Item|rm\s+-[rf]/);
+  assert.doesNotMatch(action, /SigLevel\s*=|--nosignature|--skippgpcheck/);
 });
 
 test('bootstrap success short-circuits retries and exhausted bootstrap remains fatal', () => {
@@ -106,7 +107,7 @@ test('bootstrap success short-circuits retries and exhausted bootstrap remains f
   assert.equal(exhausted.installerMayRun, false, 'no LLVM transaction or build environment after final failure');
 });
 
-function install(outcomes, version = '22.1.8') {
+function install(outcomes, version = '22.1.8', interruptedSignature = false) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'plan9asm-llvm-install-'));
   try {
     const installStep = action.slice(action.indexOf('    - name: Install LLVM 22')).split(/\n    - name:/)[0];
@@ -120,6 +121,31 @@ pacman() {
   printf 'PACMAN:'
   printf ' %s' "$@"
   printf '\\n'
+  if [[ "$MOCK_INTERRUPTED_SIGNATURE" == 1 ]]; then
+    local cache="$MOCK_DEFAULT_CACHE" argument
+    local cache_flag=false
+    for argument in "$@"; do
+      if [[ "$cache_flag" == true ]]; then cache="$argument"; break; fi
+      if [[ "$argument" == --cachedir ]]; then cache_flag=true; fi
+    done
+    printf 'CACHE:%s\\n' "$cache"
+    mkdir -p "$cache"
+    local unsigned="$cache/mingw-w64-clang-x86_64-libc++-22.1.8-1-any.pkg.tar.zst"
+    local signed="$cache/mingw-w64-clang-x86_64-llvm-22.1.8-2-any.pkg.tar.zst"
+    if (( mock_pacman_calls == 1 )); then
+      touch "$unsigned" "$unsigned.sig.part" "$signed"
+      printf 'complete signature\\n' > "$signed.sig"
+    else
+      if [[ -e "$unsigned" || -e "$unsigned.sig.part" ]]; then
+        echo 'reused a package without its required signature' >&2
+        return 71
+      fi
+      if [[ ! -f "$signed" || ! -s "$signed.sig" ]]; then
+        echo 'redownloaded a complete signed package' >&2
+        return 72
+      fi
+    fi
+  fi
   return "\${outcomes[mock_pacman_calls - 1]}"
 }
 sleep() { test "$1" = 5; printf 'RETRY_WAIT\\n'; }
@@ -133,6 +159,9 @@ ${run}`;
       encoding: 'utf8', timeout: 5000,
       env: {
         ...process.env,
+        TMPDIR: directory,
+        MOCK_DEFAULT_CACHE: path.join(directory, 'default package cache'),
+        MOCK_INTERRUPTED_SIGNATURE: interruptedSignature ? '1' : '0',
         LLVM_VERSION: '22.1.8', LLVM_PACKAGE_VERSION: '22.1.8-2',
         LLVM_RUNTIME_PACKAGE_VERSION: '22.1.8-1', MOCK_LLVM_VERSION: version,
         GITHUB_ENV: path.join(directory, 'environment'), GITHUB_PATH: path.join(directory, 'path'),
@@ -141,6 +170,9 @@ ${run}`;
     assert.ifError(result.error);
     return {
       ...result,
+      cacheCleaned: !result.stdout.split('\n')
+        .filter(line => line.startsWith('CACHE:'))
+        .some(line => fs.existsSync(line.slice('CACHE:'.length))),
       environment: fs.existsSync(path.join(directory, 'environment'))
         ? fs.readFileSync(path.join(directory, 'environment'), 'utf8') : '',
     };
@@ -161,6 +193,16 @@ test('actual installer script retries the identical pinned transaction only', ()
     assert.equal((result.stdout.match(/RETRY_WAIT/g) || []).length, outcomes.length - 1);
     assert.equal(result.environment, '', 'installation alone cannot publish attempt-dependent bindings');
   }
+});
+
+test('an interrupted signature download retries the orphan without discarding signed packages', () => {
+  const result = install([255, 0], '22.1.8', true);
+  assert.equal(result.status, 0, result.stderr);
+  const caches = result.stdout.split('\n').filter(line => line.startsWith('CACHE:'));
+  assert.equal(caches.length, 2);
+  assert.equal(new Set(caches).size, 1, 'reuse complete downloads in the job-owned cache');
+  assert.doesNotMatch(caches[0], /default package cache/);
+  assert.equal(result.cacheCleaned, true);
 });
 
 test('exhausted installation and wrong LLVM version publish no build environment', () => {

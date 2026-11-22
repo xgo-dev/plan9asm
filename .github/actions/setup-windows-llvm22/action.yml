@@ -69,11 +69,14 @@ runs:
           urls+=("$repo/$prefix-$package-any.pkg.tar.zst")
         done
 
+        package_cache=$(mktemp -d)
+        trap 'rm -rf -- "$package_cache"' EXIT
+
         # libc++ supplies the compiler runtime. Keep the exact LLVM component
         # set mutually consistent while acknowledging the cc-libs virtual.
         install_status=1
         for attempt in 1 2 3; do
-          if pacman --noconfirm -U \
+          if pacman --noconfirm -U --cachedir "$package_cache" \
             --assume-installed "$prefix-cc-libs=$LLVM_VERSION" \
             "${urls[@]}"; then
             install_status=0
@@ -82,6 +85,14 @@ runs:
             install_status=$?
           fi
           if (( attempt < 3 )); then
+            # pacman reuses a cached archive even if retrieval of its
+            # required signature timed out. Retry only the incomplete pair.
+            for url in "${urls[@]}"; do
+              archive="$package_cache/${url##*/}"
+              if [[ -f "$archive" && ! -s "$archive.sig" ]]; then
+                rm -f -- "$archive" "$archive.sig" "$archive.sig.part"
+              fi
+            done
             echo "Pinned LLVM install attempt $attempt failed ($install_status); retrying in 5 seconds" >&2
             sleep 5
           fi
