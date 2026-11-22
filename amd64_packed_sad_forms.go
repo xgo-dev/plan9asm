@@ -104,6 +104,30 @@ func (form x86PackedSADForm) constantZero(ins Instr) bool {
 		ins.Args[form.first].Reg == ins.Args[form.second].Reg
 }
 
+func x86TypedPackedSADByteEffect(ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	form, known, err := x86PackedSADProperties(ins, arch)
+	if !known || err != nil {
+		return x86TypedByteEffect{}, known, err
+	}
+	effect := x86PackedBinaryDependencyEffect(ins, form.x86PackedBinaryForm, ins.Args[form.first])
+	if form.constantZero(ins) {
+		effect.operands[0].read = false
+		effect.operands[1].read = false
+	} else if form.spec.kind != amd64PackedSADBlockSum {
+		var first, second uint64
+		for output := 0; output < form.byteWidth; output += 2 {
+			a, b := form.wordInputs(output)
+			first |= a
+			second |= b
+		}
+		if form.memory < 0 {
+			effect.operands[0].requiredBytes = first
+		}
+		effect.operands[1].requiredBytes = second
+	}
+	return effect, true, nil
+}
+
 // Required byte masks for one output word. PSADBW's other six bytes in
 // each qword are independent known zero; MPS/DBPS compute all output words.
 func (form x86PackedSADForm) wordInputs(outputByte int) (first, second uint64) {

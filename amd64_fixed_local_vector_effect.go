@@ -16,6 +16,9 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 	} else {
 		effect, known, err = x86PackedBinaryByteEffect(ins.Op, ins, "amd64")
 	}
+	if !known {
+		effect, known, err = x86TypedPackedSADByteEffect(ins, "amd64")
+	}
 	for _, project := range [...]func(Op, Instr, string) (x86TypedByteEffect, bool, error){
 		x86TypedPackedIntegerCompareByteEffect,
 		x86TypedPackedAbsSignByteEffect,

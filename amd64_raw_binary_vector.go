@@ -82,3 +82,17 @@ func decodedX86BinaryVectorOperandsWithMemory(code []byte, p x86RawVectorEncodin
 	}
 	return instruction, p.modRM + size, true, nil
 }
+
+// The immediate follows the encoded r/m operand and leads the Plan 9 operands.
+func decodedX86VectorLeadingImm8(code []byte, ins Instr, length int) (Instr, int, bool, error) {
+	if len(code) <= length {
+		return Instr{}, 0, true, fmt.Errorf("%s is missing its imm8", ins.Op)
+	}
+	ins.Args = append([]Operand{{Kind: OpImm, Imm: int64(code[length])}}, ins.Args...)
+	parts := make([]string, len(ins.Args))
+	for index, arg := range ins.Args {
+		parts[index] = arg.String()
+	}
+	ins.Raw = fmt.Sprintf("%s %s", ins.Op, strings.Join(parts, ", "))
+	return ins, length + 1, true, nil
+}

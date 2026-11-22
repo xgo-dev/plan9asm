@@ -1,9 +1,6 @@
 package plan9asm
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // The Go 1.27 table has one GFNI family: multiply (0F38 CF, W0) and the
 // affine/inverse pair (0F3A CE/CF, W1). Its VEX rows are X/Y; EVEX adds Z,
@@ -41,22 +38,9 @@ func decodedX86GFNIInstructionWithMemory(code []byte, mode int, memory x86RawMem
 	if immediate {
 		laneBits = 64
 	}
-	instruction, length, _, err := decodedX86BinaryVectorOperandsWithMemory(code, p, mode, op, laneBits, memory)
-	if err != nil {
-		return Instr{}, 0, true, err
+	instruction, length, known, err := decodedX86BinaryVectorOperandsWithMemory(code, p, mode, op, laneBits, memory)
+	if err != nil || !immediate {
+		return instruction, length, known, err
 	}
-	if !immediate {
-		return instruction, length, true, nil
-	}
-	if len(code) <= length {
-		return Instr{}, 0, true, fmt.Errorf("%s is missing its imm8", op)
-	}
-	instruction.Args = append([]Operand{{Kind: OpImm, Imm: int64(code[length])}}, instruction.Args...)
-	length++
-	parts := make([]string, len(instruction.Args))
-	for index, arg := range instruction.Args {
-		parts[index] = arg.String()
-	}
-	instruction.Raw = fmt.Sprintf("%s %s", instruction.Op, strings.Join(parts, ", "))
-	return instruction, length, true, nil
+	return decodedX86VectorLeadingImm8(code, instruction, length)
 }
