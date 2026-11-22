@@ -33,7 +33,9 @@ func fixedLocalMemoryAddress(ins Instr, index int, frame int64) (MemRef, error) 
 		return fail()
 	}
 	memory := operand.Mem
-	if memory.Base != SP {
+	name, indexed := strings.CutSuffix(memory.Sym, "(SP)")
+	indexed = indexed && memory.Index != ""
+	if memory.Base != SP && !indexed {
 		if memory.OffRaw != "" {
 			return fail()
 		}
@@ -47,6 +49,17 @@ func fixedLocalMemoryAddress(ins Instr, index int, frame int64) (MemRef, error) 
 	parsed, err := parseOperandForArch(ArchAMD64, literals[index])
 	if err != nil || !reflect.DeepEqual(parsed, ins.Args[index]) {
 		return fail()
+	}
+	if indexed {
+		offset, named := parseNamedStackConstantOffset(name)
+		named = named || validPPIdentifier(name)
+		if !named || frame <= 0 || offset > math.MaxInt64-frame ||
+			memory.Base != "" && memory.Base != SP || memory.Off != 0 || memory.OffRaw != "" ||
+			memory.IndexExt != "" || memory.Segment != "" {
+			return fail()
+		}
+		memory.Base, memory.Sym, memory.Off = SP, "", frame+offset
+		return memory, nil
 	}
 	spelling := strings.TrimSpace(literals[index])
 	if addressMove {
@@ -78,6 +91,45 @@ func fixedLocalMemoryAddress(ins Instr, index int, frame int64) (MemRef, error) 
 	memory.Off += frame
 	memory.OffRaw = ""
 	return memory, nil
+}
+
+type x86FixedLocalIndexedMove struct {
+	load  x86ScalarNativeLoadForm
+	store x86ScalarNativeStoreForm
+}
+
+// Use the same register/width grammar as a physical MOV only after replaying
+// the named AUTO spelling. The view can validate the encoding and select its
+// byte register. It does not establish the index or any initialized bytes.
+func fixedLocalIndexedScalarMove(ins Instr, frame int64) (move x86FixedLocalIndexedMove, known bool, err error) {
+	if len(ins.Args) != 2 || x86RawReturnScalarMoveBytes(ins.Op) == 0 {
+		return move, false, nil
+	}
+	for index, operand := range ins.Args {
+		if operand.Kind != OpMem || operand.Mem.Index == "" || !strings.HasSuffix(operand.Mem.Sym, "(SP)") {
+			continue
+		}
+		view := ins
+		view.Args = append([]Operand(nil), ins.Args...)
+		physical, err := fixedLocalMemoryAddress(ins, index, frame)
+		if err != nil {
+			return move, true, err
+		}
+		view.Args[index].Mem = physical
+		if index == 0 {
+			form, matched, err := x86ScalarRegisterLoadProperties(ins.Op, view, "amd64")
+			if matched {
+				return x86FixedLocalIndexedMove{load: form}, true, err
+			}
+		} else {
+			form, matched, err := x86ScalarRegisterStoreProperties(ins.Op, view, "amd64")
+			if matched {
+				return x86FixedLocalIndexedMove{store: form}, true, err
+			}
+		}
+		return move, true, goAMD64FrameContext("named indexed AUTO lacks an ordinary scalar MOV encoding")
+	}
+	return move, false, nil
 }
 
 // This query resolves only a complete numerical constant index. It neither

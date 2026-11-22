@@ -1234,11 +1234,27 @@ func fixedLocalMove(ins *Instr, state *x86FixedLocalState, sig FuncSig, proof *x
 	if len(ins.Args) != 2 {
 		return goAMD64FrameContext("unproved fixed local scalar move")
 	}
-	value, err := fixedLocalReadValue(ins, 0, state, sig, proof, residue, width, false)
+	read, write := ins, ins
+	if move, named, err := fixedLocalIndexedScalarMove(*ins, proof.frame); named {
+		if err != nil {
+			return err
+		}
+		// Keep the actual memory operand on the side that records its proof.
+		view := *ins
+		view.Args = append([]Operand(nil), ins.Args...)
+		if move.load.bytes != 0 {
+			view.Args[1].Reg = move.load.destination
+			write = &view
+		} else {
+			view.Args[0] = move.store.source
+			read = &view
+		}
+	}
+	value, err := fixedLocalReadValue(read, 0, state, sig, proof, residue, width, false)
 	if err != nil {
 		return err
 	}
-	return fixedLocalWriteValue(ins, 1, 0, value, state, sig, proof, residue, width)
+	return fixedLocalWriteValue(write, 1, 0, value, state, sig, proof, residue, width)
 }
 
 func fixedLocalVectorStep(ins *Instr, state *x86FixedLocalState, proof *x86FixedLocalProof, residue int) error {

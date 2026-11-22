@@ -19,6 +19,9 @@ func GoAMD64FixedLocalFrameBindingNeeded(file *File, goarch string, options ...O
 		}
 		bases := fixedLocalCandidateBases(fn)
 		for _, ins := range fn.Instrs {
+			if _, named, err := fixedLocalIndexedScalarMove(ins, fn.FrameSize); named && err == nil {
+				return true
+			}
 			if len(ins.Args) == 2 && ins.Args[1].Kind == OpReg && ins.Args[1].Reg == SP {
 				if _, known, err := x86ScalarFloatIntegerProperties(ins, goarch); known && err == nil {
 					return true
