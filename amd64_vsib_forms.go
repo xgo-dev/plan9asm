@@ -162,6 +162,12 @@ func validateX86VSIBMemory(memory MemRef, indexBytes int, arch string) error {
 	if memory.Sym != "" {
 		return fmt.Errorf("Go's x86 assembler does not accept an SB base with VSIB")
 	}
+	if memory.IndexExt != "" || !x86MemoryDisplacementValid(memory.Off, arch) {
+		return fmt.Errorf("invalid VSIB extension or displacement for %s", arch)
+	}
+	if memory.OffRaw != "" {
+		return fmt.Errorf("%w: unresolved VSIB displacement", ErrProbeNeedsContext)
+	}
 	if memory.Base != "" && !isX86YrlRegisterForArch(memory.Base, arch) {
 		return fmt.Errorf("VSIB base is not a GP register for %s", arch)
 	}

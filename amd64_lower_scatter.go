@@ -87,7 +87,7 @@ func (c *amd64Ctx) emitScatter(form x86VSIBForm) error {
 		joinLabel := c.newTmp() + "_scatter_join"
 		fmt.Fprintf(c.b, "  br i1 %s, label %%%s, label %%%s\n", condition, storeLabel, skipLabel)
 		fmt.Fprintf(c.b, "%s:\n", storeLabel)
-		fmt.Fprintf(c.b, "  store i%d %%%s, %s %s, align 1\n", spec.elemBits, dataLane, pointerType, pointer)
+		fmt.Fprintf(c.b, "  store volatile i%d %%%s, %s %s, align 1\n", spec.elemBits, dataLane, pointerType, pointer)
 		fmt.Fprintf(c.b, "  br label %%%s\n", joinLabel)
 		fmt.Fprintf(c.b, "%s:\n", skipLabel)
 		fmt.Fprintf(c.b, "  br label %%%s\n", joinLabel)

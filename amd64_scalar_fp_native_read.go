@@ -951,7 +951,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		direction: c.abi0EntryDirection, mode32Calls: c.mode32FrameCalls(fn),
 	}
 	if err := checkX86ABI0ResultInitializationWithEntry(fn, sig, arch, transfer, true, false, true, entry); err != nil {
-		if !vectorEntry || !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
+		if !vectorEntry || x86ResultHasIndexOnlyVSIB(fn, arch) || !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
 			return err
 		}
 		return c.checkLoweredVectorEntry(fn, sig, arch, transfer, err)

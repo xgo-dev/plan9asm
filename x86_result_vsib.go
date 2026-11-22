@@ -39,11 +39,7 @@ func x86ResultVSIBStep(ins Instr, state *x86ResultState, arch string, native boo
 	if !native || !x86OrdinaryNativeMemoryOperand(form.memory, arch) {
 		return false, true
 	}
-	// Check the independent typed pointer base after consuming the numerical
-	// vector index. A vector index is not an ordinary GP or a contiguous tuple.
-	base := form.memory
-	base.Mem.Index, base.Mem.Scale = "", 0
-	if !x86ResultIncomingPointerAddressIdentity(base, state, arch) {
+	if !x86ResultVSIBAddress(form.memory, state, arch) {
 		return false, true
 	}
 	if !form.scatter {
@@ -55,4 +51,28 @@ func x86ResultVSIBStep(ins Instr, state *x86ResultState, arch string, native boo
 		state.writeVector(mask, form.dataBytes, required, false)
 	}
 	return true, true
+}
+
+// With no encoded GP base, the initialized vector index and displacement
+// supply the full numerical address. This proves only the architectural
+// inputs to the paired predicated access. In particular, the access may fault.
+func x86ResultVSIBAddress(address Operand, state *x86ResultState, arch string) bool {
+	if address.Mem.Base == "" {
+		return address.Mem.Segment == ""
+	}
+	address.Mem.Index, address.Mem.Scale = "", 0
+	return x86ResultIncomingPointerAddressIdentity(address, state, arch)
+}
+
+// The ordinary scratch fallback seeds entire vector slots. An index-only
+// data operation must get its address, predicate and merge/data from the
+// reaching source state, including when a prior vector operation made them.
+func x86ResultHasIndexOnlyVSIB(fn Func, arch string) bool {
+	for _, ins := range fn.Instrs {
+		if form, known, err := x86VSIBProperties(ins, arch); known && err == nil &&
+			!form.prefetch && form.memory.Mem.Base == "" {
+			return true
+		}
+	}
+	return false
 }

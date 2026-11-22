@@ -38,6 +38,20 @@ func TestX86VSIBDeadGatherActiveLanesKeepMemoryFaults(t *testing.T) {
 		fmt.Fprintf(&prototypes, "extern void %s(uint64_t *,uint64_t);\n", name)
 		fmt.Fprintf(&rows, "%s,\n", name)
 	}
+	for _, row := range []struct{ name, setup, instruction string }{
+		{"IndexGather", "VMOVQ CX,X1\n", "VPGATHERQQ X1,0(X0*1),X2"},
+		{"IndexScatter", "ANDQ $1,CX\nKMOVQ CX,K1\n", "VPSCATTERQQ X2,K1,0(X0*1)"},
+	} {
+		fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-16\nMOVQ address+0(FP),AX\nMOVQ mask+8(FP),CX\n", row.name)
+		source.WriteString("VMOVQ AX,X0\nVPXOR X2,X2,X2\n")
+		source.WriteString(row.setup)
+		fmt.Fprintln(&source, row.instruction)
+		source.WriteString("RET\n")
+		fmt.Fprintf(&declarations, "func %s(address uintptr, mask uint64)\n", row.name)
+		fmt.Fprintf(&prototypes, "extern void %s(uint64_t,uint64_t);\n", row.name)
+		fmt.Fprintf(&prototypes, "static void wrap%s(uint64_t *p,uint64_t mask) { %s((uint64_t)(uintptr_t)p,mask); }\n", row.name, row.name)
+		fmt.Fprintf(&rows, "wrap%s,\n", row.name)
+	}
 	x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", source.String())
 	driver := "#include <stdint.h>\n#include <stdio.h>\n#include <signal.h>\n#include <sys/resource.h>\n#include <sys/wait.h>\n#include <unistd.h>\n" + prototypes.String() + `
 int main(void) {
@@ -67,7 +81,7 @@ int main(void) {
             }
         }
     }
-    return observations == 16 ? 0 : 4;
+    return observations == 24 ? 0 : 4;
 }
 `
 	for _, api := range []string{"text", "module", "Go"} {
