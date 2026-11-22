@@ -92,6 +92,10 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err := validateWASMRawReturn(ins, op); err != nil {
 			return FuncSig{}, err
 		}
+		controlResult, err := parseWASMControlResult(ins, op)
+		if err != nil {
+			return FuncSig{}, err
+		}
 		// Validate typed source formats even when the instruction is dead,
 		// matching translateFuncWASM's prepass. Retain these descriptors for
 		// live stack inference instead of parsing them again.
@@ -289,18 +293,10 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 				return FuncSig{}, err
 			}
 			if op == "IF" {
-				result := LLVMType("")
-				if len(ins.Args) == 1 && ins.Args[0].Kind == OpImm {
-					result = wasmBlockResultType(ins.Args[0].Imm)
-				}
-				controls = append(controls, inferControl{base: copyStack(stack), result: result})
+				controls = append(controls, inferControl{base: copyStack(stack), result: controlResult})
 			}
 		case "BLOCK", "LOOP":
-			result := LLVMType("")
-			if len(ins.Args) == 1 && ins.Args[0].Kind == OpImm {
-				result = wasmBlockResultType(ins.Args[0].Imm)
-			}
-			controls = append(controls, inferControl{base: copyStack(stack), result: result})
+			controls = append(controls, inferControl{base: copyStack(stack), result: controlResult})
 		case "ELSE":
 			if len(controls) != 0 {
 				control := controls[len(controls)-1]
@@ -381,21 +377,6 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		returnType = Void
 	}
 	return FuncSig{Name: name, Args: args, Ret: returnType, ArgRegs: regs}, nil
-}
-
-func wasmBlockResultType(code int64) LLVMType {
-	switch code {
-	case 1:
-		return I32
-	case 2:
-		return I64
-	case 3:
-		return LLVMType("float")
-	case 4:
-		return LLVMType("double")
-	default:
-		return ""
-	}
 }
 
 func wasmRegisterCarries(reg Reg, want LLVMType) bool {

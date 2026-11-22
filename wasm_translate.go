@@ -27,6 +27,46 @@ type wasmControlFrame struct {
 	inElse     bool
 }
 
+func parseWASMControlResult(ins Instr, op string) (LLVMType, error) {
+	switch op {
+	case "BLOCK", "LOOP", "IF":
+	default:
+		return "", nil
+	}
+	if len(ins.Args) == 0 {
+		return "", nil
+	}
+	if len(ins.Args) != 1 {
+		return "", fmt.Errorf("%s expects at most one block type", ins.Op)
+	}
+	operand := ins.Args[0]
+	if operand.Kind != OpImm || operand.ImmRaw != "" || operand.ImmIsFloat {
+		return "", fmt.Errorf("%s block type must be an immediate integer", ins.Op)
+	}
+	// Go writes the empty block type for zero and 0x80 minus the
+	// immediate for the numeric and vector result types.
+	switch operand.Imm {
+	case 0:
+		return "", nil
+	case 1:
+		return I32, nil
+	case 2:
+		return I64, nil
+	case 3:
+		return "float", nil
+	case 4:
+		return "double", nil
+	case 5:
+		return wasmV128CoreType, nil
+	default:
+		return "", fmt.Errorf("%s has unsupported block type $%d", ins.Op, operand.Imm)
+	}
+}
+
+func wasmControlResultSlot(index int) string {
+	return fmt.Sprintf("wasm_control_result_%d", index)
+}
+
 func validateWASMRawReturn(ins Instr, op string) error {
 	// Go accepts one- and two-operand source spellings and emits the same
 	// return instruction. These operands do not supply the stack result.
@@ -55,12 +95,23 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	// Validate source format before dead-block removal. Pure dead operators may
 	// disappear, but malformed source must not acquire an apparent pass.
 	var memoryForms map[int]wasmMemoryForm
+	var controlResults map[int]LLVMType
 	bulkMemory := false
 	needsResumePlan := false
 	for i, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
 		if err := validateWASMRawReturn(ins, op); err != nil {
 			return err
+		}
+		resultType, err := parseWASMControlResult(ins, op)
+		if err != nil {
+			return err
+		}
+		if resultType != "" {
+			if controlResults == nil {
+				controlResults = make(map[int]LLVMType)
+			}
+			controlResults[i] = resultType
 		}
 		if op == "RESUMEPOINT" || wasmLocalJumpLabel(ins, op) != "" {
 			if !goABI {
@@ -266,6 +317,11 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		}
 	}
 	for index, ins := range fn.Instrs {
+		// A control can be entered on every iteration of an enclosing loop.
+		// Use one slot for the entire function, including at LLVM -O0.
+		if resultType := controlResults[index]; resultType != "" {
+			fmt.Fprintf(b, "  %%%s = alloca %s\n", wasmControlResultSlot(index), resultType)
+		}
 		for _, arg := range ins.Args {
 			var reg Reg
 			switch arg.Kind {
@@ -1387,29 +1443,16 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			}
 			pendingName = strings.TrimSuffix(ins.Args[0].Sym, ":")
 		case "BLOCK", "LOOP", "IF":
-			resultType := LLVMType("")
-			if len(ins.Args) == 1 {
-				if ins.Args[0].Kind != OpImm {
-					return fmt.Errorf("%s block type must be an immediate", ins.Op)
-				}
-				resultType = wasmBlockResultType(ins.Args[0].Imm)
-				if resultType == "" {
-					return fmt.Errorf("%s has unsupported block type $%d", ins.Op, ins.Args[0].Imm)
-				}
-			} else if len(ins.Args) != 0 {
-				return fmt.Errorf("%s expects at most one block type", ins.Op)
-			}
 			frame := &wasmControlFrame{
 				kind:       strings.ToLower(op),
 				name:       pendingName,
 				endLabel:   newLabel("wasm_control_end"),
 				baseStack:  copyStack(stack),
-				resultType: resultType,
+				resultType: controlResults[insIndex],
 			}
 			pendingName = ""
-			if resultType != "" {
-				frame.resultSlot = newLabel("wasm_control_result")
-				fmt.Fprintf(b, "  %%%s = alloca %s\n", frame.resultSlot, resultType)
+			if frame.resultType != "" {
+				frame.resultSlot = wasmControlResultSlot(insIndex)
 			}
 			switch op {
 			case "LOOP":
