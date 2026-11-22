@@ -1,7 +1,6 @@
 package plan9asm
 
 import (
-	"bytes"
 	"debug/elf"
 	"errors"
 	"fmt"
@@ -22,12 +21,15 @@ func TestARMMachineExceptionReturnOfficialForms(t *testing.T) {
 	}
 	var source strings.Builder
 	signatures := make(map[string]FuncSig, len(forms))
+	words := make(map[string][]uint32, len(forms))
 	for index, form := range forms {
 		name := fmt.Sprintf("restore%d", index)
 		fmt.Fprintf(&source, "TEXT %s(SB),516,$0-0\n %s\n", name, form)
 		signatures[name] = FuncSig{Name: name, Ret: Void, ARMEntry: &ARMMachineEntry{
 			Return: ARMMachineReturnException,
 		}}
+		// Go asm emits this unconditional A32 word for every RFE spelling.
+		words[name] = []uint32{0xe8fd8000}
 	}
 	requireARMGoAssemblerResult(t, source.String(), true)
 	file, err := Parse(ArchARM, source.String())
@@ -68,12 +70,12 @@ func TestARMMachineExceptionReturnOfficialForms(t *testing.T) {
 	}
 	for _, ir := range []string{text, module.String(), goTranslation.Module.String()} {
 		for _, level := range []string{"-O0", "-O2"} {
-			requireARMExceptionReturnObject(t, llc, level, ir, signatures)
+			requireARMExceptionReturnObject(t, llc, level, ir, words)
 		}
 	}
 }
 
-func requireARMExceptionReturnObject(t *testing.T, llc, level, ir string, signatures map[string]FuncSig) {
+func requireARMExceptionReturnObject(t *testing.T, llc, level, ir string, words map[string][]uint32) {
 	t.Helper()
 	dir := t.TempDir()
 	input, output := filepath.Join(dir, "restore.ll"), filepath.Join(dir, "restore.o")
@@ -105,20 +107,24 @@ func requireARMExceptionReturnObject(t *testing.T, llc, level, ir string, signat
 	}
 	count := 0
 	for _, symbol := range symbols {
-		if _, known := signatures[symbol.Name]; !known {
+		want, known := words[symbol.Name]
+		if !known {
 			continue
 		}
-		// Go asm emits this exact unconditional ARM word for every spelling.
-		want := []byte{0x00, 0x80, 0xfd, 0xe8}
-		if symbol.Size != 4 || symbol.Value+4 > uint64(len(code)) ||
-			!bytes.Equal(code[symbol.Value:symbol.Value+4], want) {
-			t.Fatalf("%s %s must contain exactly the ARM restore word: size=%d offset=%d",
+		if symbol.Size != uint64(len(want)*4) || symbol.Value+symbol.Size > uint64(len(code)) {
+			t.Fatalf("%s %s must contain exactly its frame-free source instructions: size=%d offset=%d",
 				level, symbol.Name, symbol.Size, symbol.Value)
+		}
+		for index, word := range want {
+			offset := symbol.Value + uint64(index*4)
+			if got := object.ByteOrder.Uint32(code[offset : offset+4]); got != word {
+				t.Fatalf("%s %s instruction %d is %#08x, want %#08x", level, symbol.Name, index, got, word)
+			}
 		}
 		count++
 	}
-	if count != len(signatures) {
-		t.Fatalf("compiled %d of %d exception entry symbols", count, len(signatures))
+	if count != len(words) {
+		t.Fatalf("compiled %d of %d exception entry symbols", count, len(words))
 	}
 }
 
