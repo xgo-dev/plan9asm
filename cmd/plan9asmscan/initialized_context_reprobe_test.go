@@ -846,3 +846,55 @@ func TestInitializedContextReprobeOfficial386RegisterForms(t *testing.T) {
 		})
 	}
 }
+
+func TestInitializedContextReprobeScalarMoveFamily(t *testing.T) {
+	for _, mode := range []struct {
+		arch   string
+		widths []string
+	}{
+		{"386", []string{"B", "W", "L"}},
+		{"amd64", []string{"B", "W", "L", "Q"}},
+	} {
+		t.Run(mode.arch, func(t *testing.T) {
+			var instructions []string
+			for _, width := range mode.widths {
+				for _, address := range []string{"3(BX)", "-5(BX)(SI*2)"} {
+					for _, arguments := range []string{
+						address + ",DX", address + ",BX", "DX," + address, "$113," + address,
+					} {
+						instructions = append(instructions, "MOV"+width+" "+arguments)
+					}
+				}
+			}
+			if mode.arch == "386" {
+				instructions = append(instructions, "MOVL 2147483648(AX), AX")
+			}
+			forms := make(map[string]*formStat)
+			for index, line := range instructions {
+				ins := compactProbeInstructions(t, line)[0]
+				err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, mode.arch, ins)
+				if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+					t.Fatalf("%s did not require initialized inputs: %v", line, err)
+				}
+				form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, mode.arch, ins).Form
+				if forms[form] == nil {
+					forms[form] = &formStat{}
+				}
+				captureContextSource(forms, plan9asm.ArchAMD64, mode.arch, ins,
+					initializedContextSource{File: "scalar-move.s", Function: "probe", Line: index + 1}, err)
+			}
+			evidence, err := runInitializedContextReprobe(forms, "scalar-memory", mode.arch, "")
+			if err != nil || evidence.Status != "pass" || evidence.EligibleCases != len(instructions) ||
+				len(evidence.UnregisteredCases) != 0 {
+				t.Fatalf("scalar moves: %d/%d selected, status=%s, err=%v",
+					evidence.EligibleCases, len(instructions), evidence.Status, err)
+			}
+			for index, row := range evidence.Cases {
+				if !row.MemoryPointerArgument || row.OriginalInstruction.Raw != instructions[index] ||
+					row.LLVMObjectCompilation.Status != "pass" || row.RuntimeExecution.Status != "not_run" {
+					t.Fatalf("incorrect scalar move evidence: %+v", row)
+				}
+			}
+		})
+	}
+}

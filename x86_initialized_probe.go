@@ -540,7 +540,18 @@ func InitializedScalarMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 
 	effect, valid := initializedX86GPInputs(goarch, ins)
 	if !valid {
-		if form, known, err := x86ConditionalSetProperties(ins.Op, ins, goarch); known && err == nil {
+		if load, known, err := x86ScalarNativeLoadProperties(ins.Op, ins, goarch); known && err == nil {
+			// The load defines its destination, including a base register
+			// that is read to form the address before being overwritten.
+			_, valid = initializedX86GPRegister(goarch, Operand{Kind: OpReg, Reg: load.destination})
+			effect.operands = []x86TypedByteOperand{{index: 0, operand: load.source, width: load.bytes, read: true}}
+		} else if store, known, err := x86ScalarNativeStoreProperties(ins.Op, ins, goarch); known && err == nil {
+			effect.operands = []x86TypedByteOperand{
+				{index: 0, operand: store.source, width: store.bytes, read: true},
+				{index: 1, operand: store.destination, width: store.bytes, write: true},
+			}
+			valid = true
+		} else if form, known, err := x86ConditionalSetProperties(ins.Op, ins, goarch); known && err == nil {
 			effect = x86TypedByteEffect{flagsRead: x86ByteConditionFlags(form.condition),
 				operands: []x86TypedByteOperand{{index: 0, operand: form.destination, width: 1, write: true}}}
 			valid = true
