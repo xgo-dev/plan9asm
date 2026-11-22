@@ -107,6 +107,61 @@ func x86FloatArithmeticProperties(ins Instr, arch string, family x86FloatArithme
 	return form, true, x86Mode32VectorRegisterContext(ins, arch)
 }
 
+// AVX arithmetic and square root share numerical byte dependencies without
+// sharing their arithmetic or exception behavior.
+func x86TypedFloatArithmeticByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	local := ins
+	local.Op = op
+	arithmetic, known, err := x86FloatArithmeticProperties(local, arch, "")
+	form, unary := arithmetic.x86FloatBinaryForm, !known
+	if unary {
+		form, known, err = x86SqrtProperties(local, arch)
+	}
+	if !known || form.legacy {
+		return x86TypedByteEffect{}, false, nil
+	}
+	if ins.Op != "" && !strings.EqualFold(string(ins.Op), string(op)) {
+		return x86TypedByteEffect{}, true, fmt.Errorf("floating arithmetic dispatch/source opcode mismatch: %s/%s", op, ins.Op)
+	}
+	if err != nil {
+		return x86TypedByteEffect{}, true, err
+	}
+
+	width := int64(form.byteWidth)
+	active := width
+	if form.scalar {
+		active = int64(form.bits / 8)
+	}
+	sourceWidth := active
+	if form.memory >= 0 {
+		sourceWidth = int64(form.memoryBytes)
+	}
+	effect := x86TypedByteEffect{
+		vector:   x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		operands: make([]x86TypedByteOperand, 0, 4),
+	}
+	effect.operands = append(effect.operands, x86TypedByteOperand{
+		index: form.first, operand: ins.Args[form.first], width: sourceWidth, read: true,
+	})
+	if !unary || form.scalar {
+		second := x86TypedByteOperand{index: form.second, operand: ins.Args[form.second], width: width, read: true}
+		if unary {
+			// Scalar square root copies only the upper bytes from the second source.
+			second.requiredBytes = x86CallerVectorByteMask(width) &^ x86CallerVectorByteMask(active)
+		}
+		effect.operands = append(effect.operands, second)
+	}
+	destination := len(effect.operands)
+	effect.operands = append(effect.operands, x86TypedByteOperand{
+		index: form.destination, operand: ins.Args[form.destination], width: width, write: true,
+	})
+	effect.addWritemask(ins, form.mask, form.zeroing)
+	if form.scalar && effect.operands[destination].read {
+		effect.operands[destination].requiredBytes = x86CallerVectorByteMask(active)
+	}
+	return effect, true, nil
+}
+
 func (c *amd64Ctx) lowerFloatArithmetic(op Op, ins Instr, family x86FloatArithmeticFamily) (bool, bool, error) {
 	local := ins
 	local.Op = op
