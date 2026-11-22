@@ -88,22 +88,28 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		if err != nil {
 			return x86TypedByteEffect{}, true, err
 		}
-		if !form.vex || form.mask >= 0 || form.zeroing || !x86LowVEXVectorOperands(ins) || ins.Args[0].Kind == OpImm {
-			return x86TypedByteEffect{}, true, goAMD64FrameContext("broadcast effect requires its separate non-VEX consumer: %s", ins.Op)
+		if ins.Args[0].Kind == OpImm {
+			return x86TypedByteEffect{}, true, goAMD64FrameContext("broadcast immediate requires its original raw source: %s", ins.Op)
 		}
 		source := x86TypedByteOperand{index: 0, operand: ins.Args[0], width: int64(form.sourceBytes), read: true}
-		if source.operand.Kind == OpReg {
-			// Register storage keeps its complete X alias, but only the
-			// repeated scalar bytes are inputs. Memory reads the exact tuple.
+		switch {
+		case form.kind == x86BroadcastMask:
+			source.width = 8 // The complete defined K container supplies its low scalar bits.
+		case source.operand.Kind == OpReg && amd64VectorByteWidth(source.operand.Reg) != 0:
+			// Keep the X alias and require only the repeated source bytes.
 			source.width, source.requiredBytes = 16, x86CallerVectorByteMask(int64(form.sourceBytes))
+		case source.operand.Kind == OpReg:
+			source.numericalGP = true
 		}
-		return x86TypedByteEffect{
+		effect := x86TypedByteEffect{
 			vector: x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
 			operands: []x86TypedByteOperand{
 				source,
 				{index: form.destination, operand: ins.Args[form.destination], width: int64(form.byteWidth), write: true},
 			},
-		}, true, nil
+		}
+		effect.addWritemask(ins, form.mask, form.zeroing)
+		return effect, true, nil
 	}
 	if effect, known, err := x86TypedCompactExpandByteEffect(op, ins, arch); known {
 		// The frame proof checks the full possible span. Each compact

@@ -19,7 +19,6 @@ type x86BroadcastForm struct {
 	sourceBytes, laneBits, byteWidth int
 	destination, mask                int
 	zeroing                          bool
-	vex                              bool // Family has VEX forms; operand/encoding guards still apply.
 }
 
 // Scalar, block and mask-data forms share one Go grammar, not one authority.
@@ -32,12 +31,10 @@ func x86BroadcastProperties(op Op, ins Instr, arch string) (x86BroadcastForm, bo
 	switch name {
 	case "VPBROADCASTB", "VPBROADCASTW", "VPBROADCASTD", "VPBROADCASTQ":
 		f.kind, allowGP = x86BroadcastInteger, true
-		f.vex = true
 		f.sourceBytes = map[string]int{"VPBROADCASTB": 1, "VPBROADCASTW": 2, "VPBROADCASTD": 4, "VPBROADCASTQ": 8}[name]
 		f.laneBits = f.sourceBytes * 8
 	case "VBROADCASTSS", "VBROADCASTSD":
 		f.kind, f.sourceBytes = x86BroadcastFloat, 4
-		f.vex = true
 		if name == "VBROADCASTSD" {
 			f.sourceBytes, widths = 8, map[int]bool{32: true, 64: true}
 		}
@@ -46,7 +43,6 @@ func x86BroadcastProperties(op Op, ins Instr, arch string) (x86BroadcastForm, bo
 		if spec, known := amd64PackedBlockBroadcastSpecs[name]; known {
 			f.kind, f.sourceBytes, f.laneBits = x86BroadcastBlock, spec.sourceBytes, spec.laneBits
 			allowX, vexOnly, widths = spec.allowXSource, spec.vexMemoryOnly, spec.allowDestinations
-			f.vex = vexOnly
 		} else if spec, known := amd64MaskBroadcastSpecs[Op(name)]; known {
 			f.kind, f.sourceBytes, f.laneBits = x86BroadcastMask, spec.sourceBits/8, spec.laneBits
 		} else {

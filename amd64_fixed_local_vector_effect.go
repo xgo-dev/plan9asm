@@ -46,6 +46,12 @@ func fixedLocalVectorByteEffect(ins Instr) (x86TypedByteEffect, bool, error) {
 					(!operand.write || upper == x86TypedVectorNoWrite)
 				continue
 			}
+			if operand.numericalGP {
+				_, gp := x86CallerGP(operand.operand.Reg)
+				valid = valid && gp && operand.read && !operand.write &&
+					x86CallerByteMask(operand.operand.Reg, operand.width) != 0
+				continue
+			}
 			width := amd64VectorByteWidth(operand.operand.Reg)
 			index, vector := amd64VectorRegisterIndex(operand.operand.Reg, width)
 			// A widening source can consume only the low bytes of its
