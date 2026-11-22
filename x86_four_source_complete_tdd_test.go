@@ -181,9 +181,9 @@ func TestX86FourSourceIndependentNamedDirectoryAndGoBytes(t *testing.T) {
 	for _, arch := range []string{"386", "amd64"} {
 		t.Run(arch, func(t *testing.T) {
 			rows := x86FourSourceOracleRows(arch)
-			want := 72
+			want, mode := 72, 64
 			if arch == "386" {
-				want = 24
+				want, mode = 24, 32
 			}
 			if len(rows) != want {
 				t.Fatal("independent complete mode/mask/alias directory changed", len(rows))
@@ -203,6 +203,10 @@ func TestX86FourSourceIndependentNamedDirectoryAndGoBytes(t *testing.T) {
 				if len(instruction) != 6 || instruction[0] != 0x62 || instruction[1] != 0xf2 || instruction[4] != opcode ||
 					instruction[5] != byte(row.dest<<3)|3 {
 					t.Fatal("Go bytes disagree with the independent EVEX memory/ModRM row", row.instruction(), instruction)
+				}
+				size, err := x86NumericalVectorBoundary(code[pcs[index]:], mode)
+				if err != nil || size != len(instruction) {
+					t.Fatalf("%s boundary = %d, %v; want %d", row.instruction(), size, err, len(instruction))
 				}
 			}
 		})

@@ -14,6 +14,7 @@ const (
 
 type amd64FourSourceSpec struct {
 	mode       amd64FourSourceMode
+	opcode     int
 	scalar     bool
 	negative   bool
 	saturating bool
@@ -23,12 +24,46 @@ type amd64FourSourceSpec struct {
 // grammar is m128, a four-register range, optional K1-K7 and accumulator;
 // only masked register zeroing is supported, not broadcast, ER or SAE.
 var amd64FourSourceSpecs = map[Op]amd64FourSourceSpec{
-	"V4FMADDPS":  {mode: amd64FourSourceFMA},
-	"V4FMADDSS":  {mode: amd64FourSourceFMA, scalar: true},
-	"V4FNMADDPS": {mode: amd64FourSourceFMA, negative: true},
-	"V4FNMADDSS": {mode: amd64FourSourceFMA, scalar: true, negative: true},
-	"VP4DPWSSD":  {mode: amd64FourSourceDotWords},
-	"VP4DPWSSDS": {mode: amd64FourSourceDotWords, saturating: true},
+	"V4FMADDPS":  {mode: amd64FourSourceFMA, opcode: 0x9a},
+	"V4FMADDSS":  {mode: amd64FourSourceFMA, opcode: 0x9b, scalar: true},
+	"V4FNMADDPS": {mode: amd64FourSourceFMA, opcode: 0xaa, negative: true},
+	"V4FNMADDSS": {mode: amd64FourSourceFMA, opcode: 0xab, scalar: true, negative: true},
+	"VP4DPWSSD":  {mode: amd64FourSourceDotWords, opcode: 0x52},
+	"VP4DPWSSDS": {mode: amd64FourSourceDotWords, opcode: 0x53, saturating: true},
+}
+
+// Recognize the original Go instruction's extent for a native frame binding.
+func x86FourSourceNativeBoundary(code []byte, mode int, memory x86RawMemoryDecoder) (int, bool, error) {
+	prefix, ok := decodeX86RawVectorEncoding(code)
+	if !ok || !prefix.evex || prefix.mapNumber != 2 || prefix.pp != 3 {
+		return 0, false, nil
+	}
+	for name, spec := range amd64FourSourceSpecs {
+		if prefix.opcode != spec.opcode {
+			continue
+		}
+		length := 2
+		if spec.scalar {
+			length = 0
+		}
+		if !prefix.fixed || prefix.w || prefix.broadcast || prefix.vectorLength != length ||
+			prefix.addressOverride || prefix.zero && prefix.mask == 0 {
+			return 0, true, fmt.Errorf("%s has invalid EVEX modifiers", name)
+		}
+		if len(code) <= prefix.modRM || code[prefix.modRM]>>6 == 3 {
+			return 0, true, fmt.Errorf("%s requires a complete memory operand", name)
+		}
+		if mode != 32 && mode != 64 || mode == 32 &&
+			(prefix.r != 0 || prefix.x != 0 || prefix.b != 0 || prefix.upper >= 8) {
+			return 0, true, fmt.Errorf("%s has an invalid mode or extended register", name)
+		}
+		_, size, err := memory.scalar(code[prefix.modRM:], mode, prefix.b, prefix.x, prefix.segment, 16)
+		if err != nil {
+			return 0, true, err
+		}
+		return prefix.modRM + size, true, nil
+	}
+	return 0, false, nil
 }
 
 type amd64FourSourceForm struct {
@@ -120,10 +155,22 @@ func x86TypedFourSourceByteEffect(op Op, ins Instr, arch string) (x86TypedByteEf
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	effect := x86TypedByteEffect{requiresResultProof: true, operands: []x86TypedByteOperand{
-		{index: 0, operand: form.memory, width: 16, read: true},
-		{index: len(ins.Args) - 1, operand: form.destination, width: int64(form.byteWidth()), read: true, write: true},
-	}}
+	destination := x86TypedByteOperand{
+		index: len(ins.Args) - 1, operand: form.destination,
+		width: int64(form.byteWidth()), read: true, write: true,
+	}
+	if form.spec.scalar {
+		destination.requiredBytes = x86CallerVectorByteMask(form.inputBytes())
+		destination.preservedBytes = x86CallerVectorByteMask(destination.width) &^ destination.requiredBytes
+	}
+	effect := x86TypedByteEffect{
+		requiresResultProof: true,
+		vector:              x86TypedVectorEffect{upperWrite: x86TypedVectorUpperZero, memoryAlignment: 1},
+		operands: []x86TypedByteOperand{
+			{index: 0, operand: form.memory, width: 16, read: true},
+			destination,
+		},
+	}
 	for position := 0; position < 4; position++ {
 		effect.operands = append(effect.operands, x86TypedByteOperand{
 			index: 1, operand: form.source(position), width: form.inputBytes(), read: true,

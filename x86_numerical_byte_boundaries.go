@@ -90,6 +90,9 @@ func x86NumericalVectorBoundary(code []byte, mode int) (int, error) {
 		return length, err
 	}
 	memory := x86RawMemoryDecoder{physicalPC: true}
+	if length, known, err := x86FourSourceNativeBoundary(code, mode, memory); known {
+		return length, err
+	}
 	decoders := [...]func([]byte, int, x86RawMemoryDecoder) (Instr, int, bool, error){
 		decodedX86ANDNInstructionWithMemory,
 		decodedX86BEXTRInstructionWithMemory,
