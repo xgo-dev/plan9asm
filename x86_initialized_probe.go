@@ -59,8 +59,8 @@ func InitializedVectorRegisterProbeSequence(goarch string, ins Instr) ([]Instr, 
 
 // InitializedVectorMemoryProbeSequence prepares a single SIMD memory operand
 // using a declared pointer parameter named memory at 0(FP).
-// The sequence keeps the exact original addressing expression. Its caller
-// must supply the extent and alignment if the resulting function is executed.
+// It keeps the original addressing expression. When a VSIB operand has no
+// base register, the pointer supplies the vector of numerical indices.
 func InitializedVectorMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
 	return initializedVectorMemoryProbeSequence(goarch, ins, false)
 }
@@ -87,12 +87,23 @@ func initializedVectorMemoryProbeSequence(goarch string, ins Instr, numericAddre
 			!x86MemoryDisplacementValid(memory.Off, goarch) {
 			return nil, false, nil
 		}
-		registers := []Operand{form.data, form.mask, {Kind: OpReg, Reg: memory.Index}}
+		registers := []Operand{form.data, form.mask}
+		index := Operand{Kind: OpReg, Reg: memory.Index}
 		var activeMask Reg
 		if !form.evex {
 			activeMask = form.mask.Reg
 		}
-		return initializedVectorMemorySequence(goarch, ins, memory.Base, registers, activeMask)
+		if memory.Base != "" {
+			return initializedVectorMemorySequence(goarch, ins, memory.Base, append(registers, index), activeMask)
+		}
+		// Load the complete index from the caller so the object contains
+		// an actual data-dependent address, including sign extension and scale.
+		sequence, known, err := initializedVectorMemorySequence(goarch, ins, AX, registers, activeMask)
+		if !known || err != nil {
+			return nil, known, err
+		}
+		indices := Operand{Kind: OpMem, Mem: MemRef{Base: AX}}
+		return append(sequence[:len(sequence)-1], x86ProbeInstruction("VMOVUPS", indices, index), ins), true, nil
 	}
 	memory, memoryIndex := initializedOrdinaryProbeMemory(goarch, ins)
 	if memoryIndex < 0 || numericAddress != (memory.Base == memory.Index) {

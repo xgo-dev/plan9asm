@@ -671,8 +671,12 @@ func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
 		{"amd64", "VGATHERDPS 360(R15)(X30*2), K6, X20", true, false},
 		{"amd64", "VPSCATTERDD X2, K5, (AX)(X21*2)", true, false},
 		{"amd64", "VGATHERDPS (SP)(Z4*2), K2, Z20", false, false},
-		{"amd64", "VGATHERDPS X3, 8(X4*1), X6", false, false},
+		{"amd64", "VGATHERDPS X3, 8(X4*1), X6", true, true},
+		{"amd64", "VPGATHERQQ Y0, 0(Y1*1), Y2", true, true},
+		{"amd64", "VPGATHERDD 16(Z4*2), K1, Z6", true, false},
+		{"amd64", "VPSCATTERQQ X6, K1, 8(X4*8)", true, false},
 		{"386", "VPGATHERDD X2, (BP)(X7*2), X1", true, true},
+		{"386", "VPGATHERDD X3, 8(X4*1), X6", true, true},
 	} {
 		t.Run(row.arch+"/"+row.line, func(t *testing.T) {
 			ins := compactProbeInstructions(t, row.line)[0]
@@ -690,7 +694,7 @@ func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
 			}
 			if !row.eligible {
 				if evidence.Status != "not_run" || evidence.EligibleCases != 0 || len(evidence.UnregisteredCases) != 1 {
-					t.Fatalf("unbound stack or absolute base acquired evidence: %+v", evidence)
+					t.Fatalf("unbound stack acquired evidence: %+v", evidence)
 				}
 				return
 			}
@@ -698,13 +702,25 @@ func TestInitializedContextReprobeVectorMemoryVSIB(t *testing.T) {
 				t.Fatalf("missing VSIB object evidence: %s eligible=%d", evidence.Status, evidence.EligibleCases)
 			}
 			test := evidence.Cases[0]
-			activeVEX := false
+			var indexOnly plan9asm.Reg
+			for _, arg := range ins.Args {
+				if arg.Kind == plan9asm.OpMem && arg.Mem.Base == "" {
+					indexOnly = arg.Mem.Index
+				}
+			}
+			activeVEX, loadedIndex := false, false
 			for _, init := range test.Initialization {
 				if init.Op == "VPCMPEQD" {
 					activeVEX = true
 				}
+				if init.Op == "VMOVUPS" && len(init.Args) == 2 &&
+					init.Args[0].Kind == plan9asm.OpMem && init.Args[0].Mem.Base == "AX" &&
+					init.Args[1].Kind == plan9asm.OpReg && init.Args[1].Reg == indexOnly {
+					loadedIndex = true
+				}
 			}
 			if !test.MemoryPointerArgument || activeVEX != row.activeVEX ||
+				loadedIndex != (indexOnly != "") ||
 				!reflect.DeepEqual(test.OriginalInstruction, ins) ||
 				test.LLVMObjectCompilation.Status != "pass" || test.RuntimeExecution.Status != "not_run" {
 				t.Fatalf("incorrect VSIB input or evidence: %+v", test)
