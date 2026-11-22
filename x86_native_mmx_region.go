@@ -25,6 +25,7 @@ type x86NativeMMXRegion struct {
 	instructions      []Instr
 	arch, triple      string
 	fpExtent          int64
+	frameSize         int64 // The independently checked 386 TEXT frame.
 	fpRead, fpWritten []bool
 	gpRead, gpWritten [16]bool
 	xRead, xWritten   [16]bool
@@ -62,6 +63,40 @@ func x86NativeMMXInstruction(ins Instr, arch string) (x86NativeMMXSite, bool, er
 	return site, false, nil
 }
 
+// The 386 frame observer uses the same selected widths and register banks
+// before the native transfer checks the reaching input bytes and writes.
+func (site x86NativeMMXSite) frameOperands() []x86TypedByteOperand {
+	switch {
+	case site.word != nil:
+		form := site.word
+		destinationWidth := form.bytes
+		if form.targetX {
+			destinationWidth = 16
+		}
+		return []x86TypedByteOperand{
+			{operand: form.source, width: form.bytes, read: true},
+			{operand: form.destination, width: destinationWidth, write: true},
+		}
+	case site.integer != nil:
+		form := site.integer
+		sourceWidth := form.byteWidth
+		if form.memoryBytes != 0 {
+			sourceWidth = form.memoryBytes
+		}
+		return []x86TypedByteOperand{
+			{operand: form.source, width: int64(sourceWidth), read: true},
+			{operand: site.instruction.Args[form.destination], width: int64(form.byteWidth),
+				read: form.spec.table != x86LegacyMMXShuffle, write: true},
+		}
+	case site.moveMask != nil:
+		return []x86TypedByteOperand{
+			{operand: site.instruction.Args[0], width: 8, read: true},
+			{operand: site.instruction.Args[1], width: 4, write: true},
+		}
+	}
+	return nil // EMMS and implicit MASKMOVQ preserve the explicit GP frame aliases.
+}
+
 func newX86NativeMMXRegion(fn Func, sig FuncSig, arch, triple string) (*x86NativeMMXRegion, error) {
 	plan := &x86NativeMMXRegion{begin: -1, end: -1, sites: make(map[int]x86NativeMMXSite), arch: arch, triple: triple}
 	fail := func(reason string) (*x86NativeMMXRegion, error) {
@@ -83,7 +118,10 @@ func newX86NativeMMXRegion(fn Func, sig FuncSig, arch, triple string) (*x86Nativ
 	if plan.begin < 0 {
 		return nil, nil
 	}
-	if !x86ScalarFloatIntegerNativeTarget(arch, triple) || fn.FrameSize != 0 || fn.ArgSize < 0 || fn.ArgSize > 4096 ||
+	if arch == "386" && fn.FrameSize > 0 && fn.FrameSize <= 4096 && fn.FrameSize%4 == 0 {
+		plan.frameSize = fn.FrameSize
+	}
+	if !x86ScalarFloatIntegerNativeTarget(arch, triple) || fn.FrameSize != plan.frameSize || fn.ArgSize < 0 || fn.ArgSize > 4096 ||
 		len(fn.Instrs) > 512 || strings.Contains(fn.Sym, "<") || len(fn.X86RawText) != 0 || fn.X86RawAlign != 0 ||
 		len(sig.ArgRegs) != 0 || sig.ARMEntry != nil || sig.ARM64GoRegisterABI != nil || sig.ARM64ClosureABI != nil ||
 		sig.WASMContext != "" || sig.WASMNative || sig.x86CallerRegions != nil || sig.x86FixedLocal != nil ||
@@ -217,6 +255,15 @@ func (plan *x86NativeMMXRegion) operand(operand Operand, width int64, write bool
 		}
 		return nil
 	case OpMem:
+		if plan.frameSize != 0 && operand.Mem.Base == SP {
+			offset := plan.stackDisplacement(operand.Mem.Off)
+			if operand.Mem != (MemRef{Base: SP, Off: operand.Mem.Off}) ||
+				width <= 0 || offset < 0 || offset > plan.frameSize-width {
+				return fmt.Errorf("MMX operand exceeds its bounded 386 TEXT frame")
+			}
+			plan.gpRead[x86NativeMMXStackIndex] = true
+			return nil
+		}
 		if operand.Mem.Sym != "" || !x86OrdinaryNativeMemoryOperand(operand, plan.arch) {
 			return fmt.Errorf("native memory needs an ordinary complete incoming-pointer address")
 		}
@@ -230,6 +277,27 @@ func (plan *x86NativeMMXRegion) operand(operand Operand, width int64, write bool
 		return nil
 	}
 	return fmt.Errorf("symbolic/native storage needs its independent source binding")
+}
+
+func (plan *x86NativeMMXRegion) stackDisplacement(offset int64) int64 {
+	if offset < 0 {
+		return offset + plan.frameSize
+	}
+	return offset
+}
+
+func (plan *x86NativeMMXRegion) usesLocalMemory(operand Operand, state *x86ResultState) bool {
+	if plan.frameSize == 0 || operand.Kind != OpMem {
+		return false
+	}
+	if operand.Mem.Base == SP {
+		return true
+	}
+	if state.mode32Frame == nil {
+		return false
+	}
+	_, local := state.mode32Frame.registerOffset(operand.Mem.Base)
+	return local
 }
 
 func (plan *x86NativeMMXRegion) matches(fn Func, sig FuncSig, arch, triple string) bool {
@@ -262,6 +330,9 @@ func (plan *x86NativeMMXRegion) transfer(ordinal int, ins Instr, state *x86Resul
 		return true, true // Grammar only, or the actual paired hardware tag operation.
 	}
 	read := func(operand Operand, width int64) bool {
+		if plan.usesLocalMemory(operand, state) {
+			return x86ResultRead(operand, width, state, owned, arch)
+		}
 		if operand.Kind == OpReg {
 			mask := uint8((uint16(1) << uint(width)) - 1)
 			if index, valid := amd64ParseMReg(operand.Reg); valid {
@@ -292,6 +363,9 @@ func (plan *x86NativeMMXRegion) transfer(ordinal int, ins Instr, state *x86Resul
 			return true, true
 		}
 		if form.destination.Kind == OpMem {
+			if plan.usesLocalMemory(form.destination, state) {
+				return !form.nonTemporal && x86ResultStore(form.destination, form.bytes, state, owned, resultOffset, arch), true
+			}
 			return x86ResultIncomingPointerAddressIdentity(form.destination, state, arch), true
 		}
 		if form.destination.Kind == OpReg {

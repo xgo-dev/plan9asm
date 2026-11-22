@@ -443,6 +443,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 			return accepted
 		}
 		if state.mode32Frame != nil {
+			if accepted, known := nativeMMX.transfer(ordinal, ins, state, owned, resultOffset, arch); known {
+				return accepted
+			}
 			for _, operand := range ins.Args {
 				if _, local := state.mode32Frame.offset(operand, 0); local {
 					// The fixed-frame observer checks the actual scalar width

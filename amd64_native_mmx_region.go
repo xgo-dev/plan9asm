@@ -8,6 +8,8 @@ import (
 var x86NativeMMXGPRegisters = [...]Reg{AX, CX, DX, BX, SP, BP, SI, DI,
 	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"}
 
+const x86NativeMMXStackIndex = 4 // SP in the transport image's encoding order.
+
 func (c *amd64Ctx) lowerNativeMMXRegionAt(block, index int, ins Instr) (bool, error) {
 	plan := c.nativeMMXRegion
 	if plan == nil {
@@ -107,9 +109,20 @@ func (c *amd64Ctx) emitNativeMMXRegion(plan *x86NativeMMXRegion) error {
 		if !plan.gpRead[index] && !plan.gpWritten[index] {
 			continue
 		}
-		value, err := c.loadReg(reg)
-		if err != nil {
-			return err
+		var value string
+		if reg == SP {
+			// Use the same allocated bytes as scalar instructions before and
+			// after the native region. The address never becomes a source GP.
+			if plan.frameSize != int64(c.logicalAUTOExtent) || c.logicalAUTOBase == "" {
+				return fmt.Errorf("%w: native MMX region lost its 386 TEXT storage", ErrProbeNeedsContext)
+			}
+			value = c.logicalAUTOBase
+		} else {
+			var err error
+			value, err = c.loadReg(reg)
+			if err != nil {
+				return err
+			}
 		}
 		fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", value, pointer(gpBase+8*int64(index)))
 	}
@@ -208,6 +221,11 @@ func x86NativeMMXAssembly(plan *x86NativeMMXRegion, gpBase, xBase int64) (string
 		}
 		if operand.Kind != OpMem {
 			return "", fmt.Errorf("%w: MMX memory lost its source operand class", ErrProbeNeedsContext)
+		}
+		if operand.Mem.Base == SP && plan.gpRead[x86NativeMMXStackIndex] {
+			base := gpBase + 8*x86NativeMMXStackIndex
+			code = append(code, fmt.Sprintf("%s %d($0), %s", word, base, address))
+			return fmt.Sprintf("%d(%s)", plan.stackDisplacement(operand.Mem.Off), address), nil
 		}
 		base, err := gp(operand.Mem.Base)
 		if err != nil {
