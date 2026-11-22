@@ -9,6 +9,10 @@ import "fmt"
 // across processor generations; decoder acceptance is not a portable opcode
 // contract and cannot authorize changing those original bytes to VEX.L=0.
 func decodedX86ScalarFlagCompareInstruction(code []byte, mode int) (Instr, int, bool, error) {
+	return decodedX86ScalarFlagCompareInstructionWithMemory(code, mode, x86RawMemoryDecoder{})
+}
+
+func decodedX86ScalarFlagCompareInstructionWithMemory(code []byte, mode int, memory x86RawMemoryDecoder) (Instr, int, bool, error) {
 	p, matched := decodeX86RawVectorEncoding(code)
 	if !matched || p.mapNumber != 1 || (p.opcode != 0x2e && p.opcode != 0x2f) {
 		return Instr{}, 0, false, nil
@@ -54,9 +58,9 @@ func decodedX86ScalarFlagCompareInstruction(code []byte, mode int) (Instr, int, 
 	var size int
 	var err error
 	if p.evex {
-		source, size, err = decodedX86EVEXRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, "X", bytes)
+		source, size, err = memory.evex(code[p.modRM:], mode, p.b, p.x, p.segment, "X", bytes)
 	} else {
-		source, size, err = decodedX86VEXVectorRMOperand(code[p.modRM:], mode, p.b, p.x, p.segment, "X")
+		source, size, err = memory.vex(code[p.modRM:], mode, p.b, p.x, p.segment, "X")
 	}
 	if err != nil {
 		return Instr{}, 0, true, err

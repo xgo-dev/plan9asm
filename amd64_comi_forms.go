@@ -123,7 +123,9 @@ func x86TypedCOMIByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, 
 	return x86TypedByteEffect{operands: []x86TypedByteOperand{
 		{index: 0, operand: ins.Args[0], width: width, read: true},
 		{index: 1, operand: ins.Args[1], width: width, read: true},
-	}, flagsDefined: x86ByteFlagsAll, requiresResultProof: true}, true, nil
+	}, flagsDefined: x86ByteFlagsAll, requiresResultProof: true,
+		vector: x86TypedVectorEffect{upperWrite: x86TypedVectorNoWrite, memoryAlignment: 1},
+	}, true, nil
 }
 
 func x86ResultCOMIStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {

@@ -10,6 +10,69 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
 
+func fixedLocalCOMIAssembly(name, operation, seed string) string {
+	return fmt.Sprintf("TEXT ·%s(SB),4,$128-16\nMOVQ a+0(FP),AX\nMOVQ AX,120(SP)\n%s\n%s\n"+
+		"MOVQ $0,AX\nSETCS AL\nMOVQ AX,ret+8(FP)\nRET\n", name, seed, operation)
+}
+
+func TestGoAMD64FixedLocalCOMIOfficialMemoryRows(t *testing.T) {
+	var assembly, declarations strings.Builder
+	count := 0
+	for _, op := range x86COMIOracleNames() {
+		operands := []struct{ memory, register, seed string }{
+			{"120(SP)", "X2", "PXOR X2,X2"},
+		}
+		if strings.HasPrefix(op, "V") {
+			operands = append(operands, struct{ memory, register, seed string }{
+				"120(SP)", "X19", "VPXORD X19,X19,X19",
+			})
+		}
+		if op == "VUCOMISD" {
+			// Replay the original EVEX form from the Go assembler corpus.
+			operands[1].memory = "(SP)"
+			operands[1].register = "X31"
+			operands[1].seed = "MOVQ AX,(SP)\nVPXORD X31,X31,X31"
+		}
+		for _, row := range operands {
+			name := fmt.Sprintf("Value%d", count)
+			operation := fmt.Sprintf("%s %s,%s", op, row.memory, row.register)
+			assembly.WriteString(fixedLocalCOMIAssembly(name, operation, row.seed))
+			fmt.Fprintf(&declarations, "func %s(a uint64) uint64\n", name)
+			count++
+		}
+	}
+	if count != 12 {
+		t.Fatal("incomplete legacy, VEX and EVEX compare matrix", count)
+	}
+	fixedLocalCompleteVectorObjects(t, assembly.String(), declarations.String(), count)
+}
+
+func TestGoAMD64FixedLocalCOMIDependencies(t *testing.T) {
+	_, _, sig, _ := x86ResultInitializationFixture(t, "amd64", "func Value(a uint64) uint64", "RET")
+	for _, row := range []struct {
+		instruction, seed string
+		valid             bool
+	}{
+		{"COMISS 124(SP),X2", "PXOR X2,X2", true},
+		{"UCOMISD 124(SP),X2", "PXOR X2,X2", false},
+		{"VCOMISD 120(SP),X2", "PXOR X2,X2", true},
+		{"VUCOMISD 120(SP),X2", "", false},
+		{"VUCOMISD (SP),X2", "PXOR X2,X2", false},
+	} {
+		t.Run(row.instruction, func(t *testing.T) {
+			source := fixedLocalCOMIAssembly("Value", row.instruction, row.seed)
+			file, err := Parse(ArchAMD64, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = proveX86FixedLocal(file.Funcs[0], sig)
+			if row.valid && err != nil || !row.valid && !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatalf("valid=%t: %v", row.valid, err)
+			}
+		})
+	}
+}
+
 func TestGoAMD64FixedLocalFloatArithmeticOriginalObjects(t *testing.T) {
 	operations := []string{
 		"VMAXPS -17(CX)(AX*8),X7,K5,X10",

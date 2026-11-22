@@ -93,7 +93,9 @@ func TestX86COMITypedEveryByteAndEffects(t *testing.T) {
 			want := x86TypedByteEffect{operands: []x86TypedByteOperand{
 				{index: 0, operand: instruction.Args[0], width: int64(width), read: true},
 				{index: 1, operand: instruction.Args[1], width: int64(width), read: true},
-			}, flagsDefined: x86ByteFlagsAll, requiresResultProof: true}
+			}, flagsDefined: x86ByteFlagsAll, requiresResultProof: true,
+				vector: x86TypedVectorEffect{upperWrite: x86TypedVectorNoWrite, memoryAlignment: 1},
+			}
 			if !known || err != nil || !reflect.DeepEqual(effect, want) {
 				t.Fatal("comparison gained a write or lost exact input bytes/FLAGS", arch, name, effect, err)
 			}
