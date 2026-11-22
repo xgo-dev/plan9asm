@@ -153,6 +153,35 @@ func TestNativeAMD64TypedPhysicalFormatFamilies(t *testing.T) {
 	}
 }
 
+func TestNativeAMD64PhysicalGPBroadcastFamily(t *testing.T) {
+	var source strings.Builder
+	source.WriteString("TEXT physical<>(SB),516,$0-0\n")
+	for _, opcode := range []string{"VPBROADCASTB", "VPBROADCASTW", "VPBROADCASTD", "VPBROADCASTQ"} {
+		for _, register := range []string{"SP", "BP", "R13"} {
+			for _, dest := range []string{"X23", "Y7", "Z11"} {
+				fmt.Fprintf(&source, "%s %s,%s\n", opcode, register, dest)
+				fmt.Fprintf(&source, "%s %s,K4,%s\n", opcode, register, dest)
+				fmt.Fprintf(&source, "%s.Z %s,K7,%s\n", opcode, register, dest)
+			}
+		}
+	}
+	source.WriteString("RET\n")
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			input := source.String()
+			options := NativeOptions{GOOS: goos, GOARCH: "amd64", PackagePath: "probe"}
+			listing := nativeAMD64OriginalObject(t, goos, input)
+			assembly, _, err := TranslateNativeSource([]byte(input), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nativePhysicalAssemblyObject(t, assembly, "amd64")
+			ir := nativeAMD64PhysicalObjects(t, input, options)
+			nativeAMD64CompareFrameMachineCode(t, goos, listing, ir)
+		})
+	}
+}
+
 func TestNativeAMD64ManagedFrameMatchesGoAssembler(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		for _, row := range []struct {
@@ -294,6 +323,8 @@ func TestNativeAMD64TypedPhysicalRejectsUnprovedForms(t *testing.T) {
 		"MOVQ $1,X0", "DIVL $1", "PUSHQ X0", "POPQ $1", "ADJSP AX", "ADJSP $8,AX",
 		"MOVQ value+0(FP),AX", "MOVQ unknown(SB),AX", "MOVQ $unknown(SB),AX", "MOVQ AX,8(FS)",
 		"MOVQ 1(R8)(SP*2),AX", "ADDQ.Z AX,BX",
+		"VPBROADCASTD.Z SP,Y2", "VPBROADCASTW SP,K0,X0", "VPBROADCASTQ AH,Z0",
+		"VPBROADCASTB SP,K8,X23", "VPBROADCASTD SP,16(BP)",
 	} {
 		t.Run(body, func(t *testing.T) {
 			source := "#include \"textflag.h\"\nTEXT physical<>(SB),NOSPLIT|NOFRAME,$0-0\n" + body + "\nRET\n"

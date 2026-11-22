@@ -140,5 +140,44 @@ func (e *nativeAMD64) typedInstruction(out *strings.Builder, ins Instr) error {
 		}
 		return e.emitTyped(out, strings.ToLower(op), f.bits, f.source, f.destination)
 	}
+	if f, known, err := x86BroadcastProperties(ins.Op, ins, "amd64"); known && f.kind == x86BroadcastInteger {
+		if err != nil {
+			return err
+		}
+		if args[0].Kind != OpReg || !isX86YrlRegisterForArch(args[0].Reg, "amd64") {
+			return bad()
+		}
+		return emitNativeAMD64GPBroadcast(out, ins, f)
+	}
 	return bad()
+}
+
+func emitNativeAMD64GPBroadcast(out *strings.Builder, ins Instr, form x86BroadcastForm) error {
+	// The B/W opcodes read low bytes from a dword register encoding.
+	bits := 32
+	if form.sourceBytes == 8 {
+		bits = 64
+	}
+	source, err := nativeAMD64Reg(ins.Args[0], bits)
+	if err != nil {
+		return err
+	}
+	bank := "xmm"
+	switch form.byteWidth {
+	case 32:
+		bank = "ymm"
+	case 64:
+		bank = "zmm"
+	}
+	index, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
+	destination := fmt.Sprintf("%%%s%d", bank, index)
+	if form.mask >= 0 {
+		destination += " {%" + strings.ToLower(string(ins.Args[form.mask].Reg)) + "}"
+	}
+	if form.zeroing {
+		destination += " {z}"
+	}
+	opcode, _, _ := strings.Cut(strings.ToLower(string(ins.Op)), ".")
+	fmt.Fprintf(out, "\t%s %s, %s\n", opcode, source, destination)
+	return nil
 }
