@@ -52,7 +52,7 @@ func TestGoAMD64FixedLocalNativeVectorConsumers(t *testing.T) {
 					"MOVQ $1,CX\nKMOVQ CX,K1\nMOVQ AX," + base + "\n" + operation + "\nMOVQ $0,AX"
 				fn, sig, assembly := fixedLocalInputFixture(t, body)
 				switch row.family {
-				case "SAD", "horizontal", "integer-minmax", "pack", "unpack":
+				case "horizontal", "integer-minmax", "pack", "unpack":
 					// These legal instructions retain a separate fixed-local
 					// owner boundary, before this native-address consumer.
 					x86LEAActualTargetGoObject(t, "amd64", "x86_64-unknown-linux-gnu", assembly)
