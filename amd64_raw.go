@@ -238,7 +238,7 @@ func isX86DirectControlTransfer(op Op) bool {
 // final typed FP return-contract validation runs when translation consumes its
 // existing Options.Sigs. Preparation does not prove a callable return ABI.
 func NormalizeRawFileForTranslation(file *File, goarch string) (*File, error) {
-	return normalizeX86RawFile(file, goarch)
+	return normalizeX86RawFile(normalizeX86GroupedDirectBranches(file, goarch), goarch)
 }
 
 // preserveAddressSensitiveX86RawText identifies raw-only TEXT bodies whose

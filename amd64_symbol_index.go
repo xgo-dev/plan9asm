@@ -47,6 +47,87 @@ func x86SymbolIndexedControlError(ins Instr) error {
 	return nil
 }
 
+// Go progedit changes grouped SB operands of CALL/JMP/RET to TYPE_BRANCH.
+// CALL retains the relocation addend. JMP and the symbolic RET epilogue use
+// the symbol entry even when the source supplies an addend. A grouped leading
+// '*' has already become TYPE_MEM in cmd/asm; it is not an indirect call.
+func x86GroupedDirectBranch(ins Instr, goarch string) (string, bool) {
+	if ins.x86Encoded || ins.x86SourceRaw != nil ||
+		ins.Op != OpCALL && ins.Op != OpJMP && ins.Op != OpRET ||
+		len(ins.Args) != 1 || ins.Args[0].Kind != OpMem {
+		return "", false
+	}
+	memory := ins.Args[0].Mem
+	if !strings.HasSuffix(memory.Sym, "(SB)") || memory.Off != 0 || memory.OffRaw != "" ||
+		memory.IndexExt != "" || memory.Segment != "" || memory.Base == "" && memory.Index == "" {
+		return "", false
+	}
+	if memory.Base != "" && !x86SymbolGoRegisterName(string(memory.Base)) ||
+		memory.Index != "" && !x86SymbolGoRegisterName(string(memory.Index)) ||
+		goarch == "386" && x86SymbolGIndex.MatchString(ins.Raw) {
+		return "", false
+	}
+	if memory.Index == "" && memory.Scale != 0 ||
+		memory.Scale != 0 && memory.Scale != 1 && memory.Scale != 2 && memory.Scale != 4 && memory.Scale != 8 {
+		return "", false
+	}
+	// The encoder can still emit a segment prefix from Index. Keep these
+	// forms on their physical-prefix path until that contract is available.
+	if x86IsSegmentRegister(memory.Index) || memory.Index == TLS {
+		return "", false
+	}
+	symbol, addend, valid := parseSBRef(memory.Sym)
+	return symbol, valid && (ins.Op != OpCALL || addend == 0)
+}
+
+// Derive the ordinary direct branch before declaration and ABI0 analysis.
+// Retain the original operands in the parse result for source inventory.
+func normalizeX86GroupedDirectBranches(file *File, goarch string) *File {
+	if file == nil || file.Arch != ArchAMD64 || goarch != "" && goarch != "386" && goarch != "amd64" {
+		return file
+	}
+	result := file
+	for index, fn := range file.Funcs {
+		if fn.X86RawText != nil || fn.x86RawReplay != nil {
+			continue // Preserve the earlier raw-body or replay snapshot.
+		}
+		var instructions []Instr
+		for ordinal, ins := range fn.Instrs {
+			target, ok := x86GroupedDirectBranch(ins, goarch)
+			if !ok {
+				continue
+			}
+			if strings.HasSuffix(target, "<>") && !x86GroupedBranchOwnsStaticText(file, target) {
+				continue
+			}
+			if instructions == nil {
+				instructions = append([]Instr(nil), fn.Instrs...)
+			}
+			ins.Args = []Operand{{Kind: OpSym, Sym: target + "(SB)"}}
+			instructions[ordinal] = ins
+		}
+		if instructions == nil {
+			continue
+		}
+		if result == file {
+			derived := *file
+			derived.Funcs = append([]Func(nil), file.Funcs...)
+			result = &derived
+		}
+		result.Funcs[index].Instrs = instructions
+	}
+	return result
+}
+
+func x86GroupedBranchOwnsStaticText(file *File, symbol string) bool {
+	for _, fn := range file.Funcs {
+		if fn.Sym == symbol {
+			return true
+		}
+	}
+	return false
+}
+
 // asm6.oclass requires a named PARAM/AUTO base to be absent or SP and rejects
 // ordinary AMD64 EXTERN/STATIC base/index registers (their native base is RIP).
 // In 386, asmandsz ignores Reg for these names but still consumes Index.

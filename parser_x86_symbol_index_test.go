@@ -324,6 +324,136 @@ func TestX86SymbolIndexedControlThreeAPIsRequireEntryContract(t *testing.T) {
 	}
 }
 
+func TestX86GroupedDirectBranchesUseOrdinaryEntry(t *testing.T) {
+	for _, arch := range []string{"386", "amd64"} {
+		pkg := x86AddSubLiteralPackage(t, arch, "func entry()\nfunc target()\n")
+		for _, tc := range []struct {
+			op, target string
+		}{
+			{"CALL", "·target+0(SB)(AX*4)"},
+			{"CALL", "*·target(SB)(BP)(CX*2)"},
+			{"JMP", "·target+4(SB)(R11*4)"},
+			{"RET", "*·target-4(SB)(BP)"},
+		} {
+			t.Run(arch+"/"+tc.op+"/"+tc.target, func(t *testing.T) {
+				source := "TEXT ·entry(SB),516,$0-0\n" + tc.op + " " + tc.target + "\n"
+				if tc.op == "CALL" {
+					source += "RET\n"
+				}
+				source += "TEXT ·target(SB),516,$0-0\nRET\n"
+				requireX86GoAssemblerResult(t, arch, source, true)
+				file, err := Parse(ArchAMD64, source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resolve := func(sym string) string { return strings.Replace(sym, "·", "literal.", 1) }
+				sigs, err := goSigsForAsmFile(pkg, file, resolve, arch, nil, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				options := Options{Goarch: arch, ResolveSym: resolve, Sigs: sigs}
+				check := func(ir string) {
+					t.Helper()
+					if !strings.Contains(ir, "call void @literal.target()") || strings.Contains(ir, "literal.target+4") {
+						t.Fatalf("missing direct entry transfer:\n%s", ir)
+					}
+				}
+				ir, err := Translate(file, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				check(ir)
+				context := llvm.NewContext()
+				defer context.Dispose()
+				module, err := TranslateModuleInContext(context, file, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer module.Dispose()
+				check(module.String())
+				fromGo, err := TranslateGoModuleInContext(context, pkg, []byte(source), GoModuleOptions{
+					GOOS: "linux", GOARCH: arch, ResolveSym: resolve,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer fromGo.Module.Dispose()
+				check(fromGo.Module.String())
+				if file.Funcs[0].Instrs[1].Args[0].Kind != OpMem {
+					t.Fatal("translation changed the source operand used by the coverage scanner")
+				}
+			})
+		}
+	}
+}
+
+func TestX86GroupedDirectBranchesPreservePhysicalEntryBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		arch, instruction string
+		goAccepts         bool
+	}{
+		{"386", "CALL ·target+4(SB)(AX*4)", true},
+		{"amd64", "CALL ·target+4(SB)(AX*4)", true},
+		{"386", "JMP ·target(SB)(FS*1)", true},
+		{"amd64", "RET ·target(SB)(GS*2)", true},
+		{"386", "JMP ·target(SB)(g*4)", false},
+	} {
+		t.Run(tc.arch+"/"+tc.instruction, func(t *testing.T) {
+			source := "TEXT ·entry(SB),516,$0-0\n" + tc.instruction + "\nRET\nTEXT ·target(SB),516,$0-0\nRET\n"
+			requireX86GoAssemblerResult(t, tc.arch, source, tc.goAccepts)
+			file, err := Parse(ArchAMD64, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Translate(file, Options{
+				Goarch: tc.arch,
+				Sigs: map[string]FuncSig{
+					"·entry":  {Name: "·entry", Ret: Void},
+					"·target": {Name: "·target", Ret: Void},
+				},
+			})
+			if !errors.Is(err, ErrProbeNeedsContext) {
+				t.Fatalf("grouped source acquired an unverified physical entry: %v", err)
+			}
+		})
+	}
+}
+
+func TestX86GroupedDirectBranchesSurviveRawPreparation(t *testing.T) {
+	const source = `TEXT entry(SB),516,$0-0
+BYTE $0x90
+CALL target(SB)(AX*2)
+RET
+TEXT target(SB),516,$0-0
+RET
+`
+	file, err := Parse(ArchAMD64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			prepared, err := NormalizeRawFileForTranslation(file, arch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ir, err := Translate(prepared, Options{
+				Goarch: arch,
+				Sigs: map[string]FuncSig{
+					"entry":  {Name: "entry", Ret: Void},
+					"target": {Name: "target", Ret: Void},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(ir, "call void @target()") {
+				t.Fatalf("raw-byte preparation lost its ordinary direct branch:\n%s", ir)
+			}
+		})
+	}
+}
+
 func TestX86SymbolIndexedAddressPrefixAndPhysicalBanks(t *testing.T) {
 	for _, arch := range []string{"amd64", "386"} {
 		for _, role := range []string{"FP", "SP", "SB"} {
