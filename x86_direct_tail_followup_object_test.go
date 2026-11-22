@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -87,16 +88,45 @@ func TestX86DirectTailPCCompleteGoBranchRowsAndAliases(t *testing.T) {
 			}
 		}
 	}
+	opcodes := make([]string, 0, len(names))
+	for name := range names {
+		opcodes = append(opcodes, name)
+	}
+	sort.Strings(opcodes)
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM22 llc required")
+	}
 	for _, arch := range []string{"386", "amd64"} {
 		var source strings.Builder
-		source.WriteString("TEXT ·Value(SB),4,$0-0\n CMPL AX,AX\n")
-		for name := range names {
+		source.WriteString("TEXT ·Value(SB),4,$0-12\n MOVL a+0(FP),AX\n MOVL b+4(FP),BX\n XORL CX,CX\n")
+		for _, name := range opcodes {
 			for _, hint := range []string{"", "$0,", "$1,"} {
-				source.WriteString(fmt.Sprintf(" %s %s1(PC)\n", name, hint))
+				// Each branch sees a fresh set of FLAGS and skips a change
+				// to the observed result only when it actually jumps.
+				fmt.Fprintf(&source, " MOVL AX,DX\n ADDL BX,DX\n %s %s2(PC)\n INCL CX\n", name, hint)
 			}
 		}
-		source.WriteString(" JMP 1(PC)\n RET\n")
+		source.WriteString(" MOVL CX,ret+8(FP)\n JMP 1(PC)\n RET\n")
 		goAssemblerOracleOutput(t, arch, source.String(), "", true)
+		triple := "x86_64-unknown-linux-gnu"
+		if arch == "386" {
+			triple = "i386-unknown-linux-gnu"
+		}
+		for _, api := range []string{"text", "module", "Go"} {
+			t.Run(arch+"/"+api, func(t *testing.T) {
+				ir, err := x86ScalarFPBitViewAPI(t, source.String(), "func Value(a,b uint32) uint32", arch, triple, api)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, want := strings.Count(ir, "br i1 "), 3*len(opcodes); got != want {
+					t.Fatalf("lowered %d conditional edges, want %d", got, want)
+				}
+				for _, level := range []string{"-O0", "-O2"} {
+					x86PackedStringCompileObject(t, llc, triple, ir, level)
+				}
+			})
+		}
 		for _, malformed := range []string{"JEQ $2,1(PC)", "JEQ $1.0,1(PC)", "JEQ 1(PC)(AX*1)", "JMP $1,1(PC)"} {
 			goAssemblerOracleOutput(t, arch, "TEXT ·Value(SB),4,$0-0\n"+malformed+"\n RET\n", "", false)
 		}
