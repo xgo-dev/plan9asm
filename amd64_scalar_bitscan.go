@@ -35,3 +35,22 @@ func x86ScalarBitScanProperties(op Op, ins Instr, arch string) (x86ScalarBitScan
 	}
 	return spec, true, nil
 }
+
+func x86TypedBitScanByteEffect(ins Instr, arch string) (x86TypedByteEffect, bool, error) {
+	spec, known, err := x86ScalarBitScanProperties(ins.Op, ins, arch)
+	if !known || err != nil {
+		return x86TypedByteEffect{}, known, err
+	}
+	source := ins.Args[0]
+	// The native bridge consumes and returns the full prior destination.
+	// A narrow destination can retain upper bytes even if the input is nonzero;
+	// on zero input the entire prior can survive, including for a dword scan.
+	return x86TypedByteEffect{
+		operands: []x86TypedByteOperand{
+			{index: 0, operand: source, width: int64(spec.bits / 8), read: true, numericalGP: source.Kind == OpReg},
+			{index: 1, operand: ins.Args[1], width: x86ResultPointerWord(arch), read: true, write: true, numericalGP: true},
+		},
+		flagsDefined: x86ByteFlagZF,
+		flagsKilled:  x86ByteFlagsAll,
+	}, true, nil
+}
