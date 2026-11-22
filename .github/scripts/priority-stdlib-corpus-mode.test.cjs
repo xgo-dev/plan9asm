@@ -40,7 +40,13 @@ const scannerFixture = [
   "  form) forms='[{\"form\":\"PROTOCOL_BAD register\",\"errors\":[\"protocol form rejection\"]}]' ;;",
   "  parse) errors='[{\"File\":\"protocol.s\",\"Err\":\"protocol parse rejection\"}]' ;;",
   'esac',
-  'printf \'{"std_pkgs_with_sfile":1,"asm_files":1,"unsupported":%s,"unsupported_by_form":%s,"parse_errs":%s}\\n\' "$unsupported" "$forms" "$errors" > "$output"',
+  "observed='[]'",
+  'if [[ "$goarch" == wasm ]]; then',
+  '  observed=\'[{"form":"I64ADD ","files":["protocol/protocol.s","protocol/second.s"]}]\'',
+  'fi',
+  'printf \'{"std_pkgs_with_sfile":1,"asm_files":1,"unsupported":%s,' +
+    '"unsupported_by_form":%s,"parse_errs":%s,"forms":%s}\\n\' \\',
+  '  "$unsupported" "$forms" "$errors" "$observed" > "$output"',
 ].join('\n') + '\n';
 
 const translatorFixture = [
@@ -58,8 +64,15 @@ const translatorFixture = [
   'mkdir -p "$output"',
   '[[ "$CORPUS_PROTOCOL_MODE" != empty ]] || exit 0',
   'printf "; protocol fixture, not LLVM compilation evidence\\n" > "$output/protocol.ll"',
-  'if [[ "$goarch" == wasm ]]; then printf "; second protocol input, not LLVM evidence\\n" > "$output/second.ll"; fi',
-  'printf "{}\\n" > "$meta"',
+  'if [[ "$goarch" != wasm ]]; then printf "{}\\n" > "$meta"; exit; fi',
+  'printf "; second protocol input, not LLVM evidence\\n" > "$output/second.ll"',
+  'native_output=$(cd "$output" && { pwd -W 2>/dev/null || pwd; })',
+  'second=second.ll',
+  'if [[ "$CORPUS_PROTOCOL_MODE" == missing-source-object ]]; then second=absent.ll; fi',
+  'printf \'{"packages":[{"package":"protocol","items":[' +
+    '{"file":"%s/src/protocol/protocol.s","output":"%s/protocol.ll"},' +
+    '{"file":"%s/src/protocol/second.s","output":"%s/%s"}]}]}\\n\' \\',
+  '  "$GOROOT" "$native_output" "$GOROOT" "$native_output" "$second" > "$meta"',
 ].join('\n') + '\n';
 
 const llvmFixture = [
@@ -155,6 +168,7 @@ function fixture(t, mode = 'success', targets = '') {
   assert.equal(shellPath.status, 0, shellPath.stderr);
   const environment = {...process.env,
     PATH: shellBin + ':' + shellPath.stdout, LLVM_CONFIG: config,
+    GOROOT: directory.replaceAll('\\', '/'),
     PLAN9ASM_CMD: mode === 'missing-cli' ? shellBin + '/absent' : '',
     PLAN9ASM_CORPUS_TARGETS: targets, PLAN9ASM_CORPUS_INCLUDE_WINDOWS: '1',
     CORPUS_PROTOCOL_BIN: shellBin, CORPUS_PROTOCOL_SCANNER: scanner,
@@ -340,6 +354,14 @@ test('default corpus retains transpile, empty-output and object failures', async
         new RegExp('protocol-' + mode + '-failure'));
     });
   }
+});
+
+test('WASM corpus requires an emitted object for every observed source', t => {
+  const scan = wasmScanRows().find(row => row.endsWith('|signext'));
+  const result = fixture(t, 'missing-source-object', 'js/wasm/signext').run(['--instructions-only']);
+  assert.deepEqual(result.rows.filter(row => row.startsWith('object|')), wasmObjectRows(scan));
+  assert.notEqual(result.status, 0, 'compiling unrelated modules cannot account for the missing source');
+  assert.match(result.output, /WASM sources missing compiled IR: protocol\/second\.s/);
 });
 
 test('corpus mode arguments reject unknown, duplicate and extra operands', async t => {

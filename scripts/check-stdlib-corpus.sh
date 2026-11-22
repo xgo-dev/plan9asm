@@ -221,6 +221,34 @@ PY
     "$llc_cmd" -mtriple="$triple" -filetype=obj "$ll" -o "$tmp_root/verify-object.o"
   done < <(find "$out_dir" -name '*.ll' | sort)
 
+  if [[ "$goarch" == wasm ]]; then
+    # An object from another file cannot satisfy a contextual source form.
+    "$python_cmd" - "$json" "$meta" "$out_dir" "$(go env GOROOT)" "$target_label" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+scan, manifest, output, goroot = map(Path, sys.argv[1:5])
+label = sys.argv[5]
+forms = json.loads(scan.read_text(encoding="utf-8"))["forms"]
+if not forms or any(not row["files"] for row in forms):
+    raise SystemExit(f"{label}: missing WASM form source inventory")
+metadata = json.loads(manifest.read_text(encoding="utf-8"))
+compiled_modules = {module.resolve() for module in output.rglob("*.ll")}
+source_root = (goroot / "src").resolve()
+compiled_sources = {
+    Path(item["file"]).resolve().relative_to(source_root).as_posix()
+    for package in metadata.get("packages", [metadata])
+    for item in package["items"]
+    if Path(item["output"]).resolve() in compiled_modules
+}
+missing = {source for row in forms for source in row["files"]} - compiled_sources
+if missing:
+    raise SystemExit(f"{label}: WASM sources missing compiled IR: {', '.join(sorted(missing))}")
+print(f"{label}: full-source LLVM objects cover {len(forms)}/{len(forms)} observed WASM forms")
+PY
+  fi
+
   # The corpus only checks object compilation. Keep one reusable object and
   # release each target's IR and scan output before starting the next target.
   rm "$tmp_root/verify-object.o" "$json" "$meta"
