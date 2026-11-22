@@ -32,12 +32,21 @@ type wasmControlFrame struct {
 // instead recreates the official compiler's linear-memory stack, register
 // globals, resumable calls, and unwind return protocol.
 func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, wasmABI WASMABI, annotateSource bool) (err error) {
+	useGoStack := wasmABI == WASMABIGo
+	goABI := useGoStack && !sig.WASMNative
 	// Validate source format before dead-block removal. Pure dead operators may
 	// disappear, but malformed source must not acquire an apparent pass.
 	var memoryForms map[int]wasmMemoryForm
 	bulkMemory := false
+	needsResumePlan := false
 	for i, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
+		if op == "RESUMEPOINT" || wasmLocalJumpLabel(ins, op) != "" {
+			if !goABI {
+				return fmt.Errorf("%s requires the Go WebAssembly ABI", op)
+			}
+			needsResumePlan = true
+		}
 		bulkMemory = bulkMemory || op == "MEMORYCOPY" || op == "MEMORYFILL"
 		form, found, err := parseWASMMemory(ins, op)
 		if err != nil {
@@ -68,6 +77,13 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			return err
 		}
 	}
+	var resumePlan *wasmResumePlan
+	if needsResumePlan {
+		resumePlan, err = planWASMResume(fn)
+		if err != nil {
+			return err
+		}
+	}
 	// LLVM's WebAssembly backend cannot lower blockaddress. Keep this as a
 	// lowering invariant so future control-flow or code-pointer work fails here
 	// instead of producing IR that only breaks later in llc.
@@ -82,8 +98,6 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		}
 	}()
 
-	useGoStack := wasmABI == WASMABIGo
-	goABI := useGoStack && !sig.WASMNative
 	physicalRet := sig.Ret
 	if goABI {
 		physicalRet = I32
@@ -1138,7 +1152,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 
 	resumeLabels := make(map[int]string)
 	callPCs := make(map[int]int)
-	if useGoStack {
+	if resumePlan != nil {
+		callPCs = resumePlan.calls
+	} else if useGoStack {
 		pcID := 0
 		for i, ins := range fn.Instrs {
 			switch normalizeInstructionOpcode(ins.Op) {
@@ -1177,7 +1193,13 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if annotateSource && ins.Raw != "" {
 			fmt.Fprintf(b, "  ; %s\n", strings.ReplaceAll(ins.Raw, "\n", " "))
 		}
-		if blockTerminated && op != "ELSE" && op != "END" && op != "LABEL" {
+		if blockTerminated && op != "ELSE" && op != "END" && op != "LABEL" && op != "RESUMEPOINT" {
+			if resumePlan != nil && op == "CALL" {
+				// The skipped call can still be followed by an independently
+				// reachable continuation in the original dispatcher.
+				stack = nil
+				emitLabel(wasmResumeLabel(resumePlan.entries[insIndex]))
+			}
 			continue
 		}
 		if spec, ok := wasmsimd.Lookup(op); ok {
@@ -1337,6 +1359,17 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		switch op {
 		case "NOP", "NO_LOCAL_POINTERS", "FUNCDATA", "PCDATA":
 			continue
+		case "RESUMEPOINT":
+			label := wasmResumeLabel(resumePlan.entries[insIndex])
+			if blockTerminated {
+				stack = nil
+			} else {
+				if len(stack) != 0 {
+					return fmt.Errorf("RESUMEPOINT requires an empty WebAssembly operand stack")
+				}
+				fmt.Fprintf(b, "  br label %%%s\n", label)
+			}
+			emitLabel(label)
 		case "LABEL":
 			if len(ins.Args) != 1 {
 				return fmt.Errorf("wasm label expects one name")
@@ -1630,6 +1663,16 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return err
 			}
 		case "JMP":
+			if resumePlan != nil {
+				if jump, ok := resumePlan.jumps[insIndex]; ok {
+					if slot, found := regSlots[Reg("PC_B")]; found {
+						fmt.Fprintf(b, "  store i32 %d, ptr %%%s\n", jump.pc, slot)
+					}
+					fmt.Fprintf(b, "  br label %%%s\n", wasmResumeLabel(jump.entry))
+					blockTerminated = true
+					continue
+				}
+			}
 			if len(ins.Args) > 1 || len(ins.Args) == 0 && !goABI {
 				return fmt.Errorf("JMP expects one target")
 			}
@@ -1652,7 +1695,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			// still use the linear Go stack for calls, but continue directly
 			// after a normally returning callee.
 			if op == "CALL" && goABI {
-				resumeLabels[insIndex] = fmt.Sprintf("wasm_resume_%d", callPCs[insIndex])
+				resumeLabels[insIndex] = wasmResumeLabel(callPCs[insIndex])
 			}
 			if err := emitGoCall(target, callPCs[insIndex], resumeLabels[insIndex], op == "CALL" && goABI); err != nil {
 				return err
@@ -1714,7 +1757,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		return fmt.Errorf("%d unterminated wasm control blocks", len(controls)-1)
 	}
 	if !blockTerminated {
-		if useGoStack && sig.WASMNative && physicalRet != Void {
+		if resumePlan != nil {
+			b.WriteString("  unreachable\n")
+		} else if useGoStack && sig.WASMNative && physicalRet != Void {
 			// Native helpers such as gcWriteBarrier end in an infinite Loop.
 			// Structured lowering still materializes the unreachable loop-exit
 			// label; terminate that synthetic path without inventing a value.
@@ -1738,13 +1783,17 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	if goABI {
 		body := b.String()
 		b = goABIOuter
-		b.WriteString("  switch i32 %pc_b, label %wasm_entry_body [")
-		for i := range fn.Instrs {
-			if label := resumeLabels[i]; label != "" {
-				fmt.Fprintf(b, " i32 %d, label %%%s", callPCs[i], label)
+		if resumePlan != nil {
+			resumePlan.emitDispatch(b)
+		} else {
+			b.WriteString("  switch i32 %pc_b, label %wasm_entry_body [")
+			for i := range fn.Instrs {
+				if label := resumeLabels[i]; label != "" {
+					fmt.Fprintf(b, " i32 %d, label %%%s", callPCs[i], label)
+				}
 			}
+			b.WriteString(" ]\n")
 		}
-		b.WriteString(" ]\n")
 		b.WriteString(body)
 	}
 	return nil
