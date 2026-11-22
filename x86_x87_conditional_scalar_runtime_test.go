@@ -7,13 +7,19 @@ import (
 	"testing"
 )
 
+const x87ConditionalScalarLanes = 3
+
 func x86X87ConditionalScalarCounterpart() (assembly, declaration string) {
 	var source, types strings.Builder
-	for _, op := range x87ConditionalMoveGo127Ops {
-		name := "conditional" + op
-		fmt.Fprintf(&types, "func %s(a, b float64, predicate uint32) float64\n", name)
-		fmt.Fprintf(&source, "TEXT %s(SB),4,$0-32\nFINIT\nFMOVD a+0(FP),F0\nFMOVD b+8(FP),F0\n"+
-			"MOVL predicate+16(FP),AX\nCMPL AX,$1\n%s F1,F0\nFMOVDP F0,ret+24(FP)\nFINIT\nRET\n", name, op)
+	for lane := 1; lane <= x87ConditionalScalarLanes; lane++ {
+		for _, op := range x87ConditionalMoveGo127Ops {
+			name := fmt.Sprintf("conditional%sF%d", op, lane)
+			fmt.Fprintf(&types, "func %s(a, b float64, predicate uint32) float64\n", name)
+			fmt.Fprintf(&source, "TEXT %s(SB),4,$0-32\nFINIT\nFMOVD a+0(FP),F0\n", name)
+			source.WriteString(strings.Repeat("FLD1\n", lane-1))
+			fmt.Fprintf(&source, "FMOVD b+8(FP),F0\nMOVL predicate+16(FP),AX\nCMPL AX,$1\n"+
+				"%s F%d,F0\nFMOVDP F0,ret+24(FP)\nFINIT\nRET\n", op, lane)
+		}
 	}
 	return source.String(), types.String()
 }
@@ -26,12 +32,18 @@ func x86X87ConditionalScalarC(main string) string {
 #include <string.h>
 typedef double (*conditional_fn)(double, double, uint32_t);
 `)
-	for _, op := range x87ConditionalMoveGo127Ops {
-		fmt.Fprintf(&source, "extern double conditional%s(double, double, uint32_t);\n", op)
+	for lane := 1; lane <= x87ConditionalScalarLanes; lane++ {
+		for _, op := range x87ConditionalMoveGo127Ops {
+			fmt.Fprintf(&source, "extern double conditional%sF%d(double, double, uint32_t);\n", op, lane)
+		}
 	}
-	source.WriteString("static conditional_fn functions[] = {\n")
-	for _, op := range x87ConditionalMoveGo127Ops {
-		fmt.Fprintf(&source, "  conditional%s,\n", op)
+	source.WriteString("static const conditional_fn functions[][14] = {\n")
+	for lane := 1; lane <= x87ConditionalScalarLanes; lane++ {
+		source.WriteString("  {\n")
+		for _, op := range x87ConditionalMoveGo127Ops {
+			fmt.Fprintf(&source, "    conditional%sF%d,\n", op, lane)
+		}
+		source.WriteString("  },\n")
 	}
 	// Independent Intel condition names, not the lowerer's predicate table.
 	source.WriteString(`};
@@ -54,14 +66,14 @@ static int selected(unsigned op, uint32_t input) {
 }
 void x87conditionalmovesemantics(uint8_t *raw) {
   double *data = (double *)raw;
-  data[0] = conditionalFCMOVB(data[8], data[9], 0);
-  data[1] = conditionalFCMOVNB(data[8], data[9], 0);
-  data[2] = conditionalFCMOVE(data[8], data[9], 1);
-  data[3] = conditionalFCMOVNE(data[8], data[9], 1);
-  data[4] = conditionalFCMOVBE(data[8], data[9], 1);
-  data[5] = conditionalFCMOVNBE(data[8], data[9], 1);
-  data[6] = conditionalFCMOVU(data[8], data[9], 1);
-  data[7] = conditionalFCMOVNU(data[8], data[9], 1);
+  data[0] = conditionalFCMOVBF1(data[8], data[9], 0);
+  data[1] = conditionalFCMOVNBF1(data[8], data[9], 0);
+  data[2] = conditionalFCMOVEF1(data[8], data[9], 1);
+  data[3] = conditionalFCMOVNEF1(data[8], data[9], 1);
+  data[4] = conditionalFCMOVBEF1(data[8], data[9], 1);
+  data[5] = conditionalFCMOVNBEF1(data[8], data[9], 1);
+  data[6] = conditionalFCMOVUF1(data[8], data[9], 1);
+  data[7] = conditionalFCMOVNUF1(data[8], data[9], 1);
   volatile uint32_t predicates[] = {0, 1, 2, 3, 255};
   volatile uint64_t bits[][2] = {
     {UINT64_C(0x3ff4000000000000), UINT64_C(0x4023000000000000)},
@@ -77,13 +89,15 @@ void x87conditionalmovesemantics(uint8_t *raw) {
         double a, b, got;
         memcpy(&a, &a_bits, sizeof(a));
         memcpy(&b, &b_bits, sizeof(b));
-        got = functions[op](a, b, predicate);
-        memcpy(&got_bits, &got, sizeof(got_bits));
         uint64_t expected = selected(op, predicate) ? a_bits : b_bits;
-        if (got_bits != expected) {
-          fprintf(stderr, "conditional op=%u predicate=%u pair=%u got=%llx expected=%llx\n",
-            op, predicate, pair, (unsigned long long)got_bits, (unsigned long long)expected);
-          exit(1);
+        for (unsigned lane = 0; lane < sizeof(functions)/sizeof(functions[0]); ++lane) {
+          got = functions[lane][op](a, b, predicate);
+          memcpy(&got_bits, &got, sizeof(got_bits));
+          if (got_bits != expected) {
+            fprintf(stderr, "conditional op=%u lane=%u predicate=%u pair=%u got=%llx expected=%llx\n",
+              op, lane+1, predicate, pair, (unsigned long long)got_bits, (unsigned long long)expected);
+            exit(1);
+          }
         }
       }
     }
@@ -98,11 +112,14 @@ func TestX86X87ConditionalScalarCounterpartCompleteGoObject(t *testing.T) {
 	assembly, _ := x86X87ConditionalScalarCounterpart()
 	goAssemblerOracleOutput(t, "amd64", assembly, "", true)
 	file, err := Parse(ArchAMD64, assembly)
-	if err != nil || len(file.Funcs) != 14 {
+	if err != nil || len(file.Funcs) != 42 {
 		t.Fatal("typed runtime counterpart lost a complete Go conditional family", err)
 	}
 	for index, function := range file.Funcs {
-		if function.Sym != "conditional"+x87ConditionalMoveGo127Ops[index] || function.ArgSize != 32 || function.FrameSize != 0 {
+		lane := index/len(x87ConditionalMoveGo127Ops) + 1
+		op := x87ConditionalMoveGo127Ops[index%len(x87ConditionalMoveGo127Ops)]
+		if function.Sym != fmt.Sprintf("conditional%sF%d", op, lane) ||
+			function.ArgSize != 32 || function.FrameSize != 0 {
 			t.Fatal("typed scalar function changed its identity or ABI0 layout", function.Sym)
 		}
 	}
