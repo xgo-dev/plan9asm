@@ -96,7 +96,7 @@ func (c *arm64Ctx) storeARM64VectorFloat(reg Reg, arrangement arm64VectorArrange
 }
 
 func (c *arm64Ctx) loadARM64VectorInteger(reg Reg, arrangement arm64VectorArrangement) (string, error) {
-	bytesValue, err := c.loadVReg(reg)
+	bytesValue, err := c.loadVRegWidth(reg, arrangement.lanes*arrangement.elementBits)
 	if err != nil {
 		return "", err
 	}

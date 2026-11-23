@@ -74,6 +74,7 @@ func TestARM64RawVectorDecodersHaveSharedEffectsAndLowering(t *testing.T) {
 		"arm64_lower_word_rdma.go",
 		"arm64_lower_word_logical.go",
 		"arm64_lower_saturating_shift.go",
+		"arm64_lower_shift_insert.go",
 		"arm64_lower_word_sqrdmulh.go",
 		"arm64_lower_integer_narrow.go",
 		"arm64_lower_word_mul.go",

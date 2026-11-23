@@ -34,7 +34,7 @@ func (c *arm64Ctx) lowerARM64VectorSaturatingShift(op Op, ins Instr) (bool, bool
 		}
 		reg, register := arm64ParseVReg(operand.Reg)
 		arrangement, arranged := parseARM64VectorArrangement(operand.Reg)
-		if operand.Kind != OpReg || !register || !arranged || !arm64SaturatingShiftArrangement(arrangement) {
+		if operand.Kind != OpReg || !register || !arranged || !arm64IntegerShiftVectorArrangement(arrangement) {
 			return true, false, fmt.Errorf("arm64 %s requires B8/B16/H4/H8/S2/S4/D2 vector operands: %q", op, ins.Raw)
 		}
 		if form.arrangement.lanes != 0 && form.arrangement != arrangement {
@@ -54,7 +54,7 @@ func (c *arm64Ctx) lowerARM64VectorSaturatingShift(op Op, ins Instr) (bool, bool
 	return true, false, c.lowerARM64SaturatingShift(form)
 }
 
-func arm64SaturatingShiftArrangement(arrangement arm64VectorArrangement) bool {
+func arm64IntegerShiftVectorArrangement(arrangement arm64VectorArrangement) bool {
 	switch arrangement.elementBits {
 	case 8, 16, 32, 64:
 		width := arrangement.elementBits * arrangement.lanes
@@ -119,7 +119,7 @@ func decodeARM64RawSaturatingShift(word uint32) (arm64SaturatingShiftForm, bool)
 		lanes = vectorBits / elementBits
 	}
 	form.arrangement = arm64VectorArrangement{elementBits: elementBits, lanes: lanes}
-	if !form.scalar && !arm64SaturatingShiftArrangement(form.arrangement) {
+	if !form.scalar && !arm64IntegerShiftVectorArrangement(form.arrangement) {
 		return arm64SaturatingShiftForm{}, false
 	}
 	return form, true
