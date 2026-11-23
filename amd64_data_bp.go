@@ -116,8 +116,18 @@ func x86DataBPPackedRead(ins Instr, arch string) int {
 			logical, recognized, logicalErr := x86PackedLogicalProperties(ins, arch)
 			form, known, err = logical.x86PackedBinaryForm, recognized, logicalErr
 		}
+		if !known {
+			dot, recognized, dotErr := x86PackedDotProperties(ins.Op, ins, arch)
+			form, known, err = dot.x86PackedBinaryForm, recognized, dotErr
+		}
 		if known {
 			if err == nil && !form.mmx && form.first == index && form.memory == index {
+				return index
+			}
+			return -1
+		}
+		if aes, known, err := x86AESProperties(ins.Op, ins, arch); known {
+			if err == nil && aes.memory == index && aes.sourceOperand.Mem == operand.Mem {
 				return index
 			}
 			return -1

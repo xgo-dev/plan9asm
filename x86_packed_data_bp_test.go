@@ -82,6 +82,7 @@ func TestX86PackedDataBPRejectsUnprovedEffect(t *testing.T) {
 		"VPSHLDQ.Z $7,-17(BP)(DX*4),Z1,K1,Z2",
 		"VPCONFLICTQ.Z -17(BP)(DX*4),K1,Z2",
 		"VPANDQ.Z -17(BP)(DX*4),Z1,K1,Z2",
+		"VPDPBUSDS.Z -17(BP)(DX*4),Z1,K1,Z2",
 	} {
 		source, declaration := packedDataBPFixture("Value", instruction)
 		for _, missing := range []string{"MOVQ memory+0(FP),BP", "MOVQ $5,DX", "KMOVD AX,K1"} {
@@ -95,6 +96,57 @@ func TestX86PackedDataBPRejectsUnprovedEffect(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestX86PackedDataBPCompleteAESAndVNNIObjects(t *testing.T) {
+	const address = "-4(BP)(DX*4)"
+	var aes, dot []string
+	for _, name := range x86AESOracleNames {
+		banks := []string{"X"}
+		if strings.HasPrefix(name, "V") && !strings.Contains(name, "IMC") && !strings.Contains(name, "KEYGEN") {
+			banks = append(banks, "Y", "Z")
+		}
+		for _, bank := range banks {
+			row, _ := x86AESOracleRow(name, address, bank)
+			aes = append(aes, row)
+		}
+	}
+	for _, row := range x86VNNIOracleRows("amd64") {
+		if row.input != "register" {
+			instruction := strings.Replace(row.instruction(), "(AX)", address, 1)
+			dot = append(dot, strings.TrimSuffix(instruction, "0")+"2")
+		}
+	}
+	if len(aes) != 20 || len(dot) != 72 {
+		t.Fatalf("AES/VNNI memory form counts changed: %d/%d", len(aes), len(dot))
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("packed data BP objects require LLVM 22")
+	}
+	for _, family := range []struct {
+		name string
+		rows []string
+	}{{"AES", aes}, {"VNNI", dot}} {
+		t.Run(family.name, func(t *testing.T) {
+			var source, declarations strings.Builder
+			for i, row := range family.rows {
+				last := row[len(row)-1:]
+				body, decl := packedDataBPFixture(fmt.Sprintf("Packed%d", i), row)
+				source.WriteString(strings.Replace(body, "VMOVUPS Z2,(DI)", "VMOVUPS Z"+last+",(DI)", 1))
+				declarations.WriteString(decl)
+			}
+			const triple = "x86_64-unknown-linux-gnu"
+			x86LEAActualTargetGoObject(t, "amd64", triple, source.String())
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source.String(), declarations.String(), "amd64", triple, api)
+				if err != nil {
+					t.Fatalf("%s: %v", api, err)
+				}
+				x86PackedStringCompileObject(t, llc, triple, ir, "-O2")
+			}
+		})
 	}
 }
 
