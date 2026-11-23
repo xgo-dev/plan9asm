@@ -1,11 +1,14 @@
 package plan9asm
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
+
+	llvm "github.com/xgo-dev/llvm"
 )
 
 type arm64UnprivilegedTransferSample struct {
@@ -146,6 +149,97 @@ func TestARM64UnprivilegedTransferRejectsAdjacentEncodings(t *testing.T) {
 		if form, ok := decodeARM64RawUnprivilegedTransfer(word); ok {
 			t.Errorf("%s (%#08x) decoded as %+v", reason, word, form)
 		}
+	}
+}
+
+func TestNativeARM64UnprivilegedTransferEncodings(t *testing.T) {
+	samples := arm64UnprivilegedTransferSamples(true)
+	words := assembleARM64UnprivilegedTransfers(t, samples)
+	var source strings.Builder
+	source.WriteString("TEXT transfer(SB),516,$0-0\n")
+	for _, word := range words {
+		fmt.Fprintf(&source, "WORD $%#08x\n", word)
+	}
+	source.WriteString("RET\n")
+	words = append(words, 0xd65f03c0)
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			original := goAssemblerTextBytes(t, source.String(), goos, "arm64")
+			opts := NativeOptions{
+				GOOS: goos, GOARCH: "arm64", PackagePath: "probe",
+				CodeEntries: map[string]string{"transfer": "native_transfer"},
+			}
+			assembly, _, err := TranslateNativeSource([]byte(source.String()), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var instructions []string
+			for _, line := range strings.Split(assembly, "\n") {
+				if strings.HasPrefix(line, "\t") {
+					instructions = append(instructions, strings.TrimSpace(line))
+				}
+			}
+			codeSize := 4 * len(words)
+			if len(instructions) != len(words) || len(original) < codeSize || len(original) > (codeSize+15)&^15 {
+				t.Fatalf("got %d native instructions and %d Go bytes for %d source words", len(instructions), len(original), len(words))
+			}
+			// cmd/asm can pad the end of TEXT to its 16-byte alignment.
+			for _, padding := range original[codeSize:] {
+				if padding != 0 {
+					t.Fatalf("unexpected Go TEXT suffix %x", original[codeSize:])
+				}
+			}
+			for i, actual := range assembleARM64LLVMWords(t, instructions, "") {
+				if want := binary.LittleEndian.Uint32(original[i*4:]); actual != want || want != words[i] {
+					t.Errorf("instruction %d (%s) encoded as %#08x, Go %#08x, input %#08x", i, instructions[i], actual, want, words[i])
+				}
+			}
+		})
+	}
+}
+
+func TestCrossLinuxRuntimeMatrixARM64NativeUnprivilegedStack(t *testing.T) {
+	llc, triple, compiler, runner := arm64FPPairRuntimeTools(t)
+	goos := "linux"
+	if strings.Contains(triple, "apple") {
+		goos = "darwin"
+	}
+	const source = `TEXT transfer(SB),516,$0-0
+SUB $16, RSP
+WORD $0xf8008be0 // sttr x0, [sp, #8]
+WORD $0x38009bff // sttrb wzr, [sp, #9]
+WORD $0x38808be2 // ldtrsb x2, [sp, #8]
+MOVD R2, (R1)
+WORD $0xf8408be0 // ldtr x0, [sp, #8]
+ADD $16, RSP
+RET
+`
+	const driver = `#include <stdint.h>
+extern uint64_t stack_transfer(uint64_t value, int64_t *signed_byte);
+int main(void) {
+  int64_t signed_byte;
+  if (stack_transfer(0x123456789abcde80ULL, &signed_byte) != 0x123456789abc0080ULL || signed_byte != -128)
+    return 1;
+  if (stack_transfer(0xfedcba987654327fULL, &signed_byte) != 0xfedcba987654007fULL || signed_byte != 127)
+    return 2;
+  return 0;
+}`
+	requireARM64GoAssemblerResult(t, source, true)
+	ctx := llvm.NewContext()
+	defer ctx.Dispose()
+	mod, err := TranslateNativeModule(ctx, []byte(source), NativeOptions{
+		GOOS: goos, GOARCH: "arm64", PackagePath: "probe",
+		CodeEntries: map[string]string{"transfer": "stack_transfer"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mod.Dispose()
+	for _, opt := range []int{0, 2} {
+		t.Run(fmt.Sprintf("O%d", opt), func(t *testing.T) {
+			compileAndRunRuntimeTestWithCompiler(t, llc, compiler, "arm64_native_unprivileged_stack",
+				triple, mod.String(), driver, runner, opt)
+		})
 	}
 }
 

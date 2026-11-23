@@ -103,6 +103,34 @@ func (e *nativeARM64) instruction(out *strings.Builder, ins Instr) error {
 		}
 		emit("ret")
 		return nil
+	case "WORD":
+		word, err := arm64RawWordValue(ins)
+		if err != nil {
+			return err
+		}
+		form, known := decodeARM64RawUnprivilegedTransfer(word)
+		if !known {
+			break
+		}
+		baseReg := form.baseRegister()
+		if baseReg == SP {
+			// Rn=31 addresses the physical stack in this encoding.
+			baseReg = Reg("RSP")
+		}
+		base, err := nativeReg(Operand{Kind: OpReg, Reg: baseReg}, 64, true)
+		if err != nil {
+			return err
+		}
+		bits := 32
+		if form.op.bank == 'x' {
+			bits = 64
+		}
+		value, err := nativeReg(Operand{Kind: OpReg, Reg: form.dataRegister()}, bits, false)
+		if err != nil {
+			return err
+		}
+		emit(form.op.mnemonic, value, fmt.Sprintf("[%s, #%d]", base, form.offset))
+		return nil
 	case "JMP", "B", "BL", "CALL":
 		if len(a) != 1 {
 			return bad()
