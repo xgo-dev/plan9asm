@@ -140,6 +140,12 @@ func (e *nativeAMD64) typedInstruction(out *strings.Builder, ins Instr) error {
 		}
 		return e.emitTyped(out, strings.ToLower(op), f.bits, f.source, f.destination)
 	}
+	if f, known, err := x86MaskMoveProperties(ins.Op, ins, "amd64"); known {
+		if err != nil {
+			return err
+		}
+		return e.emitMaskMove(out, ins, f)
+	}
 	if f, known, err := x86BroadcastProperties(ins.Op, ins, "amd64"); known && f.kind == x86BroadcastInteger {
 		if err != nil {
 			return err
@@ -200,6 +206,28 @@ func (e *nativeAMD64) typedInstruction(out *strings.Builder, ins Instr) error {
 		return e.emitPackedMove(out, ins, f.spec.native, f.move.byteWidth, -1, false)
 	}
 	return bad()
+}
+
+func (e *nativeAMD64) emitMaskMove(out *strings.Builder, ins Instr, form x86MaskMoveForm) error {
+	var operands [2]string
+	for index, kind := range [2]x86MaskMoveOperandKind{form.source, form.destination} {
+		arg := ins.Args[index]
+		if kind == x86MaskMoveK {
+			operands[index] = "%" + strings.ToLower(string(arg.Reg))
+			continue
+		}
+		bits := form.bits
+		if kind == x86MaskMoveGP && bits < 32 {
+			bits = 32 // KMOVB/W still encode a dword GP register.
+		}
+		operand, err := e.operand(arg, bits)
+		if err != nil {
+			return err
+		}
+		operands[index] = operand
+	}
+	fmt.Fprintf(out, "\t%s %s, %s\n", strings.ToLower(string(ins.Op)), operands[0], operands[1])
+	return nil
 }
 
 func emitNativeAMD64GPBroadcast(out *strings.Builder, ins Instr, form x86BroadcastForm) error {

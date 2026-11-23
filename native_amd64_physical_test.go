@@ -153,6 +153,84 @@ func TestNativeAMD64TypedPhysicalFormatFamilies(t *testing.T) {
 	}
 }
 
+func TestNativeAMD64PhysicalMaskMoveFamilyObjects(t *testing.T) {
+	var source strings.Builder
+	source.WriteString("TEXT physical<>(SB),516,$0-0\n")
+	for _, opcode := range []string{"KMOVB", "KMOVW", "KMOVD", "KMOVQ"} {
+		for _, operands := range []string{"K1,K2", "K3,8(SP)(R13*4)", "8(SP)(R13*4),K4", "BP,K5", "K5,R14"} {
+			fmt.Fprintf(&source, "%s %s\n", opcode, operands)
+		}
+		fmt.Fprintf(&source, "MOVQ SP,R10\n%s SP,K6\n%s K7,SP\nMOVQ R10,SP\n", opcode, opcode)
+	}
+	source.WriteString("RET\n")
+	nativeAMD64RequirePhysicalObjectBytes(t, source.String())
+}
+
+func TestNativeAMD64OfficialPhysicalVectorGPObjects(t *testing.T) {
+	const stackRegisters = "(?:SP|BP)"
+	formats := []string{
+		`KMOV[BWDQ]\s+(?:` + stackRegisters + `,\s*K[0-7]|K[0-7],\s*` + stackRegisters + `)`,
+		`VPBROADCAST[BWDQ]\s+` + stackRegisters + `,\s*K[0-7],\s*[XYZ][0-9]+`,
+		`VCVTT?S[SD]2U?SI[QL]?\s+[^,]+,\s*(?:SP|BP|R14)`,
+		`VCVTUSI2S[SD][QL]\s+` + stackRegisters + `,\s*X[0-9]+,\s*X[0-9]+`,
+	}
+	match := regexp.MustCompile("^(?:" + strings.Join(formats, "|") + ")$")
+	corpus := filepath.Join(runtime.GOROOT(), "src", "cmd", "asm", "internal", "asm", "testdata", "avx512enc")
+	var source strings.Builder
+	source.WriteString("TEXT physical<>(SB),516,$0-0\n")
+	count := 0
+	for _, file := range []string{"avx512bw.s", "avx512dq.s", "avx512f.s"} {
+		data, err := os.ReadFile(filepath.Join(corpus, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Some EVEX rows list equivalent encodings. Compare the bytes the
+		// selected Go SDK actually emits for each original spelling.
+		for _, line := range strings.Split(string(data), "\n") {
+			code, _, _ := strings.Cut(line, "//")
+			instruction := strings.TrimSpace(code)
+			if !match.MatchString(instruction) {
+				continue
+			}
+			last := instruction[strings.LastIndexByte(instruction, ',')+1:]
+			destination := strings.TrimSpace(last)
+			if destination == "SP" || destination == "BP" {
+				fmt.Fprintf(&source, "MOVQ %s,R10\n%s\nMOVQ R10,%s\n", destination, instruction, destination)
+			} else {
+				fmt.Fprintln(&source, instruction)
+			}
+			count++
+		}
+	}
+	if count != 40 {
+		t.Fatalf("found %d original physical vector/GP rows, want 40", count)
+	}
+	source.WriteString("RET\n")
+	nativeAMD64RequirePhysicalObjectBytes(t, source.String())
+}
+
+func nativeAMD64RequirePhysicalObjectBytes(t *testing.T, source string) {
+	t.Helper()
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			listing := nativeAMD64OriginalObject(t, goos, source)
+			ctx := llvm.NewContext()
+			defer ctx.Dispose()
+			module, err := TranslateNativeModule(ctx, []byte(source), NativeOptions{
+				GOOS: goos, GOARCH: "amd64", PackagePath: "probe",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer module.Dispose()
+			if err := llvm.VerifyModule(module, llvm.ReturnStatusAction); err != nil {
+				t.Fatal(err)
+			}
+			nativeAMD64CompareFrameMachineCode(t, goos, listing, module.String())
+		})
+	}
+}
+
 func TestNativeAMD64PhysicalGPBroadcastFamily(t *testing.T) {
 	var source strings.Builder
 	source.WriteString("TEXT physical<>(SB),516,$0-0\n")
