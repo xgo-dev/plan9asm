@@ -7,13 +7,28 @@ package plan9asm
 // whole-source obligation. In particular, a partial or missing result cannot
 // escape the numerical-family routing check merely because its type is ptr.
 func x86OpaqueAddressPointerResultRole(fn Func, sig FuncSig, arch string) bool {
-	if sig.Ret != Ptr || len(sig.Args) != 0 || len(sig.Frame.Params) != 0 ||
+	if sig.Ret != Ptr {
+		return false
+	}
+	return x86AddressResultTransportRole(fn, sig, arch, func(ins Instr) (int, bool) {
+		_, immediate, destination, known := x86StaticAddressValueMove(ins, arch)
+		return destination, known && immediate
+	})
+}
+
+func x86NativeWordIntegerResult(sig FuncSig, arch string) bool {
+	return len(sig.Frame.Results) == 1 &&
+		(arch == "386" && sig.Ret == I32 || arch == "amd64" && sig.Ret == I64)
+}
+
+func x86AddressResultTransportRole(fn Func, sig FuncSig, arch string, addressProducer func(Instr) (int, bool)) bool {
+	if len(sig.Args) != 0 || len(sig.Frame.Params) != 0 ||
 		len(sig.Frame.Results) != 1 || !x86DirectGPFPResultSourceRole(fn, sig, arch) {
 		return false
 	}
 	word := x86ResultPointerWord(arch)
 	result := sig.Frame.Results[0]
-	if result.Type != Ptr || result.Offset != 0 || result.Index != 0 || result.Field != -1 ||
+	if result.Type != sig.Ret || result.Offset != 0 || result.Index != 0 || result.Field != -1 ||
 		len(result.Fields) != 0 || fn.ArgSize != word || len(fn.Instrs) < 3 || len(fn.Instrs) > 4096 ||
 		fn.Instrs[0].Op != OpTEXT {
 		return false
@@ -34,15 +49,15 @@ func x86OpaqueAddressPointerResultRole(fn Func, sig FuncSig, arch string) bool {
 		if original.Op == "NOP" && len(original.Args) == 0 {
 			continue
 		}
+		if destination, known := addressProducer(original); known {
+			defined |= 1 << uint(destination)
+			continue
+		}
 		ins := x86SourceMoveInstruction(original, arch)
 		if ins.Op != move || len(ins.Args) != 2 {
 			return false
 		}
 		first, last := ins.Args[0], ins.Args[1]
-		if _, immediate, destination, known := x86StaticAddressValueMove(original, arch); known && immediate {
-			defined |= 1 << uint(destination)
-			continue // The paired ordinary MOV still emits the actual symbol relocation.
-		}
 		value := first.Kind == OpImm && first.Imm == 0 && first.ImmRaw == "" && !first.ImmIsFloat
 		if first.Kind == OpReg {
 			source, _, valid := x86ResultGP(first.Reg, word, arch)

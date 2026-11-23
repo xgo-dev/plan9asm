@@ -56,6 +56,43 @@ func TestX86SameModuleRelocationValuesThreeAPIs(t *testing.T) {
 	}
 }
 
+func TestX86NamedLEAStaticAddressResultThreeAPIs(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc is required")
+	}
+	for _, target := range x86RawReturnTargets {
+		width := "Q"
+		if target.arch == "386" {
+			width = "L"
+		}
+		source := strings.Replace(x86RelocationResultSource(target.arch, "address"),
+			"MOV"+width+" $bytes<>+3(SB),AX", "LEA"+width+" bytes<>+3(SB),AX", 1)
+		goAssemblerOracleOutput(t, target.arch, source, "", true)
+		for _, api := range []string{"text", "module", "Go"} {
+			t.Run(target.triple+"/"+api, func(t *testing.T) {
+				const declaration = "func Value() uintptr"
+				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+				if err != nil || !strings.Contains(ir, "ptrtoint") {
+					t.Fatalf("address result lost its emitted relocation: %v", err)
+				}
+				x86PackedStringCompileObject(t, llc, target.triple, ir, "-O0")
+				for _, test := range []struct{ name, before, after string }{
+					{"unowned source", "LEA" + width + " bytes<>+3(SB),AX", "LEA" + width + " external(SB),AX"},
+					{"missing result", "MOV" + width + " AX,ret+0(FP)\n", ""},
+					{"numeric consumer", "MOV" + width + " AX,ret+0(FP)", "ADD" + width + " $1,AX\nMOV" + width + " AX,ret+0(FP)"},
+					{"partial address", "LEA" + width + " bytes<>+3(SB),AX", "LEAW bytes<>+3(SB),AX"},
+				} {
+					changed := strings.Replace(source, test.before, test.after, 1)
+					if ir, err := x86ScalarFPBitViewAPI(t, changed, declaration, target.arch, target.triple, api); err == nil || ir != "" {
+						t.Errorf("%s acquired a complete owned address result: %v", test.name, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestX86RelocationValueDoesNotGrantIncomingPointerOrPartialBytes(t *testing.T) {
 	for _, target := range x86RawReturnTargets {
 		word, move := 8, "MOVQ"

@@ -37,6 +37,7 @@ func x86TypedFPResultNeedsProof(fn Func, sig FuncSig, arch string) bool {
 		}
 	}
 	opaqueAddressResult := x86OpaqueAddressPointerResultRole(fn, sig, arch)
+	nativeWordResult := x86NativeWordIntegerResult(sig, arch)
 	for ordinal, ins := range fn.Instrs {
 		if x86LinuxSyscallCandidate(ins) {
 			return true // Every source argument and the target-aware raw transition remain obligations, including Void.
@@ -255,6 +256,11 @@ func x86TypedFPResultNeedsProof(fn Func, sig FuncSig, arch string) bool {
 		}
 		if _, _, _, known := x86StaticAddressValueMove(ins, arch); known && !opaqueAddressResult {
 			return true // The address source cannot hide an unwritten result.
+		}
+		if nativeWordResult {
+			if _, _, _, _, known := x86SBLEAWriteShape(ins, arch); known {
+				return true // Even a discarded static address needs a complete result.
+			}
 		}
 		if x86NamedSegmentMOVNeedsProof(ins, arch) {
 			return true // Source/input effects remain mandatory even with no result.
