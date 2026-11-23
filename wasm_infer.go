@@ -127,6 +127,10 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err != nil {
 			return FuncSig{}, err
 		}
+		comparison, comparisonKnown, err := parseWASMIntegerComparison(ins, op)
+		if err != nil {
+			return FuncSig{}, err
+		}
 		if terminated && op != "ELSE" && op != "END" && op != "LABEL" {
 			continue
 		}
@@ -140,6 +144,15 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 				}
 			}
 			push(wasmInferValue{typ: integerBinary.typ})
+			continue
+		}
+		if comparisonKnown {
+			for i := 0; i < comparison.arity; i++ {
+				if err := popTyped(op, comparison.typ); err != nil {
+					return FuncSig{}, err
+				}
+			}
+			push(wasmInferValue{typ: I32})
 			continue
 		}
 		if memoryKnown {
@@ -249,22 +262,6 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			push(wasmInferValue{typ: I32})
 		case "I64CONST":
 			push(wasmInferValue{typ: I64})
-		case "I32EQ", "I32NE", "I32LTS", "I32LTU", "I32GTS", "I32GTU", "I32LES", "I32LEU", "I32GES", "I32GEU":
-			if err := typedBinary(op, I32, I32); err != nil {
-				return FuncSig{}, err
-			}
-		case "I64EQ", "I64NE", "I64LTS", "I64LTU", "I64GTS", "I64GTU", "I64LES", "I64LEU", "I64GES", "I64GEU":
-			if err := typedBinary(op, I64, I32); err != nil {
-				return FuncSig{}, err
-			}
-		case "I32EQZ", "NOT":
-			if err := typedUnary(op, I32, I32); err != nil {
-				return FuncSig{}, err
-			}
-		case "I64EQZ":
-			if err := typedUnary(op, I64, I32); err != nil {
-				return FuncSig{}, err
-			}
 		case "SELECT":
 			condition := pop(op)
 			if err := require(condition, I32); err != nil {

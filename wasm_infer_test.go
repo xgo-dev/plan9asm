@@ -85,12 +85,13 @@ func TestInferWasmIntegerOperations(t *testing.T) {
 	}
 	for op, spec := range wasmIntegerCompareOps {
 		t.Run(op, func(t *testing.T) {
-			assertInferredWasmSig(t, fmt.Sprintf(`TEXT helper<>(SB), NOSPLIT, $0
-	Get R0
-	Get R1
-	%s
-	Return
-`, op), []LLVMType{spec.typ, spec.typ}, I32)
+			body := "Get R0\n"
+			args := []LLVMType{spec.typ}
+			if spec.arity == 2 {
+				body += "Get R1\n"
+				args = append(args, spec.typ)
+			}
+			assertInferredWasmSig(t, "TEXT helper<>(SB), NOSPLIT, $0\n"+body+op+"\nReturn\n", args, I32)
 		})
 	}
 }

@@ -68,26 +68,3 @@ var wasmIntegerBinaryOps = map[string]wasmIntegerOp{
 	"I64ROTL": {I64, "fshl"},
 	"I64ROTR": {I64, "fshr"},
 }
-
-var wasmIntegerCompareOps = map[string]wasmIntegerOp{
-	"I32EQ":  {I32, "eq"},
-	"I32NE":  {I32, "ne"},
-	"I32LTS": {I32, "slt"},
-	"I32LTU": {I32, "ult"},
-	"I32GTS": {I32, "sgt"},
-	"I32GTU": {I32, "ugt"},
-	"I32LES": {I32, "sle"},
-	"I32LEU": {I32, "ule"},
-	"I32GES": {I32, "sge"},
-	"I32GEU": {I32, "uge"},
-	"I64EQ":  {I64, "eq"},
-	"I64NE":  {I64, "ne"},
-	"I64LTS": {I64, "slt"},
-	"I64LTU": {I64, "ult"},
-	"I64GTS": {I64, "sgt"},
-	"I64GTU": {I64, "ugt"},
-	"I64LES": {I64, "sle"},
-	"I64LEU": {I64, "ule"},
-	"I64GES": {I64, "sge"},
-	"I64GEU": {I64, "uge"},
-}

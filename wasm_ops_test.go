@@ -9,37 +9,35 @@ import (
 func TestTranslateWasmIntegerOperations(t *testing.T) {
 	for op, spec := range wasmIntegerCompareOps {
 		t.Run(op, func(t *testing.T) {
-			translateWasmIntegerOperation(t, op, spec, I32)
+			translateWasmIntegerComparison(t, op, spec)
 		})
 	}
 }
 
-func translateWasmIntegerOperation(t *testing.T, op string, spec wasmIntegerOp, result LLVMType) {
+func translateWasmIntegerComparison(t *testing.T, op string, spec wasmIntegerComparisonOp) {
 	t.Helper()
 	constant := "I32Const"
 	if spec.typ == I64 {
 		constant = "I64Const"
 	}
-	file, err := Parse(ArchWASM, fmt.Sprintf(`TEXT op(SB), NOSPLIT, $0
-	%s $17
-	%s $3
-	%s
-	Return
-`, constant, constant, op))
+	body := constant + " $17\n"
+	if spec.arity == 2 {
+		body += constant + " $3\n"
+	}
+	file, err := Parse(ArchWASM, fmt.Sprintf("TEXT op(SB), NOSPLIT, $0\n%s%s\nReturn\n", body, op))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ir, err := Translate(file, Options{
 		TargetTriple: "wasm32-unknown-unknown",
-		Sigs:         map[string]FuncSig{"op": {Name: "op", Ret: result}},
+		Sigs:         map[string]FuncSig{"op": {Name: "op", Ret: I32}},
 		Goarch:       "wasm",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(ir, " = "+spec.op+" "+string(spec.typ)) &&
-		!strings.Contains(ir, " = icmp "+spec.op+" "+string(spec.typ)) {
-		t.Fatalf("translated %s IR does not contain %s %s:\n%s", op, spec.op, spec.typ, ir)
+	if !strings.Contains(ir, " = icmp "+spec.predicate+" "+string(spec.typ)) {
+		t.Fatalf("translated %s IR does not contain %s %s:\n%s", op, spec.predicate, spec.typ, ir)
 	}
 }
 

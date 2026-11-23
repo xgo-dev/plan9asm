@@ -136,6 +136,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if _, _, err := parseWASMIntegerBinary(ins, op); err != nil {
 			return err
 		}
+		if _, _, err := parseWASMIntegerComparison(ins, op); err != nil {
+			return err
+		}
 		if _, _, err := parseWASMFloatBinary(ins); err != nil {
 			return err
 		}
@@ -956,29 +959,20 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		blockTerminated = false
 		return nil
 	}
-	emitIntCompare := func(op string, typ LLVMType, pred string, unary bool) error {
-		rhs := wasmValue{typ: typ, val: "0"}
-		var err error
-		if !unary {
-			rhs, err = pop(op)
+	emitIntCompare := func(op string, spec wasmIntegerComparisonOp) error {
+		operands := [2]wasmValue{{}, {typ: spec.typ, val: "0"}}
+		for index := spec.arity - 1; index >= 0; index-- {
+			value, err := pop(op)
 			if err != nil {
 				return err
 			}
-		}
-		lhs, err := pop(op)
-		if err != nil {
-			return err
-		}
-		lhs, err = cast(lhs, typ, false)
-		if err != nil {
-			return err
-		}
-		rhs, err = cast(rhs, typ, false)
-		if err != nil {
-			return err
+			if value.typ != spec.typ || value.stackAddr {
+				return fmt.Errorf("%s operand %d requires a %s stack value, got %s", op, index+1, spec.typ, value.typ)
+			}
+			operands[index] = value
 		}
 		cmp := newTmp()
-		fmt.Fprintf(b, "  %%%s = icmp %s %s %s, %s\n", cmp, pred, typ, lhs.val, rhs.val)
+		fmt.Fprintf(b, "  %%%s = icmp %s %s %s, %s\n", cmp, spec.predicate, spec.typ, operands[0].val, operands[1].val)
 		out := newTmp()
 		fmt.Fprintf(b, "  %%%s = zext i1 %%%s to i32\n", out, cmp)
 		push(wasmValue{typ: I32, val: "%" + out})
@@ -1332,7 +1326,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			continue
 		}
 		if spec, ok := wasmIntegerCompareOps[op]; ok {
-			if err := emitIntCompare(op, spec.typ, spec.op, false); err != nil {
+			if err := emitIntCompare(op, spec); err != nil {
 				return err
 			}
 			continue
@@ -1605,14 +1599,6 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return err
 			}
 			push(constant.value())
-		case "I32EQZ", "NOT":
-			if err := emitIntCompare(op, I32, "eq", true); err != nil {
-				return err
-			}
-		case "I64EQZ":
-			if err := emitIntCompare(op, I64, "eq", true); err != nil {
-				return err
-			}
 		case "SELECT":
 			condition, err := pop(op)
 			if err != nil {
