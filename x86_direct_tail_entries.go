@@ -91,7 +91,11 @@ func (graph *x86DirectTailGraph) bindInteriorCallEntries(triple string) error {
 	positions := x86InteriorCallPositions(listing, points, graph.original)
 	graph.interiorEntries = make(map[x86SourceBranchTarget]x86DirectTailPoint, len(targets))
 	for target, text := range targets {
-		point, found := positions[text][target.addend]
+		entries, frameless := positions[text]
+		if !frameless {
+			return x86DirectTailContext("CALL byte entry lacks a verified frameless Go layout: %s", target.symbol)
+		}
+		point, found := entries[target.addend]
 		if !found {
 			return x86DirectTailContext("CALL byte offset %s%+d has no original instruction entry", target.symbol, target.addend)
 		}
@@ -111,9 +115,9 @@ func x86InteriorCallText(fn Func, arch string) error {
 	}
 	flags, err := nativeFlags(parts[1], "NOSPLIT", "NOFRAME", "DUPOK")
 	frame, frameErr := parseTEXTFrameSpec(parts)
-	if err != nil || frameErr != nil || !flags["NOSPLIT"] || !flags["NOFRAME"] ||
+	if err != nil || frameErr != nil || !flags["NOSPLIT"] ||
 		!frame.argsSpecified || frame.frameSize != 0 || frame.argSize != 0 {
-		return x86DirectTailContext("CALL byte entry has an unmodeled Go prologue: %s", fn.Sym)
+		return x86DirectTailContext("CALL byte entry requires NOSPLIT and an explicit zero-size source frame: %s", fn.Sym)
 	}
 	// A standalone member preserves local code layout. Go's shared/dynlink
 	// modes can change the size of TLS accesses and global/literal loads.
@@ -207,7 +211,11 @@ func x86InteriorCallPositions(listing []byte, points []x86DirectTailPoint, file 
 		switch match[3] {
 		case "TEXT":
 			text = -1
-			if op == OpTEXT && pc == 0 {
+			// The assembler can add a frame even for source TEXT $0-0.
+			// Older SDK listings may leave NOFRAME implicit for a leaf.
+			frame, err := parseTEXTFrameSpec(strings.Split(line[len(match[0]):], ","))
+			if op == OpTEXT && pc == 0 && err == nil && frame.argsSpecified &&
+				frame.frameSize == 0 && frame.argSize == 0 {
 				text = point.text
 				positions[text] = make(map[int64]x86DirectTailPoint)
 			}
@@ -215,7 +223,13 @@ func x86InteriorCallPositions(listing []byte, points []x86DirectTailPoint, file 
 		case "PCDATA", "FUNCDATA", "PCALIGN", "PCALIGNMAX":
 			continue
 		}
-		if point.text != text || op == OpTEXT || op == OpLABEL || seen[point] {
+		if point.text != text || op == OpLABEL || seen[point] {
+			continue
+		}
+		if op == OpTEXT {
+			// Code attributed to the TEXT header is assembler-generated.
+			delete(positions, text)
+			text = -1
 			continue
 		}
 		seen[point] = true // Expanded instructions can only be entered at their first byte.

@@ -70,14 +70,16 @@ func TestX86DirectTailNamedInteriorCallPreservesOrdinaryEntry(t *testing.T) {
 	}
 	for _, target := range x86RawReturnTargets {
 		t.Run(target.triple, func(t *testing.T) {
-			source, declarations := x86DirectTailNamedInteriorCallFixture(target.arch)
-			for _, symbol := range []struct{ source, goObject, llvm string }{
-				{"·Target", "plan9asmentries.Target", "Target"},
-				{"foo", "foo", "foo"},
+			for _, symbol := range []struct {
+				name, source, goObject, llvm string
+				flags                        int
+			}{
+				{"Target", "·Target", "plan9asmentries.Target", "Target", 516},
+				{"foo", "foo", "foo", "foo", 516},
+				{"foo/implicit-frameless", "foo", "foo", "foo", 4},
 			} {
-				t.Run(symbol.llvm, func(t *testing.T) {
-					assembly := strings.ReplaceAll(source, "·Target", symbol.source)
-					signatures := strings.ReplaceAll(declarations, "Target", symbol.llvm)
+				t.Run(symbol.name, func(t *testing.T) {
+					assembly, signatures := x86DirectTailNamedInteriorCallFixture(target.arch, symbol.source, symbol.flags)
 					original, err := x86InteriorCallGoListing(assembly, target.arch, target.triple)
 					names := []string{regexp.QuoteMeta(symbol.goObject)}
 					if symbol.source == "·Target" {
@@ -111,6 +113,34 @@ func TestX86DirectTailNamedInteriorCallPreservesOrdinaryEntry(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestX86InteriorCallPositionsRejectGeneratedPrologue(t *testing.T) {
+	const source = "TEXT foo(SB),4,$0-0\nXORL AX,AX\nADDL $73,AX\nRET\n"
+	file, err := Parse(ArchAMD64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	points := []x86DirectTailPoint{{text: -1}, {0, 0}, {0, 1}, {0, 2}, {0, 3}}
+	const frameless = `
+  0x0000 00000 (entries.s:2) TEXT foo(SB), NOSPLIT, $0-0
+  0x0000 00000 (entries.s:3) XORL AX, AX
+  0x0002 00002 (entries.s:4) ADDL $73, AX
+  0x0005 00005 (entries.s:5) RET
+`
+	positions := x86InteriorCallPositions([]byte(frameless), points, file)
+	if point, found := positions[0][2]; !found || point != (x86DirectTailPoint{0, 2}) {
+		t.Fatal("an implicit frameless entry lost its exact source instruction")
+	}
+	for _, listing := range []string{
+		strings.Replace(frameless, "$0-0", "$8-0", 1),
+		strings.Replace(frameless, "  0x0000 00000 (entries.s:3)",
+			"  0x0000 00000 (entries.s:2) PUSHQ BP\n  0x0001 00001 (entries.s:3)", 1),
+	} {
+		if got := x86InteriorCallPositions([]byte(listing), points, file); len(got) != 0 {
+			t.Fatal("assembler-generated frame entered the source continuation graph", got)
+		}
 	}
 }
 

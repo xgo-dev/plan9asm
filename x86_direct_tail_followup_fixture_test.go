@@ -31,19 +31,20 @@ alternate:
 `, "func Entry() uint32\nfunc Interior() uint32\nfunc Grouped() uint32\nfunc Starred() uint32\n"
 }
 
-func x86DirectTailNamedInteriorCallFixture(arch string) (source, declarations string) {
+func x86DirectTailNamedInteriorCallFixture(arch, symbol string, flags int) (source, declarations string) {
 	resultOffset := goWordSize(arch)
 	return fmt.Sprintf(`TEXT ·Interior(SB),516,$0-%d
  MOVL value+0(FP),AX
- CALL ·Target+4(SB)(AX*4)
+ CALL %s+4(SB)(AX*4)
  MOVL AX,ret+%d(FP)
  RET
-TEXT ·Target(SB),516,$0-0
+TEXT %s(SB),%d,$0-0
  XORL AX,AX
  XORL BX,BX
  ADDL $73,AX
  RET
-`, resultOffset+4, resultOffset), "func Interior(value uint32) uint32\nfunc Target()\n"
+`, resultOffset+4, symbol, resultOffset, symbol, flags),
+		"func Interior(value uint32) uint32\nfunc " + strings.TrimPrefix(symbol, "·") + "()\n"
 }
 
 // One complete ordinary source file composes the three independent roles.

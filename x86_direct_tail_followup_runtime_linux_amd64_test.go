@@ -245,7 +245,6 @@ int main(void) {
 }
 
 func x86DirectTailNamedInteriorCallRuntime(t *testing.T, arch string, execution x86FloatCompareExecution) {
-	source, declarations := x86DirectTailNamedInteriorCallFixture(arch)
 	const goMain = `
 func main() {
  Target()
@@ -271,7 +270,18 @@ int main(void) {
  return 0;
 }
 `
-	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, "ordinary entry and five interior inputs passed\n")
+	for _, frame := range []struct {
+		name  string
+		flags int
+	}{
+		{"explicit-frameless", 516},
+		{"implicit-frameless", 4},
+	} {
+		t.Run(frame.name, func(t *testing.T) {
+			source, declarations := x86DirectTailNamedInteriorCallFixture(arch, "·Target", frame.flags)
+			x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, "ordinary entry and five interior inputs passed\n")
+		})
+	}
 }
 
 func x86DirectTailCheckCallRuntime(t *testing.T, arch string, execution x86FloatCompareExecution,
