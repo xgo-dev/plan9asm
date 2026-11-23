@@ -102,6 +102,43 @@ func TestX86OfficialBackwardBranchObjects(t *testing.T) {
 	}
 }
 
+const x86Official386ContextSource = `TEXT ·CarryLabel(SB),4,$0-8
+MOVL input+0(FP),AX
+label:
+ADDL $1,AX
+JC label
+MOVL AX,ret+4(FP)
+RET
+
+TEXT ·CarryPC(SB),4,$0-8
+MOVL input+0(FP),AX
+ADDL $1,AX
+JC -1(PC)
+MOVL AX,ret+4(FP)
+RET
+
+TEXT ·InsertFrameLane(SB),4,$0-12
+PXOR X0,X0
+PINSRD $2,foo+4(FP),X0
+PEXTRD $2,X0,AX
+MOVL AX,ret+8(FP)
+RET
+`
+
+const x86Official386ContextDeclarations = `func CarryLabel(input uint32) uint32
+func CarryPC(input uint32) uint32
+func InsertFrameLane(prefix, foo uint32) uint32
+`
+
+func TestX86Official386CarryAndFrameObjects(t *testing.T) {
+	for _, target := range x86AddressMemoryTargets("386") {
+		t.Run(target, func(t *testing.T) {
+			x86RawNumericalFamilyObjects(t, x86Official386ContextSource, x86Official386ContextDeclarations,
+				"386", target)
+		})
+	}
+}
+
 const x86OfficialSymbolJumpSource = `TEXT ·SymbolOffset(SB),4,$0-4
 JMP bar<>+4(SB)
 

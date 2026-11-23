@@ -18,7 +18,8 @@ func TestX86PhysicalSegmentStackLeaf(t *testing.T) {
 			width := "Q"
 			if target.arch == "386" {
 				width = "L"
-				body += "PUSHL SS\nPOPL SS\nPUSHW DS\nPOPW DS\nPUSHL ES\nPOPL ES\nPUSHL CS\nPOPL AX\n"
+				body += "PUSHL SS\nPUSHL FS\nPOPL FS\nPOPL SS\n"
+				body += "PUSHW DS\nPOPW DS\nPUSHL ES\nPOPL ES\nPUSHL CS\nPOPL AX\n"
 			}
 			body += "PUSH" + width + " GS\nPOP" + width + " AX\nPUSH" + width + " AX\nPOP" + width + " GS\n"
 			program := start + body + "RET\n"

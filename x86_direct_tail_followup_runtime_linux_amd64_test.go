@@ -46,6 +46,61 @@ int main(void) {
 		declarations+x86OfficialSymbolJumpDeclarations, goMain, cMain, "7 Go branch results\n")
 }
 
+func TestCrossLinuxRuntimeMatrixX86Official386CarryAndFrame(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	compiler, err := exec.LookPath("i686-linux-gnu-gcc")
+	if llc == "" || err != nil {
+		t.Fatal("386 carry/frame owner needs LLVM 22 llc and the i686 compiler", err)
+	}
+	qemu, err := exec.LookPath("qemu-i386")
+	if err != nil {
+		t.Fatal("386 carry/frame owner needs pinned qemu-i386", err)
+	}
+	identity, err := runtimeOracleGuestRunnerSHA(qemu)
+	if err != nil || identity != runtimeOraclePinnedQEMUSHA("qemu-i386") {
+		t.Fatal("386 carry/frame owner could not authenticate qemu-i386", identity, err)
+	}
+	execution := x86FloatCompareExecution{
+		llc: llc, triple: "i386-unknown-linux-gnu", compiler: []string{compiler, "-static", "-no-pie"},
+		prefix: []string{qemu, "-cpu", "max"}, preserveArgv0: true,
+	}
+	const goMain = `
+func main() {
+    for _, test := range [][2]uint32{{0, 1}, {17, 18}, {0xfffffffe, 0xffffffff}, {0xffffffff, 1}} {
+        if CarryLabel(test[0]) != test[1] || CarryPC(test[0]) != test[1] {
+            panic("incorrect 386 carry branch")
+        }
+    }
+    if InsertFrameLane(17, 0x80706050) != 0x80706050 || InsertFrameLane(0x80706050, 17) != 17 {
+        panic("incorrect 386 frame lane")
+    }
+    fmt.Println("10 Go 386 results")
+}
+`
+	const cMain = `#include <stdint.h>
+#include <stdio.h>
+
+extern uint32_t CarryLabel(uint32_t), CarryPC(uint32_t);
+extern uint32_t InsertFrameLane(uint32_t, uint32_t);
+
+int main(void) {
+    const uint32_t tests[][2] = {{0, 1}, {17, 18}, {0xfffffffe, 0xffffffff}, {0xffffffff, 1}};
+    for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
+        if (CarryLabel(tests[i][0]) != tests[i][1] || CarryPC(tests[i][0]) != tests[i][1]) {
+            return 1;
+        }
+    }
+    if (InsertFrameLane(17, 0x80706050) != 0x80706050 || InsertFrameLane(0x80706050, 17) != 17) {
+        return 2;
+    }
+    puts("10 Go 386 results");
+    return 0;
+}
+`
+	x86DirectTailCheckCallRuntime(t, "386", execution, x86Official386ContextSource,
+		x86Official386ContextDeclarations, goMain, cMain, "10 Go 386 results\n")
+}
+
 // The Linux AMD64 owner must execute both native ISA modes. Other hosts retain
 // portable objects and source checks; no missing compiler/ISA counts as a pass.
 func TestCrossLinuxRuntimeMatrixX86DirectTailPCResultAliasesAndExternal(t *testing.T) {

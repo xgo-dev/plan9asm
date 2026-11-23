@@ -6007,6 +6007,7 @@ MOVW TASK, table-8(SP)
 			source.WriteString(aliases)
 			if target.arch == "386" {
 				source.WriteString("MOVW TASK, 24(SP)\n")
+				source.WriteString("MOVL $1,DX\nMOVL $1,DI\nMOVL DX, CR0\nMOVL DI, CR4\n")
 			}
 			source.WriteString("RET\n")
 			requireX86GoAssemblerResult(t, target.arch, source.String(), true)
