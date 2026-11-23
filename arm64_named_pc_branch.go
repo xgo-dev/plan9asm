@@ -30,6 +30,22 @@ func arm64NamedPCOperand(ins Instr) (index int, address bool, relative bool) {
 // Numeric ADR/ADRP sources never acquire a From.Target in cmd/asm, so Go's
 // brdist emits a zero displacement. Explicit label operands are already bound.
 func normalizeARM64NamedPCRelative(fn Func) (Func, error) {
+	firstOrdinal := 0
+	found := false
+	for _, ins := range fn.Instrs {
+		if ins.Op == OpLABEL {
+			continue
+		}
+		if _, _, relative := arm64NamedPCOperand(ins); relative {
+			found = true
+			break
+		}
+		firstOrdinal++
+	}
+	if !found {
+		return fn, nil
+	}
+
 	linear := make([]int, 0, len(fn.Instrs))
 	known := make(map[string]bool)
 	for i, ins := range fn.Instrs {
@@ -43,7 +59,8 @@ func normalizeARM64NamedPCRelative(fn Func) (Func, error) {
 	}
 	labels := make(map[int]string)
 	replacements := make(map[int]Instr)
-	for ordinal, index := range linear {
+	for ordinal := firstOrdinal; ordinal < len(linear); ordinal++ {
+		index := linear[ordinal]
 		ins := fn.Instrs[index]
 		argument, address, relative := arm64NamedPCOperand(ins)
 		if !relative {
@@ -79,9 +96,6 @@ func normalizeARM64NamedPCRelative(fn Func) (Func, error) {
 		ins.Args = append([]Operand(nil), ins.Args...)
 		ins.Args[argument] = Operand{Kind: OpIdent, Ident: label}
 		replacements[index] = ins
-	}
-	if len(replacements) == 0 {
-		return fn, nil
 	}
 	result := fn
 	result.Instrs = make([]Instr, 0, len(fn.Instrs)+len(labels))
