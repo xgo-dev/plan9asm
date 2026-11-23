@@ -44,7 +44,7 @@ TEXT halt(SB),516,$0-0
 TEXT debugChanges(SB),516,$0-0
  DCPS1 $11378
  DCPS2 $10699
- WORD $0xd4abebe3
+ DCPS3 $24415
  RET
 TEXT trapTail(SB),516,$0-0
  WORD $0xd41dfe82
