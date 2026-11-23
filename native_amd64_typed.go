@@ -24,15 +24,19 @@ func (e *nativeAMD64) typedInstruction(out *strings.Builder, ins Instr) error {
 	op, args := string(ins.Op), ins.Args
 	bad := func() error { return fmt.Errorf("unsupported native amd64 typed form: %q", ins.Raw) }
 	if ins.Op == "ADJSP" {
-		form, err := parseX86StackAdjustment(ins)
+		form, err := parseX86StackAdjustment(ins, "amd64")
 		if err != nil {
 			return bad()
 		}
-		switch {
-		case form.amount == 0:
-		case form.add:
+		if form.amount == 0 {
+			return nil
+		}
+		if form.prefix != 0 {
+			fmt.Fprintf(out, "\t.byte %#x\n", form.prefix)
+		}
+		if form.add {
 			fmt.Fprintf(out, "\taddq $%d, %%rsp\n", form.immediate)
-		default:
+		} else {
 			fmt.Fprintf(out, "\tsubq $%d, %%rsp\n", form.immediate)
 		}
 		return nil

@@ -340,6 +340,9 @@ func normalizeX86SourceIntegerAddresses(file *File, options Options) (*File, err
 			}
 		}
 		for index, ins := range source.Instrs {
+			if ins.Op == "ADJSP" {
+				continue // Its typed form replaces the optional destination before memory encoding.
+			}
 			if ins.Op == "NOP" {
 				// Go does not encode the pseudo operand as an address.
 				// Its own grammar checks possible prefix effects first.

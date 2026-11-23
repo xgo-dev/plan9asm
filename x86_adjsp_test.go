@@ -1,8 +1,12 @@
 package plan9asm
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -72,5 +76,117 @@ func TestX86ADJSPOrdinaryCarry(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestX86ADJSPRewrittenDestinations(t *testing.T) {
+	for _, target := range []struct{ arch, triple string }{
+		{"386", "i386-unknown-linux-gnu"}, {"amd64", "x86_64-unknown-linux-gnu"},
+	} {
+		source := x86ADJSPCarrySource("Value", 128)
+		baseline := assembleX87ControlBytes(t, target.arch, source)
+		fsPrefix := x86SymbolIndexedActualSegmentPrefixes(t, target.arch)["FS"]
+		for _, row := range []struct {
+			destination string
+			prefix      bool
+		}{
+			{"AX", false}, {"Z31", false}, {"CR15", false}, {"0", false},
+			{"(SP)", false}, {"(FS)", false}, {"0(AX)(CX*1)", false}, {"0(AX)(SP*1)", false},
+			{"absent(SB)", false}, {"absent<>(SB)", false}, {"absent(SB)(AX)", false},
+			{"0(AX)(FS*1)", true},
+		} {
+			t.Run(target.arch+"/"+row.destination, func(t *testing.T) {
+				program := strings.Replace(source, "ADJSP $128", "ADJSP $128,"+row.destination, 1)
+				want := baseline
+				if row.prefix && fsPrefix != 0 {
+					// CLC precedes the rewritten ADD and its producer's index prefix.
+					want = append([]byte{baseline[0], fsPrefix}, baseline[1:]...)
+				}
+				original := assembleX87ControlBytes(t, target.arch, program)
+				if !bytes.Equal(original, want) {
+					t.Fatalf("Go destination rewrite follows different bytes: %x, want %x", original, want)
+				}
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, program, "func Value() uint32", target.arch, target.triple, api)
+					if err != nil || !strings.Contains(x86MulDivRoundOptimize(t, ir), "ret i32 3") {
+						t.Fatalf("%s must only observe the rewritten SP and flags: %v", api, err)
+					}
+				}
+			})
+		}
+		for _, row := range []struct{ destination, displacement string }{
+			{"8(SP)", "8"}, {"absent+8(SB)", "8"}, {"$7", "7"},
+		} {
+			t.Run(target.arch+"/invalid-"+row.destination, func(t *testing.T) {
+				program := strings.Replace(source, "ADJSP $128", "ADJSP $128,"+row.destination, 1)
+				x86ADJSPRequireGoDisplacementFailure(t, target.arch, program, row.displacement)
+				_, err := x86ScalarFPBitViewAPI(t, program, "func Value() uint32", target.arch, target.triple, "Go")
+				if err == nil || !strings.Contains(err.Error(), "ADJSP destination") {
+					t.Fatalf("Go-invalid destination acquired a rewritten SP: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func x86ADJSPRequireGoDisplacementFailure(t *testing.T, arch, source, displacement string) {
+	t.Helper()
+	dir := t.TempDir()
+	input, object := filepath.Join(dir, "original.s"), filepath.Join(dir, "original.o")
+	if err := os.WriteFile(input, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := runtimeOracleStageContext(t)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "tool", "asm", "-o", object, input)
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOOS=linux", "GOARCH="+arch)
+	output, err := runtimeOracleCombinedOutput(ctx, command)
+	exit, exited := err.(*exec.ExitError)
+	expected := "asm: asmand: bad address $" + displacement + ",SP\nasm: assembly failed\n"
+	if ctx.Err() != nil || !exited || exit.ExitCode() != 1 || string(output) != expected {
+		t.Fatalf("original Go did not reject the rewritten displacement: %v\n%s", err, output)
+	}
+}
+
+func x86ADJSPLogicalFrameSource(name, arch string) string {
+	result := x86ResultPointerWord(arch)
+	return fmt.Sprintf(`TEXT ·%s(SB),4,$32-%d
+MOVL value+0(FP),AX
+MOVL AX,spill-16(SP)
+ADJSP $128,SP
+MOVL spill-16(SP),AX
+ADCL $0,AX
+MOVL AX,ret+%d(FP)
+ADJSP $-128,SP
+RET
+`, name, result+4, result)
+}
+
+func TestX86ADJSPKeepsLogicalFrameCells(t *testing.T) {
+	const declaration = "func Value(value uint32) uint32"
+	for _, target := range []struct{ arch, triple string }{
+		{"386", "i386-unknown-linux-gnu"}, {"amd64", "x86_64-unknown-linux-gnu"},
+	} {
+		t.Run(target.arch, func(t *testing.T) {
+			source := x86ADJSPLogicalFrameSource("Value", target.arch)
+			goAssemblerOracleOutput(t, target.arch, source, "", true)
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+				if err != nil {
+					t.Fatalf("%s lost the rebased AUTO/FP cells: %v", api, err)
+				}
+				x86ScalarFPNamedConstantResult(t, ir+"define i32 @Probe() { %r = call i32 @Value(i32 41)\n ret i32 %r }\n", "Probe", []uint64{42})
+			}
+			for _, invalid := range []string{
+				strings.Replace(source, "MOVL AX,spill-16(SP)", "NOP", 1),
+				strings.ReplaceAll(source, "spill-16(SP)", "16(SP)"),
+			} {
+				goAssemblerOracleOutput(t, target.arch, invalid, "", true)
+				_, err := x86ScalarFPBitViewAPI(t, invalid, declaration, target.arch, target.triple, "Go")
+				if !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatalf("undefined or physical SP storage acquired logical AUTO bytes: %v", err)
+				}
+			}
+		})
 	}
 }

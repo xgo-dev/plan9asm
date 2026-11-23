@@ -58,7 +58,7 @@ func nativeTextFrame(fn Func, target NativeOptions) (nativeFramePlan, error) {
 			stackDelta += int64(sourceBytes)
 			physicalDelta += int64(physicalBytes)
 		} else if ins.Op == "ADJSP" {
-			form, err := parseX86StackAdjustment(ins)
+			form, err := parseX86StackAdjustment(ins, "amd64")
 			if err != nil {
 				return plan, err
 			}

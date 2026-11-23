@@ -24,7 +24,7 @@ func x86Mode32FixedFrameCandidate(fn Func, arch string) bool {
 		return false
 	}
 	for _, ins := range fn.Instrs {
-		if x86InertNOP(ins, arch) {
+		if ins.Op == "ADJSP" || x86InertNOP(ins, arch) {
 			continue
 		}
 		for _, operand := range ins.Args {

@@ -19,7 +19,7 @@ func x86ResultAUTOExtent(fn Func, arch string) (int, error) {
 func x86ResultAUTOExtentWithPrivateStack(fn Func, arch string, privateStack bool) (int, error) {
 	needed := false
 	for _, ins := range fn.Instrs {
-		if x86InertNOP(ins, arch) || fn.x86StackFenceAt(ins) {
+		if ins.Op == "ADJSP" || x86InertNOP(ins, arch) || fn.x86StackFenceAt(ins) {
 			continue // Neither a pseudo hint nor ModRM has a frame access.
 		}
 		if _, _, private := x86ResultPrivateStackXORForm(ins, arch); privateStack && private {
@@ -55,7 +55,7 @@ func x86ResultAUTOExtentWithPrivateStack(fn Func, arch string, privateStack bool
 		}
 	}
 	for _, ins := range fn.Instrs {
-		if x86InertNOP(ins, arch) || fn.x86StackFenceAt(ins) {
+		if ins.Op == "ADJSP" || x86InertNOP(ins, arch) || fn.x86StackFenceAt(ins) {
 			continue
 		}
 		if _, _, private := x86ResultPrivateStackXORForm(ins, arch); privateStack && private {

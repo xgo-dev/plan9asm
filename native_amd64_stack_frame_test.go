@@ -18,6 +18,11 @@ func TestNativeAMD64StackAdjustmentUsesOriginalFlagSettingOpcode(t *testing.T) {
 	for _, amount := range []int{1, 127, 128, 129, 255, 256, 4096} {
 		fmt.Fprintf(&source, "ADJSP $%d\nADJSP $%d\n", amount, -amount)
 	}
+	for _, destination := range []string{"AX", "Z31", "CR15", "0", "(SP)", "(FS)",
+		"0(AX)(CX*1)", "absent(SB)", "absent<>(SB)", "absent(SB)(AX)",
+		"0(AX)(CS*1)", "0(AX)(DS*1)", "0(AX)(ES*1)", "0(AX)(FS*1)", "0(AX)(GS*1)"} {
+		fmt.Fprintf(&source, "ADJSP $128,%s\nADJSP $-128\n", destination)
+	}
 	source.WriteString("RET\n")
 	nativeAMD64RequirePhysicalObjectBytes(t, source.String())
 }

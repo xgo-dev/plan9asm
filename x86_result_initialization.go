@@ -329,7 +329,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	trackCPUIDLeaf := false
 	trackCallerOrigins := len(initial.callerAddressFP) != 0 || initial.callerAddressOrigin != [16]uint16{}
 	var repeatEmptyBranch func(int, Instr, *x86ResultState) bool
-	var relativeStack []int64
+	var relativeStack *x86RelativeStackPlan
 	transfer = func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 		if fn.x86StackFenceAt(ins) {
 			return true // The checked zero-add changes no live data at the following void RET.
@@ -389,13 +389,11 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		}
 		ordinary := func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 			ordinaryStep = true
-			if relativeStack != nil && ins.Op == "ADJSP" {
-				form, err := parseX86StackAdjustment(ins)
-				if err != nil {
-					return false
+			if relativeStack != nil {
+				if form, adjusted := relativeStack.adjustments[ordinal]; adjusted {
+					state.flags = form.relativeFlags()
+					return true
 				}
-				state.flags = form.relativeFlags()
-				return true
 			}
 			if repeatEmptyBranch != nil && repeatEmptyBranch(ordinal, ins, state) {
 				return true // Same empty result on both edges, never invented FLAGS.
@@ -518,7 +516,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	for _, ins := range instructions {
 		if allowRelativeStack && relativeStack == nil && ins.Op == "ADJSP" {
 			var err error
-			relativeStack, err = x86RelativeStackDepths(fn, instructions, goarch)
+			relativeStack, err = x86RelativeStack(fn, instructions, ordinals, goarch, len(initial.auto))
 			if err != nil {
 				return err
 			}
@@ -703,7 +701,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			if target < 0 || target >= len(instructions) {
 				return fail("source falls outside its continuation")
 			}
-			if relativeStack != nil && relativeStack[pc+1] != relativeStack[target] {
+			if relativeStack != nil && relativeStack.depths[pc+1] != relativeStack.depths[target] {
 				return fail("control edge changes the lexical ADJSP depth")
 			}
 		}

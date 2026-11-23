@@ -874,7 +874,7 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 		}
 		return false, nil
 	case "ADJSP":
-		form, err := parseX86StackAdjustment(ins)
+		form, err := parseX86StackAdjustment(ins, c.goarch)
 		if err != nil {
 			return false, err
 		}

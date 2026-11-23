@@ -248,7 +248,7 @@ func nativeSource(src []byte, goarch string) (string, error) {
 				return "", fmt.Errorf("unsupported native label or segment syntax: %s", stmt)
 			}
 			op, rest := splitOpcode(stmt)
-			if op != "TEXT" && op != "GLOBL" && op != "DATA" {
+			if op != "TEXT" && op != "GLOBL" && op != "DATA" && !(goarch == "amd64" && op == "ADJSP") {
 				for _, raw := range splitTopLevelCSV(rest) {
 					raw = strings.TrimSpace(raw)
 					if !strings.HasPrefix(raw, "$") && strings.HasSuffix(raw, ")") && !strings.HasSuffix(raw, "(SB)") {

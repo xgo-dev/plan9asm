@@ -968,7 +968,7 @@ func (c *amd64Ctx) stackMovementBudget() (int64, error) {
 				if c.logicalStackAdjustment {
 					continue
 				}
-				form, err := parseX86StackAdjustment(ins)
+				form, err := parseX86StackAdjustment(ins, c.goarch)
 				if err != nil {
 					return 0, err
 				}
