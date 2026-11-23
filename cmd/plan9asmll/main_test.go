@@ -2195,9 +2195,9 @@ func TestExtractSupportedOpsFindsCompleteARM64AddedFamilies(t *testing.T) {
 			t.Errorf("supported opcode extraction omitted %s", op)
 		}
 	}
-	for _, suboperation := range []string{"IVAC", "CIGDVADP", "PLDL1KEEP", "PSTL3STRM"} {
-		if _, ok := supported[suboperation]; ok {
-			t.Errorf("supported opcode extraction advertised %s suboperation as an instruction", suboperation)
+	for _, unsupported := range []string{"IVAC", "CIGDVADP", "PLDL1KEEP", "PSTL3STRM", "VSUQADD", "VUSQADD", "VSQADD2"} {
+		if _, ok := supported[unsupported]; ok {
+			t.Errorf("supported opcode extraction advertised unsupported named form %s", unsupported)
 		}
 	}
 }

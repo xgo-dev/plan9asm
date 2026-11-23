@@ -14,7 +14,7 @@ const (
 )
 
 type arm64SaturatingArithmeticOp struct {
-	name      Op
+	name      Op // Empty for WORD-only forms.
 	mnemonic  string
 	encoding  uint32
 	inputs    arm64SaturatingInputs
@@ -28,8 +28,8 @@ var arm64SaturatingArithmeticOps = [...]arm64SaturatingArithmeticOp{
 	{name: "VUQSUB", mnemonic: "uqsub", encoding: 0x2e202c00, inputs: arm64SaturatingBinary, intrinsic: "usub.sat"},
 	{name: "VSQABS", mnemonic: "sqabs", encoding: 0x0e207800, inputs: arm64SaturatingUnary},
 	{name: "VSQNEG", mnemonic: "sqneg", encoding: 0x2e207800, inputs: arm64SaturatingUnary},
-	{name: "VSUQADD", mnemonic: "suqadd", encoding: 0x0e203800, inputs: arm64SaturatingAccumulator},
-	{name: "VUSQADD", mnemonic: "usqadd", encoding: 0x2e203800, inputs: arm64SaturatingAccumulator},
+	{mnemonic: "suqadd", encoding: 0x0e203800, inputs: arm64SaturatingAccumulator},
+	{mnemonic: "usqadd", encoding: 0x2e203800, inputs: arm64SaturatingAccumulator},
 }
 
 type arm64SaturatingArithmeticForm struct {
@@ -75,7 +75,7 @@ func (c *arm64Ctx) lowerARM64VectorSaturatingArithmetic(op Op, ins Instr) (bool,
 	var spec *arm64SaturatingArithmeticOp
 	for i := range arm64SaturatingArithmeticOps {
 		candidate := &arm64SaturatingArithmeticOps[i]
-		if candidate.name == op && candidate.inputs != arm64SaturatingAccumulator {
+		if candidate.name != "" && candidate.name == op {
 			spec = candidate
 			break
 		}
