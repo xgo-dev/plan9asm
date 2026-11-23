@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,16 @@ import (
 	llvm "github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/goasmcmd"
 )
+
+func TestNativeAMD64StackAdjustmentUsesOriginalFlagSettingOpcode(t *testing.T) {
+	var source strings.Builder
+	source.WriteString("TEXT physical<>(SB),516,$0-0\n")
+	for _, amount := range []int{1, 127, 128, 129, 255, 256, 4096} {
+		fmt.Fprintf(&source, "ADJSP $%d\nADJSP $%d\n", amount, -amount)
+	}
+	source.WriteString("RET\n")
+	nativeAMD64RequirePhysicalObjectBytes(t, source.String())
+}
 
 func TestNativeAMD64StackFrameTracksGoStackForms(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {

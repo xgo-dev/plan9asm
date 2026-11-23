@@ -30,12 +30,15 @@ func (e *nativeAMD64) typedInstruction(out *strings.Builder, ins Instr) error {
 			len(args) == 2 && (args[1].Kind != OpReg || args[1].Reg != SP) {
 			return bad()
 		}
-		// Match obj6 ADJSP's SUB/ADD selection, including physical FLAGS.
-		if args[0].Imm > 0 {
-			fmt.Fprintf(out, "\tsubq $%d, %%rsp\n", args[0].Imm)
-		}
-		if args[0].Imm < 0 {
-			fmt.Fprintf(out, "\taddq $%d, %%rsp\n", -args[0].Imm)
+		// Go uses the shorter signed-byte encoding at either 128-byte
+		// boundary. ADD and SUB can give the same SP with different FLAGS.
+		amount := args[0].Imm
+		switch {
+		case amount == 0:
+		case amount == 128 || amount < 0 && amount != -128:
+			fmt.Fprintf(out, "\taddq $%d, %%rsp\n", -amount)
+		default:
+			fmt.Fprintf(out, "\tsubq $%d, %%rsp\n", amount)
 		}
 		return nil
 	}
