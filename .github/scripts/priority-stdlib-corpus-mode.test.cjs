@@ -42,7 +42,10 @@ const scannerFixture = [
   'esac',
   "observed='[]'",
   'if [[ "$goarch" == wasm ]]; then',
-  '  observed=\'[{"form":"I64ADD ","files":["protocol/protocol.s","protocol/second.s"]}]\'',
+  '  context=second.s',
+  '  if [[ "$CORPUS_PROTOCOL_MODE" == unlisted-source ]]; then context=unlisted.s; fi',
+  '  printf -v observed \'[{"form":"I64ADD ","files":["protocol/protocol.s","protocol/second.s"],' +
+    '"wasm_source_contexts":[{"file":"protocol/protocol.s","function":"first"},{"file":"protocol/%s","function":"second"}]}]\' "$context"',
   'fi',
   'printf \'{"std_pkgs_with_sfile":1,"asm_files":1,"unsupported":%s,' +
     '"unsupported_by_form":%s,"parse_errs":%s,"forms":%s}\\n\' \\',
@@ -65,14 +68,22 @@ const translatorFixture = [
   '[[ "$CORPUS_PROTOCOL_MODE" != empty ]] || exit 0',
   'printf "; protocol fixture, not LLVM compilation evidence\\n" > "$output/protocol.ll"',
   'if [[ "$goarch" != wasm ]]; then printf "{}\\n" > "$meta"; exit; fi',
-  'printf "; second protocol input, not LLVM evidence\\n" > "$output/second.ll"',
+  'printf \'define void @"protocol.first"() { ret void }\\n\' >> "$output/protocol.ll"',
+  'if [[ "$CORPUS_PROTOCOL_MODE" == missing-definition ]]; then',
+  '  printf \'declare void @"protocol.second"()\\n\' > "$output/second.ll"',
+  'else',
+  '  printf \'define void @"protocol.second"() { ret void }\\n\' > "$output/second.ll"',
+  'fi',
   'native_output=$(cd "$output" && { pwd -W 2>/dev/null || pwd; })',
   'second=second.ll',
+  'symbol=second',
   'if [[ "$CORPUS_PROTOCOL_MODE" == missing-source-object ]]; then second=absent.ll; fi',
-  'printf \'{"packages":[{"package":"protocol","items":[' +
-    '{"file":"%s/src/protocol/protocol.s","output":"%s/protocol.ll"},' +
-    '{"file":"%s/src/protocol/second.s","output":"%s/%s"}]}]}\\n\' \\',
-  '  "$GOROOT" "$native_output" "$GOROOT" "$native_output" "$second" > "$meta"',
+  'if [[ "$CORPUS_PROTOCOL_MODE" == shared-module ]]; then second=protocol.ll; fi',
+  'if [[ "$CORPUS_PROTOCOL_MODE" == missing-function ]]; then symbol=other; fi',
+  'printf \'{"goos":"%s","goarch":"wasm","packages":[{"package":"protocol","items":[' +
+    '{"file":"%s/src/protocol/protocol.s","output":"%s/protocol.ll","functions":[{"symbol":"first","resolved":"protocol.first"}]},' +
+    '{"file":"%s/src/protocol/second.s","output":"%s/%s","functions":[{"symbol":"%s","resolved":"protocol.second"}]}]}]}\\n\' \\',
+  '  "$goos" "$GOROOT" "$native_output" "$GOROOT" "$native_output" "$second" "$symbol" > "$meta"',
 ].join('\n') + '\n';
 
 const llvmFixture = [
@@ -88,7 +99,13 @@ const llvmFixture = [
   'printf "object|%s|%s\\n" "$triple" "$name" >> "$CORPUS_PROTOCOL_TRACE"',
   '[[ "$CORPUS_PROTOCOL_MODE" != object ]] || { echo protocol-object-failure >&2; exit 45; }',
   'if [[ "$CORPUS_PROTOCOL_MODE" == second-object && "$name" == second.ll ]]; then echo protocol-second-object-failure >&2; exit 47; fi',
-  'printf "protocol fixture only, not a real object\\n" > "$output"',
+  'if [[ "$CORPUS_PROTOCOL_MODE" == no-object ]]; then exit 0; fi',
+  'if [[ "$CORPUS_PROTOCOL_MODE" == no-second-object && "$name" == second.ll ]]; then exit 0; fi',
+  'if [[ "$triple" == wasm32-* && "$CORPUS_PROTOCOL_MODE" != wrong-object-format ]]; then',
+  '  printf "\\000asm\\001\\000\\000\\000" > "$output"',
+  'else',
+  '  printf "protocol fixture only, not a real object\\n" > "$output"',
+  'fi',
 ].join('\n') + '\n';
 
 const llvmConfigFixture = [
@@ -362,6 +379,30 @@ test('WASM corpus requires an emitted object for every observed source', t => {
   assert.deepEqual(result.rows.filter(row => row.startsWith('object|')), wasmObjectRows(scan));
   assert.notEqual(result.status, 0, 'compiling unrelated modules cannot account for the missing source');
   assert.match(result.output, /WASM sources missing compiled IR: protocol\/second\.s/);
+});
+
+test('WASM context requires a unique compiled module and a definition for every source function', async t => {
+  const failures = {
+    'no-second-object': /LLVM 22 produced no object for: .*second\.ll/,
+    'wrong-object-format': /invalid WASM object header/,
+    'shared-module': /WASM compiled IR is shared by multiple sources/,
+    'missing-function': /WASM source function missing from translation metadata: protocol\/second\.s:second/,
+    'missing-definition': /WASM source function missing its LLVM definition: protocol\/second\.s:second/,
+    'unlisted-source': /WASM sources missing compiled IR: protocol\/unlisted\.s/,
+  };
+  for (const [mode, diagnostic] of Object.entries(failures)) {
+    await t.test(mode, t => {
+      const result = fixture(t, mode, 'js/wasm/signext').run(['--instructions-only']);
+      assert.notEqual(result.status, 0, result.output);
+      assert.match(result.output, diagnostic);
+    });
+  }
+});
+
+test('native corpus requires an object even when LLVM reports success', t => {
+  const result = fixture(t, 'no-object', 'windows/arm64').run();
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /LLVM 22 produced no object for: .*protocol\.ll/);
 });
 
 test('corpus mode arguments reject unknown, duplicate and extra operands', async t => {

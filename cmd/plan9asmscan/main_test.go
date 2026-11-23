@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -732,6 +733,46 @@ func TestRenderMarkdownWASMOpcodeInventory(t *testing.T) {
 	if !strings.Contains(md, "official wasm opcode entries: `3` (`2` observed in the official GOROOT corpus)") {
 		t.Fatalf("wasm report has the wrong inventory description:\n%s", md)
 	}
+}
+
+func TestWasmFormsRetainAllSourceFunctions(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "src", "probe")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	pkg := pkgJSON{ImportPath: "probe", Dir: dir}
+	const source = "TEXT ·first(SB),4,$0-0\nI64Add\nI64Add\nRET\nTEXT ·second(SB),4,$0-0\nI64Add\nRET\n"
+	for index := 0; index < 6; index++ {
+		name := fmt.Sprintf("probe%d.s", index)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+		pkg.SFiles = append(pkg.SFiles, name)
+	}
+	ops, forms, parseErrors, _, count, err := scanPackages([]pkgJSON{pkg}, plan9asm.ArchWASM, "wasm", root)
+	if err != nil || len(parseErrors) != 0 || count != 6 {
+		t.Fatalf("scan %d sources: %v, parse errors %v", count, err, parseErrors)
+	}
+	report := buildReport("std", "go1.27.0", "js", "wasm", 1, 1, count, ops, forms, nil, nil, nil, nil, parseErrors)
+	for _, row := range report.Forms {
+		if row.Opcode != "I64ADD" {
+			continue
+		}
+		if row.Status != "context-required" || row.Count != 18 || len(row.Files) != 4 || len(row.WasmSourceContexts) != 12 {
+			t.Fatalf("operand form lost its complete function inventory: %+v", row)
+		}
+		functions := []string{"·first", "·second"}
+		for index, context := range row.WasmSourceContexts {
+			wantFile := fmt.Sprintf("probe/probe%d.s", index/2)
+			wantFunction := functions[index%2]
+			if context.File != wantFile || context.Function != wantFunction {
+				t.Fatalf("context %d = %+v, want %s %s", index, context, wantFile, wantFunction)
+			}
+		}
+		return
+	}
+	t.Fatal("I64ADD operand form missing from scan")
 }
 
 func TestGoAsmInstructionLine(t *testing.T) {

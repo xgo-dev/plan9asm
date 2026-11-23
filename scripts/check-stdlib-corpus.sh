@@ -218,39 +218,92 @@ PY
   echo "compiled corpus $target_label: ll_files=$ll_count"
 
   while IFS= read -r ll; do
-    "$llc_cmd" -mtriple="$triple" -filetype=obj "$ll" -o "$tmp_root/verify-object.o"
+    object="$tmp_root/verify-object.o"
+    if [[ "$goarch" == wasm ]]; then
+      object="$ll.o"
+    fi
+    rm -f -- "$object"
+    "$llc_cmd" -mtriple="$triple" -filetype=obj "$ll" -o "$object"
+    if [[ ! -s "$object" ]]; then
+      echo "$target_label: LLVM 22 produced no object for: $ll" >&2
+      exit 1
+    fi
+    if [[ "$goarch" != wasm ]]; then
+      rm "$object"
+    fi
   done < <(find "$out_dir" -name '*.ll' | sort)
 
   if [[ "$goarch" == wasm ]]; then
-    # An object from another file cannot satisfy a contextual source form.
+    # Join every source context to its own compiled module.
     "$python_cmd" - "$json" "$meta" "$out_dir" "$(go env GOROOT)" "$target_label" <<'PY'
 import json
 from pathlib import Path
+import re
 import sys
+
+def llvm_defined_names(module):
+    definition = rb'^define [^\r\n]*?@("(?:\\[0-9A-Fa-f]{2}|[^"\\])*"|[-A-Za-z$._0-9]+)\('
+    names = set()
+    for name in re.findall(definition, module.read_bytes(), re.MULTILINE):
+        if name.startswith(b'"'):
+            name = re.sub(rb'\\([0-9A-Fa-f]{2})', lambda m: bytes([int(m[1], 16)]), name[1:-1])
+        names.add(name)
+    return names
 
 scan, manifest, output, goroot = map(Path, sys.argv[1:5])
 label = sys.argv[5]
 forms = json.loads(scan.read_text(encoding="utf-8"))["forms"]
-if not forms or any(not row["files"] for row in forms):
+if not forms or any(not row.get("wasm_source_contexts") for row in forms):
     raise SystemExit(f"{label}: missing WASM form source inventory")
+contexts = {
+    (item["file"], item.get("function", ""))
+    for row in forms for item in row["wasm_source_contexts"]
+}
 metadata = json.loads(manifest.read_text(encoding="utf-8"))
+if metadata.get("goos") != label.split("/")[0] or metadata.get("goarch") != "wasm":
+    raise SystemExit(f"{label}: WASM translation metadata target differs from the corpus target")
 compiled_modules = {module.resolve() for module in output.rglob("*.ll")}
 source_root = (goroot / "src").resolve()
-compiled_sources = {
-    Path(item["file"]).resolve().relative_to(source_root).as_posix()
-    for package in metadata.get("packages", [metadata])
-    for item in package["items"]
-    if Path(item["output"]).resolve() in compiled_modules
-}
-missing = {source for row in forms for source in row["files"]} - compiled_sources
+mapped_modules = set()
+compiled_sources = {}
+for package in metadata.get("packages", [metadata]):
+    for item in package["items"]:
+        module = Path(item["output"]).resolve()
+        if module not in compiled_modules:
+            continue
+        source = Path(item["file"]).resolve().relative_to(source_root).as_posix()
+        if module in mapped_modules:
+            raise SystemExit(f"{label}: WASM compiled IR is shared by multiple sources: {module}")
+        if source in compiled_sources:
+            raise SystemExit(f"{label}: duplicate WASM translation metadata for source: {source}")
+        with Path(str(module) + ".o").open("rb") as artifact:
+            if artifact.read(8) != b"\0asm\x01\0\0\0":
+                raise SystemExit(f"{label}: invalid WASM object header: {module}.o")
+        symbols = {fn["symbol"]: fn["resolved"] for fn in item["functions"]}
+        if len(symbols) != len(item["functions"]):
+            raise SystemExit(f"{label}: duplicate WASM source function in translation metadata: {source}")
+        mapped_modules.add(module)
+        compiled_sources[source] = (symbols, llvm_defined_names(module))
+missing = {source for source, _ in contexts} - compiled_sources.keys()
 if missing:
     raise SystemExit(f"{label}: WASM sources missing compiled IR: {', '.join(sorted(missing))}")
-print(f"{label}: full-source LLVM objects cover {len(forms)}/{len(forms)} observed WASM forms")
+if mapped_modules != compiled_modules:
+    raise SystemExit(f"{label}: WASM compiled modules without source metadata")
+for source, function in sorted(contexts):
+    if not function:
+        continue
+    symbols, definitions = compiled_sources[source]
+    resolved = symbols.get(function)
+    if not resolved:
+        raise SystemExit(f"{label}: WASM source function missing from translation metadata: {source}:{function}")
+    if resolved.encode("utf-8") not in definitions:
+        raise SystemExit(f"{label}: WASM source function missing its LLVM definition: {source}:{function}")
+functions = sum(bool(function) for _, function in contexts)
+print(f"{label}: {len(forms)} WASM forms joined to {functions} source functions across {len(compiled_sources)} compiled modules")
 PY
   fi
 
-  # The corpus only checks object compilation. Keep one reusable object and
-  # release each target's IR and scan output before starting the next target.
-  rm "$tmp_root/verify-object.o" "$json" "$meta"
+  # Release each target's build artifacts and scan output before the next target.
+  rm "$json" "$meta"
   rm -r "$out_dir"
 done

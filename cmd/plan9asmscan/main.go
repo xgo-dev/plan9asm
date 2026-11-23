@@ -49,6 +49,12 @@ type formStat struct {
 	ProbeKeys        map[string]struct{}
 	contextResults   map[string]error
 	contextSources   []initializedContextCase
+	wasmSources      map[wasmSourceContext]struct{}
+}
+
+type wasmSourceContext struct {
+	File     string `json:"file"`
+	Function string `json:"function,omitempty"`
 }
 
 type parseErr struct {
@@ -148,13 +154,14 @@ type familyReport struct {
 
 type formReport struct {
 	plan9asm.InstructionDescriptor
-	Status          string   `json:"status"`
-	Count           int      `json:"count"`
-	Files           []string `json:"files,omitempty"`
-	Examples        []string `json:"examples,omitempty"`
-	Errors          []string `json:"errors,omitempty"`
-	RuntimeVerified bool     `json:"runtime_verified"`
-	CompileOnly     bool     `json:"compile_only,omitempty"`
+	Status             string              `json:"status"`
+	Count              int                 `json:"count"`
+	Files              []string            `json:"files,omitempty"`
+	Examples           []string            `json:"examples,omitempty"`
+	Errors             []string            `json:"errors,omitempty"`
+	RuntimeVerified    bool                `json:"runtime_verified"`
+	CompileOnly        bool                `json:"compile_only,omitempty"`
+	WasmSourceContexts []wasmSourceContext `json:"wasm_source_contexts,omitempty"`
 }
 
 type formFamilyReport struct {
@@ -484,7 +491,7 @@ func scanPackagesWithContexts(pkgs []pkgJSON, arch plan9asm.Arch, goarch, goRoot
 						continue
 					}
 					var source *initializedContextSource
-					if contexts {
+					if contexts || arch == plan9asm.ArchWASM {
 						source = &initializedContextSource{File: rel, Function: fn.Sym, InstructionIndex: i}
 					}
 					addFormStatWithSource(forms, arch, goarch, ins, rel, source)
@@ -523,6 +530,17 @@ func addFormStatWithSource(forms map[string]*formStat, arch plan9asm.Arch, goarc
 	st, fresh := prepareFormStat(forms, arch, goarch, ins, file, probeKey)
 	if st == nil {
 		return
+	}
+	if arch == plan9asm.ArchWASM {
+		context := wasmSourceContext{File: file}
+		if source != nil {
+			context.Function = source.Function
+			source = nil
+		}
+		if st.wasmSources == nil {
+			st.wasmSources = make(map[wasmSourceContext]struct{})
+		}
+		st.wasmSources[context] = struct{}{}
 	}
 	if fresh {
 		probeErr := plan9asm.ProbeInstruction(arch, goarch, ins)
@@ -1231,6 +1249,19 @@ func buildReport(
 			Files:                 topFiles(st.Files, 4),
 			Examples:              append([]string(nil), st.Examples...),
 			Errors:                topFiles(st.Errors, 3),
+		}
+		if len(st.wasmSources) != 0 {
+			item.WasmSourceContexts = make([]wasmSourceContext, 0, len(st.wasmSources))
+			for context := range st.wasmSources {
+				item.WasmSourceContexts = append(item.WasmSourceContexts, context)
+			}
+			sort.Slice(item.WasmSourceContexts, func(i, j int) bool {
+				a, b := item.WasmSourceContexts[i], item.WasmSourceContexts[j]
+				if a.File != b.File {
+					return a.File < b.File
+				}
+				return a.Function < b.Function
+			})
 		}
 		_, item.RuntimeVerified = verified[goarch+"\x00"+st.Descriptor.Form]
 		if item.RuntimeVerified {

@@ -326,6 +326,13 @@ These observations describe direct Plan 9 spellings, separate from Go-generated
 operations and the corpus's IR, object and runtime results. Changes to the
 observed tool behavior or the set of unclaimed names fail the gate for review.
 
+The Wasm standard-library check uses each form's complete
+`wasm_source_contexts` inventory. It joins the original source file and
+`TEXT` symbol to a function definition in that file's generated LLVM IR,
+then requires a fresh Wasm object for the module. Directives outside a
+function join to the source file. The check covers the selected JS and WASI
+profiles and reports object compilation separately from execution.
+
 To retry x86 vector-register forms with explicit initialized inputs:
 
 ```sh
