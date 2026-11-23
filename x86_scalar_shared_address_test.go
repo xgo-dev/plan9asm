@@ -13,18 +13,70 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
 
+type x86OfficialAMD64Encoding struct {
+	instruction, location string
+	code                  []byte
+}
+
+func x86OfficialAMD64EncodingRows(t *testing.T, filename, format string) []x86OfficialAMD64Encoding {
+	t.Helper()
+	path := filepath.Join(runtime.GOROOT(), "src", "cmd", "asm", "internal", "asm", "testdata", filename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile("^(?:" + format + ")$")
+	var rows []x86OfficialAMD64Encoding
+	for index, raw := range strings.Split(string(data), "\n") {
+		instruction, encoding, _ := strings.Cut(raw, "//")
+		instruction = strings.TrimSpace(instruction)
+		if !match.MatchString(instruction) {
+			continue
+		}
+		location := fmt.Sprintf("%s:%d", filename, index+1)
+		code, err := hex.DecodeString(strings.TrimSpace(encoding))
+		if err != nil || len(code) == 0 {
+			t.Fatalf("missing Go encoding for %s: %v", location, err)
+		}
+		rows = append(rows, x86OfficialAMD64Encoding{instruction, location, code})
+	}
+	return rows
+}
+
+func requireX86OfficialAMD64Objects(t *testing.T, llc, source, declarations string, witnesses []x86OfficialPackedCase) {
+	t.Helper()
+	const arch, triple = "amd64", "x86_64-unknown-linux-gnu"
+	listing, err := x86ScalarLiteralGoListing(t, arch, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x86OfficialPackedVerifyListing(listing, witnesses); err != nil {
+		t.Fatal(err)
+	}
+	var symbols, locations []string
+	for _, witness := range witnesses {
+		symbols = append(symbols, witness.symbol)
+		locations = append(locations, witness.row)
+	}
+	for _, api := range []string{"text", "module", "Go"} {
+		t.Run(api, func(t *testing.T) {
+			ir, err := x86ScalarFPBitViewAPI(t, source, declarations, arch, triple, api)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, level := range []string{"-O0", "-O2"} {
+				object := x86PackedStringCompileObject(t, llc, triple, ir, level)
+				requireX86ELFTestFunctions(t, arch, object, symbols, locations)
+			}
+		})
+	}
+}
+
 func TestX86OfficialScalarSharedAddressObjects(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
 		t.Fatal("LLVM 22 llc required")
 	}
-	path := filepath.Join(runtime.GOROOT(), "src", "cmd", "asm", "internal", "asm", "testdata", "amd64enc.s")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(string(data), "\n")
-	const arch, triple = "amd64", "x86_64-unknown-linux-gnu"
 	for _, family := range []struct {
 		name, format, result string
 		count                int
@@ -38,61 +90,30 @@ func TestX86OfficialScalarSharedAddressObjects(t *testing.T) {
 		{"double-shift", `SH[LR][WLQ] (?:CL|\$7),\s*R11,\s*\(R11\)`, "R11", 12},
 	} {
 		t.Run(family.name, func(t *testing.T) {
-			pattern := regexp.MustCompile("^(?:" + family.format + ")$")
+			rows := x86OfficialAMD64EncodingRows(t, "amd64enc.s", family.format)
+			if len(rows) != family.count {
+				t.Fatalf("found %d official shared-address rows, want %d", len(rows), family.count)
+			}
 			var source, declarations strings.Builder
-			var symbols, locations []string
 			var witnesses []x86OfficialPackedCase
 			line := 0
-			for index, raw := range lines {
-				instruction, encoding, _ := strings.Cut(raw, "//")
-				instruction = strings.TrimSpace(instruction)
-				if !pattern.MatchString(instruction) {
-					continue
-				}
-				location := fmt.Sprintf("amd64enc.s:%d", index+1)
-				code, err := hex.DecodeString(strings.TrimSpace(encoding))
-				if err != nil || len(code) == 0 {
-					t.Fatalf("missing Go encoding for %s: %v", location, err)
-				}
-				symbol := fmt.Sprintf("Shared%d", len(symbols))
+			for index, row := range rows {
+				symbol := fmt.Sprintf("Shared%d", index)
 				header := fmt.Sprintf("TEXT ·%s(SB),4,$0-16\nMOVQ address+0(FP),R11\nMOVL $7,CX\nXORL AX,AX\n", symbol)
 				observe := ""
 				if family.result == "AX" {
 					observe = "SETEQ AL\n"
 				}
-				body := fmt.Sprintf("%s%s\n%sMOVQ %s,ret+8(FP)\nRET\n", header, instruction, observe, family.result)
+				body := fmt.Sprintf("%s%s\n%sMOVQ %s,ret+8(FP)\nRET\n", header, row.instruction, observe, family.result)
 				source.WriteString(body)
 				fmt.Fprintf(&declarations, "func %s(address uintptr) uintptr\n", symbol)
-				symbols, locations = append(symbols, symbol), append(locations, location)
 				witnesses = append(witnesses, x86OfficialPackedCase{
-					row: location, symbol: symbol, line: line + strings.Count(header, "\n") + 1,
-					witness: goasmrules.X86PackedBinaryWitness{Instruction: instruction, Encoding: code},
+					row: row.location, symbol: symbol, line: line + strings.Count(header, "\n") + 1,
+					witness: goasmrules.X86PackedBinaryWitness{Instruction: row.instruction, Encoding: row.code},
 				})
 				line += strings.Count(body, "\n")
 			}
-			if len(symbols) != family.count {
-				t.Fatalf("found %d official shared-address rows, want %d", len(symbols), family.count)
-			}
-			assembly := source.String()
-			listing, err := x86ScalarLiteralGoListing(t, arch, assembly)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := x86OfficialPackedVerifyListing(listing, witnesses); err != nil {
-				t.Fatal(err)
-			}
-			for _, api := range []string{"text", "module", "Go"} {
-				t.Run(api, func(t *testing.T) {
-					ir, err := x86ScalarFPBitViewAPI(t, assembly, declarations.String(), arch, triple, api)
-					if err != nil {
-						t.Fatal(err)
-					}
-					for _, level := range []string{"-O0", "-O2"} {
-						object := x86PackedStringCompileObject(t, llc, triple, ir, level)
-						requireX86ELFTestFunctions(t, arch, object, symbols, locations)
-					}
-				})
-			}
+			requireX86OfficialAMD64Objects(t, llc, source.String(), declarations.String(), witnesses)
 		})
 	}
 }
