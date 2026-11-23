@@ -716,6 +716,10 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 	if len(ins.Args) == 0 {
 		return
 	}
+	if op == arm64LiteralLoadOp && ins.arm64Encoded && len(ins.Args) == 3 {
+		state.write(ins.Args[2], arm64ControlExternal(), false)
+		return
+	}
 	if form, handled, err := parseARM64CacheForm(op, ins); handled && err == nil && form.operation == "ZVA" {
 		// Neither address nor GP/NZCV state is written. The granule size and
 		// downward alignment are architectural runtime values, so no owned

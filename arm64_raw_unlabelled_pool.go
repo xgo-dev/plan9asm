@@ -81,8 +81,8 @@ func identifyARM64UnlabelledPool(fn Func, points []arm64RawLayoutPoint, known ma
 			switch op {
 			case "ADR":
 				addresses[at] = target
-			case "PRFM":
-				// A hint does not create a control edge or a GP address.
+			case "PRFM", "LDR", "LDRSW":
+				// The literal operand creates no control edge or GP address.
 			case "B", "BL", "CBZ", "CBNZ", "TBZ", "TBNZ":
 				queue = append(queue, target)
 			default:

@@ -1214,6 +1214,8 @@ func (c *arm64Ctx) lowerInstr(bi int, ins Instr, emitBr arm64EmitBr, emitCondBr 
 		}
 		decoded = arm64HardwareReturnAsBranch(decoded)
 		return c.lowerInstr(bi, decoded, emitBr, emitCondBr)
+	case arm64LiteralLoadOp:
+		return false, c.lowerARM64LiteralLoad(ins)
 	case arm64RawDataOp:
 		return false, nil
 	case "END":

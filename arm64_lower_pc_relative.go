@@ -52,14 +52,22 @@ func (c *arm64Ctx) arm64LocalPCAddress(target string, op Op, source string) (str
 	}
 
 	address := c.newTmp()
-	if global, ok := c.rawDataGlobals[target]; ok {
-		pointer := llvmGlobal(global)
-		if offset := c.rawDataOffsets[target]; offset != 0 {
-			pointer = fmt.Sprintf("getelementptr (i8, ptr %s, i64 %d)", pointer, offset)
-		}
+	if pointer, ok := c.arm64RawDataPointer(target); ok {
 		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", address, pointer)
 	} else {
 		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr blockaddress(%s, %%%s) to i64\n", address, llvmGlobal(c.sig.Name), arm64LLVMBlockName(target))
 	}
 	return "%" + address, nil
+}
+
+func (c *arm64Ctx) arm64RawDataPointer(target string) (string, bool) {
+	global, ok := c.rawDataGlobals[target]
+	if !ok {
+		return "", false
+	}
+	pointer := llvmGlobal(global)
+	if offset := c.rawDataOffsets[target]; offset != 0 {
+		pointer = fmt.Sprintf("getelementptr (i8, ptr %s, i64 %d)", pointer, offset)
+	}
+	return pointer, true
 }

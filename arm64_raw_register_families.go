@@ -63,6 +63,13 @@ func arm64RawContinuationEffectsForWord(word uint32) (arm64RawContinuationEffect
 	if _, _, literalPrefetch := decodeARM64RawLiteralPrefetch(word); literalPrefetch {
 		return arm64RawContinuationEffects{}, true // Layout proof remains separate.
 	}
+	if form, known := decodeARM64RawLiteralLoad(word); known {
+		effects := arm64RawContinuationEffects{}
+		if !form.vector {
+			effects.gpWrites = arm64RawGPBit(form.register)
+		}
+		return effects, true
+	}
 	if _, effects, ok := decodeARM64RawFloatFamily(word); ok {
 		return effects, true
 	}
