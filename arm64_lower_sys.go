@@ -84,23 +84,30 @@ func parseARM64SystemOperation(op Op, ins Instr) (arm64SystemOperation, bool, er
 
 func (c *arm64Ctx) lowerARM64SystemOperation(form arm64SystemOperation) error {
 	fields := form.operandString()
-	if form.register == ZR {
-		asm := "sys " + fields + ", xzr"
-		if form.read {
-			asm = "sysl xzr, " + fields
-		}
-		fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", asm, "~{memory}")
-		return nil
-	}
 	if form.read {
+		if form.register == ZR {
+			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", "sysl xzr, "+fields, "~{memory}")
+			return nil
+		}
 		result := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call i64 asm sideeffect %q, %q()\n", result, "sysl $0, "+fields, "=r,~{memory}")
 		return c.storeReg(form.register, "%"+result)
 	}
-	value, err := c.loadReg(form.register)
-	if err != nil {
-		return err
+	assembly, constraints, args := "sys "+fields+", xzr", "~{memory}", ""
+	if form.register != ZR {
+		value, err := c.loadReg(form.register)
+		if err != nil {
+			return err
+		}
+		assembly, constraints, args = "sys "+fields+", $0", "r,~{memory}", "i64 "+value
 	}
-	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", "sys "+fields+", $0", "r,~{memory}", value)
+
+	const format = "  call void asm sideeffect %q, %q(%s)\n"
+	if form.isKnownTLBI() {
+		// TLB maintenance keeps the modeled registers and NZCV intact.
+		c.emitMachineNeutralNativeIR(format, assembly, constraints, args)
+	} else {
+		fmt.Fprintf(c.b, format, assembly, constraints, args)
+	}
 	return nil
 }

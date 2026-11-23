@@ -56,6 +56,23 @@ var arm64TLBIOperations = map[string]arm64TLBIOperation{
 	"RVAE3": {arm64SystemFields{6, 6, 1}, true}, "RVALE3": {arm64SystemFields{6, 6, 5}, true},
 }
 
+var arm64TLBIOperands = func() map[arm64SystemFields]bool {
+	operands := make(map[arm64SystemFields]bool, len(arm64TLBIOperations))
+	for _, operation := range arm64TLBIOperations {
+		operands[operation.arm64SystemFields] = operation.hasOperand
+	}
+	return operands
+}()
+
+func (form arm64SystemOperation) isKnownTLBI() bool {
+	if form.read || form.cn != 8 {
+		return false
+	}
+	fields := arm64SystemFields{form.op1, form.cm, form.op2}
+	hasOperand, known := arm64TLBIOperands[fields]
+	return known && (hasOperand || form.register == ZR)
+}
+
 func arm64TLBIOperationNames() []string {
 	names := make([]string, 0, len(arm64TLBIOperations))
 	for name := range arm64TLBIOperations {
