@@ -30,9 +30,8 @@ type GoX86TLSMoveCaptureRequest struct {
 	Shared                                                 bool
 }
 
-// GoX86TLSMoveSource observes source-encoder effects only. Its first consumer
-// accepts actual zero-width NOP rewrites; it does not bind native TLS addresses,
-// g, segment-register state, storage, entry registers or a callable ABI.
+// GoX86TLSMoveSource observes source-encoder effects. Consumers can bind
+// observed zero-width NOPs or opt into a matching Go runtime TLS read.
 // Reports and parsed files cannot recreate this live observation.
 type GoX86TLSMoveSource struct {
 	mu            sync.Mutex
@@ -47,6 +46,7 @@ type GoX86TLSMoveSource struct {
 	expanded      string
 	file          *File
 	noops         []x86TLSNoopSite
+	reads         []x86TLSRuntimeSite
 	objects       [2][]byte
 	listings      [2][]byte
 	texts         [2][]gostaticstorage.TextRecord
@@ -191,8 +191,8 @@ func CaptureGoX86TLSMoveSource(ctx context.Context, request GoX86TLSMoveCaptureR
 	if !reflect.DeepEqual(x86TLSListingTextHeaders(source.listings[0]), x86TLSListingTextHeaders(source.listings[1])) {
 		return nil, x86TLSMoveContext("complete original/expanded TEXT frame and argument metadata differs")
 	}
-	source.noops, err = x86TLSObservedNoops(source.expanded, source.file, source.texts[1], source.listings[1], request.PackagePath,
-		filepath.Join(source.guard.owned, "expanded.s"), arch)
+	source.noops, source.reads, err = x86TLSObservedMoves(source.expanded, source.file, source.texts[1], source.listings[1], request.PackagePath,
+		filepath.Join(source.guard.owned, "expanded.s"), request.Target, arch)
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +270,7 @@ func (source *GoX86TLSMoveSource) digest() ([32]byte, error) {
 		Expanded string
 		File     *File
 		Noops    []x86TLSNoopSite
+		Reads    []x86TLSRuntimeSite
 		Objects  [2][]byte
 		Listings [2][]byte
 		Texts    [2][]gostaticstorage.TextRecord
@@ -278,7 +279,7 @@ func (source *GoX86TLSMoveSource) digest() ([32]byte, error) {
 		Env      map[string]string
 		Defines  []string
 		Owned    string
-	}{source.request, source.original, source.expanded, source.file, source.noops, source.objects, source.listings,
+	}{source.request, source.original, source.expanded, source.file, source.noops, source.reads, source.objects, source.listings,
 		source.texts, source.builtin, source.guard.inputs, source.guard.env, source.guard.assemblerDefines, source.guard.owned})
 	return sha256.Sum256(encoded), err
 }

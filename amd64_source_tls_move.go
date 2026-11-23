@@ -19,10 +19,12 @@ func validateX86TLSMoveFile(file *File, arch string) error {
 	return nil
 }
 
-// Validate TLS's complete ymovb/w/l/q memory rows before scalar, MMX or XMM
-// dispatch. This does not rewrite TLS to a GP register or a guessed segment.
-// No API here owns Go's runtime TLS relocation, g layout or thread transport.
+// Check the exact runtime binding or validate the unbound ymovb/w/l/q row
+// before scalar, MMX or XMM dispatch.
 func x86SourceTLSMoveError(ins Instr, arch string) error {
+	if _, valid := x86CertifiedTLSRuntimeRead(ins, arch); valid {
+		return nil
+	}
 	form, present, err := x86TLSMoveProperties(ins, arch)
 	if !present || err != nil {
 		return err

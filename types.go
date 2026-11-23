@@ -927,6 +927,8 @@ type Instr struct {
 	// Factory-only exact scalar numerical read. Its immutable source/native
 	// join is rechecked before and after translation, never inferred from SB.
 	x86NumericalRead *x86NumericalReadCertificate
+	// Same-statement load bound by an actual Go runtime TLS observation.
+	x86TLSRuntimeRead *x86TLSRuntimeRead
 	// Literal-only address/read fact from the same live original SDK DATA and
 	// complete source-path proof; never caller or native-frame authority.
 	x86SDKLiteral *x86SDKLiteralCertificate

@@ -979,11 +979,13 @@ of MOVL/MOVQ and its MOVD/MOVDQ2Q source aliases' TLS-to-GP rows, including
 Go's complete pre-encoding AX..R15 range on 386. Such a NOP preserves both
 initialized and unknown destination bytes; the complete existing source/result
 proof still runs before lowering.
-The source observer supplies no package selection, signature, native frame,
-thread, TLS address or g identity. ELF LE/IE relocations, Windows/Android runtime
-offsets, Plan 9 private storage and actual TLS memory remain Context without
-their native entry/thread/storage producer. Keep live before/after source,
-object, target and callback guards, and the required native Linux AMD64
+The observer supplies no package selection, signature, native frame or
+thread identity. `BindRuntimeTLSReads` selects the Go runtime linker contract
+for observed 386 `MOVL offset(TLS),reg` reads. Linux local-exec and initial-exec
+bind `runtime.tlsg`. Windows binds the FS offset in `runtime.tls_g`. The final
+runtime must supply the matching slot. Other TLS effects retain their Context
+classification until they have an original source and storage contract.
+Keep live before/after source, object, target and callback guards, and the required native Linux AMD64
 `TestCrossLinuxRuntimeMatrixX86TLSNoopPreservesWideGP` execution counterpart.
 Grouped SB CALL/JMP/RET operands have Go's TYPE_BRANCH role, not a native
 indexed read; they remain Context without a bound branch/entry contract.

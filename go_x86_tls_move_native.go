@@ -46,11 +46,11 @@ func x86TLSListingTextHeaders(listing []byte) []string {
 	return result
 }
 
-func x86TLSObservedNoops(expanded string, file *File, texts []gostaticstorage.TextRecord, listing []byte,
-	packagePath, expandedPath, arch string,
-) ([]x86TLSNoopSite, error) {
+func x86TLSObservedMoves(expanded string, file *File, texts []gostaticstorage.TextRecord, listing []byte,
+	packagePath, expandedPath, target, arch string,
+) (noops []x86TLSNoopSite, reads []x86TLSRuntimeSite, err error) {
 	if len(file.Funcs) != len(texts) {
-		return nil, x86TLSMoveContext("source/object TEXT inventories differ")
+		return nil, nil, x86TLSMoveContext("source/object TEXT inventories differ")
 	}
 	rows := make(map[string][]x86TLSListingRow)
 	var symbol string
@@ -62,7 +62,7 @@ func x86TLSObservedNoops(expanded string, file *File, texts []gostaticstorage.Te
 		if len(fields) >= 2 && fields[1] == "STEXT" {
 			symbol = fields[0]
 			if _, duplicate := rows[symbol]; duplicate {
-				return nil, x86TLSMoveContext("duplicate native listing TEXT")
+				return nil, nil, x86TLSMoveContext("duplicate native listing TEXT")
 			}
 			rows[symbol] = nil
 			continue
@@ -71,40 +71,41 @@ func x86TLSObservedNoops(expanded string, file *File, texts []gostaticstorage.Te
 			pc, err := strconv.ParseInt(row[1], 16, 64)
 			separator := strings.LastIndexByte(row[2], ':')
 			if err != nil || pc < 0 || symbol == "" || separator < 0 {
-				return nil, x86TLSMoveContext("unbound native listing source position")
+				return nil, nil, x86TLSMoveContext("unbound native listing source position")
 			}
 			sourceLine, err := strconv.Atoi(row[2][separator+1:])
 			if err != nil || sourceLine <= 0 {
-				return nil, x86TLSMoveContext("invalid native listing source line")
+				return nil, nil, x86TLSMoveContext("invalid native listing source line")
 			}
 			rows[symbol] = append(rows[symbol], x86TLSListingRow{pc, row[2][:separator], sourceLine, strings.TrimSpace(row[3])})
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(rows) != len(texts) {
-		return nil, x86TLSMoveContext("complete listing/object TEXT inventories differ")
+		return nil, nil, x86TLSMoveContext("complete listing/object TEXT inventories differ")
 	}
 	lines := strings.Split(expanded, "\n")
 	lineCursor := 0
-	var sites []x86TLSNoopSite
 	for functionIndex, function := range file.Funcs {
 		name := numericalNativeName(function.Sym, packagePath)
 		text := texts[functionIndex]
 		if name != text.Name || text.ABI != 0 {
-			return nil, x86TLSMoveContext("source/object TEXT symbol or ABI differs")
+			return nil, nil, x86TLSMoveContext("source/object TEXT symbol or ABI differs")
 		}
 		observed, present := rows[name]
 		if !present {
-			return nil, x86TLSMoveContext("listing lacks exact source TEXT")
+			return nil, nil, x86TLSMoveContext("listing lacks exact source TEXT")
 		}
+		byLine := make(map[int][]int, len(observed))
 		for index, row := range observed {
 			physical, valid := originalGoObjectSourcePath(row.file, "")
 			if !valid || physical != expandedPath || row.line > len(lines) || row.pc > text.Size ||
 				index != 0 && row.pc < observed[index-1].pc {
-				return nil, x86TLSMoveContext("native listing PC/file extent differs")
+				return nil, nil, x86TLSMoveContext("native listing PC/file extent differs")
 			}
+			byLine[row.line] = append(byLine[row.line], index)
 		}
 		for instructionIndex, instruction := range function.Instrs {
 			// DATA/GLOBL declarations are not function instructions. The complete
@@ -113,22 +114,30 @@ func x86TLSObservedNoops(expanded string, file *File, texts []gostaticstorage.Te
 				lineCursor++
 			}
 			if lineCursor >= len(lines) {
-				return nil, x86TLSMoveContext("parsed instruction lacks its exact expanded statement")
+				return nil, nil, x86TLSMoveContext("parsed instruction lacks its exact expanded statement")
 			}
 			line := lineCursor + 1
 			lineCursor++
 			form, known, err := x86TLSMoveProperties(instruction, arch)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			if !known || form.memory >= 0 {
+			matching := byLine[line]
+			if !known || len(matching) == 0 {
 				continue
 			}
-			var matching []int
-			for index, row := range observed {
-				if row.line == line {
-					matching = append(matching, index)
+			if form.memory >= 0 {
+				first, last := matching[0], matching[len(matching)-1]
+				if last-first+1 == len(matching) {
+					start, end := observed[first].pc, text.Size
+					if last+1 < len(observed) {
+						end = observed[last+1].pc
+					}
+					if read, ok := x86TLSObservedRuntimeRead(instruction, arch, target, text, start, end); ok {
+						reads = append(reads, x86TLSRuntimeSite{functionIndex, instructionIndex, start, read})
+					}
 				}
+				continue
 			}
 			// Initial-exec and runtime-indirection rows remain observed source,
 			// but never become a NOP certificate. No OS-name decision is used.
@@ -141,15 +150,15 @@ func x86TLSObservedNoops(expanded string, file *File, texts []gostaticstorage.Te
 				end = observed[index+1].pc
 			}
 			if observed[index].pc != end {
-				return nil, x86TLSMoveContext("source NOP has an unexpected native byte extent")
+				return nil, nil, x86TLSMoveContext("source NOP has an unexpected native byte extent")
 			}
 			for _, relocation := range text.Relocations {
 				if relocation.Size != 0 && relocation.Offset < end && relocation.Offset+relocation.Size > observed[index].pc {
-					return nil, x86TLSMoveContext("source NOP intersects a native relocation")
+					return nil, nil, x86TLSMoveContext("source NOP intersects a native relocation")
 				}
 			}
-			sites = append(sites, x86TLSNoopSite{functionIndex, instructionIndex, line, observed[index].pc})
+			noops = append(noops, x86TLSNoopSite{functionIndex, instructionIndex, line, observed[index].pc})
 		}
 	}
-	return sites, nil
+	return noops, reads, nil
 }

@@ -178,8 +178,8 @@ func (m X87Mode) valid() bool {
 type Options struct {
 	TargetTriple string
 
-	// X86TLSMoves binds only actual source-encoder NOP effects. It grants no
-	// native TLS address, thread, entry-register, storage or caller contract.
+	// X86TLSMoves binds actual source-encoder TLS effects and, if explicitly
+	// selected, the matching Go runtime slot used by observed native reads.
 	X86TLSMoves *GoX86TLSMoveBinding
 
 	// NumericalReads is an opaque live source/object/typed-storage binding.
@@ -784,6 +784,7 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 	// Collect base symbols of SB refs with numeric offsets. These are almost always
 	// global variables whose address is computed via GEP in the lowering.
 	need := map[string]bool{}
+	var tlsModel x86TLSRuntimeModel
 	numericalExtents := map[string]int64{}
 	if len(goStorage) == 1 && goStorage[0] != nil {
 		for _, object := range goStorage[0].objects {
@@ -832,6 +833,9 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 				if read, _, valid := numericalCertifiedRead(ins, cert.binding.options.Goarch); valid {
 					numericalExtents[read.Variable.NativeName] = read.Variable.Size
 				}
+			}
+			if read := ins.x86TLSRuntimeRead; read != nil {
+				tlsModel = read.Model // One captured assembler profile per module.
 			}
 			opName := strings.ToUpper(string(ins.Op))
 			for _, arg := range ins.Args {
@@ -891,6 +895,9 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 		}
 	}
 
+	if tlsModel != 0 {
+		delete(need, emitX86TLSRuntimeDeclaration(b, tlsModel))
+	}
 	if len(need) == 0 {
 		return
 	}

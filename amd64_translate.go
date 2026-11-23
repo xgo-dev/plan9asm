@@ -689,6 +689,9 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 	if recognized, err := c.lowerNumericalReadAt(ins, bi, ii); recognized {
 		return false, err
 	}
+	if ins.x86TLSRuntimeRead != nil {
+		return false, c.lowerTLSRuntimeRead(ins)
+	}
 	if c.fixedLocal != nil {
 		c.fixedMemRoles = make(map[MemRef]MemRef)
 		defer func() { c.fixedMemRoles = nil }()

@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// GoX86TLSMoveBinding consumes a live source-encoder observation. Its sole
-// permission is substituting the independently observed zero-width NOPs.
-// In particular it cannot define the original destination GP bytes.
+// GoX86TLSMoveBinding consumes a live source-encoder observation. Ordinary
+// bindings substitute observed NOPs. Runtime bindings also transport proved
+// loads through the selected Go runtime's linker-visible TLS storage.
 type GoX86TLSMoveBinding struct {
 	identity        *GoX86TLSMoveBinding
 	source          *GoX86TLSMoveSource
@@ -20,10 +20,22 @@ type GoX86TLSMoveBinding struct {
 	file            [32]byte
 	arch            string
 	triple          string
+	runtimeReads    bool
 	seal            [32]byte
 }
 
 func (source *GoX86TLSMoveSource) BindTLSMoves(ctx context.Context, file *File, options Options) (Options, error) {
+	return source.bindTLSMoves(ctx, file, options, false)
+}
+
+// BindRuntimeTLSReads selects the linker contract of the observed Go runtime.
+// The final runtime must supply runtime.tlsg (ELF) or runtime.tls_g (Windows).
+// This binds the address calculation, not the contents or extent of its slot.
+func (source *GoX86TLSMoveSource) BindRuntimeTLSReads(ctx context.Context, file *File, options Options) (Options, error) {
+	return source.bindTLSMoves(ctx, file, options, true)
+}
+
+func (source *GoX86TLSMoveSource) bindTLSMoves(ctx context.Context, file *File, options Options, runtimeReads bool) (Options, error) {
 	if err := source.Verify(ctx); err != nil {
 		return Options{}, err
 	}
@@ -34,11 +46,14 @@ func (source *GoX86TLSMoveSource) BindTLSMoves(ctx context.Context, file *File, 
 	}
 	actual, err := x86CallerSourceFingerprint(source.file)
 	provided, sourceErr := x86CallerSourceFingerprint(file)
-	if err != nil || sourceErr != nil || file == nil || provided != actual || len(source.noops) == 0 {
-		return Options{}, x86TLSMoveContext("binding needs the complete original file and an actual NOP effect")
+	if err != nil || sourceErr != nil || file == nil || provided != actual {
+		return Options{}, x86TLSMoveContext("binding needs the complete original file")
+	}
+	if runtimeReads && len(source.reads) == 0 || !runtimeReads && len(source.noops) == 0 {
+		return Options{}, x86TLSMoveContext("binding needs an observed effect of the requested kind")
 	}
 	binding := &GoX86TLSMoveBinding{source: source, originalSource: source, context: ctx, originalContext: ctx,
-		file: actual, arch: arch, triple: options.TargetTriple}
+		file: actual, arch: arch, triple: options.TargetTriple, runtimeReads: runtimeReads}
 	binding.identity = binding
 	binding.seal = binding.digest()
 	options.X86TLSMoves = binding
@@ -57,7 +72,11 @@ func x86TLSExpectedTriple(target string) string {
 }
 
 func (binding *GoX86TLSMoveBinding) digest() [32]byte {
-	return sha256.Sum256([]byte(string(binding.file[:]) + "\x00" + binding.arch + "\x00" + binding.triple))
+	input := string(binding.file[:]) + "\x00" + binding.arch + "\x00" + binding.triple
+	if binding.runtimeReads {
+		input += "\x00runtime"
+	}
+	return sha256.Sum256([]byte(input))
 }
 
 func (binding *GoX86TLSMoveBinding) verify(file *File, options Options) (result error) {
@@ -88,8 +107,8 @@ func freezeTLSMoveInputs(file *File, options Options) (*File, Options, error) {
 	if err := binding.verify(file, options); err != nil {
 		return nil, Options{}, err
 	}
-	// Reparse the independently guarded source, so caller-owned slices and
-	// decoder certificates cannot change or supplement the native NOP fact.
+	// Reparse the guarded source so caller-owned slices and decoder
+	// certificates cannot change or supplement the original TLS effects.
 	normalized, err := Parse(ArchAMD64, binding.source.expanded)
 	if err != nil {
 		return nil, Options{}, err
@@ -103,6 +122,17 @@ func freezeTLSMoveInputs(file *File, options Options) (*File, Options, error) {
 		}
 		normalized.Funcs[site.Function].Instrs[site.Instruction] = Instr{Op: "NOP", Raw: original.Raw}
 		changed[site.Function] = true
+	}
+	if binding.runtimeReads {
+		for _, site := range binding.source.reads {
+			ins := &normalized.Funcs[site.Function].Instrs[site.Instruction]
+			read := site.Read
+			ins.x86TLSRuntimeRead = &read
+			if _, valid := x86CertifiedTLSRuntimeRead(*ins, binding.arch); !valid {
+				return nil, Options{}, x86TLSMoveContext("observed runtime read source role changed")
+			}
+			changed[site.Function] = true
+		}
 	}
 	options.Sigs, err = numericalCloneSignatures(options.Sigs)
 	if err != nil {
@@ -120,11 +150,10 @@ func freezeTLSMoveInputs(file *File, options Options) (*File, Options, error) {
 		}
 		signature, present := options.Sigs[name]
 		if !present {
-			return nil, Options{}, x86TLSMoveContext("NOP consumer lacks its independent signature")
+			return nil, Options{}, x86TLSMoveContext("TLS consumer lacks its independent signature")
 		}
-		// The observed NOP preserves unknown as well as initialized GP state.
-		// Consume the existing complete lowering result/effect proof before
-		// generic register allocas can choose implementation representatives.
+		// Consume the complete lowering result/effect proof before register
+		// allocas choose representatives for undefined source state.
 		consumer := &amd64Ctx{sig: signature, fpScalarSource: function, goarch: binding.arch}
 		if err := consumer.checkLoweredScalarFPResultInitialization(); err != nil {
 			return nil, Options{}, err
