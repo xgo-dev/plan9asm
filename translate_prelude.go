@@ -97,15 +97,8 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 				}
 				wantVectorIntrinsic[spec.IntrinsicName()] = spec
 			}
-			switch op {
-			case "MEMORYCOPY":
-				want["memmove"] = true
-			case "MEMORYFILL":
-				want["memset"] = true
-			case "CURRENTMEMORY":
-				want["memory.size"] = true
-			case "GROWMEMORY":
-				want["memory.grow"] = true
+			if spec, ok := wasmMemoryBuiltins[op]; ok {
+				want[spec.intrinsic] = true
 			}
 		}
 	}

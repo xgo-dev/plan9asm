@@ -8,6 +8,39 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/wasmsimd"
 )
 
+// The memory32 instructions take i32 stack values. Bulk operations convert
+// these carriers to LLVM addresses and a fill byte only after validation.
+type wasmMemoryBuiltin struct {
+	intrinsic    string
+	operands     []string
+	sourceAccess LLVMType
+}
+
+var wasmMemoryBuiltins = map[string]wasmMemoryBuiltin{
+	"CURRENTMEMORY": {intrinsic: "memory.size"},
+	"GROWMEMORY":    {intrinsic: "memory.grow", operands: []string{"page count"}},
+	"MEMORYCOPY": {
+		intrinsic: "memmove", sourceAccess: Ptr,
+		operands: []string{"destination address", "source address", "length"},
+	},
+	"MEMORYFILL": {
+		intrinsic: "memset", sourceAccess: I8,
+		operands: []string{"destination address", "fill value", "length"},
+	},
+}
+
+func (spec wasmMemoryBuiltin) isBulk() bool {
+	return spec.sourceAccess != ""
+}
+
+func parseWASMMemoryBuiltin(ins Instr, op string) (wasmMemoryBuiltin, bool, error) {
+	spec, found := wasmMemoryBuiltins[op]
+	if !found {
+		return spec, false, nil
+	}
+	return spec, true, validateWASMIgnoredStackOperands(ins, op)
+}
+
 type wasmMemoryOp struct {
 	access LLVMType
 	stack  LLVMType
@@ -175,14 +208,13 @@ func emitWASMMemoryByteSize(b *strings.Builder, newTmp func() string) string {
 // LLVM can elide an empty memmove/memset or split a fixed-size operation into
 // smaller writes. Check every range first to retain WebAssembly's trap even
 // when len is zero, and to leave memory untouched when any range is invalid.
-func emitWASMBulkMemoryBounds(b *strings.Builder, length string, newTmp func() string, newLabel func(string) string, pointers ...string) {
+func emitWASMBulkMemoryBounds(b *strings.Builder, length string, newTmp func() string, newLabel func(string) string, addresses ...string) {
 	size := emitWASMMemoryByteSize(b, newTmp)
 	wideLength := newTmp()
 	fmt.Fprintf(b, "  %%%s = zext i32 %s to i64\n", wideLength, length)
-	for _, pointer := range pointers {
-		address, wideAddress, end, valid := newTmp(), newTmp(), newTmp(), newTmp()
-		fmt.Fprintf(b, "  %%%s = ptrtoint ptr %s to i32\n", address, pointer)
-		fmt.Fprintf(b, "  %%%s = zext i32 %%%s to i64\n", wideAddress, address)
+	for _, address := range addresses {
+		wideAddress, end, valid := newTmp(), newTmp(), newTmp()
+		fmt.Fprintf(b, "  %%%s = zext i32 %s to i64\n", wideAddress, address)
 		fmt.Fprintf(b, "  %%%s = add i64 %%%s, %%%s\n", end, wideAddress, wideLength)
 		fmt.Fprintf(b, "  %%%s = icmp ule i64 %%%s, %s\n", valid, end, size)
 		emitWASMTrapUnless(b, valid, newLabel)

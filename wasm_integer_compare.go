@@ -1,10 +1,5 @@
 package plan9asm
 
-import (
-	"fmt"
-	"strings"
-)
-
 type wasmIntegerComparisonOp struct {
 	typ       LLVMType
 	predicate string
@@ -41,8 +36,8 @@ var wasmIntegerCompareOps = map[string]wasmIntegerComparisonOp{
 // two written operands, which the Wasm encoder ignores, and no suffixes.
 func parseWASMIntegerComparison(ins Instr, op string) (wasmIntegerComparisonOp, bool, error) {
 	spec, found := wasmIntegerCompareOps[op]
-	if found && (strings.ToUpper(string(ins.Op)) != op || len(ins.Args) > 2) {
-		return spec, true, fmt.Errorf("%s accepts at most two ignored source operands without suffixes: %q", ins.Op, ins.Raw)
+	if !found {
+		return spec, false, nil
 	}
-	return spec, found, nil
+	return spec, true, validateWASMIgnoredStackOperands(ins, op)
 }

@@ -55,6 +55,15 @@ Get R1
 I32Const $8
 MemoryFill
 Return
+
+TEXT Size(SB),4,$0-0
+CurrentMemory
+Return
+
+TEXT Grow(SB),4,$0-0
+Get R0
+GrowMemory
+Return
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +74,8 @@ Return
 			Name: fn.Sym, Args: []LLVMType{I32, I32, I32}, ArgRegs: []Reg{"R0", "R1", "R2"}, Ret: Void,
 		}
 	}
+	sigs["Size"] = FuncSig{Name: "Size", Ret: I32}
+	sigs["Grow"] = FuncSig{Name: "Grow", Args: []LLVMType{I32}, ArgRegs: []Reg{"R0"}, Ret: I32}
 	for _, route := range []string{"Translate", "TranslateModule", "TranslateModuleInContext"} {
 		ir, err := wasmPackedTranslate(t, file, wasmPackedOptions(sigs, WASMABIDirect), route)
 		if err != nil {
@@ -87,22 +98,25 @@ const instantiate = bytes => new WebAssembly.Instance(new WebAssembly.Module(byt
 const translated = instantiate(fs.readFileSync(process.argv[1]));
 ` + wasmTestSectionJS + `
 const names = ['Copy', 'Fill', 'CopyZero', 'FillZero', 'CopyFixed', 'FillFixed', 'FillAtZero'];
+const allNames = [...names, 'Size', 'Grow'];
 const isCopy = name => name.startsWith('Copy');
 const pages = translated.memory.buffer.byteLength / 65536;
+const bodies = names.map((name, i) => vector([
+  0, ...(name === 'FillAtZero' ? [0x41, 0] : [0x20, 0]), 0x20, 1,
+  ...(i < 2 ? [0x20, 2] : [0x41, i < 4 ? 0 : 8]),
+  0xfc, ...(isCopy(name) ? [10, 0, 0] : [11, 0]), 0x0b,
+]));
+bodies.push(vector([0, 0x3f, 0, 0x0b]), vector([0, 0x20, 0, 0x40, 0, 0x0b]));
 const native = instantiate(Uint8Array.from([
   0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
-  ...section(1, [1, 0x60, 3, 0x7f, 0x7f, 0x7f, 0]),
-  ...section(3, vector(names.map(() => 0))),
+  ...section(1, vector([[0x60, 3, 0x7f, 0x7f, 0x7f, 0], [0x60, 0, 1, 0x7f], [0x60, 1, 0x7f, 1, 0x7f]])),
+  ...section(3, vector([...names.map(() => 0), 1, 2])),
   ...section(5, [1, 0, ...uleb(pages)]),
   ...section(7, vector([
-    ...names.map((name, i) => [...vector([...Buffer.from(name)]), 0, i]),
+    ...allNames.map((name, i) => [...vector([...Buffer.from(name)]), 0, i]),
     [...vector([...Buffer.from('memory')]), 2, 0],
   ])),
-  ...section(10, vector(names.map((name, i) => vector([
-    0, ...(name === 'FillAtZero' ? [0x41, 0] : [0x20, 0]), 0x20, 1,
-    ...(i < 2 ? [0x20, 2] : [0x41, i < 4 ? 0 : 8]),
-    0xfc, ...(isCopy(name) ? [10, 0, 0] : [11, 0]), 0x0b,
-  ])))),
+  ...section(10, vector(bodies)),
 ]));
 const output = new Uint8Array(translated.memory.buffer);
 const expected = new Uint8Array(native.memory.buffer);
@@ -135,6 +149,17 @@ for (const name of names) {
     if (!Buffer.from(output).equals(Buffer.from(expected))) {
       throw Error(name + '/' + args + ': different memory contents');
     }
+  }
+}
+if (translated.Size() !== pages) throw Error('incorrect initial memory size');
+for (const delta of [0, 1, -1, 2]) {
+  const result = translated.Grow(delta);
+  const want = native.Grow(delta);
+  if (result !== want || translated.Size() !== native.Size()) {
+    throw Error('incorrect memory growth by ' + delta + ': got ' + result + ', want ' + want);
+  }
+  if (!Buffer.from(translated.memory.buffer).equals(Buffer.from(native.memory.buffer))) {
+    throw Error('different memory after growth by ' + delta);
   }
 }
 `

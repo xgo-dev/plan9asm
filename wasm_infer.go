@@ -126,6 +126,10 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err != nil {
 			return FuncSig{}, err
 		}
+		memoryBuiltin, builtinKnown, err := parseWASMMemoryBuiltin(ins, op)
+		if err != nil {
+			return FuncSig{}, err
+		}
 		integerBinary, integerBinaryKnown, err := parseWASMIntegerBinary(ins, op)
 		if err != nil {
 			return FuncSig{}, err
@@ -179,6 +183,17 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			}
 			if !memory.spec.store {
 				push(wasmInferValue{typ: memory.spec.stack})
+			}
+			continue
+		}
+		if builtinKnown {
+			for range memoryBuiltin.operands {
+				if err := popTyped(op, I32); err != nil {
+					return FuncSig{}, err
+				}
+			}
+			if !memoryBuiltin.isBulk() {
+				push(wasmInferValue{typ: I32})
 			}
 			continue
 		}

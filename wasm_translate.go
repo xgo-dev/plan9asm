@@ -77,10 +77,17 @@ func validateWASMRawReturn(ins Instr, op string) error {
 }
 
 func validateWASMSelect(ins Instr, op string) error {
-	// Select obtains all three inputs from the stack. Go ignores up to
-	// two written operands and rejects suffixed spellings.
-	if op == "SELECT" && (strings.ToUpper(string(ins.Op)) != op || len(ins.Args) > 2) {
-		return fmt.Errorf("Select accepts at most two ignored source operands without suffixes: %q", ins.Raw)
+	if op == "SELECT" {
+		return validateWASMIgnoredStackOperands(ins, op)
+	}
+	return nil
+}
+
+// These encoders obtain their inputs from the operand stack. Go's generic
+// assembler accepts up to two written operands and rejects suffixes.
+func validateWASMIgnoredStackOperands(ins Instr, op string) error {
+	if strings.ToUpper(string(ins.Op)) != op || len(ins.Args) > 2 {
+		return fmt.Errorf("%s accepts at most two ignored source operands without suffixes: %q", ins.Op, ins.Raw)
 	}
 	return nil
 }
@@ -134,7 +141,11 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if useGoStack && (op == "CALL" || op == "CALLNORESUME") {
 			needsResumePlan = true
 		}
-		bulkMemory = bulkMemory || op == "MEMORYCOPY" || op == "MEMORYFILL"
+		memoryBuiltin, builtinKnown, err := parseWASMMemoryBuiltin(ins, op)
+		if err != nil {
+			return err
+		}
+		bulkMemory = bulkMemory || builtinKnown && memoryBuiltin.isBulk()
 		form, found, err := parseWASMMemory(ins, op)
 		if err != nil {
 			return err
@@ -1150,6 +1161,51 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		fmt.Fprintf(b, "  %%%s = icmp ne i32 %s, 0\n", name, condition.val)
 		return "%" + name, nil
 	}
+	emitMemoryBuiltin := func(op string, spec wasmMemoryBuiltin) error {
+		var operands [3]wasmValue
+		for index := len(spec.operands) - 1; index >= 0; index-- {
+			value, err := pop(op)
+			if err != nil {
+				return err
+			}
+			role := spec.operands[index]
+			if value.stackAddr {
+				return fmt.Errorf("%s %s requires an i32 stack value, got a stack-address marker", op, role)
+			}
+			if value.typ != I32 {
+				return fmt.Errorf("%s %s requires an i32 stack value, got %s", op, role, value.typ)
+			}
+			operands[index] = value
+		}
+		if !spec.isBulk() {
+			args := "i32 0"
+			if len(spec.operands) != 0 {
+				args += ", i32 " + operands[0].val
+			}
+			name := newTmp()
+			fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.%s.i32(%s)\n", name, spec.intrinsic, args)
+			push(wasmValue{typ: I32, val: "%" + name})
+			return nil
+		}
+
+		dst, src, length := operands[0], operands[1], operands[2]
+		dstPtr, err := cast(dst, Ptr, false)
+		if err != nil {
+			return err
+		}
+		source, err := cast(src, spec.sourceAccess, false)
+		if err != nil {
+			return err
+		}
+		if spec.sourceAccess == Ptr {
+			emitWASMBulkMemoryBounds(b, length.val, newTmp, newLabel, dst.val, src.val)
+			fmt.Fprintf(b, "  call void @llvm.memmove.p0.p0.i32(ptr %s, ptr %s, i32 %s, i1 false)\n", dstPtr.val, source.val, length.val)
+		} else {
+			emitWASMBulkMemoryBounds(b, length.val, newTmp, newLabel, dst.val)
+			fmt.Fprintf(b, "  call void @llvm.memset.p0.i32(ptr %s, i8 %s, i32 %s, i1 false)\n", dstPtr.val, source.val, length.val)
+		}
+		return nil
+	}
 	storeBlockResult := func(frame *wasmControlFrame, popValue bool) error {
 		if frame.resultType == "" {
 			return nil
@@ -1433,6 +1489,12 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			}
 			continue
 		}
+		if spec, ok := wasmMemoryBuiltins[op]; ok {
+			if err := emitMemoryBuiltin(op, spec); err != nil {
+				return err
+			}
+			continue
+		}
 		switch op {
 		case "NOP", "NO_LOCAL_POINTERS", "FUNCDATA", "PCDATA":
 			continue
@@ -1637,58 +1699,6 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		case "DROP":
 			if _, err := pop(op); err != nil {
 				return err
-			}
-		case "CURRENTMEMORY":
-			name := newTmp()
-			fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.memory.size.i32(i32 0)\n", name)
-			push(wasmValue{typ: I32, val: "%" + name})
-		case "GROWMEMORY":
-			pages, err := pop(op)
-			if err != nil {
-				return err
-			}
-			pages, err = cast(pages, I32, false)
-			if err != nil {
-				return err
-			}
-			name := newTmp()
-			fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.memory.grow.i32(i32 0, i32 %s)\n", name, pages.val)
-			push(wasmValue{typ: I32, val: "%" + name})
-		case "MEMORYCOPY", "MEMORYFILL":
-			length, err := pop(op)
-			if err != nil {
-				return err
-			}
-			source, err := pop(op)
-			if err != nil {
-				return err
-			}
-			dst, err := pop(op)
-			if err != nil {
-				return err
-			}
-			length, err = cast(length, I32, false)
-			if err != nil {
-				return err
-			}
-			sourceType := Ptr
-			if op == "MEMORYFILL" {
-				sourceType = I8
-			}
-			source, err = cast(source, sourceType, false)
-			if err != nil {
-				return err
-			}
-			dst, err = cast(dst, Ptr, false)
-			if err != nil {
-				return err
-			}
-			if op == "MEMORYCOPY" {
-				emitWASMBulkMemoryBounds(b, length.val, newTmp, newLabel, dst.val, source.val)
-				fmt.Fprintf(b, "  call void @llvm.memmove.p0.p0.i32(ptr %s, ptr %s, i32 %s, i1 false)\n", dst.val, source.val, length.val)
-			} else {
-				emitWASMBulkMemoryBounds(b, length.val, newTmp, newLabel, dst.val)
-				fmt.Fprintf(b, "  call void @llvm.memset.p0.i32(ptr %s, i8 %s, i32 %s, i1 false)\n", dst.val, source.val, length.val)
 			}
 		case "RET":
 			if len(ins.Args) == 1 {
