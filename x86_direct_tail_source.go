@@ -93,6 +93,11 @@ func x86DirectTailRootTargets(fn Func, helpers, ordinary map[string]bool) bool {
 			text = arg.Mem.Sym
 		}
 		base, offset, valid := parseSBRef(strings.TrimPrefix(text, "$"))
+		if valid && offset != 0 && helpers == nil && ins.Op == OpCALL && arg.Kind == OpSym {
+			if _, direct := x86DirectSourceBranch(ins, ""); direct {
+				return true
+			}
+		}
 		if valid && (helpers == nil && strings.HasSuffix(base, "<>") || helpers[base]) {
 			if ins.Op == OpCALL && arg.Kind == OpSym && offset == 0 && ordinary[base] {
 				continue
@@ -183,9 +188,6 @@ func PrepareX86DirectTailSource(file *File, options Options) (*File, error) {
 	}
 	if !pureTail && !privateTail {
 		return file, nil // Canonical bool terminals retain their independent consumer.
-	}
-	if len(helpers) == 0 && !pureTail {
-		return nil, x86DirectTailContext("private tail target has no original source TEXT")
 	}
 	if options.X86TLSMoves != nil || options.ARM64ByteCarrierSource != nil ||
 		len(file.UnlinkedPrelude) != 0 || len(file.x86Continuations) != 0 {

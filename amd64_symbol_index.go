@@ -124,16 +124,14 @@ func normalizeX86DirectSourceBranches(file *File, goarch string) *File {
 			}
 			spelling := target.symbol
 			if target.addend != 0 {
-				if !strings.HasSuffix(target.symbol, "<>") {
-					continue
-				}
 				spelling += fmt.Sprintf("%+d", target.addend)
 			}
 			spelling += "(SB)"
 			if ins.Args[0].Kind == OpSym && ins.Args[0].Sym == spelling {
 				continue
 			}
-			if strings.HasSuffix(target.symbol, "<>") && !x86SourceBranchOwnsStaticText(file, target.symbol) {
+			if (target.addend != 0 || strings.HasSuffix(target.symbol, "<>")) &&
+				!x86SourceBranchOwnsText(file, target.symbol) {
 				continue
 			}
 			if instructions == nil {
@@ -155,7 +153,7 @@ func normalizeX86DirectSourceBranches(file *File, goarch string) *File {
 	return result
 }
 
-func x86SourceBranchOwnsStaticText(file *File, symbol string) bool {
+func x86SourceBranchOwnsText(file *File, symbol string) bool {
 	for _, fn := range file.Funcs {
 		if fn.Sym == symbol {
 			return true

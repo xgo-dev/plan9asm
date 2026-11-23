@@ -106,6 +106,9 @@ int main(void) {
 			t.Run("InteriorByteEntry", func(t *testing.T) {
 				x86DirectTailInteriorCallRuntime(t, arch, execution)
 			})
+			t.Run("NamedByteEntry", func(t *testing.T) {
+				x86DirectTailNamedInteriorCallRuntime(t, arch, execution)
+			})
 		})
 	}
 }
@@ -120,6 +123,50 @@ func main() {
  fmt.Println("four byte entries passed")
 }
 `
+	const cMain = `#include <stdint.h>
+#include <stdio.h>
+extern uint32_t Entry(void), Interior(void), Grouped(void), Starred(void);
+int main(void) {
+ if (Entry() != 11 || Interior() != 73 || Grouped() != 73 || Starred() != 73) return 1;
+ puts("four byte entries passed");
+ return 0;
+}
+`
+	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, "four byte entries passed\n")
+}
+
+func x86DirectTailNamedInteriorCallRuntime(t *testing.T, arch string, execution x86FloatCompareExecution) {
+	source, declarations := x86DirectTailNamedInteriorCallFixture(arch)
+	const goMain = `
+func main() {
+ Target()
+ for _, value := range []uint32{0, 1, 3, 0x80000000, 0xffffffff} {
+  if got := Interior(value); got != value+73 {
+   panic(fmt.Sprintf("byte entry with AX=%#x: got %#x", value, got))
+  }
+ }
+ fmt.Println("ordinary entry and five interior inputs passed")
+}
+`
+	const cMain = `#include <stdint.h>
+#include <stdio.h>
+extern void Target(void);
+extern uint32_t Interior(uint32_t);
+int main(void) {
+ const uint32_t values[] = {0, 1, 3, 0x80000000, 0xffffffff};
+ Target();
+ for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+  if (Interior(values[i]) != values[i] + 73u) return 1;
+ }
+ puts("ordinary entry and five interior inputs passed");
+ return 0;
+}
+`
+	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, "ordinary entry and five interior inputs passed\n")
+}
+
+func x86DirectTailCheckCallRuntime(t *testing.T, arch string, execution x86FloatCompareExecution, source, declarations, goMain, cMain, want string) {
+	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
 		"go.mod":                 "module privateentries\n\ngo 1.20\n",
@@ -136,26 +183,16 @@ func main() {
 	command.Dir = dir
 	command.Env = append(os.Environ(), "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
 	x86FloatCompareCaptureCommand(t, command)
-	const want = "four byte entries passed\n"
 	if output := execution.run(t, original); string(output) != want {
 		t.Fatalf("incomplete original Go: %s", output)
 	}
-	const cMain = `#include <stdint.h>
-#include <stdio.h>
-extern uint32_t Entry(void), Interior(void), Grouped(void), Starred(void);
-int main(void) {
- if (Entry() != 11 || Interior() != 73 || Grouped() != 73 || Starred() != 73) return 1;
- puts("four byte entries passed");
- return 0;
-}
-`
 	for _, api := range []string{"text", "module", "Go"} {
 		ir, err := x86ScalarFPBitViewAPI(t, source, declarations, arch, execution.triple, api)
 		if err != nil {
 			t.Fatal(api, err)
 		}
 		for _, level := range []string{"-O0", "-O2"} {
-			if output := execution.compileAndRunLLVM(t, "private-entries", ir, cMain, level); string(output) != want {
+			if output := execution.compileAndRunLLVM(t, "call-entries", ir, cMain, level); string(output) != want {
 				t.Fatalf("%s/%s incomplete LLVM: %s", api, level, output)
 			}
 		}

@@ -55,7 +55,7 @@ func (graph *x86DirectTailGraph) root(root int, byName map[string]int, limit int
 			if !valid || offset != 0 && (ins.Op != OpCALL || !interior) {
 				return nil, x86DirectTailContext("indirect/external/missing/offset tail target: %s", ins.Raw)
 			}
-			if !graph.helpers[name] {
+			if !graph.helpers[name] && !interior {
 				if ins.Op == OpCALL || !graph.ordinaryExternalTail(root, name) {
 					return nil, x86DirectTailContext("external terminal lacks identical ordinary root ABI0 roles: %s", ins.Raw)
 				}
@@ -163,14 +163,14 @@ func (graph *x86DirectTailGraph) root(root int, byName map[string]int, limit int
 					continue // No graph successor: ordinary typed call+return.
 				}
 				index, exists := byName[name]
-				if !valid || !exists || !members[index] || !graph.helpers[name] {
+				point, interior := graph.interiorEntries[x86SourceBranchTarget{name, offset}]
+				if !valid || !exists || !members[index] || !(graph.helpers[name] || ins.Op == OpCALL && interior) {
 					return nil, x86DirectTailContext("unbound private tail node")
 				}
 				target, found = starts[index], true
 				if offset != 0 {
-					point, bound := graph.interiorEntries[x86SourceBranchTarget{name, offset}]
 					target, found = entries[point]
-					found = found && bound && ins.Op == OpCALL
+					found = found && interior && ins.Op == OpCALL
 				}
 			}
 			if !found || target >= len(view.points) || view.points[target].text != view.points[pc].text &&

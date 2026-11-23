@@ -57,6 +57,63 @@ func TestX86DirectTailInteriorCallSource(t *testing.T) {
 	}
 }
 
+func TestX86DirectTailNamedInteriorCallPreservesOrdinaryEntry(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM22 llc required")
+	}
+	callKinds := []string{"R_CALL"}
+	for value, kind := range x86StackControlRelocationEnums(t) {
+		if kind == "R_CALL" {
+			callKinds = append(callKinds, value)
+		}
+	}
+	for _, target := range x86RawReturnTargets {
+		t.Run(target.triple, func(t *testing.T) {
+			source, declarations := x86DirectTailNamedInteriorCallFixture(target.arch)
+			for _, symbol := range []struct{ source, goObject, llvm string }{
+				{"·Target", "plan9asmentries.Target", "Target"},
+				{"foo", "foo", "foo"},
+			} {
+				t.Run(symbol.llvm, func(t *testing.T) {
+					assembly := strings.ReplaceAll(source, "·Target", symbol.source)
+					signatures := strings.ReplaceAll(declarations, "Target", symbol.llvm)
+					original, err := x86InteriorCallGoListing(assembly, target.arch, target.triple)
+					names := []string{regexp.QuoteMeta(symbol.goObject)}
+					if symbol.source == "·Target" {
+						names = append(names, regexp.QuoteMeta(`"".Target`)) // Go 1.20 -S uses the local package placeholder.
+					}
+					relocation := regexp.MustCompile(`(?m)^\s*rel [0-9]+\+4 t=(?:` + strings.Join(callKinds, "|") +
+						`) (?:` + strings.Join(names, "|") + `)\+4\s*$`)
+					if err != nil || len(relocation.FindAll(original, -1)) != 1 {
+						t.Fatalf("original Go did not retain the direct +4 relocation: %v\n%s", err, original)
+					}
+					for _, api := range []string{"text", "module", "Go"} {
+						ir, err := x86ScalarFPBitViewAPI(t, assembly, signatures, target.arch, target.triple, api)
+						if err != nil {
+							t.Fatal(api, err)
+						}
+						if !strings.Contains(ir, "define void @"+symbol.llvm+"(") {
+							t.Fatal(api, "byte entry consumed the independently callable TEXT")
+						}
+						for _, optimization := range []string{"-O0", "-O2"} {
+							x86PackedStringCompileObject(t, llc, target.triple, ir, optimization)
+						}
+						wrongEntry := strings.Replace(assembly, "+4(SB)", "+3(SB)", 1)
+						if _, err := x86ScalarFPBitViewAPI(t, wrongEntry, signatures, target.arch, target.triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+							t.Fatal(api, "middle of an original machine instruction accepted", err)
+						}
+						external, _, _ := strings.Cut(assembly, "TEXT "+symbol.source)
+						if _, err := x86ScalarFPBitViewAPI(t, external, signatures, target.arch, target.triple, api); !errors.Is(err, ErrProbeNeedsContext) {
+							t.Fatal(api, "external byte entry accepted without its original TEXT", err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestX86DirectTailPCCompleteGoBranchRowsAndAliases(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src/cmd/internal/obj/x86/asm6.go"))
 	if err != nil {

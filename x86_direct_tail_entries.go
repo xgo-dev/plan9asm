@@ -14,20 +14,28 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/goasmcmd"
 )
 
-// Resolve byte addends only when a private call in this source needs them.
-// Go's assembler assigns the byte positions. The existing continuation
-// graph still proves source closure, frame ownership and register effects.
+// Resolve CALL byte addends against the original Go object layout. A declared
+// ordinary TEXT retains its callable entry; only the bound interior edge
+// enters the continuation graph.
 func (graph *x86DirectTailGraph) bindInteriorCallEntries(triple string) error {
 	var targets map[x86SourceBranchTarget]int
 	for _, fn := range graph.original.Funcs {
 		for _, ins := range fn.Instrs {
 			branch, direct := x86DirectSourceBranch(ins, graph.goarch)
-			if !direct || ins.Op != OpCALL || branch.addend == 0 || !graph.helpers[branch.symbol] {
+			if !direct || ins.Op != OpCALL || branch.addend == 0 {
 				continue
 			}
 			text, found := graph.texts[branch.symbol]
 			if !found || branch.addend < 0 || graph.numerical != nil {
-				return x86DirectTailContext("unknown private CALL byte entry: %s", ins.Raw)
+				return x86DirectTailContext("unbound CALL byte entry: %s", ins.Raw)
+			}
+			if !graph.helpers[branch.symbol] {
+				name := graph.symbols[branch.symbol]
+				sig, declared := graph.signatures[name]
+				if !declared || sig.Name != "" && sig.Name != name || sig.Ret != Void ||
+					len(sig.Args) != 0 || len(sig.ArgRegs) != 0 || len(sig.Frame.Params) != 0 || len(sig.Frame.Results) != 0 {
+					return x86DirectTailContext("CALL byte target needs an ordinary zero-argument, void entry: %s", branch.symbol)
+				}
 			}
 			if targets == nil {
 				targets = make(map[x86SourceBranchTarget]int)

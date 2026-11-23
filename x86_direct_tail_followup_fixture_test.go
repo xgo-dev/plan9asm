@@ -31,6 +31,21 @@ alternate:
 `, "func Entry() uint32\nfunc Interior() uint32\nfunc Grouped() uint32\nfunc Starred() uint32\n"
 }
 
+func x86DirectTailNamedInteriorCallFixture(arch string) (source, declarations string) {
+	resultOffset := goWordSize(arch)
+	return fmt.Sprintf(`TEXT ·Interior(SB),516,$0-%d
+ MOVL value+0(FP),AX
+ CALL ·Target+4(SB)(AX*4)
+ MOVL AX,ret+%d(FP)
+ RET
+TEXT ·Target(SB),516,$0-0
+ XORL AX,AX
+ XORL BX,BX
+ ADDL $73,AX
+ RET
+`, resultOffset+4, resultOffset), "func Interior(value uint32) uint32\nfunc Target()\n"
+}
+
 // One complete ordinary source file composes the three independent roles.
 // Two differently typed roots share a helper and retain distinct result slots.
 func x86DirectTailFollowupFixture(arch string) (source, declarations string) {
