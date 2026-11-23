@@ -135,14 +135,8 @@ func (c *arm64Ctx) lowerARM64SaturatingShift(form arm64SaturatingShiftForm) erro
 	if err != nil {
 		return err
 	}
-	bank := "bhsd"[bits.TrailingZeros(uint(elementBits))-3]
-	operand := func(index int) string {
-		if form.scalar {
-			return fmt.Sprintf("${%d:%c}", index, bank)
-		}
-		return fmt.Sprintf("$%d.%d%c", index, form.arrangement.lanes, bank)
-	}
-	assembly := form.op + " " + operand(0) + ", " + operand(1) + ", "
+	assembly := fmt.Sprintf("%s %s, %s, ", form.op,
+		arm64NativeSIMDReg(0, form.arrangement), arm64NativeSIMDReg(1, form.arrangement))
 	constraints, arguments := "=w,w,~{memory}", "<16 x i8> "+value
 	if form.immediate {
 		assembly += fmt.Sprintf("#%d", form.shift)
@@ -155,7 +149,7 @@ func (c *arm64Ctx) lowerARM64SaturatingShift(form arm64SaturatingShiftForm) erro
 		if err != nil {
 			return err
 		}
-		assembly += operand(2)
+		assembly += arm64NativeSIMDReg(2, form.arrangement)
 		constraints, arguments = "=w,w,w,~{memory}", arguments+", <16 x i8> "+shifts
 	}
 
