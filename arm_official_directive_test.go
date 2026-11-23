@@ -53,3 +53,61 @@ func TestProbeARMContextDependentOfficialDirectives(t *testing.T) {
 		})
 	}
 }
+
+func TestARMOfficialBoundRawWordObjects(t *testing.T) {
+	const source = `TEXT rawZero(SB),4,$0-8
+MOVW value+0(FP),R0
+CMP $1,R0
+WORD $0
+MOVW R0,ret+4(FP)
+RET
+
+TEXT rawByte(SB),4,$0-12
+MOVW memory+0(FP),R5
+ADD $1365,R5
+MOVW selector+4(FP),R0
+CMP $1,R0
+WORD $1431655765
+MOVW $0,R1
+MOVW.PL R5,R1
+MOVW R1,ret+8(FP)
+RET
+`
+	requireARMGoAssemblerResult(t, source, true)
+	ir := translateARMCompleteForms(t, source, map[string]FuncSig{
+		"rawZero": armLocalCallSignature("rawZero"),
+		"rawByte": {
+			Name: "rawByte", Args: []LLVMType{Ptr, I32}, Ret: I32,
+			Frame: FrameLayout{
+				Params:  []FrameSlot{{Offset: 0, Type: Ptr, Index: 0, Field: -1}, {Offset: 4, Type: I32, Index: 1, Field: -1}},
+				Results: []FrameSlot{{Offset: 8, Type: I32, Index: 0, Field: -1}},
+			},
+		},
+	})
+	if !strings.Contains(ir, "define i32 @rawZero(") || !strings.Contains(ir, "define i32 @rawByte(") ||
+		!strings.Contains(ir, "load i8") || !strings.Contains(ir, "1365") {
+		t.Fatal("original ARM WORD fixture lost a source function or its byte access")
+	}
+}
+
+func TestARMOfficialRawWordsRetainEncodingAndLayoutBoundaries(t *testing.T) {
+	for _, row := range []struct{ word, diagnostic string }{
+		{"WORD $1234", "0x000004d2"},
+		{"WORD $2863311530", "PC-relative"},
+	} {
+		t.Run(row.word, func(t *testing.T) {
+			source := "TEXT word(SB),4,$0-8\nMOVW value+0(FP),R0\nMOVW $3,R1\nMOVW $7,R2\nCMP $1,R0\n" +
+				row.word + "\nMOVW R0,ret+4(FP)\nRET\n"
+			requireARMGoAssemblerResult(t, source, true)
+			file, err := Parse(ArchARM, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ir, err := Translate(file, Options{Goarch: "arm", TargetTriple: "armv7-unknown-linux-gnueabihf",
+				Sigs: map[string]FuncSig{"word": armLocalCallSignature("word")}})
+			if ir != "" || err == nil || !strings.Contains(err.Error(), row.diagnostic) {
+				t.Fatalf("original raw data was accepted as an executable source instruction: %v", err)
+			}
+		})
+	}
+}
