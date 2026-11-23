@@ -62,6 +62,11 @@ func arm64ImmediateFaultSource() (source, declarations string, sigs map[string]F
 
 func arm64ImmediateOriginalGoBytes(t *testing.T, source, goos string) []byte {
 	t.Helper()
+	return goAssemblerTextBytes(t, source, goos, "arm64")
+}
+
+func goAssemblerTextBytes(t *testing.T, source, goos, goarch string) []byte {
+	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "original.s")
 	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
@@ -70,10 +75,10 @@ func arm64ImmediateOriginalGoBytes(t *testing.T, source, goos string) []byte {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, "go", "tool", "asm", "-S", "-o", filepath.Join(dir, "original.o"), path)
-	command.Env = append(os.Environ(), "GOOS="+goos, "GOARCH=arm64")
+	command.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "GOTOOLCHAIN=local")
 	listing, err := runtimeOracleCombinedOutput(ctx, command)
 	if err != nil {
-		t.Fatalf("original Go %s object: %v\n%s", goos, err, listing)
+		t.Fatalf("original Go %s/%s object: %v\n%s", goos, goarch, err, listing)
 	}
 	var output []byte
 	for _, row := range regexp.MustCompile(`(?m)^\s*0x[0-9a-f]+((?: [0-9a-f]{2}){4,16})(?:\s|$)`).FindAllSubmatch(listing, -1) {

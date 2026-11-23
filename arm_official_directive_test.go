@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"encoding/binary"
 	"errors"
 	"strings"
 	"testing"
@@ -73,7 +74,9 @@ MOVW.PL R5,R1
 MOVW R1,ret+8(FP)
 RET
 `
-	requireARMGoAssemblerResult(t, source, true)
+	actual := goAssemblerTextBytes(t, source, "linux", "arm")
+	requireARMOriginalWord(t, actual, 0)
+	requireARMOriginalWord(t, actual, 0x55555555)
 	ir := translateARMCompleteForms(t, source, map[string]FuncSig{
 		"rawZero": armLocalCallSignature("rawZero"),
 		"rawByte": {
@@ -91,14 +94,26 @@ RET
 }
 
 func TestARMOfficialRawWordsRetainEncodingAndLayoutBoundaries(t *testing.T) {
-	for _, row := range []struct{ word, diagnostic string }{
-		{"WORD $1234", "0x000004d2"},
-		{"WORD $2863311530", "PC-relative"},
+	for _, row := range []struct {
+		source, diagnostic string
+		word               uint32
+	}{
+		{"WORD $1234", "0x000004d2", 0x000004d2},
+		{"WORD $2863311530", "PC-relative", 0xaaaaaaaa},
 	} {
-		t.Run(row.word, func(t *testing.T) {
+		t.Run(row.source, func(t *testing.T) {
 			source := "TEXT word(SB),4,$0-8\nMOVW value+0(FP),R0\nMOVW $3,R1\nMOVW $7,R2\nCMP $1,R0\n" +
-				row.word + "\nMOVW R0,ret+4(FP)\nRET\n"
-			requireARMGoAssemblerResult(t, source, true)
+				row.source + "\nMOVW R0,ret+4(FP)\nRET\n"
+			actual := goAssemblerTextBytes(t, source, "linux", "arm")
+			offset := requireARMOriginalWord(t, actual, row.word)
+			if row.word == 0xaaaaaaaa {
+				// BGE uses a signed imm24 scaled by four from the A32 PC.
+				displacement := int32(row.word<<8) >> 6
+				destination := offset + 8 + int(displacement)
+				if destination >= 0 && destination < len(actual) {
+					t.Fatalf("raw BGE destination %d unexpectedly belongs to this %d-byte function", destination, len(actual))
+				}
+			}
 			file, err := Parse(ArchARM, source)
 			if err != nil {
 				t.Fatal(err)
@@ -110,4 +125,15 @@ func TestARMOfficialRawWordsRetainEncodingAndLayoutBoundaries(t *testing.T) {
 			}
 		})
 	}
+}
+
+func requireARMOriginalWord(t *testing.T, code []byte, word uint32) int {
+	t.Helper()
+	for offset := 0; offset+4 <= len(code); offset += 4 {
+		if binary.LittleEndian.Uint32(code[offset:]) == word {
+			return offset
+		}
+	}
+	t.Fatalf("original Go object is missing A32 word %#08x in %x", word, code)
+	return -1
 }
