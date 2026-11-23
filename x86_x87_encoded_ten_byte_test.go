@@ -23,42 +23,49 @@ func x87EncodedTenByteProgram(t *testing.T, arch string) (string, string) {
 	ids := map[string]string{}
 	for _, entry := range catalog.Optab {
 		switch entry.Opcode {
-		case "FMOVB", "FMOVBP", "FMOVX", "FMOVXP":
+		case "FMOVB", "FMOVBP", "FMOVX", "FMOVXP", "FBLD", "FBSTP":
 			if len(entry.Rows) != 1 || entry.Rows[0].RowIndex != 0 {
 				t.Fatal("original ten-byte instruction schema changed", entry)
 			}
 			ids[entry.Opcode] = fmt.Sprintf("optab/%d/%s/%s/0", entry.TableIndex, entry.Opcode, entry.Ytab)
 		}
 	}
-	if len(ids) != 4 {
+	if len(ids) != 6 {
 		t.Fatal("incomplete original ten-byte instruction family", ids)
 	}
 	var source, declarations strings.Builder
 	var original [2][]x86OfficialPackedCase
 	lines := 0
-	for _, form := range []struct {
-		name, load, store   string
-		loadByte, storeByte byte
-	}{
-		{"CopyBCD", "FMOVB", "FMOVBP", 0xdf, 0xdf},
-		{"CopyExtended", "FMOVX", "FMOVXP", 0xdb, 0xdb},
-	} {
-		body := fmt.Sprintf("TEXT ·%s(SB),4,$0-%d\n%s input+0(FP),SI\n%s output+%d(FP),DI\nFINIT\n%s (SI),F0\n%s F0,(DI)\nRET\n", form.name, 2*word, move, move, word, form.load, form.store)
+	type copyForm struct {
+		name, input, output string
+		load, store         string
+		loadCode, storeCode []byte
+	}
+	forms := []copyForm{
+		{"CopyBCD", "SI", "DI", "FMOVB (SI),F0", "FMOVBP F0,(DI)", []byte{0xdf, 0x26}, []byte{0xdf, 0x37}},
+		{"CopyExtended", "SI", "DI", "FMOVX (SI),F0", "FMOVXP F0,(DI)", []byte{0xdb, 0x2e}, []byte{0xdb, 0x3f}},
+	}
+	if arch == "amd64" {
+		// The exact FBLD/FBSTP occurrences and bytes in amd64enc.s.
+		forms = append(forms,
+			copyForm{"CopyBCDFromBX", "BX", "R11", "FBLD (BX)", "FBSTP (R11)", []byte{0xdf, 0x23}, []byte{0x41, 0xdf, 0x33}},
+			copyForm{"CopyBCDFromR11", "R11", "BX", "FBLD (R11)", "FBSTP (BX)", []byte{0x41, 0xdf, 0x23}, []byte{0xdf, 0x33}},
+		)
+	}
+	for _, form := range forms {
+		body := fmt.Sprintf("TEXT ·%s(SB),4,$0-%d\n%s input+0(FP),%s\n%s output+%d(FP),%s\nFINIT\n%s\n%s\nRET\n",
+			form.name, 2*word, move, form.input, move, word, form.output, form.load, form.store)
 		for role, instruction := range []struct {
-			op, text string
-			code     []byte
+			text string
+			code []byte
 		}{
-			{form.load, form.load + " (SI),F0", []byte{form.loadByte, 0x26}},
-			{form.store, form.store + " F0,(DI)", []byte{form.storeByte, 0x37}},
+			{form.load, form.loadCode},
+			{form.store, form.storeCode},
 		} {
-			// BCD uses /4 and /6, extended uses /5 and /7; source SI and
-			// destination DI are original physical addresses in both modes.
-			if form.name == "CopyExtended" {
-				instruction.code[1] += 8
-			}
+			op, _, _ := strings.Cut(instruction.text, " ")
 			position := strings.Index(body, "\n"+instruction.text+"\n")
 			original[role] = append(original[role], x86OfficialPackedCase{
-				row: ids[instruction.op], symbol: form.name,
+				row: ids[op], symbol: form.name,
 				line:    lines + strings.Count(body[:position+1], "\n") + 1,
 				witness: goasmrules.X86PackedBinaryWitness{Instruction: instruction.text, Encoding: instruction.code},
 			})

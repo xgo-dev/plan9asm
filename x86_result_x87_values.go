@@ -178,8 +178,9 @@ func x86ResultX87ValueStepWithMemory(ins Instr, state *x86ResultState, owned []b
 	status := uint16(0)
 	switch form.spec.kind {
 	case x86X87ConditionalMove:
+		flags := x86ByteConditionFlags(form.spec.condition)
 		if !read(form.source) || !read(form.destination) ||
-			!state.shapeOnly && state.flags&form.spec.flags != form.spec.flags {
+			!state.shapeOnly && state.flags&flags != flags {
 			return false, true
 		}
 		first, last := x87.integerBytes(form.source), x87.integerBytes(form.destination)

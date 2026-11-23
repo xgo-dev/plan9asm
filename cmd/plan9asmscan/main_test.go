@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/xgo-dev/plan9asm"
+	"github.com/xgo-dev/plan9asm/internal/goasmrules"
 )
 
 func TestToPlan9Arch(t *testing.T) {
@@ -607,6 +608,37 @@ func condition(op string) bool {
 	}
 	if _, found := supported["UNRELATED"]; found {
 		t.Error("an ordinary string comparison was advertised as an opcode")
+	}
+}
+
+func TestExtractSupportedOpsIncludesGoX87Families(t *testing.T) {
+	catalog, err := goasmrules.LoadX86LegacyRules(runtime.GOROOT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arch := range []string{"386", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			supported, err := extractSupportedOps(filepath.Join("..", ".."), arch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := 0
+			for _, entry := range catalog.Optab {
+				switch name := entry.Opcode; {
+				case strings.HasPrefix(name, "FADD"), strings.HasPrefix(name, "FSUB"),
+					strings.HasPrefix(name, "FMUL"), strings.HasPrefix(name, "FDIV"),
+					strings.HasPrefix(name, "FCMOV"), strings.HasPrefix(name, "FCOM"),
+					strings.HasPrefix(name, "FUCOM"):
+					count++
+					if _, found := supported[name]; !found {
+						t.Errorf("Go's %s is missing from the translator's opcode inventory", name)
+					}
+				}
+			}
+			if count != 60 {
+				t.Fatalf("checked %d x87 opcodes in the actual Go table, want 60", count)
+			}
+		})
 	}
 }
 

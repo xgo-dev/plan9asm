@@ -3,6 +3,8 @@ package plan9asm
 import (
 	"fmt"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/x86x87"
 )
 
 type x86X87ValueKind uint8
@@ -29,8 +31,8 @@ type x86X87ValueSpec struct {
 	pop             uint8
 	reverse         bool
 	directFlags     bool
-	flags           uint8 // Required integer predicates; FCMOV preserves those flags.
-	inputs          uint8 // Implicit F0/F1 dependencies of native mathematical forms.
+	condition       string // Shared x86 condition code; FCMOV preserves FLAGS.
+	inputs          uint8  // Implicit F0/F1 dependencies of native mathematical forms.
 	push            bool
 	conditionalPush bool // FPTAN/FSINCOS push only when their range check clears C2.
 	status          uint16
@@ -79,44 +81,35 @@ var x86X87ValueSpecs = func() map[Op]x86X87ValueSpec {
 	for _, op := range []Op{"FABS", "FCHS", "FSQRT"} {
 		forms[op] = x86X87ValueSpec{kind: x86X87Unary}
 	}
-	for _, row := range []struct {
-		ops   []Op
-		flags uint8
-	}{
-		{[]Op{"FCMOVCC", "FCMOVCS", "FCMOVB", "FCMOVNB"}, x86ByteFlagCF},
-		{[]Op{"FCMOVEQ", "FCMOVE", "FCMOVNE"}, x86ByteFlagZF},
-		{[]Op{"FCMOVHI", "FCMOVLS", "FCMOVBE", "FCMOVNBE"}, x86ByteFlagCF | x86ByteFlagZF},
-		{[]Op{"FCMOVNU", "FCMOVU", "FCMOVUN"}, x86ByteFlagPF},
+	for op, condition := range map[Op]string{
+		"FCMOVCS": "CS", "FCMOVB": "CS",
+		"FCMOVCC": "CC", "FCMOVNB": "CC",
+		"FCMOVLS": "LS", "FCMOVBE": "LS",
+		"FCMOVHI": "HI", "FCMOVNBE": "HI",
+		"FCMOVEQ": "EQ", "FCMOVE": "EQ", "FCMOVNE": "NE",
+		"FCMOVU": "PS", "FCMOVUN": "PS", "FCMOVNU": "PC",
 	} {
-		for _, op := range row.ops {
-			forms[op] = x86X87ValueSpec{kind: x86X87ConditionalMove, flags: row.flags}
-		}
+		forms[op] = x86X87ValueSpec{kind: x86X87ConditionalMove, condition: condition}
 	}
-	for _, stem := range []string{"FADD", "FMUL", "FSUB", "FSUBR", "FDIV", "FDIVR"} {
-		for _, suffix := range []string{"W", "L", "F", "D", "DP"} {
-			spec := x86X87ValueSpec{kind: x86X87Arithmetic, width: suffix[0], stem: stem,
-				reverse: stem == "FSUBR" || stem == "FDIVR"}
-			if suffix == "DP" {
-				spec.pop = 1
-			}
-			forms[Op(stem+suffix)] = spec
+	x86x87.VisitArithmetic(func(stem, suffix string) {
+		spec := x86X87ValueSpec{kind: x86X87Arithmetic, width: suffix[0], stem: stem,
+			reverse: stem == "FSUBR" || stem == "FDIVR"}
+		if suffix == "DP" {
+			spec.pop = 1
 		}
-	}
-	for _, row := range []struct {
-		op    Op
-		width byte
-		pop   uint8
-	}{
-		{"FCOMW", 'W', 0}, {"FCOMWP", 'W', 1},
-		{"FCOML", 'L', 0}, {"FCOMLP", 'L', 1},
-		{"FCOMF", 'F', 0}, {"FCOMFP", 'F', 1},
-		{"FCOMD", 'D', 0}, {"FCOMDP", 'D', 1}, {"FCOMDPP", 'D', 2},
-		{"FCOMI", 'D', 0}, {"FCOMIP", 'D', 1},
-		{"FUCOM", 'D', 0}, {"FUCOMP", 'D', 1}, {"FUCOMPP", 'D', 2},
-		{"FUCOMI", 'D', 0}, {"FUCOMIP", 'D', 1},
+		forms[Op(stem+suffix)] = spec
+	})
+	for op, spec := range map[Op]x86X87ValueSpec{
+		"FCOMW": {width: 'W'}, "FCOMWP": {width: 'W', pop: 1},
+		"FCOML": {width: 'L'}, "FCOMLP": {width: 'L', pop: 1},
+		"FCOMF": {width: 'F'}, "FCOMFP": {width: 'F', pop: 1},
+		"FCOMD": {width: 'D'}, "FCOMDP": {width: 'D', pop: 1}, "FCOMDPP": {width: 'D', pop: 2},
+		"FCOMI": {width: 'D', directFlags: true}, "FCOMIP": {width: 'D', pop: 1, directFlags: true},
+		"FUCOM": {width: 'D'}, "FUCOMP": {width: 'D', pop: 1}, "FUCOMPP": {width: 'D', pop: 2},
+		"FUCOMI": {width: 'D', directFlags: true}, "FUCOMIP": {width: 'D', pop: 1, directFlags: true},
 	} {
-		forms[row.op] = x86X87ValueSpec{kind: x86X87Compare, width: row.width, pop: row.pop,
-			directFlags: row.op == "FCOMI" || row.op == "FCOMIP" || row.op == "FUCOMI" || row.op == "FUCOMIP"}
+		spec.kind = x86X87Compare
+		forms[op] = spec
 	}
 	return forms
 }()

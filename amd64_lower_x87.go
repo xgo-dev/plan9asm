@@ -6,30 +6,16 @@ import (
 )
 
 func isX87Op(op Op) bool {
-	switch op {
-	case "FMOVB", "FMOVBP", "FMOVD", "FMOVDP", "FMOVF", "FMOVFP",
-		"FMOVL", "FMOVLP", "FMOVV", "FMOVVP", "FMOVW", "FMOVWP",
-		"FMOVX", "FMOVXP", "FBLD", "FBSTP", "FXCHD",
-		"FADDW", "FADDL", "FADDF", "FADDD", "FADDDP",
-		"FMULW", "FMULL", "FMULF", "FMULD", "FMULDP",
-		"FSUBW", "FSUBL", "FSUBF", "FSUBD", "FSUBDP",
-		"FSUBRW", "FSUBRL", "FSUBRF", "FSUBRD", "FSUBRDP",
-		"FDIVW", "FDIVL", "FDIVF", "FDIVD", "FDIVDP",
-		"FDIVRW", "FDIVRL", "FDIVRF", "FDIVRD", "FDIVRDP",
-		"FCOMD", "FCOMDP", "FCOMDPP", "FCOMF", "FCOMFP", "FCOMI", "FCOMIP",
-		"FCOML", "FCOMLP", "FCOMW", "FCOMWP",
-		"FUCOM", "FUCOMI", "FUCOMIP", "FUCOMP", "FUCOMPP",
-		"FCMOVCC", "FCMOVCS", "FCMOVEQ", "FCMOVHI", "FCMOVLS",
-		"FCMOVB", "FCMOVBE", "FCMOVNB", "FCMOVNBE", "FCMOVE", "FCMOVNE", "FCMOVNU", "FCMOVU", "FCMOVUN",
-		"FSTCW", "FLDCW", "FLDENV", "FRSTOR", "FSAVE", "FSTENV", "FRNDINT",
-		"F2XM1", "FABS", "FCHS", "FCLEX", "FCOS", "FDECSTP", "FINCSTP", "FINIT",
-		"FTST", "FSTSW", "FLD1", "FLDL2E", "FLDL2T", "FLDLG2", "FLDLN2",
-		"FLDPI", "FLDZ", "FNOP", "FPATAN", "FPREM", "FPREM1", "FPTAN", "FSCALE",
-		"FSIN", "FSINCOS", "FSQRT", "FXAM", "FXTRACT", "FYL2X", "FYL2XP1":
-		return true
-	default:
+	if len(op) == 0 || op[0] != 'F' {
 		return false
 	}
+	switch op {
+	case "FSTCW", "FLDCW", "FLDENV", "FRSTOR", "FSAVE", "FSTENV",
+		"FCLEX", "FDECSTP", "FINCSTP", "FINIT", "FNOP", "FXAM":
+		return true
+	}
+	_, known := x86X87ValueSpecForName(op)
+	return known
 }
 
 func (c *amd64Ctx) lowerX87(op Op, ins Instr) (ok bool, terminated bool, err error) {

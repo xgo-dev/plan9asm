@@ -109,12 +109,17 @@ void x87conditionalmovesemantics(uint8_t *raw) {
 }
 
 func TestX86X87ConditionalScalarCounterpartCompleteGoObject(t *testing.T) {
-	assembly, _ := x86X87ConditionalScalarCounterpart()
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc is required")
+	}
+	assembly, declaration := x86X87ConditionalScalarCounterpart()
 	goAssemblerOracleOutput(t, "amd64", assembly, "", true)
 	file, err := Parse(ArchAMD64, assembly)
 	if err != nil || len(file.Funcs) != 42 {
 		t.Fatal("typed runtime counterpart lost a complete Go conditional family", err)
 	}
+	var names, locations []string
 	for index, function := range file.Funcs {
 		lane := index/len(x87ConditionalMoveGo127Ops) + 1
 		op := x87ConditionalMoveGo127Ops[index%len(x87ConditionalMoveGo127Ops)]
@@ -122,6 +127,21 @@ func TestX86X87ConditionalScalarCounterpartCompleteGoObject(t *testing.T) {
 			function.ArgSize != 32 || function.FrameSize != 0 {
 			t.Fatal("typed scalar function changed its identity or ABI0 layout", function.Sym)
 		}
+		names = append(names, function.Sym)
+		locations = append(locations, fmt.Sprintf("%s F%d,F0", op, lane))
+	}
+	const triple = "x86_64-unknown-linux-gnu"
+	for _, api := range []string{"text", "module", "Go"} {
+		t.Run(api, func(t *testing.T) {
+			ir, err := x86X87InitializedWordAPI(t, assembly, declaration, "amd64", triple, api, X87Hardware)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, level := range []string{"-O0", "-O2"} {
+				object := x86PackedStringCompileObject(t, llc, triple, ir, level)
+				requireX86ELFTestFunctions(t, "amd64", object, names, locations)
+			}
+		})
 	}
 }
 

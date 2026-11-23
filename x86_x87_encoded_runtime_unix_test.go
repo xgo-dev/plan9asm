@@ -29,7 +29,9 @@ func x87EncodedRuntimePrograms(t *testing.T) (string, string, string, string) {
 			if negative {
 				data[9] = 0x80
 			}
-			samples = append(samples, sample{data: data})
+			for _, kind := range []int{0, 2, 3} {
+				samples = append(samples, sample{kind: kind, data: data})
+			}
 		}
 		for _, value := range []struct {
 			sig uint64
@@ -79,8 +81,8 @@ func x87EncodedRuntime(t *testing.T, execute bool) {
 	var reference []byte
 	if execute {
 		reference = execution.run(t, original)
-		if bytes.Count(reference, []byte{'\n'}) != 60 {
-			t.Fatal("original Go did not execute all thirty patterns at both memory edges")
+		if bytes.Count(reference, []byte{'\n'}) != 100 {
+			t.Fatal("original Go did not execute all fifty patterns at both memory edges")
 		}
 	}
 	for _, api := range []string{"text", "module", "Go"} {
@@ -99,7 +101,7 @@ func x87EncodedRuntime(t *testing.T, execute bool) {
 					if !bytes.Equal(actual, reference) {
 						t.Fatal("binary80/BCD payload or canaries differ from original Go")
 					}
-					t.Log("60 original-Go comparisons PASS, including exact guard-page ten-byte reads and writes")
+					t.Log("100 original-Go comparisons PASS, including exact guard-page ten-byte reads and writes")
 				})
 			}
 		})
@@ -121,7 +123,7 @@ var samples = []struct {
     kind int
     data [10]byte
 }{ SAMPLE_ROWS }
-var kernels = []func(*[10]byte, *[10]byte){CopyBCD, CopyExtended}
+var kernels = []func(*[10]byte, *[10]byte){CopyBCD, CopyExtended, CopyBCDFromBX, CopyBCDFromR11}
 
 func buffer(edge int, fill byte) ([]byte,int,func()) {
     data := make([]byte,32)
@@ -173,8 +175,10 @@ const x87EncodedTranslatedDriver = `
 #include <unistd.h>
 extern void CopyBCD(uint8_t *,uint8_t *);
 extern void CopyExtended(uint8_t *,uint8_t *);
+extern void CopyBCDFromBX(uint8_t *,uint8_t *);
+extern void CopyBCDFromR11(uint8_t *,uint8_t *);
 static const struct { unsigned kind; uint8_t data[10]; } samples[] = { SAMPLE_ROWS };
-static void (*kernels[])(uint8_t *,uint8_t *) = {CopyBCD,CopyExtended};
+static void (*kernels[])(uint8_t *,uint8_t *) = {CopyBCD, CopyExtended, CopyBCDFromBX, CopyBCDFromR11};
 
 static uint8_t *buffer(unsigned edge, uint8_t fill, size_t *length, size_t *start) {
     *length = edge ? (size_t)sysconf(_SC_PAGESIZE) : 32;

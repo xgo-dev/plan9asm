@@ -57,12 +57,12 @@ func (c *amd64Ctx) x87PortableSquareRoot(value x87Value, cw string) (x87Value, e
 	magnitude := c.x87PortableIR("or i128 %%%s, %s", nextRoot, sticky)
 	result := c.x87PortableRoundPack(magnitude, unit, "false", cw)
 
-	result = c.x87PortableChoose(input.zero, value, result)
-	result = c.x87PortableChoose(input.infinite, value, result)
+	result = c.selectX87Value(input.zero, value, result)
+	result = c.selectX87Value(input.infinite, value, result)
 	nonzero := c.x87PortableIR("xor i1 %s, true", input.zero)
 	negativeNonzero := c.x87PortableIR("and i1 %s, %s", input.negative, nonzero)
 	indefinite := c.packX87("13835058055282163712", "65535")
-	result = c.x87PortableChoose(negativeNonzero, indefinite, result)
+	result = c.selectX87Value(negativeNonzero, indefinite, result)
 	invalid := c.x87PortableIR("or i1 %s, %s", input.nan, input.unsupported)
-	return c.x87PortableChoose(invalid, c.x87PortableQuietNaN(input), result), nil
+	return c.selectX87Value(invalid, c.x87PortableQuietNaN(input), result), nil
 }

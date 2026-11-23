@@ -33,10 +33,6 @@ func (c *amd64Ctx) x87PortableDecode(value x87Value) x87PortableNumber {
 	return x87PortableNumber{significand, unit, negative, zero, infinite, nan, unsupported}
 }
 
-func (c *amd64Ctx) x87PortableChoose(condition string, first, second x87Value) x87Value {
-	return x87Value(c.x87PortableIR("select i1 %s, %s %s, %s %s", condition, x87ValueType, first, x87ValueType, second))
-}
-
 func (c *amd64Ctx) x87PortableSignedZero(negative string) x87Value {
 	sign := c.x87PortableIR("select i1 %s, i16 32768, i16 0", negative)
 	return c.packX87("0", sign)
@@ -276,11 +272,11 @@ func (c *amd64Ctx) x87PortableBinary(operation string, left, right x87Value, cw 
 		}
 		anyInf := c.x87PortableIR("or i1 %s, %s", a.infinite, b.infinite)
 		infinitySign := c.x87PortableIR("select i1 %s, i1 %s, i1 %s", a.infinite, a.negative, rightNegative)
-		result = c.x87PortableChoose(anyInf, c.x87PortableInfinity(infinitySign), result)
+		result = c.selectX87Value(anyInf, c.x87PortableInfinity(infinitySign), result)
 		bothInf := c.x87PortableIR("and i1 %s, %s", a.infinite, b.infinite)
 		differentSign := c.x87PortableIR("xor i1 %s, %s", a.negative, rightNegative)
 		invalid := c.x87PortableIR("and i1 %s, %s", bothInf, differentSign)
-		result = c.x87PortableChoose(invalid, indefinite, result)
+		result = c.selectX87Value(invalid, indefinite, result)
 	} else {
 		anyZero := c.x87PortableIR("or i1 %s, %s", a.zero, b.zero)
 		anyInf := c.x87PortableIR("or i1 %s, %s", a.infinite, b.infinite)
@@ -289,16 +285,16 @@ func (c *amd64Ctx) x87PortableBinary(operation string, left, right x87Value, cw 
 		if operation == "fdiv" {
 			invalid = c.x87PortableIR("and i1 %s, %s", a.infinite, b.infinite)
 			otherInvalid = c.x87PortableIR("and i1 %s, %s", a.zero, b.zero)
-			result = c.x87PortableChoose(b.infinite, c.x87PortableSignedZero(negative), result)
-			result = c.x87PortableChoose(a.zero, c.x87PortableSignedZero(negative), result)
+			result = c.selectX87Value(b.infinite, c.x87PortableSignedZero(negative), result)
+			result = c.selectX87Value(a.zero, c.x87PortableSignedZero(negative), result)
 			infinite := c.x87PortableIR("or i1 %s, %s", a.infinite, b.zero)
-			result = c.x87PortableChoose(infinite, c.x87PortableInfinity(negative), result)
+			result = c.selectX87Value(infinite, c.x87PortableInfinity(negative), result)
 		} else {
-			result = c.x87PortableChoose(anyZero, c.x87PortableSignedZero(negative), result)
-			result = c.x87PortableChoose(anyInf, c.x87PortableInfinity(negative), result)
+			result = c.selectX87Value(anyZero, c.x87PortableSignedZero(negative), result)
+			result = c.selectX87Value(anyInf, c.x87PortableInfinity(negative), result)
 		}
 		invalid = c.x87PortableIR("or i1 %s, %s", invalid, otherInvalid)
-		result = c.x87PortableChoose(invalid, indefinite, result)
+		result = c.selectX87Value(invalid, indefinite, result)
 	}
 	invalidA := c.x87PortableIR("or i1 %s, %s", a.nan, a.unsupported)
 	invalidB := c.x87PortableIR("or i1 %s, %s", b.nan, b.unsupported)
@@ -317,6 +313,6 @@ func (c *amd64Ctx) x87PortableBinary(operation string, left, right x87Value, cw 
 	positiveTie := c.x87PortableIR("and i1 %s, %s", equal, positive)
 	preferA := c.x87PortableIR("or i1 %s, %s", larger, positiveTie)
 	preferA = c.x87PortableIR("select i1 %s, i1 %s, i1 %s", bothNaN, preferA, invalidA)
-	selectedNaN := c.x87PortableChoose(preferA, c.x87PortableQuietNaN(a), c.x87PortableQuietNaN(b))
-	return c.x87PortableChoose(anyNaN, selectedNaN, result), nil
+	selectedNaN := c.selectX87Value(preferA, c.x87PortableQuietNaN(a), c.x87PortableQuietNaN(b))
+	return c.selectX87Value(anyNaN, selectedNaN, result), nil
 }

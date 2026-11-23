@@ -53,6 +53,12 @@ func (c *amd64Ctx) x87LogicalControlWord() string {
 	return "%" + value
 }
 
+func (c *amd64Ctx) selectX87Value(condition string, first, second x87Value) x87Value {
+	selected := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %s, %s %s\n", selected, condition, x87ValueType, first, x87ValueType, second)
+	return x87Value("%" + selected)
+}
+
 func (c *amd64Ctx) storeX87Operand(destination Operand, value x87Value, width byte) error {
 	if index, register := x87OperandReg(destination); register {
 		c.storeX87Value(index, value)
@@ -114,6 +120,15 @@ func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed b
 	}
 	if typed {
 		switch form.spec.kind {
+		case x86X87ConditionalMove:
+			condition, err := c.x86Condition(form.spec.condition)
+			if err != nil {
+				return true, err
+			}
+			source, _ := x87OperandReg(form.source)
+			first, second := c.loadX87Value(source), c.loadX87Value(0)
+			c.storeX87Value(0, c.selectX87Value(condition, first, second))
+			return true, nil
 		case x86X87FloatMove, x86X87IntegerMove:
 			if form.push {
 				value, err := c.loadX87Operand(form.source, form.spec.width)
@@ -191,9 +206,6 @@ func (c *amd64Ctx) lowerX87Value(op Op, ins Instr, form x86X87ValueForm, typed b
 			}
 			return true, nil
 		}
-	}
-	if strings.HasPrefix(string(op), "FCMOV") {
-		return true, c.lowerX87ConditionalMove(op, ins)
 	}
 	switch op {
 	case "FXCHD":
