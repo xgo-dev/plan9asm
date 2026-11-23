@@ -1,10 +1,8 @@
 package plan9asm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -166,14 +164,18 @@ func (source *GoX86SDKASMDataSource) capture(ctx context.Context, provided map[s
 			}
 		}
 	}
-	raw, err = source.run(ctx, "list", "-json", "-compiled", "-export", "-mod=readonly", source.request.PackagePath)
+	// Use one live observation for both the root selection and its imports.
+	// A second list command could observe a different selection.
+	graph, err := source.run(ctx, "list", "-deps", "-compiled", "-export", "-json", "-mod=readonly", source.request.PackagePath)
 	if err != nil {
 		return err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
+	raw, err = numericalSDKGraphRoot(graph, source.request.PackagePath)
+	if err != nil {
+		return err
+	}
 	var selected goAMD64FrameSelection
-	var extra any
-	if decoder.Decode(&selected) != nil || decoder.Decode(&extra) != io.EOF ||
+	if json.Unmarshal(raw, &selected) != nil ||
 		selected.ImportPath != source.request.PackagePath || selected.Dir != source.request.Directory ||
 		!selected.Standard || selected.Module != nil || selected.ForTest != "" || selected.nonordinaryRole() ||
 		len(selected.Error)+len(selected.DepsErrors) != 0 || len(selected.GoFiles) == 0 ||
@@ -198,10 +200,6 @@ func (source *GoX86SDKASMDataSource) capture(ctx context.Context, provided map[s
 	}
 	source.guard.selection = selected
 	source.observation.RawSelection = raw
-	graph, err := source.run(ctx, "list", "-deps", "-compiled", "-export", "-json", "-mod=readonly", source.request.PackagePath)
-	if err != nil {
-		return err
-	}
 	imports, err := source.guard.bindOriginalDeclarationImports(graph)
 	if err != nil {
 		return err

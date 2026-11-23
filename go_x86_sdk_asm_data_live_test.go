@@ -79,6 +79,27 @@ func sdkASMDataRetain(t *testing.T, source *GoX86SDKASMDataSource) {
 	}
 }
 
+func TestGoX86SDKASMDataLiveCaptureUsesOneListGraph(t *testing.T) {
+	_, source := sdkASMDataCapture(t)
+	var lists [][]string
+	for _, command := range source.observation.Commands {
+		if len(command.Arguments) > 0 && command.Arguments[0] == "list" {
+			lists = append(lists, command.Arguments)
+		}
+	}
+	want := [][]string{{"list", "-deps", "-compiled", "-export", "-json", "-mod=readonly", source.request.PackagePath}}
+	if !reflect.DeepEqual(lists, want) {
+		t.Fatalf("SDK capture list commands = %q, want %q", lists, want)
+	}
+	root, err := numericalSDKGraphRoot(source.observation.Graph, source.request.PackagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(root, source.observation.RawSelection) {
+		t.Fatal("package selection does not retain the root of the captured dependency graph")
+	}
+}
+
 func TestGoX86SDKASMDataLiveTwoTargets(t *testing.T) {
 	for _, arch := range []string{"386", "amd64"} {
 		t.Run(arch, func(t *testing.T) {
