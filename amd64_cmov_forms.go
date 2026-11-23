@@ -3,6 +3,8 @@ package plan9asm
 import (
 	"fmt"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/x86cmov"
 )
 
 type x86ConditionalMoveSpec struct {
@@ -13,20 +15,13 @@ type x86ConditionalMoveSpec struct {
 // Each entry is a Go yml_rl row, not a conditional memory-access permission.
 // W preserves the other GP bytes. L clears the upper half even on a false
 // predicate. Both the source and the old destination are potential inputs.
-var x86ConditionalMoveSpecs = map[Op]x86ConditionalMoveSpec{
-	"CMOVWCC": {16, "CC"}, "CMOVWCS": {16, "CS"}, "CMOVWEQ": {16, "EQ"}, "CMOVWGE": {16, "GE"},
-	"CMOVWGT": {16, "GT"}, "CMOVWHI": {16, "HI"}, "CMOVWLE": {16, "LE"}, "CMOVWLS": {16, "LS"},
-	"CMOVWLT": {16, "LT"}, "CMOVWMI": {16, "MI"}, "CMOVWNE": {16, "NE"}, "CMOVWOC": {16, "OC"},
-	"CMOVWOS": {16, "OS"}, "CMOVWPC": {16, "PC"}, "CMOVWPL": {16, "PL"}, "CMOVWPS": {16, "PS"},
-	"CMOVLCC": {32, "CC"}, "CMOVLCS": {32, "CS"}, "CMOVLEQ": {32, "EQ"}, "CMOVLGE": {32, "GE"},
-	"CMOVLGT": {32, "GT"}, "CMOVLHI": {32, "HI"}, "CMOVLLE": {32, "LE"}, "CMOVLLS": {32, "LS"},
-	"CMOVLLT": {32, "LT"}, "CMOVLMI": {32, "MI"}, "CMOVLNE": {32, "NE"}, "CMOVLOC": {32, "OC"},
-	"CMOVLOS": {32, "OS"}, "CMOVLPC": {32, "PC"}, "CMOVLPL": {32, "PL"}, "CMOVLPS": {32, "PS"},
-	"CMOVQCC": {64, "CC"}, "CMOVQCS": {64, "CS"}, "CMOVQEQ": {64, "EQ"}, "CMOVQGE": {64, "GE"},
-	"CMOVQGT": {64, "GT"}, "CMOVQHI": {64, "HI"}, "CMOVQLE": {64, "LE"}, "CMOVQLS": {64, "LS"},
-	"CMOVQLT": {64, "LT"}, "CMOVQMI": {64, "MI"}, "CMOVQNE": {64, "NE"}, "CMOVQOC": {64, "OC"},
-	"CMOVQOS": {64, "OS"}, "CMOVQPC": {64, "PC"}, "CMOVQPL": {64, "PL"}, "CMOVQPS": {64, "PS"},
-}
+var x86ConditionalMoveSpecs = func() map[Op]x86ConditionalMoveSpec {
+	specs := make(map[Op]x86ConditionalMoveSpec)
+	x86cmov.Visit(func(name string, bits int, condition string) {
+		specs[Op(name)] = x86ConditionalMoveSpec{bits: bits, condition: condition}
+	})
+	return specs
+}()
 
 type x86ConditionalMoveForm struct {
 	x86ConditionalMoveSpec

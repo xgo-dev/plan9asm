@@ -9,6 +9,7 @@ import (
 
 	"github.com/xgo-dev/plan9asm/internal/arm64atomic"
 	"github.com/xgo-dev/plan9asm/internal/wasmsimd"
+	"github.com/xgo-dev/plan9asm/internal/x86cmov"
 	"github.com/xgo-dev/plan9asm/internal/x86x87"
 )
 
@@ -23,6 +24,11 @@ func CollectGenerated(supported map[string]struct{}, file *ast.File, goarch stri
 			return
 		case goarch == "wasm" && path == "github.com/xgo-dev/plan9asm/internal/wasmsimd":
 			wasmsimd.AddNamed(supported)
+			return
+		case (goarch == "386" || goarch == "amd64") && path == "github.com/xgo-dev/plan9asm/internal/x86cmov":
+			x86cmov.Visit(func(name string, _ int, _ string) {
+				supported[name] = struct{}{}
+			})
 			return
 		case (goarch == "386" || goarch == "amd64") && path == "github.com/xgo-dev/plan9asm/internal/x86x87":
 			x86x87.VisitArithmetic(func(stem, suffix string) {

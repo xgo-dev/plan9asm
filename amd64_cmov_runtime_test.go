@@ -16,13 +16,27 @@ func TestCrossLinuxRuntimeMatrixX86CMOVIndependentWholeBytes(t *testing.T) {
 	for _, width := range []string{"W", "L", "Q"} {
 		for condition, row := range x86CMOVOracleConditions {
 			name := "CMOV" + width + row.name
-			for mode, source := range []string{"BX", "(SI)", "AX"} {
+			for mode, source := range []string{"BX", "(SI)", "AX", "(R11)"} {
 				fn := fmt.Sprintf("C%d", count)
 				count++
+				destination := "AX"
+				inputs := "MOVQ src+8(FP),SI\nMOVQ old+16(FP),AX\nMOVQ (SI),BX\n"
+				nativeInputs := "MOVQ DX,AX\nMOVQ (SI),BX\n"
+				if source == "(R11)" {
+					// The old numerical value is also the effective address.
+					// Avoid an earlier read through the separate source argument.
+					destination = "R11"
+					inputs = "MOVQ old+16(FP),R11\n"
+					nativeInputs = "MOVQ DX,R11\n"
+				}
+				instruction := fmt.Sprintf("%s %s,%s\n", name, source, destination)
 				fmt.Fprintf(&declarations, "func %s(out *[16]byte,src *[8]byte,old,seed uint64)\n", fn)
-				fmt.Fprintf(&assembly, "TEXT ·%s(SB),4,$0-32\nMOVQ out+0(FP),DI\nMOVQ src+8(FP),SI\nMOVQ old+16(FP),AX\nMOVQ (SI),BX\nPUSHQ seed+24(FP)\nPOPFQ\n%s %s,AX\nMOVQ AX,(DI)\nPUSHFQ\nPOPQ AX\nMOVQ AX,8(DI)\nRET\n", fn, name, source)
+				fmt.Fprintf(&assembly, "TEXT ·%s(SB),4,$0-32\nMOVQ out+0(FP),DI\n%sPUSHQ seed+24(FP)\nPOPFQ\n"+
+					"%sMOVQ %s,(DI)\nPUSHFQ\nPOPQ AX\nMOVQ AX,8(DI)\nRET\n", fn, inputs, instruction, destination)
 				original := "Original" + fn
-				actual := x86OrderingHintGoBytes(t, "amd64", "TEXT native(SB),4,$0-0\nPUSHQ BX\nMOVQ DX,AX\nMOVQ (SI),BX\nPUSHQ CX\nPOPFQ\n"+name+" "+source+",AX\nMOVQ AX,(DI)\nPUSHFQ\nPOPQ AX\nMOVQ AX,8(DI)\nPOPQ BX\nRET\n")
+				native := "TEXT native(SB),4,$0-0\nPUSHQ BX\n" + nativeInputs + "PUSHQ CX\nPOPFQ\n" + instruction +
+					"MOVQ " + destination + ",(DI)\nPUSHFQ\nPOPQ AX\nMOVQ AX,8(DI)\nPOPQ BX\nRET\n"
+				actual := x86OrderingHintGoBytes(t, "amd64", native)
 				var bytes []string
 				for _, value := range actual {
 					bytes = append(bytes, fmt.Sprintf("0x%02x", value))
@@ -92,6 +106,7 @@ int main(void) {
   uint8_t input[10],copy[10];memset(input,0x59,sizeof(input));
   uint64_t source=edges[(v+1)%%3],old=edges[v],flags=seed(f),got=0,afterFlags=0;
   memcpy(input+1,&source,8);memcpy(copy,input,sizeof(input));
+  if (kernel.mode==3) old=(uintptr_t)(input+1);
   uint32_t csr=0x1f80|((f%%4)<<13)|(f&63),saved=_mm_getcsr();_mm_setcsr(csr);
   if(native) {
    kernel.original(out.value,input+1,old,flags);
