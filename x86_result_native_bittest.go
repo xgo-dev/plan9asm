@@ -9,7 +9,7 @@ func x86LoweredNativeBitTest(ins Instr, state *x86ResultState, owned []bool, arc
 		return false, false
 	}
 	if !x86ResultNamedPredicateInstruction(ins) ||
-		!x86ResultNativeRMWAddress(ins, form.destination, state, owned, arch) ||
+		!x86ResultNativeRMWAddress(ins, form.destination, state, owned, arch, form.index) ||
 		!x86ResultRead(form.index, int64(form.bits/8), state, owned, arch) {
 		return false, true
 	}
@@ -20,13 +20,31 @@ func x86LoweredNativeBitTest(ins Instr, state *x86ResultState, owned []bool, arc
 
 // Only the paired scalar/bit-string emitter consumes this address. FS/GS
 // contributes its actual hardware base, never an AS0 pointer or storage fact.
-// A named GP offset still needs full numerical bytes; ordinary RMW addresses
-// keep their stricter incoming-pointer-base rule and cannot commute operands.
-func x86ResultNativeRMWAddress(ins Instr, address Operand, state *x86ResultState, owned []bool, arch string) bool {
+// An ordinary address retains its pointer base, or derives that base from a
+// complete numerical register that the same instruction explicitly reads as
+// data. In either case the complete effective address precedes any writeback.
+func x86ResultNativeRMWAddress(ins Instr, address Operand, state *x86ResultState,
+	owned []bool, arch string, numericalInputs ...Operand) bool {
 	if accepted, segment := x86ResultNativeSegmentAddress(ins, address, state, owned, arch); segment {
 		return accepted
 	}
-	return x86ResultIncomingPointerAddressIdentity(address, state, arch)
+	if x86ResultIncomingPointerAddressIdentity(address, state, arch) {
+		return true
+	}
+	if len(numericalInputs) == 0 || address.Kind != OpMem || !x86ResultNamedPredicateInstruction(ins) ||
+		ins.x86NumericalRead != nil || !x86MemoryRegisterEncodingValid(address.Mem, arch) ||
+		address.Mem.Index == "" && address.Mem.Scale != 0 {
+		return false
+	}
+	for _, operand := range numericalInputs {
+		if operand.Kind != OpReg {
+			continue
+		}
+		if root, valid := x86CallerGP(operand.Reg); valid && root == address.Mem.Base {
+			return x86ResultNativeNumericAddress(address, state, arch)
+		}
+	}
+	return false
 }
 
 // Named hardware segments supply an actual base independently of numerical

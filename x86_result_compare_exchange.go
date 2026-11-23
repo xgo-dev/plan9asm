@@ -102,10 +102,10 @@ func x86LoweredCompareExchangeResultStepWithAddressBits(ins Instr, state *x86Res
 	} else {
 		address := x86ResultIncomingPointerAddressIdentity(form.destination, state, arch)
 		if !form.spec.pair {
-			address = x86ResultNativeRMWAddress(ins, form.destination, state, owned, arch)
+			address = x86ResultNativeRMWAddress(ins, form.destination, state, owned, arch, inputs...)
 		}
 		if !address {
-			return false, true // No SB, FP/AUTO or numerical base is inferred.
+			return false, true
 		}
 	}
 	for index, reg := range outputs {

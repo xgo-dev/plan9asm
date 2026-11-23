@@ -184,12 +184,17 @@ int main(void) {
 	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, "ordinary entry and five interior inputs passed\n")
 }
 
-func x86DirectTailCheckCallRuntime(t *testing.T, arch string, execution x86FloatCompareExecution, source, declarations, goMain, cMain, want string) {
+func x86DirectTailCheckCallRuntime(t *testing.T, arch string, execution x86FloatCompareExecution,
+	source, declarations, goMain, cMain, want string, goImports ...string) {
 	t.Helper()
 	dir := t.TempDir()
+	header := "package main\nimport \"fmt\"\n"
+	for _, path := range goImports {
+		header += fmt.Sprintf("import %q\n", path)
+	}
 	files := map[string]string{
 		"go.mod":                 "module privateentries\n\ngo 1.20\n",
-		"main.go":                "package main\nimport \"fmt\"\n" + declarations + goMain,
+		"main.go":                header + declarations + goMain,
 		"entries_" + arch + ".s": source,
 	}
 	for name, content := range files {

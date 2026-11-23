@@ -39,8 +39,8 @@ func x86LoweredExchangeResultStepWithAddressBits(ins Instr, state *x86ResultStat
 			return false, true
 		}
 		outputs = append(outputs, form.other)
-	} else if !x86ResultNativeRMWAddress(ins, form.other, state, owned, arch) {
-		return false, true // No FP/AUTO, SB or numerical base witness.
+	} else if !x86ResultNativeRMWAddress(ins, form.other, state, owned, arch, form.register) {
+		return false, true
 	}
 	if !x86ResultExchangeWriteback(spec, outputs, state, owned, arch) {
 		return false, true
