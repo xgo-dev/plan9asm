@@ -17,6 +17,7 @@ type arm64RawLayoutPoint struct {
 
 type arm64RawDataBlob struct {
 	label   string
+	start   int
 	bytes   []byte
 	aliases map[string]int64
 }
@@ -146,7 +147,7 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 			continue
 		}
 		switch op {
-		case "ADR", "B", "BL", "CBZ", "CBNZ", "TBZ", "TBNZ":
+		case "ADR", "B", "BL", "CBZ", "CBNZ", "TBZ", "TBNZ", "PRFM":
 			// These encodings define their displacement relative to the current
 			// instruction address.
 		case "ADRP":
@@ -166,9 +167,12 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 			segment: points[i].segment,
 			offset:  points[i].offset + displacement,
 		}
+		at, boundaryOK := boundaries[targetPoint]
+		if op == "PRFM" && (!boundaryOK || at == len(fn.Instrs)) {
+			return Func{}, nil, fmt.Errorf("ARM64 WORD PC-relative PRFM target %+d does not land on a proven source boundary: %q", displacement, ins.Raw)
+		}
 		target, ok := labels[targetPoint]
 		if !ok {
-			at, boundaryOK := boundaries[targetPoint]
 			if !boundaryOK {
 				return Func{}, nil, fmt.Errorf("ARM64 WORD PC-relative %s target %+d does not land on a proven instruction boundary: %q", op, displacement, ins.Raw)
 			}
@@ -179,6 +183,17 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 				knownLabels[target] = true
 				insertions[at] = target
 			}
+		}
+		if op == "PRFM" {
+			if dataWords[at] && !arm64BindLiteralPrefetchData(dataBlobs, points, targetPoint, target) {
+				return Func{}, nil, fmt.Errorf("ARM64 WORD PC-relative PRFM target %+d lacks its source data binding: %q", displacement, ins.Raw)
+			}
+			hint, _, _ := decodeARM64RawLiteralPrefetch(uint32(ins.Args[0].Imm))
+			replacements[i] = Instr{
+				Op: "PRFM", Raw: ins.Raw, arm64Encoded: true,
+				Args: []Operand{{Kind: OpIdent, Ident: target}, {Kind: OpImm, Imm: int64(hint)}},
+			}
+			continue
 		}
 		decoded, err := decodeARM64RawWordInstructionTarget(ins, target)
 		if err != nil {
@@ -217,6 +232,26 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 	return result, dataBlobs, nil
 }
 
+func arm64BindLiteralPrefetchData(blobs []arm64RawDataBlob, points []arm64RawLayoutPoint, target arm64RawLayoutPoint, label string) bool {
+	for i := range blobs {
+		blob := &blobs[i]
+		start := points[blob.start]
+		offset := target.offset - start.offset
+		if target.segment != start.segment || offset < 0 || offset >= int64(len(blob.bytes)) {
+			continue
+		}
+		if label == blob.label {
+			return true
+		}
+		if blob.aliases == nil {
+			blob.aliases = make(map[string]int64)
+		}
+		blob.aliases[label] = offset
+		return true
+	}
+	return false
+}
+
 // Padding depends on the original byte position. Unknown widths may introduce
 // literal pools away from the instruction that uses them. Named conditional
 // branches may gain a veneer, whereas an explicit WORD always occupies four
@@ -245,11 +280,11 @@ func arm64RawAlignmentLayoutKnown(fn Func) bool {
 // Labeled regions are handled separately by identifyARM64RawData.
 func identifyARM64AnonymousData(fn Func, dataWords map[int]bool, labels map[string]int) ([]arm64RawDataBlob, error) {
 	for _, ins := range fn.Instrs {
-		_, _, pcRelative, err := arm64RawPCRelativeDisplacement(ins)
+		_, op, pcRelative, err := arm64RawPCRelativeDisplacement(ins)
 		if err != nil {
 			return nil, err
 		}
-		if pcRelative {
+		if pcRelative && op != "PRFM" {
 			return nil, nil
 		}
 		for _, arg := range ins.Args {
@@ -290,7 +325,7 @@ func identifyARM64AnonymousData(fn Func, dataWords map[int]bool, labels map[stri
 			bytes = append(bytes, byte(word), byte(word>>8), byte(word>>16), byte(word>>24))
 			dataWords[j] = true
 		}
-		blobs = append(blobs, arm64RawDataBlob{label: name, bytes: bytes})
+		blobs = append(blobs, arm64RawDataBlob{label: name, start: start, bytes: bytes})
 	}
 	return blobs, nil
 }
@@ -330,7 +365,7 @@ func identifyARM64RawData(fn Func, points []arm64RawLayoutPoint, boundaries map[
 		if err != nil {
 			return nil, nil, err
 		}
-		if !pcRelative {
+		if !pcRelative || op == "PRFM" {
 			continue
 		}
 		targetPoint := arm64RawLayoutPoint{segment: points[i].segment, offset: points[i].offset + displacement}
@@ -464,7 +499,7 @@ func identifyARM64RawData(fn Func, points []arm64RawLayoutPoint, boundaries map[
 			dataWords[i] = true
 		}
 		if len(buf) != 0 {
-			blobs = append(blobs, arm64RawDataBlob{label: label, bytes: buf})
+			blobs = append(blobs, arm64RawDataBlob{label: label, start: start, bytes: buf})
 		}
 	}
 	return dataWords, blobs, nil
@@ -500,6 +535,9 @@ func arm64RawPCRelativeDisplacement(ins Instr) (displacement int64, op string, p
 		return 0, "", false, nil
 	}
 	word := uint32(ins.Args[0].Imm)
+	if _, displacement, ok := decodeARM64RawLiteralPrefetch(word); ok {
+		return displacement, "PRFM", true, nil
+	}
 	var code [4]byte
 	binary.LittleEndian.PutUint32(code[:], word)
 	decoded, decodeErr := arm64asm.Decode(code[:])

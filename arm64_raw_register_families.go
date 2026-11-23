@@ -60,6 +60,9 @@ func arm64RawGPBit(index int) uint32 {
 // Lowering, raw-pool writes and source continuation proof share typed decoders.
 // Unregistered encodings still fall through to conservative effect analysis.
 func arm64RawContinuationEffectsForWord(word uint32) (arm64RawContinuationEffects, bool) {
+	if _, _, literalPrefetch := decodeARM64RawLiteralPrefetch(word); literalPrefetch {
+		return arm64RawContinuationEffects{}, true // Layout proof remains separate.
+	}
 	if _, effects, ok := decodeARM64RawFloatFamily(word); ok {
 		return effects, true
 	}

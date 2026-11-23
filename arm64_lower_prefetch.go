@@ -56,6 +56,13 @@ type arm64PrefetchForm struct {
 	shift       int
 }
 
+func decodeARM64RawLiteralPrefetch(word uint32) (hint uint8, displacement int64, ok bool) {
+	if word&0xff000000 != 0xd8000000 {
+		return 0, 0, false
+	}
+	return uint8(word & 31), int64(int32(word<<8)>>13) * 4, true
+}
+
 func decodeARM64RawPrefetch(word uint32) (arm64PrefetchForm, bool) {
 	var form arm64PrefetchForm
 	form.hint = uint8(word & 31)
@@ -106,6 +113,17 @@ func (c *arm64Ctx) lowerARM64Prefetch(op Op, ins Instr) (ok bool, terminated boo
 	}
 	if op != "PRFM" {
 		return false, false, nil
+	}
+	if ins.arm64Encoded && len(ins.Args) == 2 && ins.Args[0].Kind == OpIdent && ins.Args[1].Kind == OpImm {
+		address, err := c.arm64LocalPCAddress(ins.Args[0].Ident, op, ins.Raw)
+		if err != nil {
+			return true, false, err
+		}
+		// Both encodings issue the same nonfaulting hint. Materializing the
+		// resolved address also handles moved data pools on Mach-O and COFF,
+		// where LLVM cannot relocate a literal prefetch across sections.
+		c.emitARM64PrefetchImmediate(arm64PrefetchUnscaled, uint8(ins.Args[1].Imm), 0, address)
+		return true, false, nil
 	}
 	if strings.ToUpper(string(ins.Op)) != "PRFM" || len(ins.Args) != 2 || ins.Args[0].Kind != OpMem {
 		return true, false, fmt.Errorf("arm64 PRFM expects unsigned-scaled memory and a prefetch operation, with no suffix: %q", ins.Raw)
@@ -188,12 +206,7 @@ func (c *arm64Ctx) lowerARM64PrefetchForm(form arm64PrefetchForm) error {
 		return err
 	}
 	if form.kind == arm64PrefetchScaled || form.kind == arm64PrefetchUnscaled {
-		mnemonic := "prfm"
-		if form.kind == arm64PrefetchUnscaled {
-			mnemonic = "prfum"
-		}
-		assembly := fmt.Sprintf("%s #%d, [$0, #%d]", mnemonic, form.hint, form.offset)
-		c.emitMachineNeutralNativeIR("  call void asm sideeffect %q, %q(i64 %s)\n", assembly, "r,~{memory}", base)
+		c.emitARM64PrefetchImmediate(form.kind, form.hint, form.offset, base)
 		return nil
 	}
 
@@ -226,6 +239,15 @@ func (c *arm64Ctx) lowerARM64PrefetchForm(form arm64PrefetchForm) error {
 	}
 	c.emitMachineNeutralNativeIR("  call void asm sideeffect %q, %q(i64 %s, i64 %s)\n", assembly, "r,r,~{memory}", base, indexValue)
 	return nil
+}
+
+func (c *arm64Ctx) emitARM64PrefetchImmediate(kind arm64PrefetchKind, hint uint8, offset int64, base string) {
+	mnemonic := "prfm"
+	if kind == arm64PrefetchUnscaled {
+		mnemonic = "prfum"
+	}
+	assembly := fmt.Sprintf("%s #%d, [$0, #%d]", mnemonic, hint, offset)
+	c.emitMachineNeutralNativeIR("  call void asm sideeffect %q, %q(i64 %s)\n", assembly, "r,~{memory}", base)
 }
 
 // arm64PRFMOffsetAccepted mirrors autoclass/oregclass plus cmp(C_UOREG32K,

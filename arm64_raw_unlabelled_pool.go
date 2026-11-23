@@ -81,6 +81,8 @@ func identifyARM64UnlabelledPool(fn Func, points []arm64RawLayoutPoint, known ma
 			switch op {
 			case "ADR":
 				addresses[at] = target
+			case "PRFM":
+				// A hint does not create a control edge or a GP address.
 			case "B", "BL", "CBZ", "CBNZ", "TBZ", "TBNZ":
 				queue = append(queue, target)
 			default:
@@ -121,7 +123,7 @@ func identifyARM64UnlabelledPool(fn Func, points []arm64RawLayoutPoint, known ma
 		insertions[at] = name
 		return name
 	}
-	blob := arm64RawDataBlob{label: label(pool), aliases: make(map[string]int64)}
+	blob := arm64RawDataBlob{label: label(pool), start: pool, aliases: make(map[string]int64)}
 	for _, target := range addresses {
 		if target >= pool && target < end {
 			blob.aliases[label(target)] = int64(target-pool) * 4
