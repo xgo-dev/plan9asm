@@ -187,8 +187,14 @@ func parsePreprocessedAssembly(arch Arch, pp string) (*File, error) {
 			case OpTEXT:
 				// TEXT name(SB), flags, $frame-args
 				parts := strings.Split(rest, ",")
-				if len(parts) < 1 {
-					return nil, fmt.Errorf("line %d: invalid TEXT: %q", lineno, stmt)
+				if len(parts) != 2 && len(parts) != 3 {
+					return nil, fmt.Errorf("line %d: TEXT expects two or three operands: %q", lineno, stmt)
+				}
+				if len(parts) == 3 && strings.TrimSpace(parts[1]) == "" {
+					return nil, fmt.Errorf("line %d: missing TEXT flags: %q", lineno, stmt)
+				}
+				if !strings.HasPrefix(strings.TrimSpace(parts[len(parts)-1]), "$") {
+					return nil, fmt.Errorf("line %d: TEXT frame size must be an immediate constant: %q", lineno, stmt)
 				}
 				sym := strings.TrimSpace(parts[0])
 				if !strings.HasSuffix(sym, "(SB)") {
@@ -201,7 +207,10 @@ func parsePreprocessedAssembly(arch Arch, pp string) (*File, error) {
 				// Early Plan 9 assembly commonly spelled function definitions as
 				// TEXT ·name+0(SB). The zero is a symbol offset, not part of the
 				// linker name; current Go still accepts this legacy form.
-				if base, off := splitSymPlusOff(sym); base != sym && off == 0 {
+				if base, off := splitSymPlusOff(sym); base != sym {
+					if off != 0 {
+						return nil, fmt.Errorf("line %d: TEXT symbol must not be offset from SB: %q", lineno, sym)
+					}
 					sym = base
 				}
 				frameSize, argSize, err := parseTEXTFrame(parts)

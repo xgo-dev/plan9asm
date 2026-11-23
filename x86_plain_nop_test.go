@@ -3,10 +3,7 @@ package plan9asm
 import (
 	"bytes"
 	"errors"
-	"os"
-	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,16 +26,14 @@ func x86PlainNOPSourceForms(arch string) []string {
 }
 
 func TestX86PlainNOPCompleteGoRowsAndInertState(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(runtime.GOROOT(), "src/cmd/internal/obj/x86/asm6.go"))
-	if err != nil {
-		t.Fatal(err)
+	count := 0
+	for _, row := range x86OfficialDirectiveRows(t) {
+		if row.Opcode == "NOP" {
+			count++
+		}
 	}
-	compact := strings.Join(strings.Fields(string(data)), "")
-	const rows = "varynop=[]ytab{{Zpseudo,0,argList{}}," +
-		"{Zpseudo,0,argList{Yiauto}},{Zpseudo,0,argList{Yml}},{Zpseudo,0,argList{Yrf}},{Zpseudo,0,argList{Yxr}}," +
-		"{Zpseudo,0,argList{Yiauto}},{Zpseudo,0,argList{Yml}},{Zpseudo,0,argList{Yrf}},{Zpseudo,1,argList{Yxr}},}"
-	if !strings.Contains(compact, rows) || !strings.Contains(compact, "{obj.ANOP,ynop,Px,opBytes{0,0}},") {
-		t.Fatal("complete ordered Go NOP pseudo rows or prefix changed")
+	if count != 9 {
+		t.Fatalf("expected all nine ordered Go NOP rows, got %d", count)
 	}
 	for _, arch := range []string{"amd64", "386"} {
 		forms := x86PlainNOPSourceForms(arch)

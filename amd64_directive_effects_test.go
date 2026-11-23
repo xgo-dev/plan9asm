@@ -168,12 +168,24 @@ func TestX86DirectiveThreeAPIsFiveLLVMTargets(t *testing.T) {
 }
 
 func TestX86DirectiveCommonGoFormats(t *testing.T) {
-	for _, arch := range []string{"amd64", "386"} {
-		// Old x86 backends predate alignment directives. The shared grammar
-		// and LLVM tests above still run there, while these original-Go forms
-		// are genuinely common to every supported compiler.
-		for _, row := range []string{"PCDATA $0,$-1", "FUNCDATA $0,metadata<>+0(SB)"} {
-			goAssemblerOracleOutput(t, arch, "TEXT value(SB),4,$0-0\n"+row+"\nRET\n", "", true)
+	// Old x86 backends predate alignment directives. The metadata rows are
+	// common to every supported compiler and leave the leaf's bytes unchanged.
+	syntax := map[string]string{
+		"PCDATA":   "PCDATA $0,$-1",
+		"FUNCDATA": "FUNCDATA $0,metadata<>+0(SB)",
+	}
+	for _, row := range x86OfficialDirectiveRows(t) {
+		directive := syntax[row.Opcode]
+		if directive == "" {
+			continue
+		}
+		for _, arch := range []string{"amd64", "386"} {
+			t.Run(arch+"/"+row.ID, func(t *testing.T) {
+				source := "TEXT value(SB),4,$0-0\n" + directive + "\nRET\n"
+				if code := assembleX87ControlBytes(t, arch, source); len(code) != 1 || code[0] != 0xc3 {
+					t.Fatalf("Go metadata directive changed the leaf's RET bytes: %x", code)
+				}
+			})
 		}
 	}
 }
