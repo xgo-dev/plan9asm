@@ -101,8 +101,8 @@ func x86DataBPNativeMemory(operand Operand, arch string) bool {
 		(memory.Index != "" || memory.Scale == 0) && x86MemoryRegisterEncodingValid(memory, arch)
 }
 
-// The fixed-vector and four-source grammars share the paired native read
-// proof. Return the original memory operand, including its effective index.
+// Packed memory grammars share the paired native read proof. Return the
+// original memory operand, including its effective index.
 func x86DataBPPackedRead(ins Instr, arch string) int {
 	if arch != "amd64" || !x86ResultNamedPredicateInstruction(ins) {
 		return -1
@@ -111,7 +111,12 @@ func x86DataBPPackedRead(ins Instr, arch string) int {
 		if !x86DataBPNativeMemory(operand, arch) {
 			continue
 		}
-		if form, _, known, err := x86FixedVectorValueProperties(ins, arch); known {
+		form, _, known, err := x86FixedVectorValueProperties(ins, arch)
+		if !known {
+			logical, recognized, logicalErr := x86PackedLogicalProperties(ins, arch)
+			form, known, err = logical.x86PackedBinaryForm, recognized, logicalErr
+		}
+		if known {
 			if err == nil && !form.mmx && form.first == index && form.memory == index {
 				return index
 			}

@@ -81,6 +81,7 @@ func TestX86PackedDataBPRejectsUnprovedEffect(t *testing.T) {
 	for _, instruction := range []string{
 		"VPSHLDQ.Z $7,-17(BP)(DX*4),Z1,K1,Z2",
 		"VPCONFLICTQ.Z -17(BP)(DX*4),K1,Z2",
+		"VPANDQ.Z -17(BP)(DX*4),Z1,K1,Z2",
 	} {
 		source, declaration := packedDataBPFixture("Value", instruction)
 		for _, missing := range []string{"MOVQ memory+0(FP),BP", "MOVQ $5,DX", "KMOVD AX,K1"} {
@@ -94,5 +95,40 @@ func TestX86PackedDataBPRejectsUnprovedEffect(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestX86PackedDataBPCompleteLogicalObjects(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("packed data BP objects require LLVM 22")
+	}
+	for _, op := range x86LogicalOpcodeNames() {
+		t.Run(string(op), func(t *testing.T) {
+			var source, declarations strings.Builder
+			for i, row := range x86LogicalAcceptedForms(op, "amd64") {
+				if !strings.Contains(row, "8(AX)") || strings.HasSuffix(row, ",M7") {
+					continue
+				}
+				row = strings.Replace(row, "8(AX)", "-4(BP)(DX*4)", 1)
+				dst := row[strings.LastIndexByte(row, ',')+1:]
+				full := "Z" + dst[1:]
+				body, declaration := packedDataBPFixture(fmt.Sprintf("Logical%d", i), row)
+				body = strings.Replace(body, row+"\n", fmt.Sprintf(
+					"VPXORD %[1]s,%[1]s,%[1]s\nKMOVD AX,K7\n%[2]s\n", full, row), 1)
+				body = strings.Replace(body, "VMOVUPS Z2,(DI)", "VMOVUPS "+full+",(DI)", 1)
+				source.WriteString(body)
+				declarations.WriteString(declaration)
+			}
+			const triple = "x86_64-unknown-linux-gnu"
+			x86LEAActualTargetGoObject(t, "amd64", triple, source.String())
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source.String(), declarations.String(), "amd64", triple, api)
+				if err != nil {
+					t.Fatalf("%s: %v", api, err)
+				}
+				x86PackedStringCompileObject(t, llc, triple, ir, "-O2")
+			}
+		})
 	}
 }
