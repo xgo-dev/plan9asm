@@ -55,8 +55,7 @@ func CaptureGoAMD64SDKFrameSource(ctx context.Context, pkg GoPackage, request Go
 	}()
 	data := owner.source
 	data.operation.Lock()
-	// Clone complete compiler state: the SDK owner's verification may update
-	// its private guard maps, and a frame must neither alias nor mutate them.
+	// Keep the frame's compiler state independent of the SDK owner's maps.
 	state := struct {
 		Selection goAMD64FrameSelection
 		Env       map[string]string
@@ -262,12 +261,8 @@ func (source *GoAMD64FrameSource) verifySDKFrameState(data *GoX86SDKASMDataSourc
 	if origin == nil || origin.identity != source || origin.owner == nil || origin.owner.source != data ||
 		!source.ready || !reflect.DeepEqual(source.request, origin.request) ||
 		!reflect.DeepEqual(source.selection, data.guard.selection) || !reflect.DeepEqual(source.env, data.guard.env) ||
-		!reflect.DeepEqual(source.imports, data.guard.imports) || !reflect.DeepEqual(source.inputs, data.guard.inputs) ||
-		source.directoryInventory != data.guard.directoryInventory {
+		!reflect.DeepEqual(source.imports, data.guard.imports) || !source.matchesSDKPrimaryInputInventory(data.guard) {
 		return goAMD64FrameContext("SDK-primary native frame source/profile/complete input identity changed")
-	}
-	if err := source.verifyInputs(); err != nil {
-		return err
 	}
 	functions, declarations, err := source.sdkFrameRecords()
 	if err != nil || !reflect.DeepEqual(functions, source.functions) || !reflect.DeepEqual(declarations, source.declarations) {

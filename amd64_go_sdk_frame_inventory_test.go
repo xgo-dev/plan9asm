@@ -272,6 +272,9 @@ func TestSDKAMD64PrimaryInventoryCloneRetainsCompleteMembership(t *testing.T) {
 					t.Fatal("complete original or copied SDK inputs rejected", err)
 				}
 			}
+			if !cloned.matchesSDKPrimaryInputInventory(source.guard) {
+				t.Fatal("physical inventory did not survive the independent frame copy")
+			}
 			switch change {
 			case "add":
 				err = os.WriteFile(filepath.Join(root, "added.s"), nil, 0600)
@@ -302,9 +305,13 @@ func TestSDKAMD64PrimaryInventoryCloneRetainsCompleteMembership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			copyOnly := change == "copy inputs" || change == "copy entries" || change == "drop inventory"
+			sameInventory := !copyOnly && change != "close owner"
+			if cloned.matchesSDKPrimaryInputInventory(source.guard) != sameInventory {
+				t.Fatal("frame inventory comparison differs from the retained identity", change)
+			}
 			for _, guard := range []*GoAMD64FrameSource{source.guard, cloned} {
 				err := guard.verifyInputs()
-				copyOnly := change == "copy inputs" || change == "copy entries" || change == "drop inventory"
 				changed := change != "none" && (!copyOnly || guard == cloned)
 				if !changed && err != nil || changed && !errors.Is(err, ErrProbeNeedsContext) {
 					t.Fatal("original/copy complete-input invalidation differs", change, err)

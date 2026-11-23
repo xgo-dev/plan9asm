@@ -2,7 +2,9 @@ package plan9asm
 
 import (
 	"crypto/sha256"
+	"os"
 	"path/filepath"
+	"reflect"
 
 	"github.com/xgo-dev/plan9asm/internal/gooriginalsrc"
 	"github.com/xgo-dev/plan9asm/internal/sourcepath"
@@ -77,4 +79,17 @@ func (source *GoAMD64FrameSource) copySDKPrimaryInputInventory(original *GoAMD64
 	source.entries = append([]string(nil), original.entries...)
 	source.directoryInfo = original.directoryInfo
 	source.directoryInventory = original.directoryInventory
+}
+
+// The frame and its SDK owner must describe the same physical inputs before
+// they can share the owner's final live directory and byte verification.
+func (source *GoAMD64FrameSource) matchesSDKPrimaryInputInventory(original *GoAMD64FrameSource) bool {
+	if source.owned != original.owned || source.request.Directory != original.request.Directory ||
+		source.directoryInventory == nil || source.directoryInventory != original.directoryInventory ||
+		len(source.childDirectories) != 0 {
+		return false
+	}
+	return source.ownedInfo != nil && original.ownedInfo != nil && os.SameFile(source.ownedInfo, original.ownedInfo) &&
+		source.directoryInfo != nil && original.directoryInfo != nil && os.SameFile(source.directoryInfo, original.directoryInfo) &&
+		reflect.DeepEqual(source.entries, original.entries) && reflect.DeepEqual(source.inputs, original.inputs)
 }

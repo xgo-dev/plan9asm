@@ -168,6 +168,34 @@ func TestGoAMD64SDKFrameRejectsChangedProfile(t *testing.T) {
 	}
 }
 
+func TestGoAMD64SDKFrameRejectsDifferentArtifactOwner(t *testing.T) {
+	ctx, request := sdkASMDataRequest(t, "amd64", "crypto/md5")
+	observed, err := CaptureGoAMD64SDKFrameObservation(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observed.Close()
+	pkg := sdkAMD64FrameActualPackage(t, observed.source)
+	source, err := CaptureGoAMD64SDKFrameSource(ctx, pkg, GoAMD64FrameCaptureRequest{
+		GoBinary: request.GoBinary, Directory: request.Directory, AssemblyFile: "md5block_amd64.s",
+		Target: request.Target, Environment: request.Environment,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+
+	// A valid directory and its actual stat still belong to a different owner.
+	source.owned = t.TempDir()
+	source.ownedInfo, err = os.Lstat(source.owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Verify(ctx); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("frame accepted an artifact directory outside its SDK owner's inventory", err)
+	}
+}
+
 func TestGoAMD64SDKFrameOriginalRegisterEntry(t *testing.T) {
 	for _, profile := range []struct{ goos, triple, cpu string }{
 		{"linux", "x86_64-unknown-linux-gnu", "v1"},
