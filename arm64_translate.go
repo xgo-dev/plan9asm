@@ -1549,7 +1549,7 @@ func (c *arm64Ctx) lowerInstr(bi int, ins Instr, emitBr arm64EmitBr, emitCondBr 
 	if ok, term, err := c.lowerARM64SVEMatrixMultiply(op, ins); ok {
 		return term, err
 	}
-	if ok, term, err := c.lowerARM64SVEPairwiseTail(op, ins); ok {
+	if ok, term, err := c.lowerARM64SVEPairwise(op, ins); ok {
 		return term, err
 	}
 	if ok, term, err := c.lowerARM64SVEMultiplyAddTail(op, ins); ok {

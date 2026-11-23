@@ -760,6 +760,9 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 						add("+i8mm")
 					}
 				}
+				if form, ok := decodeARM64RawSVEPairwise(uint32(ins.Args[0].Imm)); ok {
+					add("+sve", form.spec.feature)
+				}
 				if _, ok := decodeARM64RawSVEXAR(uint32(ins.Args[0].Imm)); ok {
 					add("+sve", "+sve2")
 				}
@@ -884,11 +887,8 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				add("+sve")
 			}
 			add(arm64SVEMatrixMultiplyFeatures(Op(op), ins)...)
-			if op == "ZADDP" {
-				add("+sve", "+sve2")
-			}
-			if _, ok := arm64SVETailOps[Op(op)]; ok {
-				add("+sve", "+cpa")
+			if spec, ok := arm64SVEPairwiseSpecForOp(Op(op)); ok {
+				add("+sve", spec.feature)
 			}
 			if _, ok := arm64SVEMultiplyAddTailOps[Op(op)]; ok {
 				add("+sve", "+cpa")

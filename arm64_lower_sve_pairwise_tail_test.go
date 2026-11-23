@@ -66,6 +66,12 @@ func TestTranslateARM64SVEPairwiseTailRejectsFormsOutsideGo127Table(t *testing.T
 		"ZADDPT Z1.D, Z2.D, P0.M, Z3.D",
 		"ZSUBPT Z1.D, Z2.D, P0.Z, Z2.D",
 		"ZSUBPT.Z Z1.D, Z2.D, Z3.D",
+		"ZADDQP Z1.B, Z2.H, Z3.B",
+		"ZADDSUBP Z1.D, Z2.D, P0.M, Z2.D",
+		"ZSUBP Z1.S, Z2.S, Z2.S",
+		"ZSUBP Z1.S, Z2.S, P0.Z, Z2.S",
+		"ZSUBP Z1.S, Z2.S, P8.M, Z2.S",
+		"ZSUBP Z1.S, Z2.S, P0.M, Z3.S",
 	} {
 		t.Run(strings.NewReplacer(" ", "_", ".", "_", ",", "_").Replace(instruction), func(t *testing.T) {
 			source := "TEXT badsvepairwisetail(SB),$0-0\n\t" + instruction + "\n\tRET\n"

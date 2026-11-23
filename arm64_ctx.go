@@ -297,6 +297,15 @@ func (c *arm64Ctx) scanUsedRegs() {
 			}
 			if ins.Op == OpWORD && len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
 				word := uint32(ins.Args[0].Imm)
+				if form, ok := decodeARM64RawSVEPairwise(word); ok {
+					c.usedZRegs[form.first] = true
+					c.usedZRegs[form.second] = true
+					c.usedZRegs[form.destination] = true
+					if form.predicate >= 0 {
+						c.usedPRegs[form.predicate] = true
+					}
+					continue
+				}
 				if form, ok := decodeARM64RawStructureMemory(word); ok {
 					markReg(form.baseRegister())
 					if index := form.indexRegister(); index != "" {

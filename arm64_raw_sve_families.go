@@ -53,6 +53,7 @@ func arm64RawSVEVectorForm[T any](decode func(uint32) (T, bool), lower func(*arm
 }
 
 var arm64RawSVEVectorFamilies = [...]arm64RawSVEVectorFamily{
+	arm64RawSVEVectorForm(decodeARM64RawSVEPairwise, (*arm64Ctx).lowerARM64SVEPairwiseForm),
 	arm64RawSVEVectorForm(decodeARM64RawSVEMultiply, (*arm64Ctx).lowerRawSVEMultiply),
 	arm64RawSVEVectorForm(decodeARM64RawSVETable, (*arm64Ctx).lowerRawSVETable),
 	arm64RawSVEVectorForm(decodeARM64RawSVEUMULLB, (*arm64Ctx).lowerRawSVEUMULLB),
