@@ -3,6 +3,11 @@ package plan9asm
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -106,6 +111,76 @@ func TestARMNamedLocalCallConditionForms(t *testing.T) {
 	}
 	requireARMGoAssemblerResult(t, assembly.String(), true)
 	translateARMCompleteForms(t, assembly.String(), sigs)
+}
+
+func TestARMOfficialLocalControlObjects(t *testing.T) {
+	corpus := filepath.Join(runtime.GOROOT(), "src", "cmd", "asm", "internal", "asm", "testdata", "arm.s")
+	data, err := os.ReadFile(corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := regexp.MustCompile(`^B(?:L(?:\.[A-Z]{2})?|\.[A-Z]{2}|[A-Z]{2})?\s+(?:[+-]?\d+\(PC\)|jmp_label_\d+)$`)
+	var source strings.Builder
+	var names []string
+	sigs := make(map[string]FuncSig)
+	for _, line := range strings.Split(string(data), "\n") {
+		code, _, _ := strings.Cut(line, "//")
+		instruction := strings.TrimSpace(code)
+		if !branch.MatchString(instruction) {
+			continue
+		}
+		name := fmt.Sprintf("official%d", len(names))
+		names = append(names, name)
+		sigs[name] = armLocalCallSignature(name)
+		fmt.Fprintf(&source, "TEXT %s(SB),4,$0-8\nMOVW value+0(FP),R0\nCMP $0,R0\n", name)
+		source.WriteString(armOfficialLocalControlBody(t, instruction))
+	}
+	if len(names) != 85 {
+		t.Fatalf("found %d original local ARM branches, want 85", len(names))
+	}
+	requireARMGoAssemblerResult(t, source.String(), true)
+	ir := translateARMCompleteForms(t, source.String(), sigs)
+	for _, name := range names {
+		if !strings.Contains(ir, "define i32 @"+name+"(") {
+			t.Fatalf("missing original local ARM control function %s", name)
+		}
+	}
+}
+
+func armOfficialLocalControlBody(t *testing.T, instruction string) string {
+	t.Helper()
+	const result = "MOVW R0,ret+4(FP)\nRET\n"
+	const helper = "ADD $3,R0\nB (R14)\n"
+	const pad = "ADD $1,R0\n"
+	fields := strings.Fields(instruction)
+	opcode, _, _ := strings.Cut(fields[0], ".")
+	target := fields[1]
+	instruction += "\n"
+	link := opcode == "BL"
+
+	number, relative := strings.CutSuffix(target, "(PC)")
+	if !relative {
+		if link {
+			return instruction + result + target + ":\n" + helper
+		}
+		return instruction + pad + target + ":\n" + result
+	}
+	offset, err := strconv.Atoi(number)
+	if err != nil || offset < -16 || offset > 16 {
+		t.Fatalf("unexpected original ARM PC offset %q", target)
+	}
+	switch {
+	case offset < 0:
+		return strings.Repeat(pad, -offset) + instruction + result
+	case link && offset >= 3:
+		return instruction + result + strings.Repeat(pad, offset-3) + helper
+	case link:
+		return instruction + pad + result
+	case offset > 1:
+		return instruction + strings.Repeat(pad, offset-1) + result
+	default:
+		return instruction + result
+	}
 }
 
 func TestARMNamedLocalCallRejectsUnprovedLinkUse(t *testing.T) {
