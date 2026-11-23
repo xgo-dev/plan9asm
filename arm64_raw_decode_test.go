@@ -310,7 +310,7 @@ func TestARM64RawPCRelativeRejectsBranchesIntoGoVeneers(t *testing.T) {
 		{"TBNZ", 17},
 	} {
 		t.Run(tc.op, func(t *testing.T) {
-			const local = "WORD $0xd28000e0\nRET\n"         // MOVD $7, R0
+			const local = "after:\nWORD $0xd28000e0\nRET\n" // MOVD $7, R0
 			const distant = "far:\nWORD $0xd2800920\nRET\n" // MOVD $73, R0
 			source := "TEXT veneer(SB),516,$0-0\nWORD $0x14000003\n" +
 				arm64NamedPCBranchInstruction(tc.op, "far") + "\n" +
@@ -336,7 +336,57 @@ func TestARM64RawPCRelativeRejectsBranchesIntoGoVeneers(t *testing.T) {
 				!strings.Contains(err.Error(), "proven instruction boundary") {
 				t.Fatalf("raw branch through an unproved Go veneer acquired a source target: %v", err)
 			}
+			t.Run("past_veneer", func(t *testing.T) {
+				source := strings.Replace(source, "WORD $0x14000003", "WORD $0x14000004", 1)
+				// Only the raw branch word changes. Its new destination
+				// is the original source instruction proved at byte 16 above.
+				checkARM64RawConditionalLayoutTarget(t, source, "after")
+			})
 		})
+	}
+	t.Run("short_branch_in_large_text", func(t *testing.T) {
+		source := "TEXT veneer(SB),516,$0-0\nWORD $0x14000002\nBEQ short\nafter:\n" +
+			"WORD $0xd28000e0\nRET\nshort:\nWORD $0xd2800920\nRET\n" +
+			strings.Repeat("PCALIGN $2048\nWORD $0xd503201f\n", 513)
+		code := arm64ImmediateOriginalGoBytes(t, source, "linux")
+		if len(code) < 12 || binary.LittleEndian.Uint32(code[8:12]) != 0xd28000e0 {
+			t.Fatal("Go expanded a short local branch because of unrelated TEXT size")
+		}
+		checkARM64RawConditionalLayoutTarget(t, source, "after")
+	})
+	t.Run("redirected_branch_target", func(t *testing.T) {
+		source := "TEXT veneer(SB),516,$0-0\nWORD $0x14000002\nBEQ bridge\n" +
+			"WORD $0xd28000e0\nRET\nbridge:\nJMP far\n" +
+			strings.Repeat("PCALIGN $2048\nWORD $0xd503201f\n", 513) +
+			"far:\nWORD $0xd2800920\nRET\n"
+		code := arm64ImmediateOriginalGoBytes(t, source, "linux")
+		if len(code) < 20 || binary.LittleEndian.Uint32(code[16:20]) != 0xd28000e0 {
+			t.Fatal("Go did not resolve the conditional's jump chain before adding a veneer")
+		}
+		file, err := Parse(ArchARM64, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := normalizeARM64RawPCRelative(file.Funcs[0]); err == nil ||
+			!strings.Contains(err.Error(), "proven instruction boundary") {
+			t.Fatalf("near label concealed an unproved redirected branch layout: %v", err)
+		}
+	})
+}
+
+func checkARM64RawConditionalLayoutTarget(t *testing.T, source, label string) {
+	t.Helper()
+	file, err := Parse(ArchARM64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err := normalizeARM64RawPCRelative(file.Funcs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := fn.Instrs[1]
+	if branch.Op != OpJMP || !branch.arm64Encoded || len(branch.Args) != 1 || branch.Args[0].Ident != label {
+		t.Fatalf("raw branch lost its original destination %s: %s %v", label, branch.Op, branch.Args)
 	}
 }
 

@@ -87,7 +87,7 @@ func arm64NativeTargetCodeView(file *File) *File {
 			if instruction.Op == OpLABEL && len(instruction.Args) == 1 && instruction.Args[0].Kind == OpLabel {
 				knownLabels[instruction.Args[0].Sym] = true
 			}
-			width, known := widths.knownWidth(instruction)
+			width, known := widths.knownWidth(at)
 			if !known {
 				point.segment++
 				point.offset = 0

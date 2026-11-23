@@ -75,10 +75,7 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 				}
 			}
 			if alignment <= startAlignment {
-				padding := -offset & (alignment - 1)
-				if ins.Op == "PCALIGN" || padding <= ins.Args[1].Imm {
-					offset += padding
-				}
+				offset = arm64RawAlignedOffset(offset, alignment, ins)
 				// Padding has no source instruction boundary.
 				continue
 			}
@@ -92,7 +89,7 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 			continue
 		}
 
-		width, known := widths.knownWidth(ins)
+		width, known := widths.knownWidth(i)
 		if !known {
 			segment++
 			offset = 0
@@ -315,14 +312,14 @@ func arm64RawPCDataReference(op string) bool {
 // branches may gain a veneer, whereas an explicit WORD always occupies four
 // bytes. Retain separate layout segments if either makes alignment uncertain.
 func (widths *arm64RawLayoutWidths) alignmentKnown() bool {
-	for _, ins := range widths.fn.Instrs {
+	for i, ins := range widths.fn.Instrs {
 		if _, handled, err := arm64PCAlignment(ins); handled {
 			if err != nil {
 				return false
 			}
 			continue
 		}
-		if _, known := widths.knownWidth(ins); !known {
+		if _, known := widths.knownWidth(i); !known {
 			return false
 		}
 	}
