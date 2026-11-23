@@ -58,7 +58,7 @@ func TestARM64RawFloatCompareDecoderCompleteArchitectureFamily(t *testing.T) {
 					if !ok {
 						t.Fatalf("decoder rejected %#08x", word)
 					}
-					if form.op != encoding.op || form.zero != encoding.zero || form.absolute != encoding.absolute ||
+					if form.operation.op != encoding.op || form.zero != encoding.zero || form.operation.absolute != encoding.absolute ||
 						form.arrangement != (arm64VectorArrangement{elementBits: encoding.bits, lanes: encoding.lanes}) ||
 						form.first != first || form.destination != destination ||
 						(!encoding.zero && form.second != second) {
@@ -107,8 +107,8 @@ TEXT rawFloatCompareArchitectureFamily(SB),$0-0
 				t.Fatal(err)
 			}
 			for _, want := range []string{
-				"fcmp oeq <4 x half>", "fcmp ogt <8 x half>",
-				"@llvm.fabs.v8f16", "@llvm.fabs.v4f32", "@llvm.fabs.v2f64",
+				`asm sideeffect "fcmeq $0.4h`, `asm sideeffect "fcmgt $0.8h`,
+				`asm sideeffect "facge $0.8h`, `asm sideeffect "facgt $0.4s`, `asm sideeffect "facgt $0.2d`,
 				`"target-features"="+fullfp16"`,
 			} {
 				if !strings.Contains(ir, want) {
@@ -188,7 +188,7 @@ func TestTranslateARM64FloatCompareCompleteGo127Formats(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if got := strings.Count(ll, "fcmp o"); got != 24 {
+					if got := strings.Count(ll, `asm sideeffect "fcm`); got != 24 {
 						t.Fatalf("ARM64 %s float-compare lowering for %s emitted %d compares, want 24:\n%s", name, triple, got, ll)
 					}
 					llc := findLLVM22Tool("llc")
@@ -332,7 +332,12 @@ int main(void) {
 }
 
 func TestARM64RawFloatCompareDecoderRejectsAdjacentAndReservedEncodings(t *testing.T) {
-	for _, word := range []uint32{0x2e20d400, 0x1e21e400, 0x0e60e400, 0x0ee0d800} { // FADDP, scalar compare, binary D1, zero D1.
+	for _, word := range []uint32{
+		0x2e20d400, // Adjacent FADDP.
+		0x1e21e400, // Scalar encoding without Q.
+		0x0e60e400, // Reserved binary D1.
+		0x0ee0d800, // Reserved zero D1.
+	} {
 		if _, ok := decodeARM64RawFloatCompare(word); ok {
 			t.Fatalf("float-compare decoder accepted adjacent/reserved encoding %#08x", word)
 		}
