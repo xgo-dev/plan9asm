@@ -37,8 +37,9 @@ func decodeARM64RawScalarFloatCompare(word uint32) (arm64RawScalarFloatCompare, 
 	}
 	second := int(word>>16) & 31
 	zero := word&zeroBit != 0
-	if zero && second != 0 {
-		return arm64RawScalarFloatCompare{}, false
+	if zero {
+		// FCMP/FCMPE compare against +0.0 and ignore the encoded Rm field.
+		second = 0
 	}
 	return arm64RawScalarFloatCompare{
 		bits:      bits,

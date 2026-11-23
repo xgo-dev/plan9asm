@@ -38,24 +38,23 @@ func TestARM64RawScalarFloatCompareDecoderCompleteArchitectureFamily(t *testing.
 			}
 
 			for first := 0; first < 32; first++ {
-				word := width.base | uint32(first)<<5 | 1<<3
-				if signaling {
-					word |= 1 << 4
+				for rm := 0; rm < 32; rm++ {
+					word := width.base | uint32(first)<<5 | uint32(rm)<<16 | 1<<3
+					if signaling {
+						word |= 1 << 4
+					}
+					form, ok := decodeARM64RawScalarFloatCompare(word)
+					if !ok || form.bits != width.bits || form.signaling != signaling || !form.zero ||
+						form.first != first || form.second != 0 {
+						t.Fatalf("zero comparison with ignored Rm=%d: decode %#08x = %+v, %t", rm, word, form, ok)
+					}
+					count++
 				}
-				form, ok := decodeARM64RawScalarFloatCompare(word)
-				if !ok {
-					t.Fatalf("decoder rejected %#08x", word)
-				}
-				if form.bits != width.bits || form.signaling != signaling || !form.zero ||
-					form.first != first || form.second != 0 {
-					t.Fatalf("decode %#08x = %+v", word, form)
-				}
-				count++
 			}
 		}
 	}
-	if count != 6336 {
-		t.Fatalf("covered %d scalar float-compare encodings, want 6336", count)
+	if count != 12288 {
+		t.Fatalf("covered %d scalar float-compare encodings, want 12288", count)
 	}
 }
 
@@ -83,6 +82,7 @@ func TestTranslateARM64RawScalarFloatCompareCompleteArchitectureFamily(t *testin
 			zeroWord := width.base | modifier | 1<<3 | 29<<5
 			fmt.Fprintf(&source, "\tWORD $%#08x // %s %s30, %s31\n", registerWord, name, width.name, width.name)
 			fmt.Fprintf(&source, "\tWORD $%#08x // %s %s29, #0.0\n", zeroWord, name, width.name)
+			fmt.Fprintf(&source, "\tWORD $%#08x // %s %s29, #0.0 (ignored Rm)\n", zeroWord|31<<16, name, width.name)
 		}
 	}
 	source.WriteString("\tRET\n")
@@ -116,8 +116,8 @@ func TestTranslateARM64RawScalarFloatCompareCompleteArchitectureFamily(t *testin
 					t.Fatalf("raw scalar float-compare IR omitted %q:\n%s", want, ir)
 				}
 			}
-			if got := strings.Count(ir, `asm sideeffect "fcmp`); got != 12 {
-				t.Fatalf("raw scalar float-compare emitted %d native comparisons, want 12:\n%s", got, ir)
+			if got := strings.Count(ir, `asm sideeffect "fcmp`); got != 18 {
+				t.Fatalf("raw scalar float-compare emitted %d native comparisons, want 18:\n%s", got, ir)
 			}
 
 			llc := findLLVM22Tool("llc")
@@ -132,7 +132,6 @@ func TestTranslateARM64RawScalarFloatCompareCompleteArchitectureFamily(t *testin
 func TestARM64RawScalarFloatCompareDecoderRejectsAdjacentAndReservedEncodings(t *testing.T) {
 	for _, word := range []uint32{
 		0x1ea02000, // Reserved type=2 encoding.
-		0x1e212048, // Immediate-zero form with a nonzero Rm field.
 		0x1e202001, // Reserved low result-register field.
 		0x1e202800, // FADD, a different instruction class.
 		0x5e20d400, // Scalar FADDP, a different instruction class.
