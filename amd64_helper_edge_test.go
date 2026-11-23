@@ -372,7 +372,11 @@ func TestAMD64AtomicAndBranchEdges(t *testing.T) {
 		},
 	}
 	c, b := newAMD64CtxWithFuncForTest(t, fn, sig, sigs)
-	c.blocks = []amd64Block{{name: "entry"}, {name: "fall"}, {name: "target"}}
+	c.blocks = []amd64Block{
+		{name: "entry", instrs: fn.Instrs[0:1]},
+		{name: "fall", instrs: fn.Instrs[1:2]},
+		{name: "target", instrs: fn.Instrs[2:3]},
+	}
 	c.blockBase = []int{0, 1, 2}
 	c.blockByIdx = map[int]int{0: 0, 1: 1, 2: 2}
 
@@ -1771,7 +1775,12 @@ func TestAMD64BranchCoverageDeep(t *testing.T) {
 			t.Fatalf("storeReg(%s) error = %v", tc.r, err)
 		}
 	}
-	c.blocks = []amd64Block{{name: "entry"}, {name: "fall"}, {name: "V1"}, {name: "tail"}}
+	c.blocks = []amd64Block{
+		{name: "entry", instrs: fn.Instrs[0:1]},
+		{name: "fall", instrs: fn.Instrs[1:2]},
+		{name: "V1", instrs: fn.Instrs[2:3]},
+		{name: "tail", instrs: fn.Instrs[3:4]},
+	}
 	c.blockBase = []int{0, 1, 2, 3}
 	c.blockByIdx = map[int]int{0: 0, 1: 1, 2: 2, 3: 3}
 	c.setCmpFlags("1", "2")
