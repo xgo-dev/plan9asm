@@ -553,12 +553,8 @@ func Test386RejectsInvalidClassicFrameIndex(t *testing.T) {
 
 func TestAMD64Ignores386ControlInstructions(t *testing.T) {
 	c, _ := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.amd64", Ret: Void}, nil)
-	for _, op := range []Op{"ADJSP", "CLD", "STD", "REP"} {
-		args := []Operand(nil)
-		if op == "ADJSP" {
-			args = []Operand{{Kind: OpImm, Imm: 8}}
-		}
-		terminated, err := c.lowerInstr(0, 0, Instr{Op: op, Raw: string(op), Args: args}, nil, nil)
+	for _, op := range []Op{"CLD", "STD", "REP"} {
+		terminated, err := c.lowerInstr(0, 0, Instr{Op: op, Raw: string(op)}, nil, nil)
 		if err != nil || terminated {
 			t.Fatalf("lowerInstr(%s) = (%v, %v), want ignored instruction", op, terminated, err)
 		}

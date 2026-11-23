@@ -44,6 +44,9 @@ int main(void) {
 `
 	x86DirectTailCheckCallRuntime(t, "amd64", execution, source+x86OfficialSymbolJumpSource,
 		declarations+x86OfficialSymbolJumpDeclarations, goMain, cMain, "7 Go branch results\n")
+	t.Run("ADJSP", func(t *testing.T) {
+		x86ADJSPCarryRuntime(t, "amd64", execution)
+	})
 }
 
 func TestCrossLinuxRuntimeMatrixX86Official386CarryAndFrame(t *testing.T) {
@@ -99,6 +102,38 @@ int main(void) {
 `
 	x86DirectTailCheckCallRuntime(t, "386", execution, x86Official386ContextSource,
 		x86Official386ContextDeclarations, goMain, cMain, "10 Go 386 results\n")
+	t.Run("ADJSP", func(t *testing.T) {
+		x86ADJSPCarryRuntime(t, "386", execution)
+	})
+}
+
+func x86ADJSPCarryRuntime(t *testing.T, arch string, execution x86FloatCompareExecution) {
+	t.Helper()
+	source := x86ADJSPCarrySource("BelowBoundary", 127) + x86ADJSPCarrySource("AtBoundary", 128) +
+		x86ADJSPCarrySource("AboveBoundary", 129)
+	const declarations = "func BelowBoundary() uint32\nfunc AtBoundary() uint32\nfunc AboveBoundary() uint32\n"
+	const goMain = `
+func main() {
+    if BelowBoundary() != 0 || AtBoundary() != 3 || AboveBoundary() != 0 {
+        panic("incorrect carry on a stack adjustment")
+    }
+    fmt.Println("ADJSP carry 0 3 0")
+}
+`
+	const cMain = `#include <stdint.h>
+#include <stdio.h>
+
+extern uint32_t BelowBoundary(void), AtBoundary(void), AboveBoundary(void);
+
+int main(void) {
+    if (BelowBoundary() != 0 || AtBoundary() != 3 || AboveBoundary() != 0) {
+        return 1;
+    }
+    puts("ADJSP carry 0 3 0");
+    return 0;
+}
+`
+	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, "ADJSP carry 0 3 0\n")
 }
 
 // The Linux AMD64 owner must execute both native ISA modes. Other hosts retain

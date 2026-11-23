@@ -38,8 +38,10 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	var nativeMMX *x86NativeMMXRegion
 	named := true
 	hasLinuxSyscall := false
+	hasStackAdjustment := false
 	for _, ins := range fn.Instrs {
 		named = named && x86ResultNamedPredicateInstruction(ins)
+		hasStackAdjustment = hasStackAdjustment || ins.Op == "ADJSP"
 		if _, known, err := x86LinuxSyscallProperties(ins, arch, c.targetTriple); known {
 			if err != nil {
 				return err
@@ -117,6 +119,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 				return err
 			}
 		}
+		c.logicalStackAdjustment = hasStackAdjustment && strictErr == nil && !registerEntry && !logicalScalar
 		return strictErr
 	}
 	if selected, err := c.checkRawLogicalScalarResult(); selected {

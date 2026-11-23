@@ -299,7 +299,7 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 				}
 			}
 			return nil
-		}, trapOnly)
+		}, trapOnly, scalarViews && !trapOnly)
 	if err != nil {
 		return err
 	}
@@ -320,15 +320,16 @@ type x86ResultFlowBudget struct {
 // entry role cannot weaken the existing ABI0 result proof.
 func checkX86ResultSourceFlow(fn Func, initial x86ResultState, owned []bool, resultOffset int64, goarch string,
 	transfer x86ResultSourceTransfer, checkReturn func(x86ResultState, int) error) error {
-	return checkX86ResultSourceFlowWithTrapOnly(fn, initial, owned, resultOffset, goarch, transfer, checkReturn, false)
+	return checkX86ResultSourceFlowWithTrapOnly(fn, initial, owned, resultOffset, goarch, transfer, checkReturn, false, false)
 }
 
 func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned []bool, resultOffset int64, goarch string,
-	transfer x86ResultSourceTransfer, checkReturn func(x86ResultState, int) error, trapOnly bool) error {
+	transfer x86ResultSourceTransfer, checkReturn func(x86ResultState, int) error, trapOnly, allowRelativeStack bool) error {
 	originalTransfer := transfer
 	trackCPUIDLeaf := false
 	trackCallerOrigins := len(initial.callerAddressFP) != 0 || initial.callerAddressOrigin != [16]uint16{}
 	var repeatEmptyBranch func(int, Instr, *x86ResultState) bool
+	var relativeStack []int64
 	transfer = func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 		if fn.x86StackFenceAt(ins) {
 			return true // The checked zero-add changes no live data at the following void RET.
@@ -388,6 +389,14 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		}
 		ordinary := func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 			ordinaryStep = true
+			if relativeStack != nil && ins.Op == "ADJSP" {
+				form, err := parseX86StackAdjustment(ins)
+				if err != nil {
+					return false
+				}
+				state.flags = form.relativeFlags()
+				return true
+			}
 			if repeatEmptyBranch != nil && repeatEmptyBranch(ordinal, ins, state) {
 				return true // Same empty result on both edges, never invented FLAGS.
 			}
@@ -507,6 +516,13 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	flagProjection := false
 	trackMoveMask := false
 	for _, ins := range instructions {
+		if allowRelativeStack && relativeStack == nil && ins.Op == "ADJSP" {
+			var err error
+			relativeStack, err = x86RelativeStackDepths(fn, instructions, goarch)
+			if err != nil {
+				return err
+			}
+		}
 		trackCPUIDLeaf = trackCPUIDLeaf || strings.EqualFold(string(ins.Op), string(OpCPUID))
 		_, moveMask := amd64MoveMaskSpecs[Op(strings.ToUpper(string(ins.Op)))]
 		trackMoveMask = trackMoveMask || moveMask
@@ -686,6 +702,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		for _, target := range next {
 			if target < 0 || target >= len(instructions) {
 				return fail("source falls outside its continuation")
+			}
+			if relativeStack != nil && relativeStack[pc+1] != relativeStack[target] {
+				return fail("control edge changes the lexical ADJSP depth")
 			}
 		}
 		edges[pc] = next

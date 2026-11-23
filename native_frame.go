@@ -57,9 +57,13 @@ func nativeTextFrame(fn Func, target NativeOptions) (nativeFramePlan, error) {
 			}
 			stackDelta += int64(sourceBytes)
 			physicalDelta += int64(physicalBytes)
-		} else if ins.Op == "ADJSP" && len(ins.Args) != 0 && ins.Args[0].Kind == OpImm {
-			stackDelta += ins.Args[0].Imm
-			physicalDelta += ins.Args[0].Imm
+		} else if ins.Op == "ADJSP" {
+			form, err := parseX86StackAdjustment(ins)
+			if err != nil {
+				return plan, err
+			}
+			stackDelta += form.amount
+			physicalDelta += form.amount
 		}
 		if ins.Op == OpRET && stackDelta != 0 {
 			return plan, fmt.Errorf("native TEXT has unbalanced PUSH/POP: %s", fn.Sym)

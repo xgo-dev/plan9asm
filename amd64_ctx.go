@@ -13,10 +13,11 @@ type amd64Ctx struct {
 	sig FuncSig
 	// goarch distinguishes the 32-bit x86 rules from amd64 while sharing the
 	// common x86 lowering implementation.
-	goarch             string
-	targetTriple       string
-	x86Plan9Source     bool
-	abi0EntryDirection x86ResultDirection
+	goarch                 string
+	targetTriple           string
+	x86Plan9Source         bool
+	abi0EntryDirection     x86ResultDirection
+	logicalStackAdjustment bool
 
 	resolve        func(string) string
 	sigs           map[string]FuncSig
@@ -314,7 +315,8 @@ func (c *amd64Ctx) scanUsedRegs() {
 
 	for _, blk := range c.blocks {
 		for _, ins := range blk.instrs {
-			if x86InertNOP(ins, c.goarch) || c.fpScalarSource.x86StackFenceAt(ins) {
+			if c.logicalStackAdjustment && ins.Op == "ADJSP" ||
+				x86InertNOP(ins, c.goarch) || c.fpScalarSource.x86StackFenceAt(ins) {
 				continue
 			}
 			if form, known, err := x86ScalarNativeLoadProperties(ins.Op, ins, c.goarch); known && err == nil {
@@ -963,10 +965,15 @@ func (c *amd64Ctx) stackMovementBudget() (int64, error) {
 					return 0, err
 				}
 			case "ADJSP":
-				if len(ins.Args) == 1 && ins.Args[0].Kind == OpImm {
-					if err := add(abs386StackAdjustment(int64(ins.Args[0].Imm)), ins); err != nil {
-						return 0, err
-					}
+				if c.logicalStackAdjustment {
+					continue
+				}
+				form, err := parseX86StackAdjustment(ins)
+				if err != nil {
+					return 0, err
+				}
+				if err := add(abs386StackAdjustment(form.amount), ins); err != nil {
+					return 0, err
 				}
 			case "ADDL", "SUBL":
 				if is386SPDestination(ins) && len(ins.Args) == 2 && ins.Args[0].Kind == OpImm {

@@ -24,21 +24,16 @@ func (e *nativeAMD64) typedInstruction(out *strings.Builder, ins Instr) error {
 	op, args := string(ins.Op), ins.Args
 	bad := func() error { return fmt.Errorf("unsupported native amd64 typed form: %q", ins.Raw) }
 	if ins.Op == "ADJSP" {
-		if len(args) < 1 || len(args) > 2 ||
-			args[0].Kind != OpImm || args[0].ImmRaw != "" || args[0].ImmIsFloat ||
-			args[0].Imm < -2147483647 || args[0].Imm > 2147483647 ||
-			len(args) == 2 && (args[1].Kind != OpReg || args[1].Reg != SP) {
+		form, err := parseX86StackAdjustment(ins)
+		if err != nil {
 			return bad()
 		}
-		// Go uses the shorter signed-byte encoding at either 128-byte
-		// boundary. ADD and SUB can give the same SP with different FLAGS.
-		amount := args[0].Imm
 		switch {
-		case amount == 0:
-		case amount == 128 || amount < 0 && amount != -128:
-			fmt.Fprintf(out, "\taddq $%d, %%rsp\n", -amount)
+		case form.amount == 0:
+		case form.add:
+			fmt.Fprintf(out, "\taddq $%d, %%rsp\n", form.immediate)
 		default:
-			fmt.Fprintf(out, "\tsubq $%d, %%rsp\n", amount)
+			fmt.Fprintf(out, "\tsubq $%d, %%rsp\n", form.immediate)
 		}
 		return nil
 	}

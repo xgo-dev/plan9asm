@@ -874,18 +874,24 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 		}
 		return false, nil
 	case "ADJSP":
-		if c.goarch != "386" {
+		form, err := parseX86StackAdjustment(ins)
+		if err != nil {
+			return false, err
+		}
+		if c.logicalStackAdjustment {
+			c.lowerRelativeStackAdjustment(form)
 			return false, nil
 		}
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpImm {
-			return false, fmt.Errorf("386 ADJSP expects an immediate: %q", ins.Raw)
+		if c.goarch != "386" {
+			return false, fmt.Errorf("%w: ADJSP lacks a proved relative source stack", ErrProbeNeedsContext)
 		}
+		// The 386 emitter also serves independent physical-stack format probes.
 		sp, err := c.loadReg(SP)
 		if err != nil {
 			return false, err
 		}
 		next := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %d\n", next, sp, int64(ins.Args[0].Imm))
+		fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %d\n", next, sp, form.amount)
 		return false, c.storeRegUnchecked(SP, "%"+next)
 	case "CLD", "STD":
 		_, err := c.lowerDirectionControl(ins)
