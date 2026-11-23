@@ -15,14 +15,57 @@ type wasmValue struct {
 	stackAddr bool
 }
 
-type wasmControlFrame struct {
+type wasmControlLabel struct {
 	kind       string
 	name       string
+	resultType LLVMType
+}
+
+func (label wasmControlLabel) branchResult() LLVMType {
+	// Loop labels have no parameters in Go's single-result block encoding.
+	// The declared result belongs only to the fallthrough out of the loop.
+	if label.kind == "loop" {
+		return ""
+	}
+	return label.resultType
+}
+
+func wasmBranchTarget(ins Instr, op string, count int, nameAt func(int) string) (int, error) {
+	if strings.ToUpper(string(ins.Op)) != op || len(ins.Args) != 1 {
+		return 0, fmt.Errorf("%s expects one target without suffixes", ins.Op)
+	}
+	arg := ins.Args[0]
+	var name string
+	switch arg.Kind {
+	case OpImm:
+		if arg.ImmRaw != "" || arg.ImmIsFloat {
+			return 0, fmt.Errorf("%s branch depth must be an immediate integer", ins.Op)
+		}
+		if arg.Imm < 0 || arg.Imm >= int64(count) {
+			return 0, fmt.Errorf("branch depth %d exceeds %d active controls", arg.Imm, count)
+		}
+		return count - 1 - int(arg.Imm), nil
+	case OpIdent:
+		name = arg.Ident
+	case OpLabel, OpSym:
+		name = strings.TrimSuffix(arg.Sym, ":")
+	default:
+		return 0, fmt.Errorf("unsupported branch target %s", arg)
+	}
+	for i := count - 1; i >= 0; i-- {
+		if nameAt(i) == name {
+			return i, nil
+		}
+	}
+	return 0, fmt.Errorf("unknown structured branch target %q", name)
+}
+
+type wasmControlFrame struct {
+	wasmControlLabel
 	startLabel string
 	elseLabel  string
 	endLabel   string
 	baseStack  []wasmValue
-	resultType LLVMType
 	resultSlot string
 	inElse     bool
 }
@@ -1054,7 +1097,10 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		fmt.Fprintf(b, "  %%%s = getelementptr i8, ptr %s, i32 %d\n", name, v.val, offset)
 		return wasmValue{typ: Ptr, val: "%" + name}, nil
 	}
-	root := &wasmControlFrame{kind: "function", endLabel: "wasm_function_return"}
+	root := &wasmControlFrame{
+		wasmControlLabel: wasmControlLabel{kind: "function"},
+		endLabel:         "wasm_function_return",
+	}
 	if physicalRet != Void {
 		root.resultType = physicalRet
 		root.resultSlot = "wasm_function_result"
@@ -1247,14 +1293,21 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		}
 		return nil
 	}
-	storeBlockResult := func(frame *wasmControlFrame, popValue bool) error {
+	storeBlockResult := func(frame *wasmControlFrame, stackBase int, popValue bool) error {
 		if frame.resultType == "" {
 			return nil
 		}
-		if len(stack) <= len(frame.baseStack) {
+		if len(stack) <= stackBase {
 			return fmt.Errorf("%s block is missing its %s result", frame.kind, frame.resultType)
 		}
 		v := stack[len(stack)-1]
+		want, got := frame.resultType, v.typ
+		if frame.kind == "function" {
+			want, got = wasmPhysicalStackType(want), wasmPhysicalStackType(got)
+		}
+		if v.stackAddr || got != want {
+			return fmt.Errorf("%s block result requires %s, got %s", frame.kind, want, v.typ)
+		}
 		if popValue {
 			stack = stack[:len(stack)-1]
 		}
@@ -1270,53 +1323,37 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if blockTerminated {
 			return nil
 		}
-		if err := storeBlockResult(frame, true); err != nil {
+		if err := storeBlockResult(frame, len(frame.baseStack), true); err != nil {
 			return err
 		}
 		fmt.Fprintf(b, "  br label %%%s\n", frame.endLabel)
 		blockTerminated = true
 		return nil
 	}
-	controlTarget := func(arg Operand) (*wasmControlFrame, error) {
-		if arg.Kind == OpImm {
-			depth := int(arg.Imm)
-			if depth < 0 || depth >= len(controls) {
-				return nil, fmt.Errorf("branch depth %d exceeds %d active controls", depth, len(controls))
-			}
-			return controls[len(controls)-1-depth], nil
-		}
-		var name string
-		switch arg.Kind {
-		case OpIdent:
-			name = arg.Ident
-		case OpLabel, OpSym:
-			name = strings.TrimSuffix(arg.Sym, ":")
-		default:
-			return nil, fmt.Errorf("unsupported branch target %s", arg)
-		}
-		for i := len(controls) - 1; i >= 0; i-- {
-			if controls[i].name == name {
-				return controls[i], nil
-			}
-		}
-		return nil, fmt.Errorf("unknown structured branch target %q", name)
-	}
-	emitBranch := func(op string, arg Operand, conditional bool) error {
-		target, err := controlTarget(arg)
+	emitBranch := func(ins Instr, op string) error {
+		targetIndex, err := wasmBranchTarget(ins, op, len(controls), func(i int) string {
+			return controls[i].name
+		})
 		if err != nil {
 			return err
 		}
+		target := controls[targetIndex]
+		conditional := op == "BRIF"
+		stackBase := len(controls[len(controls)-1].baseStack)
 		var condition string
 		if conditional {
+			if len(stack) <= stackBase {
+				return fmt.Errorf("%s operand stack underflow", op)
+			}
 			condition, err = conditionValue(op)
 			if err != nil {
 				return err
 			}
 		}
-		// A loop branch transfers to the entry. The single result encoded
-		// in its block type is consumed only when the loop exits.
-		if target.kind != "loop" && target.resultType != "" {
-			if err := storeBlockResult(target, !conditional); err != nil {
+		if target.branchResult() != "" {
+			// An outer label's result still has to come from the current
+			// block's operand stack, above its entry height.
+			if err := storeBlockResult(target, stackBase, !conditional); err != nil {
 				return err
 			}
 		}
@@ -1563,11 +1600,13 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			pendingName = strings.TrimSuffix(ins.Args[0].Sym, ":")
 		case "BLOCK", "LOOP", "IF":
 			frame := &wasmControlFrame{
-				kind:       strings.ToLower(op),
-				name:       pendingName,
-				endLabel:   newLabel("wasm_control_end"),
-				baseStack:  copyStack(stack),
-				resultType: controlResults[insIndex],
+				wasmControlLabel: wasmControlLabel{
+					kind:       strings.ToLower(op),
+					name:       pendingName,
+					resultType: controlResults[insIndex],
+				},
+				endLabel:  newLabel("wasm_control_end"),
+				baseStack: copyStack(stack),
 			}
 			pendingName = ""
 			if frame.resultType != "" {
@@ -1631,10 +1670,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				push(wasmValue{typ: frame.resultType, val: "%" + name})
 			}
 		case "BR", "BRIF":
-			if len(ins.Args) != 1 {
-				return fmt.Errorf("%s expects one target", ins.Op)
-			}
-			if err := emitBranch(op, ins.Args[0], op == "BRIF"); err != nil {
+			if err := emitBranch(ins, op); err != nil {
 				return err
 			}
 		case "GET":

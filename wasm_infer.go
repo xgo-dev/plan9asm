@@ -18,18 +18,19 @@ type wasmInferValue struct {
 // have no Go declaration, so their signature cannot come from go/types.
 func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 	type inferControl struct {
-		base   []wasmInferValue
-		result LLVMType
+		wasmControlLabel
+		base []wasmInferValue
 	}
 	var (
-		stack      []wasmInferValue
-		regTypes   = make(map[Reg]LLVMType)
-		inputs     = make(map[Reg]bool)
-		written    = make(map[Reg]bool)
-		returnType LLVMType
-		controls   []inferControl
-		dead       wasmDeadControls
-		terminated bool
+		stack       []wasmInferValue
+		regTypes    = make(map[Reg]LLVMType)
+		inputs      = make(map[Reg]bool)
+		written     = make(map[Reg]bool)
+		returnType  LLVMType
+		controls    = []inferControl{{wasmControlLabel: wasmControlLabel{kind: "function"}}}
+		dead        wasmDeadControls
+		terminated  bool
+		pendingName string
 	)
 	copyStack := func(values []wasmInferValue) []wasmInferValue {
 		return append([]wasmInferValue(nil), values...)
@@ -86,6 +87,15 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		}
 		push(wasmInferValue{typ: out})
 		return nil
+	}
+	checkResult := func(kind string, result LLVMType, stackBase int) error {
+		if result == "" {
+			return nil
+		}
+		if len(stack) <= stackBase {
+			return fmt.Errorf("%s: %s block is missing its %s result", name, kind, result)
+		}
+		return require(stack[len(stack)-1], result)
 	}
 
 	for _, ins := range fn.Instrs {
@@ -147,9 +157,6 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			if skip {
 				continue
 			}
-		}
-		if op == "ELSE" || op == "END" {
-			terminated = false
 		}
 		if integerBinaryKnown {
 			for i := 0; i < 2; i++ {
@@ -258,7 +265,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			continue
 		}
 		switch op {
-		case "TEXT", "NOP", "NO_LOCAL_POINTERS", "LABEL":
+		case "TEXT", "NOP", "NO_LOCAL_POINTERS":
 		case "GET":
 			if len(ins.Args) != 1 || ins.Args[0].Kind != OpReg || ins.Args[0].Reg == SP {
 				continue
@@ -309,52 +316,82 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 				}
 			}
 			push(wasmInferValue{typ: typ})
-		case "IF", "BRIF":
-			if err := popTyped(op, I32); err != nil {
+		case "LABEL":
+			if len(ins.Args) != 1 {
+				return FuncSig{}, fmt.Errorf("wasm label expects one name")
+			}
+			pendingName = strings.TrimSuffix(ins.Args[0].Sym, ":")
+		case "BLOCK", "LOOP", "IF":
+			if op == "IF" {
+				if err := popTyped(op, I32); err != nil {
+					return FuncSig{}, err
+				}
+			}
+			controls = append(controls, inferControl{
+				wasmControlLabel: wasmControlLabel{
+					kind:       strings.ToLower(op),
+					name:       pendingName,
+					resultType: controlResult,
+				},
+				base: copyStack(stack),
+			})
+			pendingName = ""
+		case "ELSE":
+			control := &controls[len(controls)-1]
+			if control.kind != "if" {
+				return FuncSig{}, fmt.Errorf("Else without matching If")
+			}
+			if !terminated {
+				if err := checkResult(control.kind, control.resultType, len(control.base)); err != nil {
+					return FuncSig{}, err
+				}
+			}
+			control.kind = "else"
+			stack = copyStack(control.base)
+			terminated = false
+		case "END":
+			if len(controls) <= 1 {
+				return FuncSig{}, fmt.Errorf("End without active control")
+			}
+			control := controls[len(controls)-1]
+			controls = controls[:len(controls)-1]
+			if control.kind == "if" && control.resultType != "" {
+				return FuncSig{}, fmt.Errorf("result-producing If requires Else")
+			}
+			if !terminated {
+				if err := checkResult(control.kind, control.resultType, len(control.base)); err != nil {
+					return FuncSig{}, err
+				}
+			}
+			stack = copyStack(control.base)
+			if control.resultType != "" {
+				push(wasmInferValue{typ: control.resultType})
+			}
+			terminated = false
+		case "BR", "BRIF":
+			index, err := wasmBranchTarget(ins, op, len(controls), func(i int) string {
+				return controls[i].name
+			})
+			if err != nil {
 				return FuncSig{}, err
 			}
-			if op == "IF" {
-				controls = append(controls, inferControl{base: copyStack(stack), result: controlResult})
-			}
-		case "BLOCK", "LOOP":
-			controls = append(controls, inferControl{base: copyStack(stack), result: controlResult})
-		case "ELSE":
-			if len(controls) != 0 {
-				control := controls[len(controls)-1]
-				if control.result != "" && len(stack) > len(control.base) {
-					if err := require(stack[len(stack)-1], control.result); err != nil {
-						return FuncSig{}, err
-					}
+			stackBase := len(controls[len(controls)-1].base)
+			if op == "BRIF" {
+				if len(stack) <= stackBase {
+					return FuncSig{}, fmt.Errorf("%s: %s operand stack underflow", name, op)
 				}
-				stack = copyStack(control.base)
-			}
-		case "END":
-			if len(controls) != 0 {
-				control := controls[len(controls)-1]
-				controls = controls[:len(controls)-1]
-				if control.result != "" {
-					if len(stack) > len(control.base) {
-						if err := require(stack[len(stack)-1], control.result); err != nil {
-							return FuncSig{}, err
-						}
-					}
-					stack = copyStack(control.base)
-					push(wasmInferValue{typ: control.result})
-				} else {
-					stack = copyStack(control.base)
+				if err := popTyped(op, I32); err != nil {
+					return FuncSig{}, err
 				}
 			}
-		case "BR":
-			terminated = true
-			if len(controls) != 0 {
-				control := controls[len(controls)-1]
-				if control.result != "" && len(stack) > len(control.base) {
-					if err := require(stack[len(stack)-1], control.result); err != nil {
-						return FuncSig{}, err
-					}
-				}
+			target := controls[index]
+			if err := checkResult(target.kind, target.branchResult(), stackBase); err != nil {
+				return FuncSig{}, err
 			}
-			stack = nil
+			if op == "BR" {
+				terminated = true
+				stack = nil
+			}
 		case "DROP":
 			_ = pop(op)
 		case "UNDEF", "UNREACHABLE", "JMP":
@@ -381,8 +418,8 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		}
 	}
 
-	if len(dead) != 0 {
-		return FuncSig{}, fmt.Errorf("%d unterminated wasm control blocks", len(dead))
+	if open := len(controls) - 1 + len(dead); open != 0 {
+		return FuncSig{}, fmt.Errorf("%d unterminated wasm control blocks", open)
 	}
 	regs := make([]Reg, 0, len(inputs))
 	for reg := range inputs {
