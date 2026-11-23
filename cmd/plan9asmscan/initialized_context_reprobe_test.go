@@ -821,6 +821,10 @@ func TestInitializedContextReprobeOfficial386Forms(t *testing.T) {
 		{"vector-register", "386.s", []string{"CMPPD X0, X1, 4"}},
 		{"scalar-register", "386.s", []string{"SETCC AX", "DIVB AX", "IMULL AX"}},
 		{"scalar-numeric-memory", "386enc.s", []string{"ADDL 2147483648(AX), AX", "ADDL -2147483648(AX), AX"}},
+		{"mmx", "386enc.s", []string{
+			"MOVQ (AX), M0", "MOVQ M0, 8(SP)", "MOVQ 8(SP), M0",
+			"MOVQ M0, (AX)", "MOVQ M0, (BX)",
+		}},
 	} {
 		t.Run(test.profile, func(t *testing.T) {
 			evidence, err := runInitializedContextReprobe(forms, test.profile, arch, "")
@@ -846,6 +850,63 @@ func TestInitializedContextReprobeOfficial386Forms(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInitializedContextReprobeMMXNativeRegions(t *testing.T) {
+	const arch = "amd64"
+	rows := []struct {
+		instruction string
+		pointer     bool
+	}{
+		{"PSLLW $4,M3", false},
+		{"PSLLW M3,M2", false},
+		{"PSHUFW $27,M2,M1", false},
+		{"PMOVMSKB M3,DI", false},
+		{"MOVQ M1,M2", false},
+		{"MOVDQ2Q X3,M2", false},
+		{"MOVQ (CX)(AX*4),M1", true},
+		{"MOVNTQ M1,(AX)", true},
+		{"MASKMOVQ M1,M2", true},
+	}
+	forms := make(map[string]*formStat)
+	for i, row := range rows {
+		ins := compactProbeInstructions(t, row.instruction)[0]
+		probeErr := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, arch, ins)
+		if !errors.Is(probeErr, plan9asm.ErrProbeNeedsContext) {
+			t.Fatalf("isolated %s: %v", row.instruction, probeErr)
+		}
+		form := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, arch, ins).Form
+		if forms[form] == nil {
+			forms[form] = &formStat{}
+		}
+		captureContextSource(forms, plan9asm.ArchAMD64, arch, ins,
+			initializedContextSource{File: "mmx.s", Function: "probe", Line: i + 1}, probeErr)
+	}
+	evidence, err := runInitializedContextReprobe(forms, "mmx", arch, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Status != "pass" || len(evidence.Cases) != len(rows) || len(evidence.ObjectBatches) != 1 {
+		t.Fatalf("incorrect MMX evidence: status %s, cases %d, batches %d",
+			evidence.Status, len(evidence.Cases), len(evidence.ObjectBatches))
+	}
+	for i, expected := range rows {
+		c := evidence.Cases[i]
+		if c.OriginalInstruction.Raw != expected.instruction || c.MemoryPointerArgument != expected.pointer ||
+			c.FrameSize != 0 || len(c.Cleanup) != 1 || c.Cleanup[0].Op != "EMMS" ||
+			c.IRTextGeneration.Status != "pass" || c.LLVMObjectCompilation.Status != "pass" ||
+			c.RuntimeExecution.Status != "not_run" {
+			t.Errorf("incorrect evidence for %s: %+v", expected.instruction, c)
+		}
+	}
+	for _, instruction := range []string{
+		"MOVQ M1,8(SP)", "MOVQ table(SB),M1", "MOVQ (AX)(AX*2),M1", "PSLLW X1,X2",
+	} {
+		ins := compactProbeInstructions(t, instruction)[0]
+		if _, known := plan9asm.BuildInitializedMMXProbe(arch, ins); known {
+			t.Errorf("%s acquired an unrelated or unproved native memory role", instruction)
+		}
 	}
 }
 

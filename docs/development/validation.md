@@ -357,7 +357,10 @@ base-less, segment-relative, implicit, symbolic and aliased GP addresses stay
 outside this fixture. The `scalar-register` profile covers typed GP operands,
 including explicit and implicit multiply, divide, shifts, comparisons, and
 instructions with FLAGS inputs such as ADC and SETcc. Use `mask-logical` for
-the K-register logical family. Use `scalar-memory` for fixed-width GP
+the K-register logical family. Use `mmx` for physical MMX regions on 386 and
+amd64. It retains the original instruction, supplies real register producers
+and a declared pointer or bounded 386 local frame, and records the terminating
+`EMMS` separately. Use `scalar-memory` for fixed-width GP
 memory effects with the same explicit pointer fixture. It also initializes
 reaching FLAGS and any implicit accumulator inputs required by the form.
 Dynamic bit strings and private stack effects require separate validation.

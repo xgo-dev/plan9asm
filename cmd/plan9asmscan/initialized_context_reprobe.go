@@ -32,6 +32,7 @@ type initializedContextCase struct {
 	OriginalStatus         string                   `json:"original_status"`
 	Source                 initializedContextSource `json:"source"`
 	Initialization         []plan9asm.Instr         `json:"initialization"`
+	Cleanup                []plan9asm.Instr         `json:"cleanup,omitempty"`
 	MemoryPointerArgument  bool                     `json:"memory_pointer_argument,omitempty"`
 	NumericAddressArgument bool                     `json:"numeric_address_argument,omitempty"`
 	FrameSize              int64                    `json:"frame_size,omitempty"`
@@ -61,14 +62,50 @@ type initializedContextReport struct {
 	ObjectBatches     []initializedContextObject `json:"object_batches"`
 }
 
-var initializedContextProfiles = map[string]func(string, plan9asm.Instr) ([]plan9asm.Instr, bool, error){
-	"mask-logical":          plan9asm.InitializedMaskLogicalProbeSequence,
-	"scalar-register":       plan9asm.InitializedScalarRegisterProbeSequence,
-	"scalar-memory":         plan9asm.InitializedScalarMemoryProbeSequence,
-	"scalar-numeric-memory": plan9asm.InitializedScalarNumericMemoryProbeSequence,
-	"vector-memory":         plan9asm.InitializedVectorMemoryProbeSequence,
-	"vector-numeric-memory": plan9asm.InitializedVectorNumericMemoryProbeSequence,
-	"vector-register":       plan9asm.InitializedVectorRegisterProbeSequence,
+type initializedContextArgument uint8
+
+const (
+	initializedNoArgument initializedContextArgument = iota
+	initializedPointerArgument
+	initializedNumericArgument
+)
+
+type initializedContextBuilder func(string, *initializedContextCase) (bool, error)
+
+var initializedContextProfiles = map[string]initializedContextBuilder{
+	"mask-logical":          initializedSequenceBuilder(plan9asm.InitializedMaskLogicalProbeSequence, initializedNoArgument),
+	"scalar-register":       initializedSequenceBuilder(plan9asm.InitializedScalarRegisterProbeSequence, initializedNoArgument),
+	"scalar-memory":         initializedSequenceBuilder(plan9asm.InitializedScalarMemoryProbeSequence, initializedPointerArgument),
+	"scalar-numeric-memory": initializedSequenceBuilder(plan9asm.InitializedScalarNumericMemoryProbeSequence, initializedNumericArgument),
+	"vector-memory":         initializedSequenceBuilder(plan9asm.InitializedVectorMemoryProbeSequence, initializedPointerArgument),
+	"vector-numeric-memory": initializedSequenceBuilder(plan9asm.InitializedVectorNumericMemoryProbeSequence, initializedNumericArgument),
+	"vector-register":       initializedSequenceBuilder(plan9asm.InitializedVectorRegisterProbeSequence, initializedNoArgument),
+	"mmx":                   initializedMMXBuilder,
+}
+
+func initializedSequenceBuilder(prepare func(string, plan9asm.Instr) ([]plan9asm.Instr, bool, error),
+	argument initializedContextArgument) initializedContextBuilder {
+	return func(goarch string, source *initializedContextCase) (bool, error) {
+		sequence, known, err := prepare(goarch, source.OriginalInstruction)
+		if !known || err != nil {
+			return known, err
+		}
+		source.Initialization = sequence[:len(sequence)-1]
+		source.MemoryPointerArgument = argument == initializedPointerArgument
+		source.NumericAddressArgument = argument == initializedNumericArgument
+		return true, nil
+	}
+}
+
+func initializedMMXBuilder(goarch string, source *initializedContextCase) (bool, error) {
+	probe, known := plan9asm.BuildInitializedMMXProbe(goarch, source.OriginalInstruction)
+	if known {
+		source.Initialization = probe.Before
+		source.Cleanup = probe.After
+		source.MemoryPointerArgument = probe.MemoryPointerArgument
+		source.FrameSize = probe.FrameSize
+	}
+	return known, nil
 }
 
 // Retain occurrences, not the capped display Examples or form-level status.
@@ -133,17 +170,14 @@ func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, l
 		return a.InstructionIndex < b.InstructionIndex
 	})
 	for _, source := range sources {
-		sequence, known, err := prepare(goarch, source.OriginalInstruction)
+		known, err := prepare(goarch, &source)
+		if err != nil {
+			return result, err
+		}
 		if !known {
 			result.UnregisteredCases = append(result.UnregisteredCases, source)
 			continue
 		}
-		if err != nil {
-			return result, err
-		}
-		source.Initialization = sequence[:len(sequence)-1]
-		source.MemoryPointerArgument = profile == "vector-memory" || profile == "scalar-memory"
-		source.NumericAddressArgument = profile == "vector-numeric-memory" || profile == "scalar-numeric-memory"
 		if goarch == "amd64" && source.MemoryPointerArgument {
 			for _, ins := range source.Initialization {
 				if ins.Op == "MOVQ" && len(ins.Args) == 2 && ins.Args[0].Kind == plan9asm.OpFP &&
@@ -219,13 +253,14 @@ func runInitializedContextReprobe(forms map[string]*formStat, profile, goarch, l
 }
 
 func (test initializedContextCase) sequence() []plan9asm.Instr {
-	sequence := make([]plan9asm.Instr, 0, len(test.Initialization)+2)
+	sequence := make([]plan9asm.Instr, 0, len(test.Initialization)+len(test.Cleanup)+2)
 	sequence = append(sequence, test.Initialization...)
-	return append(sequence, test.OriginalInstruction)
+	sequence = append(sequence, test.OriginalInstruction)
+	return append(sequence, test.Cleanup...)
 }
 
 func (test initializedContextCase) probe(goarch string) error {
-	if !test.MemoryPointerArgument && !test.NumericAddressArgument {
+	if !test.MemoryPointerArgument && !test.NumericAddressArgument && test.FrameSize == 0 {
 		return plan9asm.ProbeInstructionSequence(plan9asm.ArchAMD64, goarch, test.sequence())
 	}
 	fn, sig := test.function("initialized.memory", goarch)
