@@ -169,6 +169,24 @@ for report_path in report_paths:
             "review the form-level report before updating the baseline"
         )
 
+    if arch == "wasm":
+        catalog = report.get("opcode_catalog")
+        if not catalog:
+            raise SystemExit(f"{version}/wasm: official opcode catalog is missing")
+        unclaimed = {
+            item["opcode"] for item in catalog
+            if not item["name_claimed_by_lowerer"]
+        }
+        observations = report.get("wasm_direct_encoder_observations", [])
+        observed = {item["opcode"] for item in observations}
+        if observed != unclaimed or len(observed) != len(observations):
+            raise SystemExit(
+                f"{version}/wasm: incomplete direct encoder observations: "
+                f"missing={sorted(unclaimed - observed)}, extra={sorted(observed - unclaimed)}, "
+                f"distinct={len(observed)}, observations={len(observations)}"
+            )
+        print(f"{version}/wasm: {len(observations)} direct encoder observations for unclaimed names")
+
     if arch == "arm64":
         required = {
             line.strip()

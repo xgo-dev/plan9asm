@@ -44,6 +44,7 @@ func TestOfficialCoverageCIChecksCompleteEncodingRuleAttributes(t *testing.T) {
 		"unchanged", "changed-fingerprint", "changed-count", "missing-report",
 		"missing-baseline", "both-missing", "386-fingerprint", "count-zero",
 		"count-bool", "count-string", "malformed-fingerprint", "missing-count", "missing-fingerprint",
+		"wasm-missing-observation", "wasm-duplicate-observation", "wasm-missing-catalog",
 	} {
 		t.Run(mutation, func(t *testing.T) {
 			var baseline map[string]interface{}
@@ -90,8 +91,26 @@ func TestOfficialCoverageCIChecksCompleteEncodingRuleAttributes(t *testing.T) {
 				}
 			}
 			reports["arm64"]["opcode_catalog"] = catalog
+			wasm := reports["wasm"]
+			wasm["opcode_catalog"] = []opcodeCatalogReport{
+				{Opcode: "BRTABLE"},
+				{Opcode: "LOCALGET"},
+				{Opcode: "I32ADD", NameClaimed: true},
+			}
+			observations := []wasmDirectEncoderObservation{{Opcode: "BRTABLE"}, {Opcode: "LOCALGET"}}
+			wasm["wasm_direct_encoder_observations"] = observations
 			entry := arches["amd64"].(map[string]interface{})
+			diagnosis := "encoder_rule"
 			switch mutation {
+			case "wasm-missing-observation":
+				wasm["wasm_direct_encoder_observations"] = observations[:1]
+				diagnosis = "incomplete direct encoder observations"
+			case "wasm-duplicate-observation":
+				wasm["wasm_direct_encoder_observations"] = append(observations, observations[0])
+				diagnosis = "incomplete direct encoder observations"
+			case "wasm-missing-catalog":
+				delete(wasm, "opcode_catalog")
+				diagnosis = "official opcode catalog is missing"
 			case "changed-fingerprint":
 				reports["amd64"]["encoder_rule_fingerprint"] = strings.Repeat("b", 64)
 			case "changed-count":
@@ -151,8 +170,8 @@ func TestOfficialCoverageCIChecksCompleteEncodingRuleAttributes(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatalf("CI accepted %s with identical historical operand-class fingerprint:\n%s", mutation, output)
-			} else if ctx.Err() != nil || !strings.Contains(string(output), "encoder_rule") {
-				t.Fatalf("CI failure was not an encoding-rule diagnosis: %v\n%s", err, output)
+			} else if ctx.Err() != nil || !strings.Contains(string(output), diagnosis) {
+				t.Fatalf("CI failure did not report %q: %v\n%s", diagnosis, err, output)
 			}
 		})
 	}

@@ -316,6 +316,16 @@ fingerprints. Inspect differences before changing
 `testdata/coverage/go-asm-baseline.json`. Opcode names, observed corpus forms,
 encoder rules, LLVM objects and runtime semantics are distinct coverage claims.
 
+For Wasm, the gate also requires a direct-encoder observation for each official
+name without a lowering claim. The scan runs the selected SDK's assembler with
+two index operand sets and retains the exact source, exit status and emitted
+function bytes in `wasm_direct_encoder_observations`. The known direct
+`BrTable` panic has its own outcome. Indexed forms such as `LocalGet`,
+`MemoryInit` and `TableCopy` emit the opcode and omit the written indexes.
+These observations describe direct Plan 9 spellings, separate from Go-generated
+operations and the corpus's IR, object and runtime results. Changes to the
+observed tool behavior or the set of unclaimed names fail the gate for review.
+
 To retry x86 vector-register forms with explicit initialized inputs:
 
 ```sh

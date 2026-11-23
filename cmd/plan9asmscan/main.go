@@ -86,18 +86,19 @@ type report struct {
 
 	LegacyEncoder *legacyEncoderReport `json:"legacy_encoder,omitempty"`
 
-	OpsByFreq                 []opReport                `json:"ops_by_freq"`
-	ClusterStats              []clusterReport           `json:"cluster_stats"`
-	FamilyStats               []familyReport            `json:"unsupported_family_stats"`
-	FormFamilies              []formFamilyReport        `json:"form_family_stats"`
-	Forms                     []formReport              `json:"forms"`
-	Unsupported               []opReport                `json:"unsupported"`
-	UnsupportedByForm         []formReport              `json:"unsupported_by_form"`
-	OpcodeCatalog             []opcodeCatalogReport     `json:"opcode_catalog,omitempty"`
-	EncoderCatalog            []encoderFormReport       `json:"encoder_form_catalog,omitempty"`
-	FrontendInventory         *frontendInventory        `json:"frontend_inventory,omitempty"`
-	ParseErrs                 []parseErr                `json:"parse_errs,omitempty"`
-	InitializedContextReprobe *initializedContextReport `json:"initialized_context_reprobe,omitempty"`
+	OpsByFreq                 []opReport                     `json:"ops_by_freq"`
+	ClusterStats              []clusterReport                `json:"cluster_stats"`
+	FamilyStats               []familyReport                 `json:"unsupported_family_stats"`
+	FormFamilies              []formFamilyReport             `json:"form_family_stats"`
+	Forms                     []formReport                   `json:"forms"`
+	Unsupported               []opReport                     `json:"unsupported"`
+	UnsupportedByForm         []formReport                   `json:"unsupported_by_form"`
+	OpcodeCatalog             []opcodeCatalogReport          `json:"opcode_catalog,omitempty"`
+	EncoderCatalog            []encoderFormReport            `json:"encoder_form_catalog,omitempty"`
+	FrontendInventory         *frontendInventory             `json:"frontend_inventory,omitempty"`
+	WasmDirectEncoder         []wasmDirectEncoderObservation `json:"wasm_direct_encoder_observations,omitempty"`
+	ParseErrs                 []parseErr                     `json:"parse_errs,omitempty"`
+	InitializedContextReprobe *initializedContextReport      `json:"initialized_context_reprobe,omitempty"`
 }
 
 // Default scanning runs text-lowering probes, not object or execution tests.
@@ -302,6 +303,12 @@ func main() {
 		fatalf("load Go legacy encoder inventory: %v", err)
 	}
 	rep.FrontendInventory = frontend
+	if *corpus == "go-asm" && *goarch == "wasm" {
+		rep.WasmDirectEncoder, err = observeWasmDirectEncoder(*goroot, *goos)
+		if err != nil {
+			fatalf("observe actual Wasm direct encoder: %v", err)
+		}
+	}
 	var reprobeErr error
 	if *reprobe != "" {
 		rep.InitializedContextReprobe, reprobeErr = runInitializedContextReprobe(forms, *reprobe, *goarch, *llc)
@@ -1359,6 +1366,15 @@ func renderMarkdown(rep report) []byte {
 	b.WriteString("| LLVM 22 object compilation | not run by this scanner |\n")
 	b.WriteString("| Runtime execution | not run by this scanner |\n\n")
 	b.WriteString("Context is not successful translation. Zero observed unsupported forms does not prove complete instruction, object or runtime coverage. Manifest associations require separate current-head test receipts.\n\n")
+	if len(rep.WasmDirectEncoder) != 0 {
+		b.WriteString("## Wasm direct encoder observations\n\n")
+		b.WriteString("Each name was assembled with two distinct sets of direct index operands. JSON retains the exact sources, outcomes and emitted bytes.\n\n")
+		b.WriteString("| Name | Outcome |\n| --- | --- |\n")
+		for _, observation := range rep.WasmDirectEncoder {
+			fmt.Fprintf(&b, "| `%s` | `%s` |\n", observation.Opcode, observation.Outcome)
+		}
+		b.WriteByte('\n')
+	}
 	if reprobe := rep.InitializedContextReprobe; reprobe != nil {
 		fmt.Fprintf(&b, "## Counterfactual initialized-context reprobe\n\nProfile `%s`: `%s`, %d eligible source occurrences, %d object batches; %d other context occurrences retained without reprobe.\n\n",
 			reprobe.Profile, reprobe.Status, reprobe.EligibleCases, len(reprobe.ObjectBatches), len(reprobe.UnregisteredCases))
