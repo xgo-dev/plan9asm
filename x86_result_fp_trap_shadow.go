@@ -57,7 +57,7 @@ func (c *amd64Ctx) checkTrapOnlyLogicalFPResultInitialization() error {
 		}
 		width := x86IntegerFPMoveWidth(ins, arch)
 		if width != 0 && len(ins.Args) == 2 && ins.Args[1].Kind == OpFP {
-			if _, err := c.bitTestFPSpan(ins.Args[1].FPOffset, int(width)); err != nil {
+			if _, err := c.logicalIntegerFPSpan(ins.Args[1].FPOffset, int(width)); err != nil {
 				return false
 			}
 			// Only the logical shadow boundary changes. All source byte/flag

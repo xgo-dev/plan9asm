@@ -13,7 +13,7 @@ func (c *amd64Ctx) scalarBitTestFPShadowTransfer(ins Instr, state *x86ResultStat
 		ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride || ins.x86SegmentPrefix != 0 {
 		return false, true
 	}
-	if _, err := c.bitTestFPSpan(form.destination.FPOffset, form.bits/8); err != nil {
+	if _, err := c.logicalIntegerFPSpan(form.destination.FPOffset, form.bits/8); err != nil {
 		return false, true
 	}
 	next := state.clone()

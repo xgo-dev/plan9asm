@@ -136,7 +136,7 @@ func (c *amd64Ctx) loadBitTestDestination(destination Operand, typ LLVMType, mem
 		if registerIndex {
 			return "", nil, fmt.Errorf("%w: a register-indexed FP bit string has no fixed logical byte span", ErrProbeNeedsContext)
 		}
-		return c.loadBitTestFPDestination(destination, typ)
+		return c.loadLogicalIntegerFPDestination(destination, typ)
 	}
 	pointer, pointerType, _, err := c.packedVectorMemoryPointer(destination)
 	if err != nil {
@@ -160,10 +160,10 @@ func (c *amd64Ctx) loadBitTestDestination(destination Operand, typ LLVMType, mem
 	}, nil
 }
 
-func (c *amd64Ctx) loadBitTestFPDestination(destination Operand, typ LLVMType) (string, func(string) error, error) {
+func (c *amd64Ctx) loadLogicalIntegerFPDestination(destination Operand, typ LLVMType) (string, func(string) error, error) {
 	bits, _ := amd64IntegerTypeBits(typ)
 	width := bits / 8
-	result, err := c.bitTestFPSpan(destination.FPOffset, width)
+	result, err := c.logicalIntegerFPSpan(destination.FPOffset, width)
 	if err != nil {
 		return "", nil, err
 	}
@@ -185,7 +185,7 @@ func (c *amd64Ctx) loadBitTestFPDestination(destination Operand, typ LLVMType) (
 	}, nil
 }
 
-func (c *amd64Ctx) bitTestFPSpan(off int64, width int) (bool, error) {
+func (c *amd64Ctx) logicalIntegerFPSpan(off int64, width int) (bool, error) {
 	if err := c.validateX86PackedShiftFPSpan(off, width); err != nil {
 		return false, err
 	}
@@ -193,7 +193,7 @@ func (c *amd64Ctx) bitTestFPSpan(off int64, width int) (bool, error) {
 	for offset := off; offset < off+int64(width); offset++ {
 		slot, output, _ := c.fpVectorSlot(offset)
 		if slot.Type == Ptr || slot.Type == I1 {
-			return false, fmt.Errorf("%w: FP bit string needs declared numerical bytes", ErrProbeNeedsContext)
+			return false, fmt.Errorf("%w: logical FP integer access needs declared numerical bytes", ErrProbeNeedsContext)
 		}
 		result = result || output
 	}

@@ -369,6 +369,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if x86EndBranchPreservesSourceState(ins) {
 			continue // Exact native CET tracking preserves inputs, not memory or entry permissions.
 		}
+		if _, known, err := x86ARPLProperties(ins.Op, ins, arch); known && err == nil && ins.x86SourceRaw != nil {
+			continue // The same word RMW and independent input checks apply to the original bytes.
+		}
 		if ins.x86Encoded || ins.x86RawNearReturn != nil ||
 			ins.x86AddressBits != 0 || ins.x86UnboundAddressOverride {
 			return strictErr
@@ -787,6 +790,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 			return accepted
 		}
 		if accepted, recognized := x86LoweredScalarMemoryRMW(ins, state, owned, arch); recognized {
+			return accepted
+		}
+		if accepted, known := c.loweredARPLTransfer(ins, state, owned, arch); known {
 			return accepted
 		}
 		if accepted, known := x86LoweredScalarShiftMemory(ins, state, owned, resultOffset, arch); known {

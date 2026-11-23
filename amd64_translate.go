@@ -779,6 +779,12 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 		}
 		return false, c.lowerX86Decimal(form)
 	}
+	if form, known, err := x86ARPLProperties(Op(op), ins, c.goarch); known {
+		if err != nil {
+			return false, err
+		}
+		return false, c.lowerARPL(ins, form)
+	}
 	switch Op(op) {
 	case "LOCK":
 		return false, c.namedLockPrefixBinding(bi, ii, ins)

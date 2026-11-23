@@ -155,6 +155,9 @@ func x86TypedGPByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bo
 	if effect, known, err := x86TypedDecimalEffect(op, ins, arch); known {
 		return effect, true, err
 	}
+	if form, known, err := x86ARPLProperties(op, ins, arch); known {
+		return form.effects(), true, err
+	}
 	if effect, known, err := x86TypedSelfCompareByteEffect(op, ins, arch); known {
 		return effect, known, err
 	}
