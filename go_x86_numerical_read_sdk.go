@@ -254,7 +254,7 @@ func (source *GoX86NumericalReadSource) verifySDKObservation(ctx context.Context
 	if !reflect.DeepEqual(selected, source.guard.selection) || !numericalSameRawSelection(source.rawSelection, raw) {
 		return numericalSBContext("actual consumer selection/export changed")
 	}
-	imports, err := source.guard.bindOriginalDeclarationImports(graph)
+	imports, err := source.guard.recheckOriginalDeclarationImports(graph)
 	if err != nil {
 		return numericalSBContext("complete SDK source/export graph cannot be rebound: %v", err)
 	}

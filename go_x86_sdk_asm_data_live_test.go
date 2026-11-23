@@ -100,6 +100,32 @@ func TestGoX86SDKASMDataLiveCaptureUsesOneListGraph(t *testing.T) {
 	}
 }
 
+func TestGoX86SDKASMDataLiveVerifyDoesNotAcquireInput(t *testing.T) {
+	ctx, request := sdkASMDataRequest(t, "amd64", "hash/crc32")
+	source, err := CaptureGoX86SDKASMDataSource(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	dependency := source.observation.Imports["internal/cpu"].Export
+	if _, retained := source.guard.inputs[dependency]; !retained || dependency == "" {
+		t.Fatal("the original compiler export was not captured")
+	}
+
+	// A missing input must be rejected without acquiring it during verification.
+	delete(source.guard.inputs, dependency)
+	source.stateSeal, err = source.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Verify(ctx); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatal("an incomplete original input inventory verified", err)
+	}
+	if _, retained := source.guard.inputs[dependency]; retained {
+		t.Fatal("verification acquired a dependency export outside the original input inventory")
+	}
+}
+
 func TestGoX86SDKASMDataLiveTwoTargets(t *testing.T) {
 	for _, arch := range []string{"386", "amd64"} {
 		t.Run(arch, func(t *testing.T) {

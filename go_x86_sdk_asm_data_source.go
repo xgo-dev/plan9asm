@@ -454,7 +454,7 @@ func (source *GoX86SDKASMDataSource) verifyState(ctx context.Context, frame *GoA
 	if err != nil {
 		return err
 	}
-	imports, err := source.guard.bindOriginalDeclarationImports(raw)
+	imports, err := source.guard.recheckOriginalDeclarationImports(raw)
 	if err != nil || !reflect.DeepEqual(imports, source.observation.Imports) ||
 		!numericalSameRawSDKGraph(raw, source.observation.Graph) {
 		return sdkASMDataContext("complete SDK source/export/selection graph changed: %v", err)

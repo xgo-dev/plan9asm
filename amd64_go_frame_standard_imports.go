@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 
@@ -28,9 +29,31 @@ func (source *GoAMD64FrameSource) loadOriginalDeclarationImports(ctx context.Con
 	return source.bindOriginalDeclarationImports(output)
 }
 
-// A caller retaining the actual command bytes may share the same complete
-// graph decoder. This routine observes files/exports, not frame authority.
 func (source *GoAMD64FrameSource) bindOriginalDeclarationImports(output []byte) (map[string]goAMD64FrameSelection, error) {
+	return source.projectOriginalDeclarationImports(output, func(name string) (int, error) {
+		data, err := source.read(name)
+		return len(data), err
+	})
+}
+
+// Recheck the physical graph against retained inputs. The caller must verify
+// the complete input hashes in the same live operation before publishing.
+func (source *GoAMD64FrameSource) recheckOriginalDeclarationImports(output []byte) (map[string]goAMD64FrameSelection, error) {
+	return source.projectOriginalDeclarationImports(output, func(name string) (int, error) {
+		if _, retained := source.inputs[name]; !retained {
+			return 0, goAMD64FrameContext("declaration dependency is outside the original input inventory: %s", filepath.Base(name))
+		}
+		info, err := os.Lstat(name)
+		if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > 64<<20 {
+			return 0, goAMD64FrameContext("declaration dependency is not a bounded regular input: %s", filepath.Base(name))
+		}
+		return int(info.Size()), nil
+	})
+}
+
+// Both capture and verification resolve the complete physical graph. The
+// input observation supplies bounded extents for source and export roles.
+func (source *GoAMD64FrameSource) projectOriginalDeclarationImports(output []byte, inputSize func(string) (int, error)) (map[string]goAMD64FrameSelection, error) {
 	if len(output) > 16<<20 {
 		return nil, goAMD64FrameContext("declaration import graph exceeds its bound")
 	}
@@ -101,11 +124,11 @@ func (source *GoAMD64FrameSource) bindOriginalDeclarationImports(output []byte) 
 				if filepath.Base(file) != file {
 					return nil, goAMD64FrameContext("declaration dependency source is not a package-local file")
 				}
-				data, err := source.read(filepath.Join(dir, file))
+				size, err := inputSize(filepath.Join(dir, file))
 				if err != nil {
 					return nil, err
 				}
-				inputBytes += len(data)
+				inputBytes += size
 				inputFiles++
 				if inputBytes > 64<<20 || inputFiles > 32768 {
 					return nil, goAMD64FrameContext("complete declaration dependency inputs exceed their bound")
@@ -117,8 +140,8 @@ func (source *GoAMD64FrameSource) bindOriginalDeclarationImports(output []byte) 
 			if err != nil || !goAssemblyPathWithinRoot(cache, selected.Export) {
 				return nil, goAMD64FrameContext("declaration compiler export is outside its actual cache")
 			}
-			data, err := source.read(selected.Export)
-			if err != nil || len(data) == 0 {
+			size, err := inputSize(selected.Export)
+			if err != nil || size == 0 {
 				return nil, goAMD64FrameContext("declaration compiler export is empty or changed: %v", err)
 			}
 		}
