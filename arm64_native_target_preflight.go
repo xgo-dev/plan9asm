@@ -81,12 +81,13 @@ func arm64NativeTargetCodeView(file *File) *File {
 		points := make([]arm64RawLayoutPoint, len(function.Instrs))
 		knownLabels := make(map[string]bool)
 		point := arm64RawLayoutPoint{}
+		widths := arm64RawLayoutWidths{fn: function}
 		for at, instruction := range function.Instrs {
 			points[at] = point
 			if instruction.Op == OpLABEL && len(instruction.Args) == 1 && instruction.Args[0].Kind == OpLabel {
 				knownLabels[instruction.Args[0].Sym] = true
 			}
-			width, known := arm64RawKnownSourceWidth(function, instruction)
+			width, known := widths.knownWidth(instruction)
 			if !known {
 				point.segment++
 				point.offset = 0

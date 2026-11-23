@@ -49,6 +49,7 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 	offset := int64(0)
 	var startAlignment int64
 	alignmentChecked, alignmentLayoutKnown := false, false
+	widths := arm64RawLayoutWidths{fn: fn}
 	for i, ins := range fn.Instrs {
 		point := arm64RawLayoutPoint{segment: segment, offset: offset}
 		points[i] = point
@@ -68,7 +69,7 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 			}
 			if !alignmentChecked {
 				alignmentChecked = true
-				alignmentLayoutKnown = arm64RawAlignmentLayoutKnown(fn)
+				alignmentLayoutKnown = widths.alignmentKnown()
 				if alignmentLayoutKnown && arm64DeclaredFramelessText(fn) {
 					startAlignment = 2048
 				}
@@ -91,7 +92,7 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 			continue
 		}
 
-		width, known := arm64RawKnownSourceWidth(fn, ins)
+		width, known := widths.knownWidth(ins)
 		if !known {
 			segment++
 			offset = 0
@@ -313,18 +314,15 @@ func arm64RawPCDataReference(op string) bool {
 // literal pools away from the instruction that uses them. Named conditional
 // branches may gain a veneer, whereas an explicit WORD always occupies four
 // bytes. Retain separate layout segments if either makes alignment uncertain.
-func arm64RawAlignmentLayoutKnown(fn Func) bool {
-	for _, ins := range fn.Instrs {
+func (widths *arm64RawLayoutWidths) alignmentKnown() bool {
+	for _, ins := range widths.fn.Instrs {
 		if _, handled, err := arm64PCAlignment(ins); handled {
 			if err != nil {
 				return false
 			}
 			continue
 		}
-		if !ins.arm64Encoded && arm64IsConditionalBranch(arm64ControlOp(ins)) {
-			return false
-		}
-		if _, known := arm64RawKnownSourceWidth(fn, ins); !known {
+		if _, known := widths.knownWidth(ins); !known {
 			return false
 		}
 	}
@@ -694,21 +692,6 @@ func arm64RawKnownSourceWidth(fn Func, ins Instr) (int64, bool) {
 	case "BL", OpCALL:
 		if arm64RawFixedWidthJumpOperand(ins, true) {
 			return 4, true
-		}
-		return 0, false
-	case "BCC", "BCS", "BEQ", "BGE", "BGT", "BHI", "BHS", "BLE",
-		"BLO", "BLS", "BLT", "BMI", "BNE", "BPL", "BVC", "BVS":
-		// Go 1.27's conditional-branch optab has a single C_SBRA form,
-		// always four bytes. Do not infer a width for other operand forms.
-		if len(ins.Args) == 1 {
-			switch ins.Args[0].Kind {
-			case OpIdent, OpSym:
-				return 4, true
-			case OpMem:
-				if ins.Args[0].Mem.Base == PC && ins.Args[0].Mem.Index == "" {
-					return 4, true
-				}
-			}
 		}
 		return 0, false
 	case OpMOVD:

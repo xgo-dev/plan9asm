@@ -37,16 +37,21 @@ func TestARM64RawPCAlignmentBindsGoObjectTarget(t *testing.T) {
 		source := arm64RawAlignedBranchSource("aligned", "4", "PCALIGN $64\n", "PCALIGN $32", 20)
 		checkARM64RawAlignedGoTarget(t, source, 32)
 	})
+	t.Run("short_named_branch", func(t *testing.T) {
+		source := arm64RawAlignedBranchSource("aligned", "516", "", "PCALIGN $32", 20)
+		source = strings.Replace(source, "PCALIGN $32\n", "BEQ branchTarget\nPCALIGN $32\n", 1)
+		checkARM64RawAlignedGoTarget(t, source, 32)
+	})
 }
 
 func TestARM64RawPCAlignmentRetainsUnknownLayoutBoundaries(t *testing.T) {
-	// Either an unresolved prefix size or a named conditional branch that
-	// Go can extend must leave the alignment's byte placement unproved.
+	// An unresolved instruction width can conceal a literal pool or make
+	// the distance of an adjacent conditional branch unprovable.
 	for _, test := range []struct {
 		name, change string
 	}{
 		{"literal materialization", "MOVD $0x123456789abcdef0,R10\n"},
-		{"possible Go veneer", "BEQ branchTarget\n"},
+		{"unbounded named branch", "BEQ branchTarget\nMOVD $0x123456789abcdef0,R10\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := arm64RawAlignedBranchSource("aligned", "516", "", "PCALIGN $32", 20)

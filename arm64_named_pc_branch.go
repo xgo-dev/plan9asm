@@ -12,15 +12,15 @@ func arm64NamedPCOperand(ins Instr) (index int, address bool, relative bool) {
 	}
 	count := 1
 	switch op {
-	case "B", "JMP", "BL", "CALL", "BEQ", "BNE", "BLO", "BHI", "BLT", "BGE", "BLE", "BGT", "BHS", "BLS", "BMI", "BPL", "BVS", "BVC", "BCC", "BCS":
-	case "CBZ", "CBNZ", "CBZW", "CBNZW":
-		index, count = 1, 2
-	case "TBZ", "TBNZ":
-		index, count = 2, 3
+	case "B", "JMP", "BL", "CALL":
 	case "ADR", "ADRP":
 		count, address = 2, true
 	default:
-		return 0, false, false
+		count, _ = arm64ConditionalBranchShape(op)
+		if count == 0 {
+			return 0, false, false
+		}
+		index = count - 1
 	}
 	return index, address, len(ins.Args) == count && ins.Args[index].Kind == OpMem && ins.Args[index].Mem.Base == PC
 }

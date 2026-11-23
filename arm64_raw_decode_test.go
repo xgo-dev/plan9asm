@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -280,10 +281,11 @@ func TestARM64RawPCRelativeCrossesConditionalBranchFamily(t *testing.T) {
 	for _, branch := range []string{
 		"BCC", "BCS", "BEQ", "BGE", "BGT", "BHI", "BHS", "BLE",
 		"BLO", "BLS", "BLT", "BMI", "BNE", "BPL", "BVC", "BVS",
+		"CBZ", "CBNZ", "CBZW", "CBNZW", "TBZ", "TBNZ",
 	} {
 		t.Run(branch, func(t *testing.T) {
 			source := "TEXT rawConditionalBranch(SB), $0-0\n\tWORD $0x1000005e // ADR +8, R30\n\t" +
-				branch + " branchTarget\n\tMOVD R0, R0\nbranchTarget:\n\tRET\n"
+				arm64NamedPCBranchInstruction(branch, "branchTarget") + "\n\tMOVD R0, R0\nbranchTarget:\n\tRET\n"
 			requireARM64GoAssemblerResult(t, source, true)
 			file, err := Parse(ArchARM64, source)
 			if err != nil {
@@ -291,6 +293,48 @@ func TestARM64RawPCRelativeCrossesConditionalBranchFamily(t *testing.T) {
 			}
 			if _, err := normalizeARM64RawPCRelative(file.Funcs[0]); err != nil {
 				t.Fatalf("fixed-width %s broke raw PC-relative layout: %v", branch, err)
+			}
+		})
+	}
+}
+
+func TestARM64RawPCRelativeRejectsBranchesIntoGoVeneers(t *testing.T) {
+	for _, tc := range []struct {
+		op      string
+		padding int
+	}{
+		{"BEQ", 513},
+		{"CBZW", 513},
+		{"CBNZ", 513},
+		{"TBZ", 17},
+		{"TBNZ", 17},
+	} {
+		t.Run(tc.op, func(t *testing.T) {
+			const local = "WORD $0xd28000e0\nRET\n"         // MOVD $7, R0
+			const distant = "far:\nWORD $0xd2800920\nRET\n" // MOVD $73, R0
+			source := "TEXT veneer(SB),516,$0-0\nWORD $0x14000003\n" +
+				arm64NamedPCBranchInstruction(tc.op, "far") + "\n" +
+				local + strings.Repeat("PCALIGN $2048\nWORD $0xd503201f\n", tc.padding) + distant
+			code := arm64ImmediateOriginalGoBytes(t, source, "linux")
+			if len(code) < 20 {
+				t.Fatalf("short original Go TEXT: %d bytes", len(code))
+			}
+			// The raw branch lands on the second inserted instruction,
+			// which goes to far. The first source fallthrough starts at 16.
+			veneer := binary.LittleEndian.Uint32(code[12:16])
+			target := 12 + int(int32(veneer<<6)>>4)
+			if veneer&0xfc000000 != 0x14000000 || target <= 16 || target > len(code)-4 ||
+				binary.LittleEndian.Uint32(code[target:target+4]) != 0xd2800920 ||
+				binary.LittleEndian.Uint32(code[16:20]) != 0xd28000e0 {
+				t.Fatalf("missing Go conditional branch veneer: offset 12=%#08x target=%d", veneer, target)
+			}
+			file, err := Parse(ArchARM64, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := normalizeARM64RawPCRelative(file.Funcs[0]); err == nil ||
+				!strings.Contains(err.Error(), "proven instruction boundary") {
+				t.Fatalf("raw branch through an unproved Go veneer acquired a source target: %v", err)
 			}
 		})
 	}

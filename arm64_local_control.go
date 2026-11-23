@@ -680,11 +680,22 @@ func arm64RegisterReturnTarget(ins Instr, hasGoFrame bool) (Operand, bool) {
 }
 
 func arm64IsConditionalBranch(op Op) bool {
+	_, bits := arm64ConditionalBranchShape(op)
+	return bits != 0
+}
+
+// Go's conditional-branch rows have a label in the last operand. The
+// displacement field determines when cmd/asm must insert a branch veneer.
+func arm64ConditionalBranchShape(op Op) (operands, bits int) {
 	switch op {
-	case "BEQ", "BNE", "BLO", "BHI", "BLT", "BGE", "BLE", "BGT", "BHS", "BLS", "BMI", "BPL", "BVS", "BVC", "BCC", "BCS", "CBZ", "CBNZ", "CBZW", "CBNZW", "TBZ", "TBNZ":
-		return true
+	case "BEQ", "BNE", "BLO", "BHI", "BLT", "BGE", "BLE", "BGT", "BHS", "BLS", "BMI", "BPL", "BVS", "BVC", "BCC", "BCS":
+		return 1, 19
+	case "CBZ", "CBNZ", "CBZW", "CBNZW":
+		return 2, 19
+	case "TBZ", "TBNZ":
+		return 3, 14
 	}
-	return false
+	return 0, 0
 }
 
 func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[string]string) {
