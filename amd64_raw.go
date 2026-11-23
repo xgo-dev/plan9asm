@@ -18,7 +18,8 @@ func normalizeX86RawFile(file *File, goarch string, translationOptions ...Option
 	if err := validateX86MoveSourceAliases(file, goarch); err != nil {
 		return nil, err
 	}
-	if err := validateX86DirectiveFile(file); err != nil {
+	file, err := normalizeX86DirectiveFile(file, goarch)
+	if err != nil {
 		return nil, err
 	}
 	opt := Options{Goarch: goarch}

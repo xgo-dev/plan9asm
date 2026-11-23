@@ -143,6 +143,12 @@ func prepareNativeSource(src []byte, opts NativeOptions) (*File, *nativeEmitter,
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if opts.GOARCH == "amd64" {
+		f, err = normalizeX86DirectiveFile(f, opts.GOARCH)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	if len(f.Funcs) == 0 && len(f.Globl) == 0 {
 		return nil, nil, nil, fmt.Errorf("native assembly requires TEXT or GLOBL")
 	}
