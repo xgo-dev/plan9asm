@@ -6,11 +6,7 @@ import (
 )
 
 func (c *arm64Ctx) lowerARM64VectorIntegerAbsNeg(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	saturating, handled := map[Op]bool{
-		"VABS": false, "VNEG": false,
-		"VSQABS": true, "VSQNEG": true,
-	}[op]
-	if !handled && op != "VABS" && op != "VNEG" {
+	if op != "VABS" && op != "VNEG" {
 		return false, false, nil
 	}
 	if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 2 ||
@@ -24,16 +20,19 @@ func (c *arm64Ctx) lowerARM64VectorIntegerAbsNeg(op Op, ins Instr) (ok bool, ter
 		return true, false, fmt.Errorf("arm64 %s requires matching B8, B16, H4, H8, S2, S4, or D2 arrangements: %q", op, ins.Raw)
 	}
 
-	arrangement := sourceArrangement
+	return true, false, c.lowerARM64IntegerAbsNeg(ins.Args[0].Reg, ins.Args[1].Reg, sourceArrangement, op == "VABS", false)
+}
+
+func (c *arm64Ctx) lowerARM64IntegerAbsNeg(sourceReg, destination Reg, arrangement arm64VectorArrangement, absolute, saturating bool) error {
 	vectorType := fmt.Sprintf("<%d x i%d>", arrangement.lanes, arrangement.elementBits)
-	source, err := c.loadARM64VectorInteger(ins.Args[0].Reg, arrangement)
+	source, err := c.loadARM64VectorInteger(sourceReg, arrangement)
 	if err != nil {
-		return true, false, err
+		return err
 	}
 	negated := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = sub %s zeroinitializer, %s\n", negated, vectorType, source)
 	result := "%" + negated
-	if op == "VABS" || op == "VSQABS" {
+	if absolute {
 		negative := c.newTmp()
 		absolute := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, zeroinitializer\n", negative, vectorType, source)
@@ -58,7 +57,7 @@ func (c *arm64Ctx) lowerARM64VectorIntegerAbsNeg(op Op, ins Instr) (ok bool, ter
 			selected, arrangement.lanes, overflow, vectorType, saturated, vectorType, result)
 		result = "%" + selected
 	}
-	return true, false, c.storeARM64VectorInteger(ins.Args[1].Reg, arrangement, result)
+	return c.storeARM64VectorInteger(destination, arrangement, result)
 }
 
 func arm64VectorIntegerSplat(arrangement arm64VectorArrangement, value int64) string {

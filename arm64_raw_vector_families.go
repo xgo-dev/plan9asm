@@ -14,7 +14,7 @@ var arm64RawVectorFamilies = [...]arm64RawFamily{
 	arm64RawNoGPOrMemoryForm(decodeARM64RawMatrixMultiply, (*arm64Ctx).lowerRawMatrixMultiply),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawTableLookup, (*arm64Ctx).lowerRawTableLookup),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawSQRDMULH, (*arm64Ctx).lowerRawSQRDMULH),
-	arm64RawNoGPOrMemoryForm(decodeARM64RawMixedSaturatingAdd, (*arm64Ctx).lowerRawMixedSaturatingAdd),
+	arm64RawNoGPOrMemoryForm(decodeARM64RawSaturatingArithmetic, (*arm64Ctx).lowerARM64SaturatingArithmetic),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawSQDMULH, (*arm64Ctx).lowerRawSQDMULH),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawDoublingMultiplyLong, (*arm64Ctx).lowerARM64RawDoublingMultiplyLong),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawMUL, (*arm64Ctx).lowerRawMUL),

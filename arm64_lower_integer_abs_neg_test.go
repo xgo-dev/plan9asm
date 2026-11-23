@@ -36,7 +36,7 @@ func TestTranslateARM64VectorIntegerAbsNegCompleteGoAssemblerForms(t *testing.T)
 		if err != nil {
 			t.Fatalf("%s: %v", triple, err)
 		}
-		for _, want := range []string{"sub <", "icmp slt <", "icmp eq <", "select <"} {
+		for _, want := range []string{"sub <", "icmp slt <", "select <", `asm sideeffect "sqabs`, `asm sideeffect "sqneg`} {
 			if !strings.Contains(ll, want) {
 				t.Fatalf("%s integer abs/neg IR omitted %q:\n%s", triple, want, ll)
 			}

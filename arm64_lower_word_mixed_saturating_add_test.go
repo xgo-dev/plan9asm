@@ -58,7 +58,7 @@ func TestTranslateARM64RawMixedSaturatingAddCompleteFamily(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{"@llvm.aarch64.neon.suqadd", "@llvm.aarch64.neon.usqadd"} {
+			for _, name := range []string{`asm sideeffect "suqadd`, `asm sideeffect "usqadd`} {
 				if !strings.Contains(ir, name) {
 					t.Fatalf("missing %s in generated IR:\n%s", name, ir)
 				}
@@ -91,7 +91,7 @@ func TestARM64RawMixedSaturatingAddDecoderRejectsAdjacentEncodings(t *testing.T)
 		0x6e203ca2, // Adjacent opcode, not USQADD.
 		0x4e203ca2, // Adjacent opcode, not SUQADD.
 	} {
-		if form, ok := decodeARM64RawMixedSaturatingAdd(word); ok {
+		if form, ok := decodeARM64RawSaturatingArithmetic(word); ok {
 			t.Fatalf("accepted invalid or adjacent encoding %#08x as %+v", word, form)
 		}
 	}

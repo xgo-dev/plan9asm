@@ -36,7 +36,7 @@ func TestTranslateARM64VectorSaturatingArithmeticCompleteGoAssemblerForms(t *tes
 		if err != nil {
 			t.Fatalf("%s: %v", triple, err)
 		}
-		for _, want := range []string{"@llvm.sadd.sat.", "@llvm.uadd.sat.", "@llvm.ssub.sat.", "@llvm.usub.sat."} {
+		for _, want := range []string{`asm sideeffect "sqadd`, `asm sideeffect "uqadd`, `asm sideeffect "sqsub`, `asm sideeffect "uqsub`} {
 			if !strings.Contains(ll, want) {
 				t.Fatalf("%s saturating arithmetic IR omitted %q:\n%s", triple, want, ll)
 			}
