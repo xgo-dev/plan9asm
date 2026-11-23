@@ -7,9 +7,6 @@ type x86ResultValueStack struct {
 	bytes   []uint8 // Low byte is at the end, matching a descending byte stack.
 	invalid bool
 	id      bool // ID is separate from the six arithmetic flags and DF.
-	// AMD64 has at most 63 private cells. A set bit marks a source W cell,
-	// not a Q cell; equal virtual depth does not imply equal native SP delta.
-	wordCells uint64
 	// Eight bounded bitmap words cover at most 504 private byte positions.
 	// Mode32 uses only the first four; unused positions must remain zero.
 	pointerCells [8]uint64
@@ -21,10 +18,9 @@ type x86ResultValueStack struct {
 }
 
 func x86ResultValueStackLimit(arch string) int {
-	// AMD64 lowering reserves one of its 64 virtual slots for an unproved
-	// entry continuation. This observer never reads that slot. The 386 byte
-	// stack uses the same bounded number of native words.
-	return 63 * int(x86ResultPointerWord(arch))
+	// AMD64 lowering reserves eight bytes for its synthetic entry word.
+	// This observer stays within the private bytes in both source modes.
+	return (x86PrivateStackWords - 1) * int(x86ResultPointerWord(arch))
 }
 
 // Private numerical storage and ID survive these independently accepted
@@ -135,9 +131,6 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 	}
 	width := int64(spec.bits / 8)
 	storage := int(width)
-	if arch == "amd64" {
-		storage = 8 // Existing virtual AMD64 slots zero-extend narrow pushes.
-	}
 	stack := state.valueStack
 	if spec.mode == amd64StackPopValue && ins.Args[0].Kind == OpReg && ins.Args[0].Reg == SP {
 		return false, true // Numerical storage cannot rebind the physical/private stack pointer.
@@ -146,9 +139,6 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 		!stack.pointerCellsBounded(arch) ||
 		stack.refinable != nil && len(stack.refinable) != len(stack.bytes) ||
 		stack.correlation != nil && (arch != "386" || len(stack.correlation.bytes) != len(stack.bytes)) {
-		return false, true
-	}
-	if arch == "amd64" && (len(stack.bytes)%8 != 0 || stack.wordCells>>uint(len(stack.bytes)/8) != 0) {
 		return false, true
 	}
 	push := spec.mode == amd64StackPushValue || spec.mode == amd64StackPushFlags
@@ -167,9 +157,8 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 				}
 				pointer = width == x86ResultPointerWord(arch) && state.pointerGP[index]
 				// This is a bit-preserving private copy, not a numerical use.
-				// Retain only independently known bytes; narrow virtual slots
-				// zero-extend exactly as the paired existing emitter does.
-				bits = ^uint64(0) << uint(8*width)
+				// Retain only independently known source bytes.
+				bits = 0
 				for offset := int64(0); offset < width; offset++ {
 					if !pointer && state.gp[index]&(1<<uint(offset)) != 0 {
 						bits |= uint64(255) << uint(8*offset)
@@ -202,9 +191,6 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 			return false, true
 		}
 		x86ResultFlagsStackPush(stack, bits, storage, spec.mode == amd64StackPushFlags)
-		if arch == "amd64" && width == 2 {
-			stack.wordCells |= uint64(1) << uint(len(stack.bytes)/8)
-		}
 		if spec.mode == amd64StackPushFlags && stack.refinable == nil {
 			stack.refinable = make([]uint8, len(stack.bytes))
 			copy(stack.refinable, stack.bytes)
@@ -233,13 +219,6 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 	if !state.shapeOnly {
 		if len(stack.bytes) < storage {
 			return false, true
-		}
-		if arch == "amd64" {
-			cell := uint64(1) << uint(len(stack.bytes)/8-1)
-			if (stack.wordCells&cell != 0) != (width == 2) {
-				return false, true // Partial native pops need a separate byte-accurate emitter.
-			}
-			stack.wordCells &^= cell
 		}
 		pointer = width == x86ResultPointerWord(arch) && stack.pointerCell(len(stack.bytes))
 		stack.revokePointerCells(len(stack.bytes)-storage, len(stack.bytes), int(x86ResultPointerWord(arch)))

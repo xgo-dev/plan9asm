@@ -39,11 +39,20 @@ func x86PhysicalSegmentStackText(fn Func, sig FuncSig, arch, triple string) []by
 	}
 
 	var sourceDepth, physicalDepth int
+	var accumulatorBytes int
 	var text []byte
 	for _, ins := range fn.Instrs[1 : len(fn.Instrs)-1] {
 		code, sourceBytes, physicalBytes := x86PhysicalSegmentStackInstruction(ins, arch)
 		if len(code) == 0 {
 			return nil
+		}
+		if ins.Args[0].Kind == OpReg && ins.Args[0].Reg == AX {
+			if physicalBytes > accumulatorBytes {
+				return nil // The leaf cannot consume an unbound incoming AX.
+			}
+			if -physicalBytes > accumulatorBytes {
+				accumulatorBytes = -physicalBytes
+			}
 		}
 		if x86ResultNamedPredicateInstruction(ins) {
 			sourceDepth += sourceBytes
@@ -97,10 +106,14 @@ func x86PhysicalSegmentStackInstruction(ins Instr, arch string) (code []byte, so
 		} else {
 			code = append(code, encoding.pop)
 		}
-	} else if !push && arg.Kind == OpReg && arg.Reg == AX {
-		// AX is caller-clobbered in both modes. It can discard a
-		// pushed CS selector, which has no matching segment POP.
-		code = append(code, 0x58)
+	} else if arg.Kind == OpReg && arg.Reg == AX {
+		// AX is caller-clobbered in both modes. The leaf can discard a
+		// selector here or use this scratch copy for a subsequent POP.
+		if push {
+			code = append(code, 0x50)
+		} else {
+			code = append(code, 0x58)
+		}
 	} else {
 		return nil, 0, 0
 	}

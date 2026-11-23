@@ -15,9 +15,12 @@ func TestX86PhysicalSegmentStackLeaf(t *testing.T) {
 		t.Run(target.triple, func(t *testing.T) {
 			const start = "TEXT leaf(SB),516,$0-0\n"
 			body := "PUSHQ FS\nPOPQ FS\nPUSHL GS\nPOPL GS\nPUSHW FS\nPOPW FS\n"
+			width := "Q"
 			if target.arch == "386" {
+				width = "L"
 				body += "PUSHL SS\nPOPL SS\nPUSHW DS\nPOPW DS\nPUSHL ES\nPOPL ES\nPUSHL CS\nPOPL AX\n"
 			}
+			body += "PUSH" + width + " GS\nPOP" + width + " AX\nPUSH" + width + " AX\nPOP" + width + " GS\n"
 			program := start + body + "RET\n"
 			goAssemblerOracleOutput(t, target.arch, program, "", true)
 			originalBytes, _ := x86NumericalBoundaryGoBytes(t, target.arch, body+"RET")

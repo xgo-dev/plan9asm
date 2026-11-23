@@ -72,8 +72,9 @@ type amd64Ctx struct {
 	namedAtomicLock    bool   // actual same-block source-adjacent LOCK for this instruction only
 	lockScalarNS       string // compiler name allocation, not a source capability
 	bitScanNS          string // compiler name allocation, not a source capability
-	vstackSlot         string // [64 x i64] virtual stack for PUSHQ/POPQ
-	vspSlot            string // i64 virtual stack pointer (next free slot)
+	vstackSlot         string // byte-addressable private stack
+	vspSlot            string // i64 offset of the current private SP
+	usesPrivateStack   bool
 	localStackSlot     string // byte-addressable backing storage for x86 SP references
 	logicalAUTOBase    string // immutable entry-SP SSA address, not a source pointer fact
 	logicalAUTOExtent  int    // proved ordinary logical frame bytes above entry SP
@@ -393,9 +394,15 @@ func (c *amd64Ctx) scanUsedRegs() {
 				markReg(AX)
 				markReg(BX)
 			}
-			if c.goarch == "386" {
+			if _, stack := amd64StackWidthSpecs[Op(op)]; stack {
+				if c.goarch == "386" {
+					markReg(SP)
+				} else {
+					c.usesPrivateStack = true
+				}
+			} else if c.goarch == "386" {
 				switch op {
-				case "PUSHW", "POPW", "PUSHFW", "POPFW", "PUSHL", "POPL", "PUSHFL", "POPFL", "PUSHAL", "POPAL", "ADJSP":
+				case "PUSHAL", "POPAL", "ADJSP":
 					markReg(SP)
 				}
 			}
@@ -681,18 +688,9 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.directionSlot)
 	}
 
-	// Virtual stack for stack-manipulation instructions used by some stdlib asm
-	// stubs (e.g. syscall rawVfork paths using POPQ/PUSHQ around SYSCALL).
-	// We do not model host stack memory directly; this local stack keeps
-	// lowering deterministic and avoids invalid memory accesses in IR.
-	c.vstackSlot = "%virt_stack"
-	c.vspSlot = "%virt_sp"
-	fmt.Fprintf(c.b, "  %s = alloca [64 x i64]\n", c.vstackSlot)
-	fmt.Fprintf(c.b, "  store [64 x i64] zeroinitializer, ptr %s\n", c.vstackSlot)
-	fmt.Fprintf(c.b, "  %s = alloca i64\n", c.vspSlot)
-	// Seed one synthetic return-address slot so an initial POPQ yields 0 and
-	// subsequent PUSHQ can round-trip through the virtual stack.
-	fmt.Fprintf(c.b, "  store i64 1, ptr %s\n", c.vspSlot)
+	if c.usesPrivateStack && c.sourceStack == nil {
+		c.emitPrivateAMD64Stack()
+	}
 
 	if c.goarch == "386" {
 		if err := c.emit386ClassicFrame(); err != nil {
@@ -1105,40 +1103,6 @@ func models386SPWrite(ins Instr) bool {
 	default:
 		return false
 	}
-}
-
-func (c *amd64Ctx) pushI64(v string) {
-	sp := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", sp, c.vspSlot)
-	full := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp uge i64 %%%s, 64\n", full, sp)
-	idx := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 63, i64 %%%s\n", idx, full, sp)
-	ptr := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = getelementptr inbounds [64 x i64], ptr %s, i32 0, i64 %%%s\n", ptr, c.vstackSlot, idx)
-	fmt.Fprintf(c.b, "  store i64 %s, ptr %%%s\n", v, ptr)
-	inc := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, 1\n", inc, sp)
-	next := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 64, i64 %%%s\n", next, full, inc)
-	fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", next, c.vspSlot)
-}
-
-func (c *amd64Ctx) popI64() string {
-	sp := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", sp, c.vspSlot)
-	empty := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, 0\n", empty, sp)
-	dec := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = sub i64 %%%s, 1\n", dec, sp)
-	idx := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 0, i64 %%%s\n", idx, empty, dec)
-	fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", idx, c.vspSlot)
-	ptr := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = getelementptr inbounds [64 x i64], ptr %s, i32 0, i64 %%%s\n", ptr, c.vstackSlot, idx)
-	val := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %%%s\n", val, ptr)
-	return "%" + val
 }
 
 func (c *amd64Ctx) pushI16(v string) error {

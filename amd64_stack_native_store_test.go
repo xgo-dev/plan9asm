@@ -45,7 +45,6 @@ func TestX86PrivatePOPNativeStoreExactBitsAndOrigins(t *testing.T) {
 					}
 					want := before.clone()
 					want.valueStack.bytes = want.valueStack.bytes[:0]
-					want.valueStack.wordCells = 0
 					if !reflect.DeepEqual(state, want) {
 						t.Fatal("native POP changed facts beyond the independently popped private cell")
 					}

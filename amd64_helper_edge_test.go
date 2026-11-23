@@ -26,6 +26,7 @@ func newAMD64CtxWithFuncForTest(t *testing.T, fn Func, sig FuncSig, sigs map[str
 func TestAMD64CtxHelperEdges(t *testing.T) {
 	fn := Func{
 		Instrs: []Instr{
+			{Op: "PUSHQ", Args: []Operand{{Kind: OpReg, Reg: AX}}},
 			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}},
 			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}},
 			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("Y2")}, {Kind: OpReg, Reg: Reg("Y3")}}},
@@ -68,9 +69,11 @@ func TestAMD64CtxHelperEdges(t *testing.T) {
 		t.Fatalf("amd64ValueAsI64(unsupported) = (%q, %v, %v)", got, ok, err)
 	}
 
-	c.pushI64("7")
-	if got := c.popI64(); got == "" {
-		t.Fatalf("popI64() returned empty value")
+	if err := c.pushStackWidth(64, "7"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.popStackWidth(64); err != nil || got == "" {
+		t.Fatalf("popStackWidth(64) returned %q, %v", got, err)
 	}
 
 	t.Run("VectorRegs", func(t *testing.T) {

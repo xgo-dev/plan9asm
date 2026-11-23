@@ -126,43 +126,20 @@ func x86StackWidthProperties(ins Instr, arch string) (amd64StackWidthSpec, bool,
 	return spec, true, nil
 }
 
-func (c *amd64Ctx) lowerStackWidth(op Op, ins Instr) (ok bool, terminated bool, err error) {
-	if _, known, err := x86StackWidthProperties(ins, c.goarch); known && err != nil {
-		return true, false, err
-	}
-	rawOp := strings.ToUpper(string(op))
-	baseOp := rawOp
-	if dot := strings.IndexByte(rawOp, '.'); dot >= 0 {
-		baseOp = rawOp[:dot]
-	}
-	spec, recognized := amd64StackWidthSpecs[Op(baseOp)]
-	if !recognized {
-		return false, false, nil
-	}
-	if rawOp != baseOp {
-		return true, false, fmt.Errorf("%s %s has no suffixed form in Go 1.27: %q", c.goarch, baseOp, ins.Raw)
+func (c *amd64Ctx) lowerStackWidth(ins Instr) (ok bool, terminated bool, err error) {
+	spec, known, err := x86StackWidthProperties(ins, c.goarch)
+	if !known || err != nil {
+		return known, false, err
 	}
 
 	switch spec.mode {
 	case amd64StackPushFlags:
-		if err := c.validateOrdinaryStackWidthMode(baseOp, spec.bits, ins); err != nil {
-			return true, false, err
-		}
-		if len(ins.Args) != 0 {
-			return true, false, fmt.Errorf("%s %s takes no operands: %q", c.goarch, baseOp, ins.Raw)
-		}
 		value := c.packX86Flags()
 		if spec.bits != 64 {
 			value = c.truncI64(value, amd64StackLLVMType(spec.bits))
 		}
 		return true, false, c.pushStackWidth(spec.bits, value)
 	case amd64StackPopFlags:
-		if err := c.validateOrdinaryStackWidthMode(baseOp, spec.bits, ins); err != nil {
-			return true, false, err
-		}
-		if len(ins.Args) != 0 {
-			return true, false, fmt.Errorf("%s %s takes no operands: %q", c.goarch, baseOp, ins.Raw)
-		}
 		value, err := c.popStackWidth(spec.bits)
 		if err != nil {
 			return true, false, err
@@ -175,23 +152,12 @@ func (c *amd64Ctx) lowerStackWidth(op Op, ins Instr) (ok bool, terminated bool, 
 		c.unpackX86Flags(value, spec.bits)
 		return true, false, nil
 	case amd64StackPushValue, amd64StackPopValue:
-		if len(ins.Args) != 1 {
-			role := "src"
-			if spec.mode == amd64StackPopValue {
-				role = "dst"
-			}
-			return true, false, fmt.Errorf("%s %s expects %s: %q", c.goarch, baseOp, role, ins.Raw)
-		}
 	default:
 		panic("unknown x86 stack-width mode")
 	}
 
 	operand := ins.Args[0]
-	segmentStack := x86SegmentRegisterOperand(operand)
-	if segmentStack {
-		if !spec.segments.contains(operand.Reg) {
-			return true, false, fmt.Errorf("%s %s does not accept segment register %s in Go 1.27's ymovtab: %q", c.goarch, baseOp, operand.Reg, ins.Raw)
-		}
+	if x86SegmentRegisterOperand(operand) {
 		bits := spec.operandBits(operand, c.goarch)
 		if spec.mode == amd64StackPushValue {
 			selector := c.loadX86SegmentSelector(operand.Reg)
@@ -222,21 +188,7 @@ func (c *amd64Ctx) lowerStackWidth(op Op, ins Instr) (ok bool, terminated bool, 
 		}
 		return true, false, c.storeX86SegmentSelector(operand.Reg, value)
 	}
-	if err := c.validateOrdinaryStackWidthMode(baseOp, spec.bits, ins); err != nil {
-		return true, false, err
-	}
 	if spec.mode == amd64StackPushValue {
-		if operand.Kind == OpReg {
-			if !isX86YrlRegisterForArch(operand.Reg, c.goarch) {
-				return true, false, fmt.Errorf("%s %s source is outside Go 1.27's Yrl class: %q", c.goarch, baseOp, ins.Raw)
-			}
-		} else if operand.Kind != OpImm && !isAMD64MemoryOperand(operand) &&
-			!x86AbsoluteRelocationSource(operand, c.goarch, spec.bits) {
-			return true, false, fmt.Errorf("%s %s expects Yrl/memory/immediate src: %q", c.goarch, baseOp, ins.Raw)
-		}
-		if operand.Kind == OpMem && !x86MemoryRegistersValidForArch(operand.Mem, c.goarch) {
-			return true, false, fmt.Errorf("%s %s memory source uses an out-of-range address register: %q", c.goarch, baseOp, ins.Raw)
-		}
 		// PUSHQ encodes at most 32 immediate bits. Both immediate
 		// encodings sign-extend their payload to the full stack word.
 		if spec.bits == 64 && operand.Kind == OpImm {
@@ -249,25 +201,11 @@ func (c *amd64Ctx) lowerStackWidth(op Op, ins Instr) (ok bool, terminated bool, 
 		return true, false, c.pushStackWidth(spec.bits, value)
 	}
 
-	if operand.Kind == OpReg {
-		if !isX86YrlRegisterForArch(operand.Reg, c.goarch) {
-			return true, false, fmt.Errorf("%s %s destination is outside Go 1.27's Yrl class: %q", c.goarch, baseOp, ins.Raw)
-		}
-	} else if !isAMD64MemoryOperand(operand) {
-		return true, false, fmt.Errorf("%s %s expects reg/mem dst in the Yrl class: %q", c.goarch, baseOp, ins.Raw)
-	}
-	if operand.Kind == OpMem && !x86MemoryRegistersValidForArch(operand.Mem, c.goarch) {
-		return true, false, fmt.Errorf("%s %s memory destination uses an out-of-range address register: %q", c.goarch, baseOp, ins.Raw)
-	}
 	value, err := c.popStackWidth(spec.bits)
 	if err != nil {
 		return true, false, err
 	}
 	return true, false, c.storeStackWidth(operand, spec.bits, value)
-}
-
-func (c *amd64Ctx) validateOrdinaryStackWidthMode(op string, bits int, ins Instr) error {
-	return validateX86OrdinaryStackWidthMode(c.goarch, op, bits, ins)
 }
 
 func validateX86OrdinaryStackWidthMode(arch, op string, bits int, ins Instr) error {
@@ -315,8 +253,9 @@ func amd64StackLLVMType(bits int) LLVMType {
 }
 
 func (c *amd64Ctx) pushStackWidth(bits int, value string) error {
+	typ := amd64StackLLVMType(bits)
 	if c.sourceStack != nil {
-		return c.pushSourceStackValue(amd64StackLLVMType(bits), int64(bits/8), value)
+		return c.pushSourceStackValue(typ, int64(bits/8), value)
 	}
 	if c.goarch == "386" {
 		switch bits {
@@ -327,18 +266,15 @@ func (c *amd64Ctx) pushStackWidth(bits int, value string) error {
 		}
 		return fmt.Errorf("386 cannot push %d-bit stack values", bits)
 	}
-	if bits != 64 {
-		extended := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", extended, amd64StackLLVMType(bits), value)
-		value = "%" + extended
-	}
-	c.pushI64(value)
+	address := c.privateAMD64StackAddress(bits/8, true)
+	fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", typ, value, address)
 	return nil
 }
 
 func (c *amd64Ctx) popStackWidth(bits int) (string, error) {
+	typ := amd64StackLLVMType(bits)
 	if c.sourceStack != nil {
-		return c.popSourceStackValue(amd64StackLLVMType(bits), int64(bits/8))
+		return c.popSourceStackValue(typ, int64(bits/8))
 	}
 	if c.goarch == "386" {
 		switch bits {
@@ -349,11 +285,10 @@ func (c *amd64Ctx) popStackWidth(bits int) (string, error) {
 		}
 		return "", fmt.Errorf("386 cannot pop %d-bit stack values", bits)
 	}
-	value := c.popI64()
-	if bits == 64 {
-		return value, nil
-	}
-	return c.truncI64(value, amd64StackLLVMType(bits)), nil
+	address := c.privateAMD64StackAddress(bits/8, false)
+	value := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", value, typ, address)
+	return "%" + value, nil
 }
 
 func (c *amd64Ctx) storeStackWidth(destination Operand, bits int, value string) error {

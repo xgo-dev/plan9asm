@@ -231,7 +231,7 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 	if ok, terminated, err := c.lowerX86OrderingHint(op, ins); ok {
 		return ok, terminated, err
 	}
-	if ok, terminated, err := c.lowerStackWidth(op, ins); ok {
+	if ok, terminated, err := c.lowerStackWidth(ins); ok {
 		return ok, terminated, err
 	}
 	if ok, terminated, err := c.lowerAccumulatorSignExtend(op, ins); ok {

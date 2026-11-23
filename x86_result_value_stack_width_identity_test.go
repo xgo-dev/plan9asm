@@ -7,10 +7,7 @@ import (
 	"testing"
 )
 
-// AMD64's private lowering currently uses one virtual cell per PUSH. Go's
-// actual W/Q operations move SP by two/eight bytes. A partial native pop must
-// not consume an entire private cell or invent zero bytes for a later wide pop.
-func TestX86ValueStackMixedNativeWidthsNeedByteAccurateStorage(t *testing.T) {
+func TestX86ValueStackMixedNativeWidths(t *testing.T) {
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
 		t.Fatal("LLVM22 llc required")
@@ -21,15 +18,16 @@ func TestX86ValueStackMixedNativeWidthsNeedByteAccurateStorage(t *testing.T) {
 		}
 		for _, row := range []struct {
 			name, body string
+			safe       bool
 		}{
-			{"wide-first", "PUSHQ value+0(FP)\nPOPW AX\nPUSHW $9\nPOPQ BX\nMOVQ BX,ret+8(FP)"},
-			{"narrow-first", "PUSHW $7\nPOPQ AX\nPUSHQ $9\nPOPW BX\nMOVQ $1,ret+8(FP)"},
+			{"replace-low-word", "PUSHQ value+0(FP)\nPOPW AX\nPUSHW $9\nPOPQ BX\nMOVQ BX,ret+8(FP)", true},
+			{"combine-four-words", "PUSHW $0xa1b2\nPUSHW $0xc3d4\nPUSHW $0xe5f6\nPUSHW $0x0718\nPOPQ BX\nMOVQ BX,ret+8(FP)", true},
+			{"underflow-first", "PUSHW $7\nPOPQ AX\nPUSHQ $9\nPOPW BX\nMOVQ $1,ret+8(FP)", false},
 		} {
 			t.Run(target.triple+"/"+row.name, func(t *testing.T) {
 				source := "TEXT ·Value(SB),4,$0-16\n" + row.body + "\nRET\n"
-				// Both sources balance their actual total SP delta. The first
-				// recombines bytes; the second can overwrite the entry word.
-				// Keep actual Go objects, but never execute the unsafe source.
+				// Even the underflow example has zero final delta. Only
+				// complete initialized private bytes can reach a wide POP.
 				for _, result := range []bool{false, true} {
 					text, declaration := source, "func Value(value uint64) uint64"
 					if !result {
@@ -41,6 +39,14 @@ func TestX86ValueStackMixedNativeWidthsNeedByteAccurateStorage(t *testing.T) {
 					x86LEAActualTargetGoObject(t, "amd64", target.triple, text)
 					for _, api := range []string{"text", "module", "Go"} {
 						ir, err := x86ScalarFPBitViewAPI(t, text, declaration, "amd64", target.triple, api)
+						if row.safe {
+							if err != nil || ir == "" {
+								t.Errorf("%s result=%v rejected a balanced byte stack: %v", api, result, err)
+							} else {
+								x86PackedStringCompileObject(t, llc, target.triple, ir, "-O0")
+							}
+							continue
+						}
 						if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
 							t.Errorf("%s result=%v changed native byte-stack semantics into virtual-cell semantics: %v", api, result, err)
 						}
@@ -69,7 +75,7 @@ func TestX86ValueStackMixedNativeWidthsNeedByteAccurateStorage(t *testing.T) {
 	}
 }
 
-func TestX86ValueStackCellWidthsKeepCloneAndJoinIdentity(t *testing.T) {
+func TestX86ValueStackByteDepthKeepsCloneAndJoinIdentity(t *testing.T) {
 	for _, widths := range []struct{ left, right string }{
 		{"Q", "Q"}, {"W", "W"}, {"Q", "W"}, {"W", "Q"},
 	} {
@@ -91,7 +97,8 @@ func TestX86ValueStackCellWidthsKeepCloneAndJoinIdentity(t *testing.T) {
 				left, right := makeState(widths.left), makeState(widths.right)
 				clone := left.clone()
 				pop := x86ScalarLaneInstruction(t, "POP"+widths.left+" AX")
-				if !x86ResultTransfer(pop, &clone, nil, 0, "amd64") || len(left.valueStack.bytes) != 8 {
+				depth := map[string]int{"Q": 8, "W": 2}[widths.left]
+				if !x86ResultTransfer(pop, &clone, nil, 0, "amd64") || len(left.valueStack.bytes) != depth {
 					t.Fatal("a cloned pop changed the original private cell")
 				}
 				replacement := "Q"
@@ -109,7 +116,7 @@ func TestX86ValueStackCellWidthsKeepCloneAndJoinIdentity(t *testing.T) {
 				merged := left.intersect(right)
 				got := x86ResultTransfer(pop, &merged, nil, 0, "amd64")
 				if got != (widths.left == widths.right) {
-					t.Fatal("equal virtual depth erased a native cell-width distinction", widths, got)
+					t.Fatal("join did not preserve the actual source byte depth", widths, got)
 				}
 			})
 		}

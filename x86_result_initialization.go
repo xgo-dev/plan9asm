@@ -1112,11 +1112,9 @@ func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 	}
 	if merged.valueStack != nil {
 		if other.valueStack == nil || merged.valueStack.invalid || other.valueStack.invalid ||
-			len(merged.valueStack.bytes) != len(other.valueStack.bytes) ||
-			merged.valueStack.wordCells != other.valueStack.wordCells {
+			len(merged.valueStack.bytes) != len(other.valueStack.bytes) {
 			merged.valueStack.bytes, merged.valueStack.invalid = nil, true
 			merged.valueStack.refinable = nil
-			merged.valueStack.wordCells = 0
 			merged.valueStack.pointerCells = [8]uint64{}
 		} else {
 			for index := range merged.valueStack.pointerCells {

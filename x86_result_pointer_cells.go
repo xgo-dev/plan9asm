@@ -3,7 +3,7 @@ package plan9asm
 // One bit at byte-end minus one means the preceding native word was pushed
 // from an already established opaque incoming pointer. It does not describe
 // numerical bits, a pointee or any caller/frame/entry capability. Byte ends
-// preserve mode32's genuinely mixed W/L positions without joining two halves.
+// preserve mixed-width stack positions without joining two halves.
 func (stack *x86ResultValueStack) pointerCell(end int) bool {
 	return end > 0 && end <= len(stack.bytes) &&
 		stack.pointerCells[(end-1)/64]&(uint64(1)<<uint((end-1)%64)) != 0
@@ -38,9 +38,6 @@ func (stack *x86ResultValueStack) pointerCellsBounded(arch string) bool {
 		remaining := len(stack.bytes) - index*64
 		if remaining <= 0 && bits != 0 || remaining > 0 && remaining < 64 && bits>>uint(remaining) != 0 {
 			return false
-		}
-		if arch == "amd64" && bits&^uint64(0x8080808080808080) != 0 {
-			return false // Existing AMD64 virtual cells each occupy eight bytes.
 		}
 	}
 	return true
