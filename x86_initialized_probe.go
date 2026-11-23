@@ -503,19 +503,22 @@ func initializedX86GPInputs(goarch string, ins Instr) (x86TypedByteEffect, bool)
 	}
 	effect, known, err := x86TypedGPByteEffect(ins.Op, ins, goarch)
 	if !known {
-		effect, known, err = initializedX86GPAccumulatorRead(ins, goarch)
+		effect, known, err = initializedX86GPTypedRead(ins, goarch)
 	}
 	return effect, known && err == nil
 }
 
-// These read-only memory families also consume the old destination. Use the
-// same byte dependencies as their lowering, including BSF/BSR's zero-input
-// preservation and CRC32's low dword accumulator on every source width.
-func initializedX86GPAccumulatorRead(ins Instr, goarch string) (x86TypedByteEffect, bool, error) {
+// These families read a fixed memory tuple and may also consume the old
+// destination. Reuse their typed effects for both independent pointer and
+// shared numerical address probes.
+func initializedX86GPTypedRead(ins Instr, goarch string) (x86TypedByteEffect, bool, error) {
 	if effect, known, err := x86TypedBitScanByteEffect(ins, goarch); known {
 		return effect, true, err
 	}
-	return x86TypedCRC32ByteEffect(ins.Op, ins, goarch)
+	if effect, known, err := x86TypedCRC32ByteEffect(ins.Op, ins, goarch); known {
+		return effect, true, err
+	}
+	return x86TypedSegmentQueryByteEffect(ins.Op, ins, goarch)
 }
 
 // InitializedScalarMemoryProbeSequence supplies one explicit pointer
@@ -554,7 +557,7 @@ func initializedScalarMemoryProbeSequence(goarch string, ins Instr, numericAddre
 	if numericAddress {
 		_, known, err := x86ScalarArithmeticNativeReadProperties(ins, goarch)
 		if !known && err == nil {
-			_, known, err = initializedX86GPAccumulatorRead(ins, goarch)
+			_, known, err = initializedX86GPTypedRead(ins, goarch)
 		}
 		if !known || err != nil {
 			return nil, false, nil
