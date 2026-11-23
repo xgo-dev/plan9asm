@@ -23,8 +23,7 @@ func emitX86LiteralControl(b *strings.Builder, fn Func, sig FuncSig, arch, tripl
 	}
 	if !x86ABI0NoArgumentVoidCallRole(sig) || fn.x86DirectTailRoot != nil ||
 		fn.x86ContinuationFlow != nil || fn.x86RawReplay != nil ||
-		validateX86AddressSensitiveRawText(fn, arch) != nil ||
-		arch == "amd64" && x86InteriorCallText(fn, arch) != nil {
+		validateX86AddressSensitiveRawText(fn, arch) != nil {
 		return true, fmt.Errorf("%w: literal x86 transfer needs a complete frameless native entry: %s", ErrProbeNeedsContext, fn.Sym)
 	}
 	format := x86LiteralControlObjectFormat(arch, triple)
@@ -33,6 +32,7 @@ func emitX86LiteralControl(b *strings.Builder, fn Func, sig FuncSig, arch, tripl
 	}
 	var assembly []string
 	terminates := false
+	hasCall := false
 	for index, ins := range fn.Instrs[1:] {
 		if !x86ResultNamedPredicateInstruction(ins) {
 			return true, fmt.Errorf("%w: literal x86 transfer needs its named native source: %s", ErrProbeNeedsContext, ins.Raw)
@@ -70,9 +70,17 @@ func emitX86LiteralControl(b *strings.Builder, fn Func, sig FuncSig, arch, tripl
 			assembly = append(assembly, fmt.Sprintf("%s %d", mnemonic, arg.Imm))
 		}
 		terminates = terminates || ins.Op == OpJMP
+		hasCall = hasCall || ins.Op == OpCALL
 	}
 	if !terminates {
 		return true, fmt.Errorf("%w: literal x86 CALL needs its original return or jump", ErrProbeNeedsContext)
+	}
+	// Go can insert a BP frame for a non-leaf amd64 TEXT $0-0.
+	// A naked literal transfer has no Go object layout to prove otherwise.
+	if arch == "amd64" {
+		if err := x86InteriorCallText(fn, arch, hasCall); err != nil {
+			return true, err
+		}
 	}
 	emitX86NakedVoidAssembly(b, sig.Name, strings.Join(assembly, "; "), "~{memory}", "")
 	return true, nil

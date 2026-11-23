@@ -59,7 +59,7 @@ func (graph *x86DirectTailGraph) bindInteriorCallEntries(triple string) error {
 		if !selected[text] {
 			continue
 		}
-		if err := x86InteriorCallText(fn, graph.goarch); err != nil {
+		if err := x86InteriorCallText(fn, graph.goarch, false); err != nil {
 			return err
 		}
 		for ordinal, ins := range fn.Instrs {
@@ -104,7 +104,7 @@ func (graph *x86DirectTailGraph) bindInteriorCallEntries(triple string) error {
 	return nil
 }
 
-func x86InteriorCallText(fn Func, arch string) error {
+func x86InteriorCallText(fn Func, arch string, requiresExplicitNoFrame bool) error {
 	if fn.FrameSize != 0 || fn.ArgSize != 0 || len(fn.Instrs) == 0 || fn.Instrs[0].Op != OpTEXT {
 		return x86DirectTailContext("CALL byte entry needs an explicit frameless TEXT: %s", fn.Sym)
 	}
@@ -118,6 +118,9 @@ func x86InteriorCallText(fn Func, arch string) error {
 	if err != nil || frameErr != nil || !flags["NOSPLIT"] ||
 		!frame.argsSpecified || frame.frameSize != 0 || frame.argSize != 0 {
 		return x86DirectTailContext("CALL byte entry requires NOSPLIT and an explicit zero-size source frame: %s", fn.Sym)
+	}
+	if requiresExplicitNoFrame && !flags["NOFRAME"] {
+		return x86DirectTailContext("native literal CALL requires explicit NOFRAME: %s", fn.Sym)
 	}
 	// A standalone member preserves local code layout. Go's shared/dynlink
 	// modes can change the size of TLS accesses and global/literal loads.
