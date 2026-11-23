@@ -499,11 +499,14 @@ func emitX86RelocationAnchor(b *strings.Builder, fn Func, sig FuncSig, resolve f
 		args = append(args, "ptr "+llvmGlobal(funcSigSymbol(resolved, targetSig)))
 	}
 	constraints = append(constraints, "~{memory}")
-	fmt.Fprintf(b, "define void %s() naked noinline {\nentry:\n", llvmGlobal(sig.Name))
-	fmt.Fprintf(b, "  call void asm sideeffect %q, %q(%s)\n",
-		strings.Join(assembly, "; "), strings.Join(constraints, ","), strings.Join(args, ", "))
-	b.WriteString("  unreachable\n}\n")
+	emitX86NakedVoidAssembly(b, sig.Name, strings.Join(assembly, "; "), strings.Join(constraints, ","), strings.Join(args, ", "))
 	return nil
+}
+
+func emitX86NakedVoidAssembly(b *strings.Builder, name, assembly, constraints, args string) {
+	fmt.Fprintf(b, "define void %s() naked noinline {\nentry:\n", llvmGlobal(name))
+	fmt.Fprintf(b, "  call void asm sideeffect %q, %q(%s)\n", assembly, constraints, args)
+	b.WriteString("  unreachable\n}\n")
 }
 
 type x86FunctionSource struct {
@@ -523,6 +526,9 @@ type x86FunctionSource struct {
 }
 
 func translateFuncX86(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, goarch, targetTriple string, x87Mode X87Mode, annotateSource bool, sources ...x86FunctionSource) error {
+	if known, err := emitX86LiteralControl(b, fn, sig, goarch, targetTriple); known {
+		return err
+	}
 	if text := x86PhysicalSegmentStackText(fn, sig, goarch, targetTriple); text != nil {
 		fn.X86RawText = text
 		return emitX86AddressSensitiveRawText(b, fn, sig)

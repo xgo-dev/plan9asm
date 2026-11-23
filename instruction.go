@@ -430,9 +430,8 @@ func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
 	if strings.HasPrefix(normalizeInstructionOpcode(ins.Op), "REP") {
 		return fmt.Errorf("%w: REP prefix must be probed with its following instruction", ErrProbeNeedsContext)
 	}
-	if arch == ArchAMD64 && goarch == "386" && normalizeInstructionOpcode(ins.Op) == "JMP" &&
-		len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
-		return fmt.Errorf("%w: %s uses the 386 assembler's legacy numeric branch relocation and requires final text layout", ErrProbeNeedsContext, ins.Raw)
+	if arch == ArchAMD64 && x86HasLiteralControlOperand(ins) && ins.Args[0].ImmRaw == "" {
+		return fmt.Errorf("%w: %s needs a complete x86 native entry and final text layout", ErrProbeNeedsContext, ins.Raw)
 	}
 	if arch == ArchARM && normalizeInstructionOpcode(ins.Op) == "RFE" {
 		return fmt.Errorf("%w: %s returns through privileged exception state", ErrProbeNeedsContext, ins.Raw)
