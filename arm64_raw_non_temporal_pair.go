@@ -112,7 +112,8 @@ func (c *arm64Ctx) lowerARM64NonTemporalPair(f arm64NonTemporalPair) error {
 		constraints := fmt.Sprintf("={%s0},={%s1},r,~{memory}", registerBank, registerBank)
 		pair := fmt.Sprintf("{ %s, %s }", f.view.typ, f.view.typ)
 		result := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call %s asm sideeffect %q, %q(i64 %s)\n", result, pair, "ldnp "+operands, constraints, base)
+		c.emitMachineNeutralNativeIR("  %%%s = call %s asm sideeffect %q, %q(i64 %s)\n",
+			result, pair, "ldnp "+operands, constraints, base)
 		for index, register := range [2]Reg{left, right} {
 			value := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, %d\n", value, pair, result, index)
@@ -135,7 +136,7 @@ func (c *arm64Ctx) lowerARM64NonTemporalPair(f arm64NonTemporalPair) error {
 	if f.view.simd {
 		constraints = "w,w,r,~{memory}"
 	}
-	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(%s %s, %s %s, i64 %s)\n",
+	c.emitMachineStoreNativeIR("  call void asm sideeffect %q, %q(%s %s, %s %s, i64 %s)\n",
 		"stnp "+operands, constraints, f.view.typ, first, f.view.typ, second, base)
 	return nil
 }

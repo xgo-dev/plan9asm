@@ -160,6 +160,32 @@ func TestARM64RawNonTemporalPairPrivateFrameAndContinuation(t *testing.T) {
 	}
 }
 
+func TestARM64RawNonTemporalPairPreservesNZCV(t *testing.T) {
+	const source = `TEXT pair(SB),4,$0-0
+CMP R0, R0
+WORD $0xa8400941 // LDNP x1, x2, [x10]
+CSET EQ, R4
+WORD $0xa8000941 // STNP x1, x2, [x10]
+CSET EQ, R5
+RET
+`
+	requireARM64GoAssemblerResult(t, source, true)
+	file, err := Parse(ArchARM64, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(file, Options{Goarch: "arm64", TargetTriple: arm64LinuxGNUTriple,
+		Sigs: map[string]FuncSig{"pair": {Name: "pair", Ret: Void}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
+	}
+	compileLLVMToObject(t, llc, arm64LinuxGNUTriple, "pair-nzcv.ll", "pair-nzcv.o", ir)
+}
+
 func TestARM64RawNonTemporalPairNativeRuntime(t *testing.T) {
 	if runtime.GOARCH != "arm64" {
 		t.Skip("covered by the required Linux/QEMU runtime counterpart")
