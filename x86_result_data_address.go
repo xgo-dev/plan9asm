@@ -174,6 +174,14 @@ func x86StaticAddressValueSource(source Operand, arch string) (x86StaticSBAddres
 	return address, immediate, valid && (immediate || address.offset >= 0)
 }
 
+func (c *amd64Ctx) ownsStaticAddressImmediate(source Operand, arch string) bool {
+	if c.fpStaticAddressValues == nil || c.resolve == nil {
+		return false
+	}
+	address, immediate, valid := x86StaticAddressValueSource(source, arch)
+	return valid && immediate && c.fpStaticAddressValues.objects[resolveAssemblyDataSymbol(address.symbol, c.resolve)]
+}
+
 func (c *amd64Ctx) scalarStaticAddressValueTransfer(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
 	values := c.fpStaticAddressValues
 	if values == nil {

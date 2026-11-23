@@ -49,9 +49,21 @@ func x86LoweredStackNativeStore(ins Instr, state *x86ResultState, owned []bool,
 		return false, true
 	}
 	candidate := state.clone()
-	accepted, recognized := x86ResultValueStackStepWithNativeStore(ins, &candidate, owned, resultOffset, arch, true)
+	accepted, recognized := x86ResultBoundValueStackStep(ins, &candidate, owned, resultOffset, arch, x86StackValueNativeStore)
 	if accepted {
 		*state = candidate
 	}
 	return accepted, recognized
+}
+
+// A resolved relocation supplies a complete numerical word to the private
+// stack. Unbound relocations retain their ordinary opaque copy semantics.
+func (c *amd64Ctx) stackAddressImmediateTransfer(ins Instr, state *x86ResultState, owned []bool,
+	resultOffset int64, arch string) (bool, bool) {
+	if ins.Op != "PUSHL" || len(ins.Args) != 1 || !x86AbsoluteRelocationSource(ins.Args[0], arch, 32) ||
+		!x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil ||
+		!c.ownsStaticAddressImmediate(ins.Args[0], arch) {
+		return false, false
+	}
+	return x86ResultBoundValueStackStep(ins, state, owned, resultOffset, arch, x86StackValueOwnedAddress)
 }

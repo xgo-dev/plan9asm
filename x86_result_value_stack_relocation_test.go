@@ -3,8 +3,39 @@ package plan9asm
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestGo386PrivateStackOwnedAddressResult(t *testing.T) {
+	const body = "TEXT ·Value(SB),4,$0-4\nPUSHL $foo+4(SB)\nPOPL AX\nMOVL AX,result+0(FP)\nRET\n"
+	const declaration = "func Value() uintptr"
+	source := "GLOBL foo(SB),16,$16\n" + body
+	goAssemblerOracleOutput(t, "386", source, "", true)
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc required")
+	}
+	for _, target := range x86AddressMemoryTargets("386") {
+		for _, api := range []string{"text", "module", "Go"} {
+			t.Run(target+"/"+api, func(t *testing.T) {
+				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, "386", target, api)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(ir, "ptrtoint ptr") || strings.Contains(ir, "load i32, ptr @foo") {
+					t.Fatal("stack transport lost the original relocated address")
+				}
+				x86PackedStringCompileObject(t, llc, target, ir, "-O0")
+				x86PackedStringCompileObject(t, llc, target, x86DwordProductIROptimize(t, ir), "-O2")
+				ir, err = x86ScalarFPBitViewAPI(t, body, declaration, "386", target, api)
+				if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+					t.Fatal("undefined data symbol acquired a numerical stack value", err)
+				}
+			})
+		}
+	}
+}
 
 func TestX86PrivateStackAbsoluteRelocationBitsStayOpaque(t *testing.T) {
 	state := x86ResultState{valueStack: new(x86ResultValueStack), flags: x86ByteFlagsAll,

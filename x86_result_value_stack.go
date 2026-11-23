@@ -113,11 +113,19 @@ func x86ResultValueStackContinuation(ins Instr, state *x86ResultState, arch stri
 	return true
 }
 
+type x86StackValueBinding uint8
+
+const (
+	x86StackValueOrdinary x86StackValueBinding = iota
+	x86StackValueNativeStore
+	x86StackValueOwnedAddress
+)
+
 func x86ResultValueStackStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
-	return x86ResultValueStackStepWithNativeStore(ins, state, owned, resultOffset, arch, false)
+	return x86ResultBoundValueStackStep(ins, state, owned, resultOffset, arch, x86StackValueOrdinary)
 }
 
-func x86ResultValueStackStepWithNativeStore(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string, nativeStore bool) (bool, bool) {
+func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string, binding x86StackValueBinding) (bool, bool) {
 	spec, known, err := x86StackWidthProperties(ins, arch)
 	if !known {
 		return false, false
@@ -168,9 +176,9 @@ func x86ResultValueStackStepWithNativeStore(ins Instr, state *x86ResultState, ow
 					}
 				}
 			} else if x86AbsoluteRelocationSource(arg, arch, spec.bits) {
-				// Copy the actual relocation address as opaque bits. Its
-				// numerical value and every pointer/storage role remain unknown.
-				bits = ^uint64(0) << uint(8*width)
+				if binding != x86StackValueOwnedAddress {
+					bits = ^uint64(0) << uint(8*width)
+				}
 			} else if !x86ResultRead(arg, width, state, owned, arch) {
 				return false, true
 			}
@@ -317,7 +325,7 @@ func x86ResultValueStackStepWithNativeStore(ins Instr, state *x86ResultState, ow
 			return false, true
 		}
 	}
-	if nativeStore && ins.x86NumericalRead == nil && x86OrdinaryNativeMemoryOperand(arg, arch) &&
+	if binding == x86StackValueNativeStore && ins.x86NumericalRead == nil && x86OrdinaryNativeMemoryOperand(arg, arch) &&
 		x86ResultIncomingPointerAddressIdentity(arg, state, arch) {
 		return true, true // Only the existing private pop changes; no pointee or later-read fact.
 	}

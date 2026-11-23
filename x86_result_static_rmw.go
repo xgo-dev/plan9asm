@@ -73,8 +73,7 @@ func (c *amd64Ctx) scalarStaticRMWTransfer(ins Instr, state *x86ResultState, own
 		return false, true
 	}
 	if relocation {
-		address, immediate, valid := x86StaticAddressValueSource(form.source, arch)
-		if !valid || !immediate || !values.objects[resolveAssemblyDataSymbol(address.symbol, c.resolve)] {
+		if !c.ownsStaticAddressImmediate(form.source, arch) {
 			return false, true
 		}
 	} else if !form.spec.unary && !x86ResultRead(form.source, width, state, owned, arch) {
