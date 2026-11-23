@@ -76,8 +76,12 @@ func validateWASMRawReturn(ins Instr, op string) error {
 	return nil
 }
 
-func validateWASMSelect(ins Instr, op string) error {
-	if op == "SELECT" {
+func wasmSourceTrap(op string) bool {
+	return op == "UNDEF" || op == "UNREACHABLE"
+}
+
+func validateWASMStackControlOperands(ins Instr, op string) error {
+	if op == "SELECT" || wasmSourceTrap(op) {
 		return validateWASMIgnoredStackOperands(ins, op)
 	}
 	return nil
@@ -119,7 +123,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if err := validateWASMRawReturn(ins, op); err != nil {
 			return err
 		}
-		if err := validateWASMSelect(ins, op); err != nil {
+		if err := validateWASMStackControlOperands(ins, op); err != nil {
 			return err
 		}
 		resultType, err := parseWASMControlResult(ins, op)
@@ -976,7 +980,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if call.propagateUnwind && goABI {
 			b.WriteString("  ret i32 1\n")
 		} else {
-			b.WriteString("  unreachable\n")
+			emitWASMTrap(b)
 		}
 		fmt.Fprintf(b, "%s:\n", continueLabel)
 		blockTerminated = false
@@ -1807,7 +1811,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return err
 			}
 		case "UNDEF", "UNREACHABLE":
-			b.WriteString("  unreachable\n")
+			emitWASMTrap(b)
 			blockTerminated = true
 		default:
 			return fmt.Errorf("unsupported wasm instruction %s", ins.Op)
@@ -1817,8 +1821,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		return fmt.Errorf("%d unterminated wasm control blocks", len(controls)-1)
 	}
 	if !blockTerminated {
-		if goABI && resumePlan != nil {
-			b.WriteString("  unreachable\n")
+		if goABI {
+			// cmd/asm appends UNDEF after the original Go function body.
+			emitWASMTrap(b)
 		} else if useGoStack && sig.WASMNative && physicalRet != Void {
 			// Native helpers such as gcWriteBarrier end in an infinite Loop.
 			// Structured lowering still materializes the unreachable loop-exit

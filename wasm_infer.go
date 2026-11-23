@@ -92,7 +92,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err := validateWASMRawReturn(ins, op); err != nil {
 			return FuncSig{}, err
 		}
-		if err := validateWASMSelect(ins, op); err != nil {
+		if err := validateWASMStackControlOperands(ins, op); err != nil {
 			return FuncSig{}, err
 		}
 		controlResult, err := parseWASMControlResult(ins, op)

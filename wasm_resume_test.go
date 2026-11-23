@@ -88,7 +88,7 @@ func checkWASMGoResumeDispatcher(t *testing.T, source string) {
 	for _, goos := range wasmPackedGoPlatforms {
 		t.Run(goos, func(t *testing.T) {
 			dir := t.TempDir()
-			listing := wasmStockResumeListing(t, dir, goos, source)
+			listing := wasmStockFunctionListing(t, dir, goos, source)
 			options := wasmPackedOptions(sigs, WASMABIGo)
 			if goos == "wasip1" {
 				options.TargetTriple = "wasm32-unknown-wasi"
@@ -137,9 +137,9 @@ func checkWASMResumeRuntime(t *testing.T, ir, node, listing string) {
 	}
 }
 
-func wasmStockResumeListing(t *testing.T, dir, goos, source string) string {
+func wasmStockFunctionListing(t *testing.T, dir, goos, source string) string {
 	t.Helper()
-	input := filepath.Join(dir, "resume.s")
+	input := filepath.Join(dir, "original.s")
 	listing := filepath.Join(dir, "go-asm.txt")
 	object := filepath.Join(dir, "go.o")
 	if err := os.WriteFile(input, []byte(source), 0600); err != nil {
@@ -151,7 +151,7 @@ func wasmStockResumeListing(t *testing.T, dir, goos, source string) string {
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOOS="+goos, "GOARCH=wasm")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("Go %s/wasm resume source: %v\n%s", goos, err, output)
+		t.Fatalf("Go %s/wasm assembly: %v\n%s", goos, err, output)
 	}
 	if err := os.WriteFile(listing, output, 0600); err != nil {
 		t.Fatal(err)

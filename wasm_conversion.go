@@ -132,5 +132,11 @@ func (spec wasmConversionOp) emitTrapCheck(b *strings.Builder, value wasmValue, 
 func emitWASMTrapUnless(b *strings.Builder, valid string, newLabel func(string) string) {
 	trap, next := newLabel("wasm_trap"), newLabel("wasm_valid")
 	fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n%s:\n", valid, next, trap, trap)
-	fmt.Fprintf(b, "  call void @llvm.trap()\n  unreachable\n%s:\n", next)
+	emitWASMTrap(b)
+	fmt.Fprintf(b, "%s:\n", next)
+}
+
+func emitWASMTrap(b *strings.Builder) {
+	// A Wasm trap is observable even when the surrounding IR is optimized.
+	b.WriteString("  call void @llvm.trap()\n  unreachable\n")
 }

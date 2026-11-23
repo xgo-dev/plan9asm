@@ -54,10 +54,12 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	wantIntegerIntrinsic := make(map[string]bool)
 	wantConversion := make(map[string]wasmConversionOp)
 	var wantVectorIntrinsic map[string]wasmsimd.Form
-	wantTrap := false
+	// Go function bodies can reach the assembler's implicit final UNDEF.
+	wantTrap := wasmABI == WASMABIGo
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
 			op := normalizeInstructionOpcode(ins.Op)
+			wantTrap = wantTrap || wasmSourceTrap(op)
 			if spec, ok := wasmIntegerCountOps[op]; ok {
 				wantIntegerIntrinsic[spec.intrinsic+"."+string(spec.typ)] = true
 			}

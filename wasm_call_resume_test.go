@@ -165,7 +165,8 @@ RET
 	// Exercise the actual caller with a stub that returns the runtime's
 	// unwind result. An ordinary CALLNORESUME to that stub must still trap.
 	file, err := Parse(ArchWASM, source+`TEXT ·panicStub(SB),4,$0-0
-I32Const $1
+I32Const $256
+I32Load $0
 Return
 TEXT ·ordinaryCaller(SB),4,$0-0
 CALLNORESUME ·panicStub(SB)
@@ -206,8 +207,10 @@ define i32 @probeOrdinary() {
 	runLLVMWASMObject(t, ir, "2", `
 const bytes = require('node:fs').readFileSync(process.argv[1]);
 const m = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
+const memory = new DataView(m.memory.buffer);
+memory.setUint32(256, 1, true);
 if (m.probePanic() !== 1) throw Error('sigpanic did not propagate unwind');
-const pc = new DataView(m.memory.buffer).getBigUint64(4096 - 16 - 8, true);
+const pc = memory.getBigUint64(4096 - 16 - 8, true);
 if ((pc & 65535n) !== 3n) throw Error('sigpanic saved PC_B=' + (pc & 65535n));
 let trapped = false;
 try { m.probeOrdinary(); } catch (e) {
@@ -215,5 +218,7 @@ try { m.probeOrdinary(); } catch (e) {
   trapped = true;
 }
 if (!trapped) throw Error('ordinary CALLNORESUME accepted unwind');
+memory.setUint32(256, 0, true);
+if (m.probeOrdinary() !== 0) throw Error('ordinary CALLNORESUME lost normal return');
 `)
 }
