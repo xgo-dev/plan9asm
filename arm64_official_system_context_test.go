@@ -73,6 +73,10 @@ func TestARM64OfficialSystemContextObjects(t *testing.T) {
 	}
 	add("WORD $0xd50e8734", "R20", false, 0xd50e8734) // TLBI VAE3, R20.
 	add("SYS $427808, R20", "R20", false, 0xd50e8734)
+	// AT and SYS have the same two operand rows in Go's arm64 encoder.
+	add("AT $30720", "", false, 0xd508781f)
+	add("AT $30720, R3", "R3", false, 0xd5087803)
+	add("AT $30720, ZR", "ZR", false, 0xd508781f)
 	assembly := source.String()
 	requireARM64GoAssemblerResult(t, assembly, true)
 	file, err := Parse(ArchARM64, assembly)
@@ -97,6 +101,7 @@ func TestARM64OfficialSystemContextObjects(t *testing.T) {
 		body string
 	}{
 		{"unknown SYS effect", "MOVD value+0(FP),R20\nSYS $32768,R20\n"},
+		{"unknown AT effect", "MOVD value+0(FP),R20\nAT $30720,R20\n"},
 		{"reserved TLBI register field", "MOVD value+0(FP),R20\nSYS $34560,R20\n"},
 		{"missing TLBI input", "TLBI VAE3,R20\n"},
 	} {

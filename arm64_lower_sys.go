@@ -50,11 +50,20 @@ func (f arm64SYSFields) operandString() string {
 	return fmt.Sprintf("#%d, c%d, c%d, #%d", f.op1, f.cn, f.cm, f.op2)
 }
 
+func arm64IsSYSOpcode(op Op) bool {
+	switch op {
+	case "AT", "SYS", "SYSL":
+		return true
+	default:
+		return false
+	}
+}
+
 func parseARM64SystemOperation(op Op, ins Instr) (arm64SystemOperation, bool, error) {
 	if op == "TLBI" {
 		return parseARM64TLBI(ins)
 	}
-	if op != "SYS" && op != "SYSL" {
+	if !arm64IsSYSOpcode(op) {
 		return arm64SystemOperation{}, false, nil
 	}
 	if strings.ToUpper(string(ins.Op)) != string(op) {

@@ -679,6 +679,18 @@ func TestExtractSupportedOpsFindsARM64ScalarAtomics(t *testing.T) {
 	}
 }
 
+func TestExtractSupportedOpsFindsARM64SVEPairwiseDispatch(t *testing.T) {
+	supported, err := extractSupportedOps("../..", "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ZADDP", "ZADDPT", "ZSUBPT", "ZADDQP", "ZADDSUBP", "ZSUBP"} {
+		if _, found := supported[name]; !found {
+			t.Errorf("implemented ARM64 pairwise instruction %s missing from the inventory", name)
+		}
+	}
+}
+
 func TestExtractSupportedOpsFindsSingleFamilyOpcodeComparison(t *testing.T) {
 	dir := t.TempDir()
 	src := `package sample

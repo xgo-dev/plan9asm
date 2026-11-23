@@ -98,10 +98,14 @@ func arm64TrailingResultUnobserved(fn Func) bool {
 		return false
 	}
 	for _, ins := range fn.Instrs {
-		switch arm64ControlOp(ins) {
+		op := arm64ControlOp(ins)
+		if arm64IsSYSOpcode(op) {
+			return false
+		}
+		switch op {
 		case OpWORD, "DWORD", "BYTE", arm64RawDataOp, "ADR", "ADRP",
 			"CALL", "BL", "BLR", "BR", "DUFFCOPY", "DUFFZERO", "SVC", "HVC", "SMC",
-			"MRS", "MSR", "SYS", "SYSL":
+			"MRS", "MSR":
 			return false
 		case OpRET:
 			if len(ins.Args) != 0 {

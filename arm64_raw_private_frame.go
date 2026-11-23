@@ -381,8 +381,11 @@ func (s *arm64RawPrivateFrameState) transfer(original, ins Instr, frameSize int6
 	// No unrecognized transform can kill a may-frame register. Its explicit
 	// operands must not consume an address; native/implicit-effect forms are
 	// excluded even when no temporary happens to be live.
+	if arm64IsSYSOpcode(op) {
+		return false
+	}
 	switch op {
-	case "DWORD", "BYTE", "QUAD", "SVC", "HVC", "SMC", "BRK", "HLT", "DCPS1", "DCPS2", "DCPS3", "DRPS", "ERET", "UNDEF", "MRS", "MSR", "SYS", "SYSL", "DC", "IC", "TLBI":
+	case "DWORD", "BYTE", "QUAD", "SVC", "HVC", "SMC", "BRK", "HLT", "DCPS1", "DCPS2", "DCPS3", "DRPS", "ERET", "UNDEF", "MRS", "MSR", "DC", "IC", "TLBI":
 		return false
 	}
 	for _, arg := range ins.Args {

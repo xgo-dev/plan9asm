@@ -117,6 +117,11 @@ func TestTranslateARM64SYSRejectsFormsOutsideGoAssemblerTable(t *testing.T) {
 		"SYS $0, R1, R2",
 		"SYS R1",
 		"SYS.P $0",
+		"AT $1",
+		"AT $0x80000",
+		"AT $0, R1, R2",
+		"AT S1E1R, R3",
+		"AT.P $0",
 		"SYSL $0",
 		"SYSL $0, $1",
 		"SYSL $0, R1, R2",
@@ -134,7 +139,7 @@ func TestTranslateARM64SYSRejectsFormsOutsideGoAssemblerTable(t *testing.T) {
 				Goarch:       "arm64",
 				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
 			}); err == nil {
-				t.Fatalf("Translate accepted %q outside Go 1.27's SYS/SYSL forms", instruction)
+				t.Fatalf("Translate accepted %q outside Go 1.27's SYS/SYSL/AT forms", instruction)
 			}
 		})
 	}

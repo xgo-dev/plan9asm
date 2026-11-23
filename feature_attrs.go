@@ -907,7 +907,7 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				add("+sve")
 			}
 			add(arm64SVEMatrixMultiplyFeatures(Op(op), ins)...)
-			if spec, ok := arm64SVEPairwiseSpecForOp(Op(op)); ok {
+			if spec, ok := arm64SVEPairwiseSpecs[Op(op)]; ok {
 				add("+sve", spec.feature)
 			}
 			if _, ok := arm64SVEMultiplyAddTailOps[Op(op)]; ok {

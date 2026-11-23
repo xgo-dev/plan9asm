@@ -451,8 +451,11 @@ func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
 				}
 			}
 		}
+		if arm64IsSYSOpcode(Op(op)) {
+			return fmt.Errorf("%w: %s depends on privileged ARM64 execution state", ErrProbeNeedsContext, ins.Raw)
+		}
 		switch op {
-		case "TLBI", "SYS", "SYSL", "DCPS1", "DCPS2", "DCPS3", "DRPS", "ERET", "HLT", "HVC", "SMC":
+		case "TLBI", "DCPS1", "DCPS2", "DCPS3", "DRPS", "ERET", "HLT", "HVC", "SMC":
 			return fmt.Errorf("%w: %s depends on privileged ARM64 execution state", ErrProbeNeedsContext, ins.Raw)
 		}
 	}
