@@ -70,7 +70,8 @@ func x86LoweredScalarShiftTransfer(ins Instr, form x86ScalarShiftForm, state *x8
 			continue
 		}
 		if nativeDestination && input.index == form.destinationIndex {
-			if !ownedStaticDestination && !x86ResultIncomingPointerAddressIdentity(input.operand, state, arch) {
+			if !ownedStaticDestination && !x86ResultIncomingPointerAddressIdentity(input.operand, state, arch) &&
+				!x86ResultSharedNumericalAddress(ins, input.operand, state, arch, form.source) {
 				return false
 			}
 			continue

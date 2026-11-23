@@ -80,8 +80,9 @@ func x86LoweredMOVBEResultStep(ins Instr, state *x86ResultState, owned []bool, r
 	}
 	width := int64(form.bits / 8)
 	if form.store && x86OrdinaryNativeMemoryOperand(form.destination, arch) {
-		return x86ResultIncomingPointerAddressIdentity(form.destination, state, arch) &&
-			x86ResultRead(form.source, width, state, owned, arch), true
+		address := x86ResultIncomingPointerAddressIdentity(form.destination, state, arch) ||
+			x86ResultSharedNumericalAddress(local, form.destination, state, arch, form.source)
+		return address && x86ResultRead(form.source, width, state, owned, arch), true
 	}
 	if !form.store && x86OrdinaryNativeMemoryOperand(form.source, arch) {
 		if !x86ResultReadWithNativeContinuation(local, form.source, width, state, owned, arch, true) {
