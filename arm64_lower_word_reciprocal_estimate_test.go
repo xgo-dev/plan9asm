@@ -133,6 +133,9 @@ func TestARM64RawReciprocalEstimateDecoderRejectsAdjacentEncodings(t *testing.T)
 		0x7ea1fc00, // FRSQRTS.
 		0x0ee1d800, // Reserved vector D1.
 		0x1ea1d800, // Scalar encoding with an invalid opcode class.
+		0x0ee1c800, // Unsigned reciprocal estimate reserves sz=1.
+		0x6ee1c800, // Unsigned square root estimate reserves sz=1.
+		0x5ea1c800, // No scalar unsigned estimate.
 	} {
 		if form, ok := decodeARM64RawReciprocalEstimate(word); ok {
 			t.Fatalf("decoder accepted adjacent/reserved encoding %#08x as %#v", word, form)

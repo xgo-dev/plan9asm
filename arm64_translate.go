@@ -41,6 +41,12 @@ func emitARM64Prelude(b *strings.Builder) {
 	b.WriteString("declare <2 x float> @llvm.aarch64.neon.bfdot.v2f32.v4bf16(<2 x float>, <4 x bfloat>, <4 x bfloat>)\n")
 	b.WriteString("declare <4 x float> @llvm.aarch64.neon.bfdot.v4f32.v8bf16(<4 x float>, <8 x bfloat>, <8 x bfloat>)\n")
 	b.WriteString("declare <4 x float> @llvm.aarch64.neon.bfmmla(<4 x float>, <8 x bfloat>, <8 x bfloat>)\n")
+	for _, lanes := range []int{2, 4} {
+		typ := fmt.Sprintf("<%d x i32>", lanes)
+		for _, intrinsic := range []string{"urecpe", "ursqrte"} {
+			fmt.Fprintf(b, "declare %s @llvm.aarch64.neon.%s.v%di32(%s)\n", typ, intrinsic, lanes, typ)
+		}
+	}
 	for _, shape := range []struct {
 		lanes    int
 		typeName string
