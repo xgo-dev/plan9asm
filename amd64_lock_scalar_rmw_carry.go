@@ -309,24 +309,13 @@ func (c *amd64Ctx) sourceBlockSuccessors(block int, labels map[string]int) ([]in
 		}
 		return nil, false
 	}
-	args := ins.Args
-	if op != OpJMP && op != "LOOP" && !isAMD64CounterZeroBranch(op) &&
-		len(args) == 2 && args[0].Kind == OpImm && (args[0].Imm == 0 || args[0].Imm == 1) {
-		args = args[1:]
-	}
+	args := x86DirectTailBranchArgs(ins)
 	if len(args) != 1 {
 		return nil, false
 	}
 	target, found := -1, false
-	if args[0].Kind == OpMem && args[0].Mem.Base == PC && args[0].Mem.OffRaw == "" {
-		base := int64(c.blockBase[block] + len(body) - 1)
-		if args[0].Mem.Off > 1<<63-1-base {
-			return nil, false
-		}
-		pc := base + args[0].Mem.Off
-		if pc >= 0 && pc <= int64(^uint(0)>>1) {
-			target, found = c.blockByIdx[int(pc)]
-		}
+	if args[0].Kind == OpMem && args[0].Mem.Base == PC {
+		target, found = c.pcRelativeBlock(block, len(body)-1, args[0])
 	} else {
 		label := ""
 		switch args[0].Kind {

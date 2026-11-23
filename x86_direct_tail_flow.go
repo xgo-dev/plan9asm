@@ -150,11 +150,10 @@ func (graph *x86DirectTailGraph) root(root int, byName map[string]int, limit int
 				// PCDATA/FUNCDATA/PCALIGN do. The view retains exactly those
 				// source Progs in each TEXT. Bound before converting/adding, and
 				// never let a relative edge cross an original TEXT boundary.
-				offset := arg.Mem.Off
-				if offset < -int64(pc) || offset >= int64(len(view.points)-pc) {
+				target, found = x86PCBranchIndex(pc, len(view.points), arg.Mem.Off)
+				if !found {
 					return nil, x86DirectTailContext("PC branch outside original source instructions")
 				}
-				target, found = pc+int(offset), true
 			}
 			if (ins.Op == OpJMP || ins.Op == OpCALL) && arg.Kind == OpSym {
 				name, offset, valid := parseSBRef(arg.Sym)
@@ -214,12 +213,11 @@ func x86DirectTailPCBranch(ins Instr) bool {
 		return false
 	}
 	args := x86DirectTailBranchArgs(ins)
-	if len(args) != 1 || args[0].Kind != OpMem {
+	if len(args) != 1 {
 		return false
 	}
-	memory := args[0].Mem
-	return memory.Base == "PC" && memory.OffRaw == "" && memory.Sym == "" && memory.Index == "" &&
-		memory.Scale == 0 && memory.Segment == "" && memory.IndexExt == ""
+	_, valid := x86PCBranchOffset(args[0])
+	return valid
 }
 
 func (view *x86DirectTailRoot) blocks() []amd64Block {

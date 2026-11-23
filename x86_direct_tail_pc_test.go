@@ -74,7 +74,7 @@ func TestX86DirectTailPCRelativeDoesNotGrantPCAddress(t *testing.T) {
 	for _, branch := range []string{
 		"JEQ -4(PC)", // Would land on TEXT, not a continuation instruction.
 		"JEQ 20(PC)", "JEQ 9223372036854775807(PC)",
-		"JEQ -9223372036854775808(PC)", "JEQ missing(PC)",
+		"JEQ -9223372036854775808(PC)", "JEQ missing+UNRESOLVED(PC)",
 		"JEQ 2(PC)(SI*1)", "JEQ $2, 2(PC)", "JEQ $1.0, 2(PC)",
 		"MOVQ 2(PC),AX", "LEAQ 2(PC),AX", "CALL 2(PC)",
 	} {

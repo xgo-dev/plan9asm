@@ -55,9 +55,7 @@ func x86CounterControlProperties(op Op, ins Instr, arch string) (x86CounterContr
 	target := ins.Args[0]
 	valid := target.Kind == OpLabel && target.Sym != "" || target.Kind == OpIdent && target.Ident != ""
 	if target.Kind == OpMem {
-		memory := target.Mem
-		valid = memory.Base == PC && memory.Sym == "" && memory.OffRaw == "" &&
-			memory.Index == "" && memory.Scale == 0 && memory.IndexExt == "" && memory.Segment == ""
+		_, valid = x86PCBranchOffset(target)
 	}
 	if !valid {
 		return fail("requires an original local label or instruction-relative PC target")

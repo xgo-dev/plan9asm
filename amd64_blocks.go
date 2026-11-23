@@ -73,20 +73,14 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 
 	isPCRelTarget := func(ins Instr) (off int64, ok bool) {
 		op := strings.ToUpper(string(ins.Op))
-		if op != "JMP" && op != "LOOP" && op != "XBEGIN" && !isAMD64ConditionalBranch(Op(op)) {
+		if op != "JMP" && op != "XBEGIN" && !isAMD64ConditionalBranch(Op(op)) {
 			return 0, false
 		}
-		args := ins.Args
-		if op != "JMP" && len(args) == 2 && args[0].Kind == OpImm {
-			args = args[1:]
-		}
-		if len(args) != 1 || args[0].Kind != OpMem {
+		args := x86DirectTailBranchArgs(ins)
+		if len(args) != 1 {
 			return 0, false
 		}
-		if !strings.EqualFold(string(args[0].Mem.Base), "PC") {
-			return 0, false
-		}
-		return args[0].Mem.Off, true
+		return x86PCBranchOffset(args[0])
 	}
 
 	startAnon := func() {
@@ -122,8 +116,7 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 	splitAt := map[int]bool{}
 	for i, ins := range linear {
 		if off, ok := isPCRelTarget(ins); ok {
-			t := i + int(off)
-			if 0 <= t && t < len(linear) {
+			if t, inside := x86PCBranchIndex(i, len(linear), off); inside {
 				splitAt[t] = true
 			}
 		}

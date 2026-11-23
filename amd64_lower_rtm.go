@@ -140,11 +140,9 @@ func (c *amd64Ctx) rtmBranchTarget(bi int, ii int, operand Operand) (string, err
 		if !strings.EqualFold(string(operand.Mem.Base), "PC") {
 			return "", fmt.Errorf("%s XBEGIN expects a label or PC-relative target", c.goarch)
 		}
-		current := c.blockBase[bi] + ii
-		index := current + int(operand.Mem.Off)
-		targetBlock, ok := c.blockByIdx[index]
-		if !ok || targetBlock < 0 || targetBlock >= len(c.blocks) {
-			return "", fmt.Errorf("%s XBEGIN invalid PC-relative target %d(PC)", c.goarch, operand.Mem.Off)
+		targetBlock, ok := c.pcRelativeBlock(bi, ii, operand)
+		if !ok {
+			return "", fmt.Errorf("%s XBEGIN invalid PC-relative target %s", c.goarch, operand)
 		}
 		target = c.blocks[targetBlock].name
 	default:

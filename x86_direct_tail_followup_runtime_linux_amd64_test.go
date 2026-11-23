@@ -109,8 +109,27 @@ int main(void) {
 			t.Run("NamedByteEntry", func(t *testing.T) {
 				x86DirectTailNamedInteriorCallRuntime(t, arch, execution)
 			})
+			t.Run("OfficialPCBranches", func(t *testing.T) {
+				x86OfficialPCBranchRuntime(t, arch, execution)
+			})
 		})
 	}
+}
+
+func x86OfficialPCBranchRuntime(t *testing.T, arch string, execution x86FloatCompareExecution) {
+	t.Helper()
+	source, declarations, names, _ := x86OfficialPCBranchSource(t, arch)
+	var goChecks, cDeclarations, cChecks strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&goChecks, "if %s(0) != 19 || %s(^uint32(0)) != 11 { panic(%q) }\n", name, name, name)
+		fmt.Fprintf(&cDeclarations, "extern uint32_t %s(uint32_t);\n", name)
+		fmt.Fprintf(&cChecks, "if (%s(0) != 19 || %s(UINT32_MAX) != 11) return 1;\n", name, name)
+	}
+	message := fmt.Sprintf("official branches: %d taken and %d fallthrough paths", len(names), len(names))
+	goMain := "func main() {\n" + goChecks.String() + fmt.Sprintf("fmt.Println(%q)\n}\n", message)
+	cMain := "#include <stdint.h>\n#include <stdio.h>\n" + cDeclarations.String() +
+		"int main(void) {\n" + cChecks.String() + fmt.Sprintf("puts(%q);\nreturn 0;\n}\n", message)
+	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, message+"\n")
 }
 
 func x86DirectTailInteriorCallRuntime(t *testing.T, arch string, execution x86FloatCompareExecution) {

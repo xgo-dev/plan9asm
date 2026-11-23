@@ -87,7 +87,6 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 	}
 	target := ""
 	pcRel := false
-	pcOff := int64(0)
 	knownBlock := func(name string) bool {
 		for _, blk := range c.blocks {
 			if blk.name == name {
@@ -162,7 +161,6 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 			// sequence (blocks are split at terminators, so the pattern works well).
 			if strings.EqualFold(string(args[0].Mem.Base), "PC") {
 				pcRel = true
-				pcOff = args[0].Mem.Off
 				break
 			}
 			if op == "JMP" {
@@ -184,11 +182,9 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		return true, false, fmt.Errorf("amd64 %s empty target: %q", op, ins.Raw)
 	}
 	if pcRel {
-		cur := c.blockBase[bi] + ii
-		tgt := cur + int(pcOff)
-		tbi, ok := c.blockByIdx[tgt]
-		if !ok || tbi < 0 || tbi >= len(c.blocks) {
-			return true, false, fmt.Errorf("amd64 %s invalid PC-relative target %d(PC): %q", op, pcOff, ins.Raw)
+		tbi, ok := c.pcRelativeBlock(bi, ii, args[0])
+		if !ok {
+			return true, false, fmt.Errorf("amd64 %s invalid PC-relative target %s: %q", op, args[0], ins.Raw)
 		}
 		target = c.blocks[tbi].name
 	}

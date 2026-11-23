@@ -606,7 +606,7 @@ func parseOperandsCSV(arch Arch, op Op, s string) ([]Operand, error) {
 			continue
 		}
 		if arch == ArchAMD64 {
-			if operand, matched := parseX86BranchIdentifier(op, part); matched {
+			if operand, matched := parseX86BranchOperand(op, part); matched {
 				out = append(out, operand)
 				continue
 			}
