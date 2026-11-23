@@ -190,3 +190,65 @@ func TestX86ADJSPKeepsLogicalFrameCells(t *testing.T) {
 		})
 	}
 }
+
+func x86ADJSPPhysicalScratchSource(name string) string {
+	return fmt.Sprintf(`TEXT ·%s(SB),516,$0-4
+ADJSP $128
+MOVL $6,124(SP)
+ADDL $1,124(SP)
+ADJSP $32
+CMPL 156(SP),$7
+JNE bad
+MOVL 156(SP),AX
+JMP done
+bad:
+MOVL $15,AX
+done:
+ADJSP $-160
+MOVL AX,ret+0(FP)
+RET
+`, name)
+}
+
+func TestX86ADJSPPhysicalScratch(t *testing.T) {
+	for _, target := range []struct{ arch, triple string }{
+		{"386", "i386-unknown-linux-gnu"}, {"amd64", "x86_64-unknown-linux-gnu"},
+	} {
+		source := x86ADJSPPhysicalScratchSource("Value")
+		alias := `TEXT ·Value(SB),4,$32-4
+MOVL $6,spill-16(SP)
+ADJSP $128
+ADDL $1,144(SP)
+ADJSP $-128
+MOVL spill-16(SP),AX
+MOVL AX,ret+0(FP)
+RET
+`
+		for _, row := range []struct{ name, source string }{{"nested", source}, {"named-alias", alias}} {
+			t.Run(target.arch+"/"+row.name, func(t *testing.T) {
+				goAssemblerOracleOutput(t, target.arch, row.source, "", true)
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, row.source, "func Value() uint32", target.arch, target.triple, api)
+					if err != nil {
+						t.Fatalf("%s lost the initialized stack cell: %v", api, err)
+					}
+					x86ScalarFPNamedConstantResult(t, ir, "Value", []uint64{7})
+				}
+			})
+		}
+		for _, row := range []struct{ name, source string }{
+			{"crosses-owned-end", strings.Replace(source, "124(SP)", "125(SP)", 1)},
+			{"uninitialized", strings.Replace(source, "MOVL $6,124(SP)", "NOP", 1)},
+			{"released", strings.Replace(source, "ADJSP $32", "ADJSP $-128\nADJSP $160", 1)},
+			{"escaped", strings.Replace(source, "MOVL 156(SP),AX", "LEAL 156(SP),AX", 1)},
+		} {
+			t.Run(target.arch+"/"+row.name, func(t *testing.T) {
+				goAssemblerOracleOutput(t, target.arch, row.source, "", true)
+				_, err := x86ScalarFPBitViewAPI(t, row.source, "func Value() uint32", target.arch, target.triple, "Go")
+				if !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatalf("unproved physical stack access was accepted: %v", err)
+				}
+			})
+		}
+	}
+}

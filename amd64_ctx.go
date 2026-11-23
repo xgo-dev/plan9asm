@@ -13,11 +13,11 @@ type amd64Ctx struct {
 	sig FuncSig
 	// goarch distinguishes the 32-bit x86 rules from amd64 while sharing the
 	// common x86 lowering implementation.
-	goarch                 string
-	targetTriple           string
-	x86Plan9Source         bool
-	abi0EntryDirection     x86ResultDirection
-	logicalStackAdjustment bool
+	goarch             string
+	targetTriple       string
+	x86Plan9Source     bool
+	abi0EntryDirection x86ResultDirection
+	relativeStack      *x86RelativeStackPlan
 
 	resolve        func(string) string
 	sigs           map[string]FuncSig
@@ -315,7 +315,7 @@ func (c *amd64Ctx) scanUsedRegs() {
 
 	for _, blk := range c.blocks {
 		for _, ins := range blk.instrs {
-			if c.logicalStackAdjustment && ins.Op == "ADJSP" ||
+			if c.relativeStack != nil && ins.Op == "ADJSP" ||
 				x86InertNOP(ins, c.goarch) || c.fpScalarSource.x86StackFenceAt(ins) {
 				continue
 			}
@@ -910,6 +910,9 @@ func (c *amd64Ctx) emit386ClassicFrame() error {
 
 func (c *amd64Ctx) stackOffsetRange() (minOff, maxOff int64) {
 	maxOff = c.frameSize
+	if extent := int64(c.logicalAUTOExtent); extent > maxOff {
+		maxOff = extent
+	}
 	for _, block := range c.blocks {
 		for _, ins := range block.instrs {
 			if x86InertNOP(ins, c.goarch) {
@@ -965,7 +968,7 @@ func (c *amd64Ctx) stackMovementBudget() (int64, error) {
 					return 0, err
 				}
 			case "ADJSP":
-				if c.logicalStackAdjustment {
+				if c.relativeStack != nil {
 					continue
 				}
 				form, err := parseX86StackAdjustment(ins, c.goarch)

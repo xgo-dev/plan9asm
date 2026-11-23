@@ -61,6 +61,7 @@ type x86ABI0ResultEntry struct {
 	vectors     map[int]int
 	mode32Calls map[string]x86Mode32FrameCall
 	dataBPReads bool
+	relative    *x86RelativeStackPlan
 }
 
 func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch string,
@@ -194,6 +195,14 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 		}
 	}
 	initial.callerAddressFP = initial.pointerFP // Immutable actual typed entry layout.
+	relativeStack := entry.relative
+	if relativeStack == nil && scalarViews && !trapOnly {
+		var err error
+		relativeStack, err = x86PlanRelativeStack(fn, goarch)
+		if err != nil {
+			return err
+		}
+	}
 	if privateStack {
 		stack, err := x86ResultPrivateFlagsSource(fn, goarch)
 		if err != nil {
@@ -205,7 +214,7 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 	if scalarViews {
 		autoExtent, scopedControl = x86X87ScopedControlScratchExtent(fn, goarch)
 	}
-	if scalarViews && x86Mode32FixedFrameCandidate(fn, goarch) {
+	if scalarViews && relativeStack == nil && x86Mode32FixedFrameCandidate(fn, goarch) {
 		if err := x86CheckMode32FixedFrame(fn, sig.Frame, entry.mode32Calls); err != nil {
 			return err
 		}
@@ -220,10 +229,13 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 		}
 	} else if !scopedControl {
 		var autoErr error
-		autoExtent, autoErr = x86ResultAUTOExtentWithPrivateStack(fn, goarch, initial.valueStack != nil)
+		autoExtent, autoErr = x86ResultAUTOExtentForStack(fn, goarch, initial.valueStack != nil, relativeStack)
 		if autoErr != nil {
 			return autoErr
 		}
+	}
+	if relativeStack != nil && relativeStack.extent != 0 {
+		autoExtent = relativeStack.extent
 	}
 	initial.auto = make([]bool, autoExtent)
 	owned := make([]bool, frame)
@@ -299,7 +311,7 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 				}
 			}
 			return nil
-		}, trapOnly, scalarViews && !trapOnly)
+		}, trapOnly, relativeStack)
 	if err != nil {
 		return err
 	}
@@ -320,17 +332,21 @@ type x86ResultFlowBudget struct {
 // entry role cannot weaken the existing ABI0 result proof.
 func checkX86ResultSourceFlow(fn Func, initial x86ResultState, owned []bool, resultOffset int64, goarch string,
 	transfer x86ResultSourceTransfer, checkReturn func(x86ResultState, int) error) error {
-	return checkX86ResultSourceFlowWithTrapOnly(fn, initial, owned, resultOffset, goarch, transfer, checkReturn, false, false)
+	return checkX86ResultSourceFlowWithTrapOnly(fn, initial, owned, resultOffset, goarch, transfer, checkReturn, false, nil)
 }
 
 func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned []bool, resultOffset int64, goarch string,
-	transfer x86ResultSourceTransfer, checkReturn func(x86ResultState, int) error, trapOnly, allowRelativeStack bool) error {
+	transfer x86ResultSourceTransfer, checkReturn func(x86ResultState, int) error, trapOnly bool, relativeStack *x86RelativeStackPlan) error {
 	originalTransfer := transfer
 	trackCPUIDLeaf := false
 	trackCallerOrigins := len(initial.callerAddressFP) != 0 || initial.callerAddressOrigin != [16]uint16{}
 	var repeatEmptyBranch func(int, Instr, *x86ResultState) bool
-	var relativeStack *x86RelativeStackPlan
 	transfer = func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
+		if relativeStack != nil {
+			if projected, found := relativeStack.accesses[ordinal]; found {
+				ins = projected
+			}
+		}
 		if fn.x86StackFenceAt(ins) {
 			return true // The checked zero-add changes no live data at the following void RET.
 		}
@@ -392,6 +408,14 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			if relativeStack != nil {
 				if form, adjusted := relativeStack.adjustments[ordinal]; adjusted {
 					state.flags = form.relativeFlags()
+					if form.amount < 0 && relativeStack.extent != 0 {
+						// Only live reservations own initialized bytes. A later
+						// reservation must supply them again even at the same address.
+						start := len(state.auto) - int(fn.FrameSize+form.before)
+						for index := start; index < start-int(form.amount); index++ {
+							state.auto[index] = false
+						}
+					}
 					return true
 				}
 			}
@@ -509,18 +533,14 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 	if len(instructions) == 0 || len(instructions) > 4096 {
 		return fail("missing or oversized source CFG")
 	}
+	if relativeStack != nil && len(relativeStack.depths) != len(instructions)+1 {
+		return fail("relative stack depth inventory differs from the original CFG")
+	}
 	// Discover private value-stack effects in the same complete, already
 	// selected CFG used below, including source-bound private helpers.
 	flagProjection := false
 	trackMoveMask := false
 	for _, ins := range instructions {
-		if allowRelativeStack && relativeStack == nil && ins.Op == "ADJSP" {
-			var err error
-			relativeStack, err = x86RelativeStack(fn, instructions, ordinals, goarch, len(initial.auto))
-			if err != nil {
-				return err
-			}
-		}
 		trackCPUIDLeaf = trackCPUIDLeaf || strings.EqualFold(string(ins.Op), string(OpCPUID))
 		_, moveMask := amd64MoveMaskSpecs[Op(strings.ToUpper(string(ins.Op)))]
 		trackMoveMask = trackMoveMask || moveMask

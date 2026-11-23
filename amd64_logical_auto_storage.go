@@ -13,7 +13,11 @@ func (c *amd64Ctx) prepareLogicalAUTOStorage() error {
 		fn.x86ContinuationFlow != nil || fn.x86BoolCalls != nil {
 		return nil
 	}
-	if x86Mode32FixedFrameCandidate(fn, c.goarch) {
+	if c.relativeStack != nil && c.relativeStack.extent != 0 {
+		c.logicalAUTOExtent = c.relativeStack.extent
+		return nil
+	}
+	if c.relativeStack == nil && x86Mode32FixedFrameCandidate(fn, c.goarch) {
 		// The paired transfer mapped named AUTO and physical addresses into
 		// the same frame. Preserve that projection in the emitter.
 		if !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) {

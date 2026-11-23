@@ -648,6 +648,11 @@ func (c *amd64Ctx) lowerBlocks() error {
 }
 
 func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emitCondBr amd64EmitCondBr) (terminated bool, err error) {
+	if c.relativeStack != nil {
+		if projected, found := c.relativeStack.emission[c.blockBase[bi]+ii]; found {
+			ins = projected
+		}
+	}
 	c.namedAtomicLock = bi >= 0 && bi < len(c.blocks) && ii > 0 && ii <= len(c.blocks[bi].instrs) &&
 		strings.EqualFold(string(c.blocks[bi].instrs[ii-1].Op), "LOCK")
 	defer func() { c.namedAtomicLock = false }()
@@ -878,7 +883,7 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 		if err != nil {
 			return false, err
 		}
-		if c.logicalStackAdjustment {
+		if c.relativeStack != nil {
 			c.lowerRelativeStackAdjustment(form)
 			return false, nil
 		}

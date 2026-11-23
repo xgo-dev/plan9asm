@@ -5,17 +5,21 @@ package plan9asm
 // reads. It does not expand the public asmdecl-filter query, caller admission,
 // frame backing, or pointer permissions.
 func checkX86ScalarFPResultInitialization(fn Func, sig FuncSig, arch string) error {
+	return checkX86ScalarFPResultInitializationWithStack(fn, sig, arch, nil)
+}
+
+func checkX86ScalarFPResultInitializationWithStack(fn Func, sig FuncSig, arch string, relative *x86RelativeStackPlan) error {
 	reads := x86ScalarFPCallerReads(fn, sig, arch)
 	if fn.x86DirectTailRoot != nil {
 		reads = nil // No helper may borrow another TEXT's caller-read ordinal.
 	}
-	return checkX86ABI0ResultInitializationAtSource(fn, sig, arch,
+	return checkX86ABI0ResultInitializationWithEntry(fn, sig, arch,
 		func(ordinal int, ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {
 			if read, present := reads[ordinal]; present {
 				return read.transfer(ins, state, owned, resultOffset, arch)
 			}
 			return x86ScalarFPResultTransfer(ins, state, owned, resultOffset, arch)
-		}, true)
+		}, true, false, false, x86ABI0ResultEntry{relative: relative})
 }
 
 func x86ScalarFPResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) bool {

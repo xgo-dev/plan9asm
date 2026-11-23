@@ -110,15 +110,16 @@ int main(void) {
 func x86ADJSPCarryRuntime(t *testing.T, arch string, execution x86FloatCompareExecution) {
 	t.Helper()
 	source := x86ADJSPCarrySource("BelowBoundary", 127) + x86ADJSPCarrySource("AtBoundary", 128) +
-		x86ADJSPCarrySource("AboveBoundary", 129) + x86ADJSPLogicalFrameSource("Framed", arch)
+		x86ADJSPCarrySource("AboveBoundary", 129) + x86ADJSPLogicalFrameSource("Framed", arch) +
+		x86ADJSPPhysicalScratchSource("Scratch")
 	const declarations = "func BelowBoundary() uint32\nfunc AtBoundary() uint32\nfunc AboveBoundary() uint32\n" +
-		"func Framed(value uint32) uint32\n"
+		"func Framed(value uint32) uint32\nfunc Scratch() uint32\n"
 	const goMain = `
 func main() {
-    if BelowBoundary() != 0 || AtBoundary() != 3 || AboveBoundary() != 0 || Framed(41) != 42 || Framed(0xffffffff) != 0 {
+    if BelowBoundary() != 0 || AtBoundary() != 3 || AboveBoundary() != 0 || Framed(41) != 42 || Framed(0xffffffff) != 0 || Scratch() != 7 {
         panic("incorrect carry on a stack adjustment")
     }
-    fmt.Println("ADJSP carry 0 3 0, frame 42 0")
+    fmt.Println("ADJSP carry 0 3 0, frame 42 0, scratch 7")
 }
 `
 	const cMain = `#include <stdint.h>
@@ -126,16 +127,17 @@ func main() {
 
 extern uint32_t BelowBoundary(void), AtBoundary(void), AboveBoundary(void);
 extern uint32_t Framed(uint32_t);
+extern uint32_t Scratch(void);
 
 int main(void) {
-    if (BelowBoundary() != 0 || AtBoundary() != 3 || AboveBoundary() != 0 || Framed(41) != 42 || Framed(0xffffffff) != 0) {
+    if (BelowBoundary() != 0 || AtBoundary() != 3 || AboveBoundary() != 0 || Framed(41) != 42 || Framed(0xffffffff) != 0 || Scratch() != 7) {
         return 1;
     }
-    puts("ADJSP carry 0 3 0, frame 42 0");
+    puts("ADJSP carry 0 3 0, frame 42 0, scratch 7");
     return 0;
 }
 `
-	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, "ADJSP carry 0 3 0, frame 42 0\n")
+	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain, "ADJSP carry 0 3 0, frame 42 0, scratch 7\n")
 }
 
 // The Linux AMD64 owner must execute both native ISA modes. Other hosts retain

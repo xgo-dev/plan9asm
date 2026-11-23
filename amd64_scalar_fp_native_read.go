@@ -80,7 +80,15 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	if calls := fn.x86BoolCalls; calls != nil && calls.tail != nil {
 		return calls.checkTailTerminal(fn, sig, arch)
 	}
-	strictErr := checkX86ScalarFPResultInitialization(fn, sig, arch)
+	var relative *x86RelativeStackPlan
+	if hasStackAdjustment {
+		var err error
+		relative, err = x86RelativeStack(fn, arch)
+		if err != nil {
+			return err
+		}
+	}
+	strictErr := checkX86ScalarFPResultInitializationWithStack(fn, sig, arch, relative)
 	if strictErr != nil && c.ownsStaticLEAResult(fn, sig, arch) {
 		return nil
 	}
@@ -119,7 +127,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 				return err
 			}
 		}
-		c.logicalStackAdjustment = hasStackAdjustment && strictErr == nil && !registerEntry && !logicalScalar
+		if strictErr == nil && !registerEntry && !logicalScalar {
+			c.relativeStack = relative
+		}
 		return strictErr
 	}
 	if selected, err := c.checkRawLogicalScalarResult(); selected {

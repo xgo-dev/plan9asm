@@ -193,11 +193,11 @@ func (c *amd64Ctx) validateScalarFPSourceViews() error {
 		}
 	}
 	for _, ins := range c.fpScalarSource.Instrs {
-		if ins.Op == "ADJSP" && !c.logicalStackAdjustment {
+		if ins.Op == "ADJSP" && c.relativeStack == nil {
 			if err := c.scalarFPResultInitialized(); err != nil {
 				return err
 			}
-			if !c.logicalStackAdjustment {
+			if c.relativeStack == nil {
 				return fmt.Errorf("%w: ADJSP lacks a proved relative source stack", ErrProbeNeedsContext)
 			}
 		}
