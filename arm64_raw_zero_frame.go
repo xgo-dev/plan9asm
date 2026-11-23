@@ -290,6 +290,9 @@ func arm64RawZeroFrameProof(fn Func, transport *arm64PrivateFrameTransport, cont
 					break
 				}
 				if op == "B" || op == "JMP" || arm64IsConditionalBranch(op) {
+					if control != nil && seed == 0 {
+						control.recordFixedPredicate([2]int{point.block, instructionIndex}, state.control, ins, op)
+					}
 					if len(ins.Args) == 0 {
 						return false
 					}

@@ -149,101 +149,83 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 		}
 		return true, true, nil
 
-	case "CBZ", "CBNZ":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects reg, label: %q", op, ins.Raw)
-		}
-		rv, err := c.loadReg(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		t := c.newTmp()
-		if op == "CBZ" {
-			fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", t, rv)
-		} else {
-			fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %s, 0\n", t, rv)
-		}
-		tgt, ok := c.resolveBranchTarget(bi, ins.Args[1])
-		if !ok {
-			return true, false, fmt.Errorf("arm64 %s invalid target: %q", op, ins.Raw)
-		}
-		fall := ""
-		if bi+1 < len(c.blocks) {
-			fall = c.blocks[bi+1].name
-		}
-		if fall == "" {
-			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
-		}
-		c.emitPredicateBranch("%"+t, tgt, fall)
-		return true, true, nil
-
-	case "TBZ", "TBNZ":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects $bit, reg, label: %q", op, ins.Raw)
-		}
-		bit := ins.Args[0].Imm
-		if bit < 0 || bit > 63 {
-			return true, false, fmt.Errorf("arm64 %s bit index must be in [0, 63]: %q", op, ins.Raw)
-		}
-		rv, err := c.loadReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		sh := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", sh, rv, bit)
-		mask := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", mask, sh)
-		condT := c.newTmp()
-		if op == "TBZ" {
-			fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, 0\n", condT, mask)
-		} else {
-			fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", condT, mask)
-		}
-		tgt, ok := c.resolveBranchTarget(bi, ins.Args[2])
-		if !ok {
-			return true, false, fmt.Errorf("arm64 %s invalid target: %q", op, ins.Raw)
-		}
-		fall := ""
-		if bi+1 < len(c.blocks) {
-			fall = c.blocks[bi+1].name
-		}
-		if fall == "" {
-			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
-		}
-		c.emitPredicateBranch("%"+condT, tgt, fall)
-		return true, true, nil
-
-	case "CBZW", "CBNZW":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects reg, label: %q", op, ins.Raw)
-		}
-		rv, err := c.loadReg(ins.Args[0].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		w := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", w, rv)
-		t := c.newTmp()
-		if op == "CBZW" {
-			fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %%%s, 0\n", t, w)
-		} else {
-			fmt.Fprintf(c.b, "  %%%s = icmp ne i32 %%%s, 0\n", t, w)
-		}
-		tgt, ok := c.resolveBranchTarget(bi, ins.Args[1])
-		if !ok {
-			return true, false, fmt.Errorf("arm64 %s invalid target: %q", op, ins.Raw)
-		}
-		fall := ""
-		if bi+1 < len(c.blocks) {
-			fall = c.blocks[bi+1].name
-		}
-		if fall == "" {
-			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
-		}
-		c.emitPredicateBranch("%"+t, tgt, fall)
-		return true, true, nil
+	case "CBZ", "CBNZ", "CBZW", "CBNZW", "TBZ", "TBNZ":
+		err := c.lowerRegisterPredicateBranch(bi, op, ins)
+		return true, err == nil, err
 	}
 	return false, false, nil
+}
+
+type arm64RegisterPredicate struct {
+	reg     Reg
+	target  Operand
+	width   int
+	bit     int64
+	nonzero bool
+}
+
+func parseARM64RegisterPredicate(op Op, ins Instr) (arm64RegisterPredicate, error) {
+	form := arm64RegisterPredicate{width: 64, bit: -1, nonzero: op == "CBNZ" || op == "CBNZW" || op == "TBNZ"}
+	operands, _ := arm64ConditionalBranchShape(op)
+	if operands == 3 {
+		if len(ins.Args) != operands || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg {
+			return form, fmt.Errorf("arm64 %s expects $bit, reg, label: %q", op, ins.Raw)
+		}
+		if bit := ins.Args[0].Imm; bit < 0 || bit > 63 {
+			return form, fmt.Errorf("arm64 %s bit index must be in [0, 63]: %q", op, ins.Raw)
+		}
+		form.bit = ins.Args[0].Imm
+	} else if len(ins.Args) != operands || ins.Args[0].Kind != OpReg {
+		return form, fmt.Errorf("arm64 %s expects reg, label: %q", op, ins.Raw)
+	}
+	if op == "CBZW" || op == "CBNZW" {
+		form.width = 32
+	}
+	form.reg, form.target = ins.Args[operands-2].Reg, ins.Args[operands-1]
+	return form, nil
+}
+
+func (c *arm64Ctx) lowerRegisterPredicateBranch(bi int, op Op, ins Instr) error {
+	form, err := parseARM64RegisterPredicate(op, ins)
+	if err != nil {
+		return err
+	}
+	if c.localControl != nil && c.localControl.unboundPredicate[[2]int{bi, c.currentInstruction}] {
+		return fmt.Errorf("%w: ARM64 %s consumes an unbound fixed entry register at %q", ErrProbeNeedsContext, form.reg, ins.Raw)
+	}
+	target, ok := c.resolveBranchTarget(bi, form.target)
+	if !ok {
+		return fmt.Errorf("arm64 %s invalid target: %q", op, ins.Raw)
+	}
+	if bi+1 >= len(c.blocks) || c.blocks[bi+1].name == "" {
+		return fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
+	}
+	width := form.width
+	if form.bit >= 0 {
+		width = int(form.bit) + 1
+	}
+	value, err := c.loadRegisterWidth(form.reg, width)
+	if err != nil {
+		return err
+	}
+	if form.bit >= 0 {
+		shift, mask := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", shift, value, form.bit)
+		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", mask, shift)
+		value = "%" + mask
+	} else if form.width == 32 {
+		narrow := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", narrow, value)
+		value = "%" + narrow
+	}
+	comparison := "eq"
+	if form.nonzero {
+		comparison = "ne"
+	}
+	condition := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp %s i%d %s, 0\n", condition, comparison, form.width, value)
+	c.emitPredicateBranch("%"+condition, target, c.blocks[bi+1].name)
+	return nil
 }
 
 func (c *arm64Ctx) castI64RegToArg(v string, to LLVMType) (string, error) {

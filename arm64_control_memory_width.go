@@ -78,14 +78,14 @@ func (state *arm64ControlState) readMemoryWidth(memory Operand, width int64, gp 
 	if gp && width == 8 {
 		return state.source(memory, false)
 	}
-	value := arm64ControlUnion(arm64ControlExternal(), arm64ControlLabels(state.source(memory, false)))
+	value := arm64ControlUnion(arm64ControlExternal(), arm64ControlComputedInputs(state.source(memory, false)))
 	if key := state.memoryKey(memory, false); strings.HasPrefix(key, "sp:") || strings.HasPrefix(key, "fp:") {
 		// Partial or floating loads can carry bits of a code pointer, but
 		// cannot restore its exact control identity. Inspect every overlap,
 		// including a load beginning inside a saved cell rather than at it.
 		for cell, stored := range state.memory {
 			if arm64ControlMemoryRangesOverlap(key, width, cell, 8) {
-				value = arm64ControlUnion(value, arm64ControlLabels(stored))
+				value = arm64ControlUnion(value, arm64ControlComputedInputs(stored))
 			}
 		}
 	}
@@ -108,10 +108,12 @@ func (state *arm64ControlState) writeMemoryWidth(memory Operand, value arm64Cont
 	state.invalidateOverlappingControlCells(key, width)
 	// Retain transformed code bits without inventing an exact pointer cell.
 	// Unknown ordinary data need not create a new tracked continuation cell.
-	taint := arm64ControlLabels(value)
+	taint := arm64ControlComputedInputs(value)
 	if arm64ControlCount(taint) != 0 {
 		taint = arm64ControlUnion(taint, arm64ControlExternal())
-		taint = arm64ControlWithToken(taint, "code-derived:")
+		if arm64ControlCount(arm64ControlLabels(taint)) != 0 {
+			taint = arm64ControlWithToken(taint, "code-derived:")
+		}
 		for offset := int64(0); offset < width; offset += 8 {
 			cell := arm64ControlElement(memory, offset)
 			part := state.memoryKey(cell, false)

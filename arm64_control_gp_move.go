@@ -49,7 +49,7 @@ func (state *arm64ControlState) transferGPRegisterMove(ins Instr) bool {
 	if form.source.Kind == OpReg {
 		value = state.source(form.source, false)
 		if form.op != "MOVD" {
-			value = arm64ControlUnion(arm64ControlExternal(), arm64ControlLabels(value))
+			value = arm64ControlUnion(arm64ControlExternal(), arm64ControlComputedInputs(value))
 			if arm64ControlCount(arm64ControlLabels(value)) != 0 {
 				value = arm64ControlWithToken(value, "code-derived:")
 			}

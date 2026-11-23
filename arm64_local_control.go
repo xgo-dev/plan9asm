@@ -22,12 +22,13 @@ type arm64ControlState struct {
 }
 
 type arm64LocalControlPlan struct {
-	before      map[[2]int]arm64ControlValue
-	stackBefore map[[2]int]arm64ControlValue
-	linkBefore  map[[2]int]arm64ControlValue
-	reachable   []bool
-	outer       string
-	autoFrame   bool
+	before           map[[2]int]arm64ControlValue
+	stackBefore      map[[2]int]arm64ControlValue
+	linkBefore       map[[2]int]arm64ControlValue
+	unboundPredicate map[[2]int]bool
+	reachable        []bool
+	outer            string
+	autoFrame        bool
 }
 
 type arm64GoFrame struct {
@@ -156,6 +157,12 @@ func arm64ControlBase(reg Reg) Reg {
 }
 
 func arm64ControlOffset(value arm64ControlValue, off int64) arm64ControlValue {
+	if arm64ControlUsesFixedInput(value) {
+		if off == 0 {
+			return value
+		}
+		return arm64ControlUnion(arm64ControlExternal(), arm64ControlComputedInputs(value))
+	}
 	if off != 0 {
 		for _, token := range arm64ControlKeys(value) {
 			if strings.HasPrefix(token, "label:") || token == "code-derived:" {
@@ -219,11 +226,15 @@ func (state *arm64ControlState) source(op Operand, post bool) arm64ControlValue 
 	if op.Kind == OpFPAddr {
 		return arm64ControlFromMap(map[string]bool{"fpa:" + strconv.FormatInt(op.FPOffset, 10): true})
 	}
+	if op.Kind == OpMem && (arm64ControlUsesFixedInput(arm64ControlRead(state.regs, op.Mem.Base)) ||
+		op.Mem.Index != "" && arm64ControlUsesFixedInput(arm64ControlRead(state.regs, op.Mem.Index))) {
+		return arm64ControlWithToken(arm64ControlExternal(), arm64DerivedFixedInput)
+	}
 	if key := state.memoryKey(op, post); key != "" && state.memory[key] != nil {
 		if state.unexposedSP && strings.HasPrefix(key, "sp:") && arm64ControlEscapedOnlyCode(state.escaped) {
 			return state.memory[key]
 		}
-		return arm64ControlUnion(state.memory[key], arm64ControlLabels(state.escaped))
+		return arm64ControlUnion(state.memory[key], arm64ControlComputedInputs(state.escaped))
 	}
 	if op.Kind == OpMem || op.Kind == OpFP || op.Kind == OpSym {
 		return arm64ControlUnion(arm64ControlExternal(), state.escaped)
@@ -423,7 +434,15 @@ func (c *arm64Ctx) prepareLocalControl() error {
 	if c.sourceFrameR20 {
 		entry.regs["R20"] = arm64ControlFromMap(map[string]bool{"sp:0": true})
 	}
+	if arm64HasRegisterPredicate(c.blocks) {
+		for _, fixed := range arm64RawZeroFixedEntry {
+			entry.regs[fixed.reg] = arm64ControlWithToken(nil, fixed.token)
+		}
+	}
 	for _, reg := range c.sig.ArgRegs {
+		if arm64ControlUsesFixedInput(entry.regs[reg]) && (c.sourceABI0Inputs || c.goRegisterEntry) {
+			continue // This signature does not initialize the physical register.
+		}
 		entry.regs[reg] = arm64ControlExternal()
 	}
 	before := make([]*arm64ControlState, len(c.blocks))
@@ -542,6 +561,7 @@ func (c *arm64Ctx) prepareLocalControl() error {
 				break
 			}
 			if arm64IsConditionalBranch(op) {
+				plan.recordFixedPredicate([2]int{bi, ii}, state, ins, op)
 				if len(ins.Args) != 0 {
 					if name, ok := arm64BranchTarget(ins.Args[len(ins.Args)-1]); ok {
 						if target, ok := indices[name]; ok {
@@ -684,6 +704,32 @@ func arm64IsConditionalBranch(op Op) bool {
 	return bits != 0
 }
 
+func arm64HasRegisterPredicate(blocks []arm64Block) bool {
+	for _, block := range blocks {
+		if len(block.instrs) == 0 {
+			continue
+		}
+		last := block.instrs[len(block.instrs)-1]
+		if operands, _ := arm64ConditionalBranchShape(arm64ControlOp(last)); operands > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func (plan *arm64LocalControlPlan) recordFixedPredicate(point [2]int, state *arm64ControlState, ins Instr, op Op) {
+	if operands, _ := arm64ConditionalBranchShape(op); operands < 2 {
+		return
+	}
+	form, err := parseARM64RegisterPredicate(op, ins)
+	if err == nil && arm64ControlUsesFixedInput(arm64ControlRead(state.regs, form.reg)) {
+		if plan.unboundPredicate == nil {
+			plan.unboundPredicate = make(map[[2]int]bool)
+		}
+		plan.unboundPredicate[point] = true
+	}
+}
+
 // Go's conditional-branch rows have a label in the last operand. The
 // displacement field determines when cmd/asm must insert a branch veneer.
 func arm64ConditionalBranchShape(op Op) (operands, bits int) {
@@ -710,7 +756,7 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 		// outputs lose their old continuation; Linux does not write R1.
 		result := arm64ControlExternal()
 		for _, reg := range []Reg{"R0", "R1", "R2", "R3", "R4", "R5", "R8", "R16"} {
-			result = arm64ControlUnion(result, arm64ControlLabels(arm64ControlRead(state.regs, reg)))
+			result = arm64ControlUnion(result, arm64ControlComputedInputs(arm64ControlRead(state.regs, reg)))
 		}
 		form, err := parseARM64SyscallForm(state.targetTriple, ins)
 		writes := uint32(3) // Unknown contexts cannot invent preservation.
@@ -789,7 +835,7 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 	if inputs, destination, valid := arm64ScalarMultiplyInputs(op, ins); valid {
 		value := arm64ControlExternal()
 		for _, input := range inputs {
-			value = arm64ControlUnion(value, arm64ControlLabels(state.source(input, false)))
+			value = arm64ControlUnion(value, arm64ControlComputedInputs(state.source(input, false)))
 		}
 		if arm64ControlCount(arm64ControlLabels(value)) != 0 {
 			value = arm64ControlWithToken(value, "code-derived:") // Multiplication is not a pure PC copy.
@@ -809,7 +855,7 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 		}
 		value := state.source(Operand{Kind: OpReg, Reg: form.base}, false)
 		if form.offset != 0 {
-			value = arm64ControlUnion(arm64ControlOffset(value, form.offset), arm64ControlLabels(value))
+			value = arm64ControlUnion(arm64ControlOffset(value, form.offset), arm64ControlComputedInputs(value))
 		}
 		state.write(ins.Args[1], value, false)
 		return
@@ -858,7 +904,7 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 		}
 		value := state.source(src, false)
 		if off != 0 {
-			value = arm64ControlUnion(arm64ControlOffset(value, off), arm64ControlLabels(value))
+			value = arm64ControlUnion(arm64ControlOffset(value, off), arm64ControlComputedInputs(value))
 		}
 		state.write(dst, value, false)
 	} else if state.transferGPData(ins) {
@@ -873,9 +919,9 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 		// happen to reconstitute the original blockaddress at runtime.
 		value := arm64ControlExternal()
 		for _, arg := range ins.Args {
-			value = arm64ControlUnion(value, arm64ControlLabels(state.source(arg, post)))
+			value = arm64ControlUnion(value, arm64ControlComputedInputs(state.source(arg, post)))
 			for _, reg := range arg.RegList {
-				value = arm64ControlUnion(value, arm64ControlLabels(arm64ControlRead(state.regs, reg)))
+				value = arm64ControlUnion(value, arm64ControlComputedInputs(arm64ControlRead(state.regs, reg)))
 			}
 		}
 		destination := ins.Args[len(ins.Args)-1]
@@ -889,7 +935,7 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 		}
 		if key := state.memoryKey(destination, post); key != "" {
 			state.invalidateOverlappingControlCells(key, 64)
-			value = arm64ControlUnion(value, arm64ControlLabels(state.memory[key]))
+			value = arm64ControlUnion(value, arm64ControlComputedInputs(state.memory[key]))
 		}
 		state.write(destination, value, post)
 	}

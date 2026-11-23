@@ -37,7 +37,10 @@ type arm64ControlNode struct {
 	count, falseEntries int
 	frames, labels      int
 	nonUnknown          int
+	fixedInput          bool
 }
+
+const arm64DerivedFixedInput = "fixed-entry-derived:"
 
 func arm64ControlHash(token string) uint64 {
 	const prime = uint64(1099511628211)
@@ -70,6 +73,10 @@ func arm64ControlLeaf(hash uint64, entries []arm64ControlEntry) *arm64ControlNod
 		if entry.token != "" {
 			node.nonUnknown++
 		}
+		switch entry.token {
+		case "entry-os18:", "entry-g:", "entry-bp:", arm64DerivedFixedInput:
+			node.fixedInput = true
+		}
 	}
 	return node
 }
@@ -86,6 +93,7 @@ func arm64ControlBranch(split uint64, left, right *arm64ControlNode) *arm64Contr
 		count: left.count + right.count, falseEntries: left.falseEntries + right.falseEntries,
 		frames: left.frames + right.frames, labels: left.labels + right.labels,
 		nonUnknown: left.nonUnknown + right.nonUnknown,
+		fixedInput: left.fixedInput || right.fixedInput,
 	}
 }
 
@@ -393,6 +401,20 @@ func arm64ControlLabels(value arm64ControlValue) arm64ControlValue {
 		value.labels = &arm64ControlSet{root: arm64ControlProject(value.root, arm64ControlLabelTokens)}
 	})
 	return value.labels
+}
+
+func arm64ControlUsesFixedInput(value arm64ControlValue) bool {
+	return value != nil && value.root != nil && value.root.fixedInput
+}
+
+// Computations retain their dependencies without claiming to preserve an
+// exact caller value. A full-width copy or spill keeps the original token.
+func arm64ControlComputedInputs(value arm64ControlValue) arm64ControlValue {
+	inputs := arm64ControlLabels(value)
+	if arm64ControlUsesFixedInput(value) {
+		return arm64ControlWithToken(inputs, arm64DerivedFixedInput)
+	}
+	return inputs
 }
 
 func arm64ControlAddressTaint(value arm64ControlValue) arm64ControlValue {
