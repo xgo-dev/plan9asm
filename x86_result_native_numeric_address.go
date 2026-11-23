@@ -10,6 +10,26 @@ func x86ResultPairedNativeAddress(ins Instr, arg Operand, state *x86ResultState,
 			x86ResultNativeNumericAddress(arg, state, arch)
 }
 
+// The same register may supply both a data input and the address base of an
+// already paired instruction. All effective address bytes must reach the use.
+func x86ResultSharedNumericalAddress(ins Instr, address Operand, state *x86ResultState,
+	arch string, numericalInputs ...Operand) bool {
+	if len(numericalInputs) == 0 || address.Kind != OpMem || !x86ResultNamedPredicateInstruction(ins) ||
+		ins.x86NumericalRead != nil || !x86MemoryRegisterEncodingValid(address.Mem, arch) ||
+		address.Mem.Index == "" && address.Mem.Scale != 0 {
+		return false
+	}
+	for _, operand := range numericalInputs {
+		if operand.Kind != OpReg {
+			continue
+		}
+		if root, valid := x86CallerGP(operand.Reg); valid && root == address.Mem.Base {
+			return x86ResultNativeNumericAddress(address, state, arch)
+		}
+	}
+	return false
+}
+
 // Only an already selected native emitter may consume these numerical address
 // bits. A successful volatile access initializes its result, not its pointee,
 // and creates no logical pointer, extent, caller or reusable storage fact.

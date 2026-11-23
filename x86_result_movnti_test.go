@@ -28,6 +28,20 @@ func TestX86MOVNTIPairedStoreReadsEveryByteAndPreservesState(t *testing.T) {
 				if accepted, known := x86LoweredMOVNTIResultStep(ins, &state, nil, arch); !known || !accepted || !reflect.DeepEqual(state, before) {
 					t.Fatal("MOVNTI created bytes, memory, pointers or FLAGS facts")
 				}
+				t.Run("shared data and base", func(t *testing.T) {
+					shared := x86YMMReadSource(t, row.name+" AX,-1(AX)(CX*2)")
+					for missing := int64(-1); missing < x86ResultPointerWord(arch); missing++ {
+						current := before.clone()
+						if missing >= 0 {
+							current.gp[value] &^= 1 << uint(missing)
+						}
+						initial := current.clone()
+						accepted, known := x86LoweredMOVNTIResultStep(shared, &current, nil, arch)
+						if !known || accepted != (missing < 0) || !reflect.DeepEqual(current, initial) {
+							t.Fatalf("shared data/base changed state or ignored an address byte %d", missing)
+						}
+					}
+				})
 				for missing := int64(0); missing < row.width; missing++ {
 					current := before.clone()
 					current.gp[value] &^= 1 << uint(missing)

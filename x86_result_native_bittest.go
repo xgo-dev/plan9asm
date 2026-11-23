@@ -20,31 +20,15 @@ func x86LoweredNativeBitTest(ins Instr, state *x86ResultState, owned []bool, arc
 
 // Only the paired scalar/bit-string emitter consumes this address. FS/GS
 // contributes its actual hardware base, never an AS0 pointer or storage fact.
-// An ordinary address retains its pointer base, or derives that base from a
-// complete numerical register that the same instruction explicitly reads as
-// data. In either case the complete effective address precedes any writeback.
+// Ordinary addressing uses a pointer base or a numerical base that also
+// carries a data input. The effective address precedes any writeback.
 func x86ResultNativeRMWAddress(ins Instr, address Operand, state *x86ResultState,
 	owned []bool, arch string, numericalInputs ...Operand) bool {
 	if accepted, segment := x86ResultNativeSegmentAddress(ins, address, state, owned, arch); segment {
 		return accepted
 	}
-	if x86ResultIncomingPointerAddressIdentity(address, state, arch) {
-		return true
-	}
-	if len(numericalInputs) == 0 || address.Kind != OpMem || !x86ResultNamedPredicateInstruction(ins) ||
-		ins.x86NumericalRead != nil || !x86MemoryRegisterEncodingValid(address.Mem, arch) ||
-		address.Mem.Index == "" && address.Mem.Scale != 0 {
-		return false
-	}
-	for _, operand := range numericalInputs {
-		if operand.Kind != OpReg {
-			continue
-		}
-		if root, valid := x86CallerGP(operand.Reg); valid && root == address.Mem.Base {
-			return x86ResultNativeNumericAddress(address, state, arch)
-		}
-	}
-	return false
+	return x86ResultIncomingPointerAddressIdentity(address, state, arch) ||
+		x86ResultSharedNumericalAddress(ins, address, state, arch, numericalInputs...)
 }
 
 // Named hardware segments supply an actual base independently of numerical

@@ -28,10 +28,11 @@ func TestCrossLinuxRuntimeMatrixX86RMWSharedAddressOriginalGo(t *testing.T) {
 			}
 			var source, declarations, goRows, cDecls, cRows strings.Builder
 			stems := []string{"XCHG", "XADD", "CMPXCHG", "BT", "BTC", "BTR", "BTS", "ADD", "ADC", "SUB", "SBB", "AND", "OR", "XOR"}
+			stems = append(stems, "MOV", "MOVNTI")
 			for _, op := range stems {
 				for i, width := range widths {
 					bits, bitTest := 8<<i, strings.HasPrefix(op, "BT")
-					if bitTest && bits == 8 {
+					if bitTest && bits == 8 || op == "MOVNTI" && bits < 32 {
 						continue
 					}
 					name := "Check" + op + string(width)
@@ -47,6 +48,8 @@ func TestCrossLinuxRuntimeMatrixX86RMWSharedAddressOriginalGo(t *testing.T) {
 						source.WriteString("SETCS AL\nMOVBLZX AL,AX\n")
 					case op == "XADD" || op == "XCHG":
 						fmt.Fprintf(&source, "%s %s,AX\n", move, base)
+					case op == "MOVNTI":
+						source.WriteString("SFENCE\n")
 					}
 					fmt.Fprintf(&source, "%s AX,ret+%d(FP)\nRET\n", move, 2*word)
 					fmt.Fprintf(&declarations, "func %s(value, adjustment uintptr) uintptr\n", name)
@@ -119,6 +122,8 @@ func x86SharedRMWExpected(op string, bits int, value, seed uint64) (offset int, 
 		stored = old | data
 	case "XOR":
 		stored = old ^ data
+	case "MOV", "MOVNTI":
+		stored = data
 	}
 	return offset, old, result, stored & mask
 }

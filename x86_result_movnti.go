@@ -15,9 +15,10 @@ func x86LoweredMOVNTIResultStep(ins Instr, state *x86ResultState, owned []bool, 
 		return true, true // The independently registered #UD closes control flow.
 	}
 	if x86LogicalSourceFrameRegister(form.source.Reg, arch) ||
-		!x86RegisterAddressedNativeMemoryOperand(form.destination, arch) ||
-		!x86ResultIncomingPointerAddressIdentity(form.destination, state, arch) {
+		!x86RegisterAddressedNativeMemoryOperand(form.destination, arch) {
 		return false, true
 	}
-	return x86ResultRead(form.source, int64(form.bits/8), state, owned, arch), true
+	address := x86ResultIncomingPointerAddressIdentity(form.destination, state, arch) ||
+		x86ResultSharedNumericalAddress(ins, form.destination, state, arch, form.source)
+	return address && x86ResultRead(form.source, int64(form.bits/8), state, owned, arch), true
 }
