@@ -5,6 +5,7 @@ package plan9asm
 // not evidence that an instruction stores to arbitrary source stack memory.
 var arm64RawStateFamilies = [...]arm64RawFamily{
 	arm64RawForm(decodeARM64RawNonTemporalPair, (*arm64Ctx).lowerARM64NonTemporalPair, arm64NonTemporalPair.effects),
+	arm64RawForm(decodeARM64RawUnprivilegedTransfer, (*arm64Ctx).lowerARM64UnprivilegedTransfer, arm64UnprivilegedTransfer.effects),
 	arm64RawForm(decodeARM64RawNZCV, (*arm64Ctx).lowerARM64NZCV,
 		func(form arm64NZCVForm) arm64RawContinuationEffects {
 			reads, writes := form.gpEffects()

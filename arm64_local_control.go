@@ -353,8 +353,8 @@ func arm64ControlDecode(ins Instr) Instr {
 			if _, system := decodeARM64RawSystemOperation(uint32(ins.Args[0].Imm)); system {
 				return ins
 			}
-			if _, pair := decodeARM64RawNonTemporalPair(uint32(ins.Args[0].Imm)); pair {
-				return ins // Keep the typed pair's two registers and full memory width.
+			if _, transfer := decodeARM64RawMemoryTransfer(uint32(ins.Args[0].Imm)); transfer {
+				return ins // Keep the exact native memory effect for the original WORD.
 			}
 		}
 		if decoded, err := decodeARM64RawWordInstruction(ins); err == nil {
@@ -731,8 +731,8 @@ func (state *arm64ControlState) transfer(ins Instr, op Op, post bool, data map[s
 		stores := true
 		if len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
 			word := uint32(ins.Args[0].Imm)
-			if pair, ok := decodeARM64RawNonTemporalPair(word); ok {
-				state.transferTypedMemoryForm(pair.privateMemory())
+			if transfer, ok := decodeARM64RawMemoryTransfer(word); ok {
+				state.transferTypedMemoryForm(transfer)
 				return
 			} else if effects, ok := arm64RawContinuationEffectsForWord(word); ok {
 				writes, stores, known = effects.gpWrites, effects.stores, true

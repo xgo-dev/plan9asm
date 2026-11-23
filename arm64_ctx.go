@@ -360,10 +360,14 @@ func (c *arm64Ctx) scanUsedRegs() {
 						markReg(Reg(fmt.Sprintf("R%d", form.base)))
 					}
 				}
-				// Specialized raw decoders below predate the shared Go-table
-				// fallback. Also scan the official decoded operands so any
-				// instruction handled by that fallback receives register storage.
-				if decoded, err := decodeARM64RawWordInstruction(ins); err == nil {
+				// Prefer the native memory grammar, which keeps the original
+				// register banks and does not require disassembling the word.
+				if form, ok := decodeARM64RawMemoryTransfer(word); ok {
+					markOp(form.memory)
+					for _, register := range form.registers {
+						markReg(register)
+					}
+				} else if decoded, err := decodeARM64RawWordInstruction(ins); err == nil {
 					for _, op := range decoded.Args {
 						markOp(op)
 					}

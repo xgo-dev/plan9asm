@@ -305,8 +305,8 @@ func (s *arm64RawPrivateFrameState) transfer(original, ins Instr, frameSize int6
 		if len(ins.Args) != 1 || ins.Args[0].Kind != OpImm || ins.Args[0].ImmRaw != "" {
 			return false
 		}
-		if pair, ok := decodeARM64RawNonTemporalPair(uint32(ins.Args[0].Imm)); ok {
-			return s.memory(pair.privateMemory(), frameSize)
+		if transfer, ok := decodeARM64RawMemoryTransfer(uint32(ins.Args[0].Imm)); ok {
+			return s.memory(transfer, frameSize)
 		}
 		effects, known := arm64RawContinuationEffectsForWord(uint32(ins.Args[0].Imm))
 		if !known || effects.stores || effects.readsSP {
@@ -460,6 +460,16 @@ func arm64RawPrivatePairBytes(op Op) int64 {
 		return 16
 	}
 	return 0
+}
+
+func decodeARM64RawMemoryTransfer(word uint32) (arm64RawPrivateMemoryForm, bool) {
+	if form, ok := decodeARM64RawNonTemporalPair(word); ok {
+		return form.privateMemory(), true
+	}
+	if form, ok := decodeARM64RawUnprivilegedTransfer(word); ok {
+		return form.privateMemory(), true
+	}
+	return arm64RawPrivateMemoryForm{}, false
 }
 
 func arm64RawPrivateMemory(ins Instr) (arm64RawPrivateMemoryForm, bool) {
