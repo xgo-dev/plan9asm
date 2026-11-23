@@ -76,6 +76,15 @@ func validateWASMRawReturn(ins Instr, op string) error {
 	return nil
 }
 
+func validateWASMSelect(ins Instr, op string) error {
+	// Select obtains all three inputs from the stack. Go ignores up to
+	// two written operands and rejects suffixed spellings.
+	if op == "SELECT" && (strings.ToUpper(string(ins.Op)) != op || len(ins.Args) > 2) {
+		return fmt.Errorf("Select accepts at most two ignored source operands without suffixes: %q", ins.Raw)
+	}
+	return nil
+}
+
 func wasmPhysicalStackType(typ LLVMType) LLVMType {
 	switch typ {
 	case I1, I8, I16, Ptr:
@@ -101,6 +110,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	for i, ins := range fn.Instrs {
 		op := normalizeInstructionOpcode(ins.Op)
 		if err := validateWASMRawReturn(ins, op); err != nil {
+			return err
+		}
+		if err := validateWASMSelect(ins, op); err != nil {
 			return err
 		}
 		resultType, err := parseWASMControlResult(ins, op)
@@ -1128,9 +1140,11 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if err != nil {
 			return "", err
 		}
-		condition, err = cast(condition, I32, false)
-		if err != nil {
-			return "", err
+		if condition.stackAddr {
+			return "", fmt.Errorf("%s condition requires i32, got a stack-address marker", op)
+		}
+		if condition.typ != I32 {
+			return "", fmt.Errorf("%s condition requires i32, got %s", op, condition.typ)
 		}
 		name := newTmp()
 		fmt.Fprintf(b, "  %%%s = icmp ne i32 %s, 0\n", name, condition.val)
@@ -1202,7 +1216,9 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 				return err
 			}
 		}
-		if target.resultType != "" {
+		// A loop branch transfers to the entry. The single result encoded
+		// in its block type is consumed only when the loop exits.
+		if target.kind != "loop" && target.resultType != "" {
 			if err := storeBlockResult(target, !conditional); err != nil {
 				return err
 			}
@@ -1600,7 +1616,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			}
 			push(constant.value())
 		case "SELECT":
-			condition, err := pop(op)
+			condition, err := conditionValue(op)
 			if err != nil {
 				return err
 			}
@@ -1615,14 +1631,8 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			if ifTrue.typ != ifFalse.typ {
 				return fmt.Errorf("Select value type mismatch: %s and %s", ifTrue.typ, ifFalse.typ)
 			}
-			condition, err = cast(condition, I32, false)
-			if err != nil {
-				return err
-			}
-			cmp := newTmp()
-			fmt.Fprintf(b, "  %%%s = icmp ne i32 %s, 0\n", cmp, condition.val)
 			name := newTmp()
-			fmt.Fprintf(b, "  %%%s = select i1 %%%s, %s %s, %s %s\n", name, cmp, ifTrue.typ, ifTrue.val, ifFalse.typ, ifFalse.val)
+			fmt.Fprintf(b, "  %%%s = select i1 %s, %s %s, %s %s\n", name, condition, ifTrue.typ, ifTrue.val, ifFalse.typ, ifFalse.val)
 			push(wasmValue{typ: ifTrue.typ, val: "%" + name})
 		case "DROP":
 			if _, err := pop(op); err != nil {

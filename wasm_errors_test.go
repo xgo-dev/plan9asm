@@ -120,7 +120,12 @@ func TestTranslateWasmDiagnostics(t *testing.T) {
 		{name: "select condition underflow", body: "Select", want: "operand stack underflow"},
 		{name: "select false underflow", body: "I32Const $1\nSelect", want: "operand stack underflow"},
 		{name: "select true underflow", body: "I32Const $1\nI32Const $1\nSelect", want: "operand stack underflow"},
-		{name: "select condition cast", body: "I32Const $1\nI32Const $2\nF64Load x+0(FP)\nSelect", sig: frameF64, want: "unsupported wasm cast double to i32"},
+		{
+			name: "select condition type",
+			body: "I32Const $1\nI32Const $2\nF64Load x+0(FP)\nSelect",
+			sig:  frameF64,
+			want: "SELECT condition requires i32, got double",
+		},
 		{name: "unknown float result", body: "F64Load x+0(FP)\nF64Store ret+8(FP)", sig: frameF64, want: "unknown FP result"},
 		{name: "unknown float result with stack value", body: "I64Const $1\nF64Load x+0(FP)\nF64Store ret+8(FP)", sig: frameF64, want: "unknown FP result"},
 		{name: "float operation underflow", body: "F64Floor", want: "operand stack underflow"},

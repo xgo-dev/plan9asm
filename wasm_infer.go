@@ -92,6 +92,9 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err := validateWASMRawReturn(ins, op); err != nil {
 			return FuncSig{}, err
 		}
+		if err := validateWASMSelect(ins, op); err != nil {
+			return FuncSig{}, err
+		}
 		controlResult, err := parseWASMControlResult(ins, op)
 		if err != nil {
 			return FuncSig{}, err
@@ -263,8 +266,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		case "I64CONST":
 			push(wasmInferValue{typ: I64})
 		case "SELECT":
-			condition := pop(op)
-			if err := require(condition, I32); err != nil {
+			if err := popTyped(op, I32); err != nil {
 				return FuncSig{}, err
 			}
 			ifFalse := pop(op)
@@ -286,7 +288,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 			}
 			push(wasmInferValue{typ: typ})
 		case "IF", "BRIF":
-			if err := require(pop(op), I32); err != nil {
+			if err := popTyped(op, I32); err != nil {
 				return FuncSig{}, err
 			}
 			if op == "IF" {
