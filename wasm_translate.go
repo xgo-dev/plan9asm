@@ -27,6 +27,42 @@ type wasmControlFrame struct {
 	inElse     bool
 }
 
+type wasmDeadControlFrame struct {
+	kind   string
+	result LLVMType
+}
+
+// Track the lexical nesting below a terminated path. Only a delimiter of the
+// surrounding live control may re-enter its alternate path or continuation.
+type wasmDeadControls []wasmDeadControlFrame
+
+func (frames *wasmDeadControls) skip(op string, result LLVMType) (bool, error) {
+	switch op {
+	case "BLOCK", "LOOP", "IF":
+		*frames = append(*frames, wasmDeadControlFrame{kind: op, result: result})
+	case "END", "ELSE":
+		if len(*frames) == 0 {
+			return false, nil
+		}
+		last := len(*frames) - 1
+		frame := &(*frames)[last]
+		if op == "END" {
+			if frame.kind == "IF" && frame.result != "" {
+				return true, fmt.Errorf("result-producing If requires Else")
+			}
+			*frames = (*frames)[:last]
+		} else {
+			if frame.kind != "IF" {
+				return true, fmt.Errorf("Else without matching If")
+			}
+			frame.kind = "ELSE"
+		}
+	case "RESUMEPOINT":
+		return len(*frames) != 0, nil
+	}
+	return true, nil
+}
+
 func parseWASMControlResult(ins Instr, op string) (LLVMType, error) {
 	switch op {
 	case "BLOCK", "LOOP", "IF":
@@ -1026,6 +1062,7 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 	}
 	var (
 		controls       = []*wasmControlFrame{root}
+		deadControls   wasmDeadControls
 		pendingName    string
 		rootBranchUsed bool
 	)
@@ -1330,14 +1367,20 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 		if annotateSource && ins.Raw != "" {
 			fmt.Fprintf(b, "  ; %s\n", strings.ReplaceAll(ins.Raw, "\n", " "))
 		}
-		if blockTerminated && op != "ELSE" && op != "END" && op != "LABEL" && op != "RESUMEPOINT" {
-			if goABI && resumePlan != nil && op == "CALL" {
-				// The skipped call can still be followed by an independently
-				// reachable continuation in the original dispatcher.
-				stack = nil
-				emitLabel(wasmResumeLabel(resumePlan.entries[insIndex]))
+		if blockTerminated {
+			skip, err := deadControls.skip(op, controlResults[insIndex])
+			if err != nil {
+				return err
 			}
-			continue
+			if skip {
+				if goABI && resumePlan != nil && op == "CALL" && len(deadControls) == 0 {
+					// The skipped call can still be followed by an independently
+					// reachable continuation in the original dispatcher.
+					stack = nil
+					emitLabel(wasmResumeLabel(resumePlan.entries[insIndex]))
+				}
+				continue
+			}
 		}
 		if spec, ok := wasmsimd.Lookup(op); ok {
 			var inputs [3]wasmValue
@@ -1817,8 +1860,8 @@ func translateFuncWASM(b *strings.Builder, file *File, fn Func, sig FuncSig, res
 			return fmt.Errorf("unsupported wasm instruction %s", ins.Op)
 		}
 	}
-	if len(controls) != 1 {
-		return fmt.Errorf("%d unterminated wasm control blocks", len(controls)-1)
+	if open := len(controls) - 1 + len(deadControls); open != 0 {
+		return fmt.Errorf("%d unterminated wasm control blocks", open)
 	}
 	if !blockTerminated {
 		if goABI {

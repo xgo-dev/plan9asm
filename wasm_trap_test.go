@@ -39,6 +39,58 @@ RESUMEPOINT
 	checkWASMTrapsAgainstGo(t, source, WASMABIGo)
 }
 
+func TestWASMDeadStructuredControlMatchesGo(t *testing.T) {
+	const source = `TEXT trap0(SB),4,$0-0
+Get PC_B
+If
+ Unreachable
+ Block
+  I32Const $1
+  If
+   Loop
+   End
+  Else
+  End
+ End
+Else
+ I32Const $73
+ Return
+End
+Unreachable
+
+TEXT trap1(SB),4,$0-0
+Get PC_B
+I32Eqz
+If
+ I32Const $73
+ Return
+ Loop $2
+  I64Const $5
+ End
+ Drop
+End
+UNDEF
+
+TEXT trap2(SB),4,$0-0
+Get PC_B
+If
+ UNDEF
+Else
+ Block $1
+  I32Const $73
+  Br $0
+  Block
+   Loop
+   End
+  End
+ End
+ Return
+End
+Unreachable
+`
+	checkWASMTrapsAgainstGo(t, source, WASMABIDirect, WASMABIGo)
+}
+
 func checkWASMTrapsAgainstGo(t *testing.T, source string, abis ...WASMABI) {
 	t.Helper()
 	file, err := Parse(ArchWASM, source)
@@ -141,6 +193,24 @@ func TestWASMSourceTrapValidatesDeadOperands(t *testing.T) {
 			sigs := map[string]FuncSig{"trap": {Name: "trap", Ret: Void}}
 			if _, err := Translate(file, wasmPackedOptions(sigs, WASMABIDirect)); err == nil {
 				t.Error("translation accepted malformed trap operands")
+			}
+		})
+	}
+}
+
+func TestWASMDeadStructuredControlValidatesDelimiters(t *testing.T) {
+	for _, body := range []string{"Block\nElse\nEnd", "If\nElse\nElse\nEnd", "If $1\nEnd", "Loop"} {
+		t.Run(body, func(t *testing.T) {
+			file, err := Parse(ArchWASM, "TEXT trap(SB),4,$0-0\nUnreachable\n"+body+"\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InferWASMAssemblyFuncSig(file.Funcs[0], "trap"); err == nil {
+				t.Error("inference accepted malformed dead structured control")
+			}
+			sigs := map[string]FuncSig{"trap": {Name: "trap", Ret: Void}}
+			if _, err := Translate(file, wasmPackedOptions(sigs, WASMABIDirect)); err == nil {
+				t.Error("translation accepted malformed dead structured control")
 			}
 		})
 	}

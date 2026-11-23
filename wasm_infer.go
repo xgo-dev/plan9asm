@@ -28,6 +28,7 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		written    = make(map[Reg]bool)
 		returnType LLVMType
 		controls   []inferControl
+		dead       wasmDeadControls
 		terminated bool
 	)
 	copyStack := func(values []wasmInferValue) []wasmInferValue {
@@ -138,8 +139,14 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		if err != nil {
 			return FuncSig{}, err
 		}
-		if terminated && op != "ELSE" && op != "END" && op != "LABEL" {
-			continue
+		if terminated {
+			skip, err := dead.skip(op, controlResult)
+			if err != nil {
+				return FuncSig{}, err
+			}
+			if skip {
+				continue
+			}
 		}
 		if op == "ELSE" || op == "END" {
 			terminated = false
@@ -374,6 +381,9 @@ func InferWASMAssemblyFuncSig(fn Func, name string) (FuncSig, error) {
 		}
 	}
 
+	if len(dead) != 0 {
+		return FuncSig{}, fmt.Errorf("%d unterminated wasm control blocks", len(dead))
+	}
 	regs := make([]Reg, 0, len(inputs))
 	for reg := range inputs {
 		regs = append(regs, reg)
