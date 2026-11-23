@@ -160,6 +160,7 @@ func x86EndOpcode(op Op) bool {
 // AEND has a source PC, even though Go's object writer removes it. Preserve
 // existing PC-relative destinations as labels before deleting the source slots.
 func discardX86End(fn Func) ([]Instr, error) {
+	names := newAssemblyBlockNames(fn)
 	linear := make([]int, 0, len(fn.Instrs))
 	labelPC := make(map[string]int)
 	for index, ins := range fn.Instrs {
@@ -170,9 +171,18 @@ func discardX86End(fn Func) ([]Instr, error) {
 			continue
 		}
 		linear = append(linear, index)
+		// A generated label must not satisfy an unresolved original reference.
+		for _, operand := range ins.Args {
+			switch operand.Kind {
+			case OpIdent:
+				names.used[operand.Ident] = true
+			case OpSym:
+				name := strings.TrimSuffix(strings.TrimSpace(operand.Sym), "(SB)")
+				names.used[strings.TrimSuffix(name, "<>")] = true
+			}
+		}
 	}
 
-	names := newAssemblyBlockNames(fn)
 	labels := make(map[int]string)
 	rebound := make(map[int]Instr)
 	for ordinal, index := range linear {

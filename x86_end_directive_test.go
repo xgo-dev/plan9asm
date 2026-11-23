@@ -3,6 +3,10 @@ package plan9asm
 import (
 	"bytes"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -91,6 +95,37 @@ func TestX86ENDRejectsInvalidSourceForms(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestX86ENDDoesNotBindAnUndefinedSourceLabel(t *testing.T) {
+	const source = "TEXT ·Value(SB),4,$0-4\nMOVL $7,AX\nJMP __x86_source_pc\n" +
+		"JMP 2(PC)\nEND\nMOVL AX,ret+0(FP)\nRET\n"
+	for _, target := range []struct{ arch, triple string }{
+		{"amd64", "x86_64-unknown-linux-gnu"}, {"386", "i386-unknown-linux-gnu"},
+	} {
+		t.Run(target.arch, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "missing.s")
+			if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := runtimeOracleStageContext(t)
+			defer cancel()
+			command := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"),
+				"tool", "asm", "-p", "example.com/forms", "-o", path+".o", path)
+			command.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+target.arch, "GOTOOLCHAIN=local")
+			output, err := runtimeOracleCombinedOutput(ctx, command)
+			var exit *exec.ExitError
+			if ctx.Err() != nil || !errors.As(err, &exit) || exit.ExitCode() != 1 ||
+				!bytes.Contains(output, []byte("undefined label __x86_source_pc")) {
+				t.Fatalf("expected original Go to reject the exact missing label: %v\n%s", err, output)
+			}
+			for _, api := range []string{"text", "module", "Go"} {
+				if _, err := x86ScalarFPBitViewAPI(t, source, "func Value() uint32", target.arch, target.triple, api); err == nil {
+					t.Errorf("%s silently bound an undefined source label", api)
+				}
+			}
+		})
 	}
 }
 
