@@ -64,10 +64,14 @@ func x86StaticSBBodyNames(bodies map[string]string) []string {
 	return names
 }
 
+type x86SymbolMemoryCase struct {
+	operation, before, after string
+}
+
 func TestGo386OriginalSymbolMemoryObjects(t *testing.T) {
 	// cmd/asm's 386.s tests the encoding without owning the referenced
 	// storage. Keep each original instruction and give it a complete leaf.
-	rows := []struct{ operation, before, after string }{
+	rows := []x86SymbolMemoryCase{
 		{"SETCC foo+4(SB)", "CMPL AX,AX\n", ""},
 		{"DIVB foo+4(SB)", "", ""},
 		{"SUBB $1, foo+4(SB)", "", ""},
@@ -78,27 +82,49 @@ func TestGo386OriginalSymbolMemoryObjects(t *testing.T) {
 		{"SHLL $4, foo+4(SB):AX", "", ""},
 		{"CMPPD foo+4(SB), X1, 4", "PXOR X1,X1\n", "PEXTRD $0,X1,AX\n"},
 	}
+	testX86OriginalSymbolMemoryObjects(t, "386", rows)
+}
+
+func TestGoAMD64OriginalSymbolMemoryObjects(t *testing.T) {
+	rows := []x86SymbolMemoryCase{
+		{"NEGQ foo+4(SB)", "", ""},
+		{"DIVB foo+4(SB)", "", ""},
+		{"SUBQ foo+4(SB), DI", "MOVQ $17,DI\n", "MOVQ DI,AX\n"},
+		{"SUBQ R11, foo+4(SB)", "MOVQ $3,R11\n", ""},
+		{"SHLL CX, foo+4(SB)", "MOVL $5,CX\n", ""},
+		{"IMULQ foo+4(SB), R11", "MOVQ $19,R11\n", "MOVQ R11,AX\n"},
+		{"CMPPD foo+4(SB), X2, 4", "PXOR X2,X2\n", "PEXTRD $0,X2,AX\n"},
+	}
+	testX86OriginalSymbolMemoryObjects(t, "amd64", rows)
+}
+
+func testX86OriginalSymbolMemoryObjects(t *testing.T, arch string, rows []x86SymbolMemoryCase) {
+	t.Helper()
+	word, move, result := 8, "MOVQ", "uint64"
+	if arch == "386" {
+		word, move, result = 4, "MOVL", "uint32"
+	}
 	var source, declarations strings.Builder
 	source.WriteString("GLOBL foo(SB),16,$32\nDATA foo+4(SB)/4,$0x01010101\n")
 	names := make([]string, 0, len(rows))
 	for i, row := range rows {
 		name := fmt.Sprintf("Value%d", i)
 		names = append(names, name)
-		fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-4\nMOVL $1,AX\nMOVL $2,BX\n", name)
+		fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-%d\nMOVL $1,AX\nMOVL $2,BX\n", name, word)
 		source.WriteString(row.before + row.operation + "\n" + row.after)
-		source.WriteString("MOVL AX,result+0(FP)\nRET\n")
-		fmt.Fprintf(&declarations, "func %s() uint32\n", name)
+		fmt.Fprintf(&source, "%s AX,result+0(FP)\nRET\n", move)
+		fmt.Fprintf(&declarations, "func %s() %s\n", name, result)
 	}
-	goAssemblerOracleOutput(t, "386", source.String(), "", true)
+	goAssemblerOracleOutput(t, arch, source.String(), "", true)
 
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
 		t.Fatal("LLVM 22 llc required")
 	}
-	for _, triple := range []string{"i386-unknown-linux-gnu", "i686-pc-windows-msvc"} {
+	for _, triple := range x86AddressMemoryTargets(arch) {
 		for _, api := range []string{"text", "module", "Go"} {
 			t.Run(triple+"/"+api, func(t *testing.T) {
-				ir, err := x86ScalarFPBitViewAPI(t, source.String(), declarations.String(), "386", triple, api)
+				ir, err := x86ScalarFPBitViewAPI(t, source.String(), declarations.String(), arch, triple, api)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -11,6 +11,41 @@ import (
 	"testing"
 )
 
+func TestCrossLinuxRuntimeMatrixX86OfficialBranches(t *testing.T) {
+	execution := x86FloatCompareExecutionTools(t)
+	source, declarations := x86OfficialBackwardBranchProgram()
+	const goMain = `
+func main() {
+    for _, value := range []uint32{BelowPC(), BelowLabel(), JumpPC(), JumpLabel(), CountLoop()} {
+        if value != 3 {
+            panic("incorrect backward branch")
+        }
+    }
+    if SymbolOffset() != 37 || SymbolIndex() != 37 {
+        panic("incorrect Go symbol entry")
+    }
+    fmt.Println("7 Go branch results")
+}
+`
+	const cMain = `#include <stdint.h>
+#include <stdio.h>
+
+extern uint32_t BelowPC(void), BelowLabel(void), JumpPC(void), JumpLabel(void), CountLoop(void);
+extern uint32_t SymbolOffset(void), SymbolIndex(void);
+
+int main(void) {
+    if (BelowPC() != 3 || BelowLabel() != 3 || JumpPC() != 3 ||
+        JumpLabel() != 3 || CountLoop() != 3 || SymbolOffset() != 37 || SymbolIndex() != 37) {
+        return 1;
+    }
+    puts("7 Go branch results");
+    return 0;
+}
+`
+	x86DirectTailCheckCallRuntime(t, "amd64", execution, source+x86OfficialSymbolJumpSource,
+		declarations+x86OfficialSymbolJumpDeclarations, goMain, cMain, "7 Go branch results\n")
+}
+
 // The Linux AMD64 owner must execute both native ISA modes. Other hosts retain
 // portable objects and source checks; no missing compiler/ISA counts as a pass.
 func TestCrossLinuxRuntimeMatrixX86DirectTailPCResultAliasesAndExternal(t *testing.T) {

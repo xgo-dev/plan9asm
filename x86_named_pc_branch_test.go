@@ -78,6 +78,50 @@ func TestX86PCBranchRejectsConstructedMemoryAddress(t *testing.T) {
 	}
 }
 
+func x86OfficialBackwardBranchProgram() (string, string) {
+	var source, declarations strings.Builder
+	for _, row := range []struct{ name, body string }{
+		{"BelowPC", "label:\nINCL AX\nMOVL AX,DX\nMOVL AX,DX\nCMPL AX,$3\nJB -4(PC)\n"},
+		{"BelowLabel", "label:\nINCL AX\nCMPL AX,$3\nJB label\n"},
+		{"JumpPC", "label:\nINCL AX\nCMPL AX,$3\nJAE done\nMOVL AX,DX\nJMP -4(PC)\ndone:\n"},
+		{"JumpLabel", "label:\nINCL AX\nCMPL AX,$3\nJAE done\nJMP label\ndone:\n"},
+		{"CountLoop", "MOVL $3,CX\nloop:\nINCL AX\nLOOP loop\n"},
+	} {
+		fmt.Fprintf(&source, "TEXT ·%s(SB),4,$0-4\nXORL AX,AX\n%sMOVL AX,ret+0(FP)\nRET\n", row.name, row.body)
+		fmt.Fprintf(&declarations, "func %s() uint32\n", row.name)
+	}
+	return source.String(), declarations.String()
+}
+
+func TestX86OfficialBackwardBranchObjects(t *testing.T) {
+	source, declarations := x86OfficialBackwardBranchProgram()
+	for _, arch := range []string{"amd64", "386"} {
+		t.Run(arch, func(t *testing.T) {
+			x86RawNumericalFamilyObjects(t, source, declarations, arch, testTargetTriple("linux", arch))
+		})
+	}
+}
+
+const x86OfficialSymbolJumpSource = `TEXT ·SymbolOffset(SB),4,$0-4
+JMP bar<>+4(SB)
+
+TEXT ·SymbolIndex(SB),4,$0-4
+MOVQ $5,R11
+JMP bar<>+4(SB)(R11*4)
+
+TEXT bar<>(SB),4,$0-0
+MOVL $37,AX
+MOVL AX,ret+0(FP)
+RET
+`
+
+const x86OfficialSymbolJumpDeclarations = "func SymbolOffset() uint32\nfunc SymbolIndex() uint32\n"
+
+func TestGoAMD64OfficialSymbolJumpObjects(t *testing.T) {
+	x86RawNumericalFamilyObjects(t, x86OfficialSymbolJumpSource, x86OfficialSymbolJumpDeclarations,
+		"amd64", testTargetTriple("linux", "amd64"))
+}
+
 func x86OfficialPCBranchSource(t *testing.T, arch string) (assembly, declarations string, names, locations []string) {
 	t.Helper()
 	var source, signatures strings.Builder
