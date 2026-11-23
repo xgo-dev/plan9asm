@@ -20,9 +20,20 @@ func TestGoAMD64FixedLocalOfficialStackObjects(t *testing.T) {
 	for _, file := range []string{"amd64.s", "amd64enc.s", "amd64enc_extra.s"} {
 		paths = append(paths, filepath.Join(root, file))
 	}
+	goAMD64FramePrepareOwnedToolCache(t)
+	for _, base := range []Reg{SP, BP} {
+		t.Run(string(base), func(t *testing.T) {
+			fixedLocalOfficialStackObjects(t, paths, base)
+		})
+	}
+}
+
+func fixedLocalOfficialStackObjects(t *testing.T, paths []string, base Reg) {
+	t.Helper()
 	var assembly, declarations strings.Builder
 	var names, locations []string
 	namedAuto, aligned, stackResult, indexed := 0, 0, 0, 0
+	address := "(" + string(base) + ")"
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -31,7 +42,7 @@ func TestGoAMD64FixedLocalOfficialStackObjects(t *testing.T) {
 		for line, source := range strings.Split(string(data), "\n") {
 			code, _, _ := strings.Cut(source, "//")
 			code = strings.TrimSpace(code)
-			if !strings.Contains(code, "(SP)") {
+			if !strings.Contains(code, address) {
 				continue
 			}
 			ins := x86ScalarLaneInstruction(t, code)
@@ -47,7 +58,10 @@ func TestGoAMD64FixedLocalOfficialStackObjects(t *testing.T) {
 			declaration := fmt.Sprintf("func %s()\n", name)
 			var body string
 			var alignment bool
-			if operand < 0 || memory.Base != SP {
+			if operand < 0 || memory.Base != base {
+				if base != SP {
+					t.Fatalf("%s: missing physical BP address", location)
+				}
 				body = fixedLocalOfficialAutoSource(t, name, ins, location)
 				namedAuto++
 			} else {
@@ -90,12 +104,14 @@ func TestGoAMD64FixedLocalOfficialStackObjects(t *testing.T) {
 	if strings.HasPrefix(version, "go1.20.") || strings.HasPrefix(version, "go1.27.") {
 		got := [5]int{len(names), indexed, aligned, stackResult, namedAuto}
 		want := [5]int{627, 36, 9, 1, 12}
+		if base == BP {
+			want = [5]int{650, 73, 7, 0, 0}
+		}
 		if got != want {
-			t.Fatalf("%s: Go SDK stack corpus counts %v, want %v", version, got, want)
+			t.Fatalf("%s %s: Go SDK stack corpus counts %v, want %v", version, base, got, want)
 		}
 	}
 
-	goAMD64FramePrepareOwnedToolCache(t)
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
 		t.Fatal("LLVM 22 llc required")
@@ -219,13 +235,22 @@ func fixedLocalOfficialStackSource(t *testing.T, name string, ins Instr, memory 
 			alignment = form.move.spec.aligned
 		}
 	}
-	if memory.Off < 0 || memory.Off > 4<<10 {
-		t.Fatalf("%s: fixture must stay inside a bounded positive frame", location)
+	if memory.Off < -(4<<10) || memory.Off > 4<<10 || memory.Off < 0 && memory.Base != BP {
+		t.Fatalf("%s: fixture must stay within a bounded frame", location)
 	}
 
-	start, end := memory.Off&^7, (memory.Off+width+7)&^7
+	var origin int64
+	if memory.Off < 0 {
+		origin = -memory.Off
+	}
+	effective := origin + memory.Off
+	start, end := effective&^7, (effective+width+7)&^7
+	frame := end
+	if pointerEnd := (origin + 8) &^ 7; memory.Base == BP && pointerEnd > frame {
+		frame = pointerEnd
+	}
 	var body strings.Builder
-	fmt.Fprintf(&body, "TEXT ·%s(SB),4,$%d-0\nMOVQ $1,AX\n", name, end)
+	fmt.Fprintf(&body, "TEXT ·%s(SB),4,$%d-0\nMOVQ $1,AX\n", name, frame)
 	for offset := start; offset < end; offset += 8 {
 		fmt.Fprintf(&body, "MOVQ AX,%d(SP)\n", offset)
 	}
@@ -247,6 +272,11 @@ func fixedLocalOfficialStackSource(t *testing.T, name string, ins Instr, memory 
 	}
 	if memory.Index != "" && !vsib {
 		fmt.Fprintf(&body, "MOVQ $0,%s\n", memory.Index)
+	}
+	if memory.Base == BP {
+		// Derive BP from the captured private frame; the original negative
+		// displacement and its separate index remain in the target opcode.
+		fmt.Fprintf(&body, "LEAQ %d(SP),BP\n", origin)
 	}
 	fmt.Fprintln(&body, ins.Raw)
 	body.WriteString("RET\n")
