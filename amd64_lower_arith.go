@@ -216,6 +216,9 @@ func amd64YmbEffectiveRegister(r Reg, bits int) Reg {
 }
 
 func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	if ins.Op == "" {
+		ins.Op = op
+	}
 	if known, err := x86PrefetchProperties(op, ins, c.goarch); known {
 		return true, false, err
 	}
