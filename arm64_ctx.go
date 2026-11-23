@@ -317,6 +317,15 @@ func (c *arm64Ctx) scanUsedRegs() {
 					}
 					continue
 				}
+				if form, ok := decodeARM64RawSVELUTI(word); ok {
+					c.usedZRegs[form.index] = true
+					c.usedZRegs[form.destination] = true
+					c.usedZRegs[form.table] = true
+					if form.spec.tableCount == 2 {
+						c.usedZRegs[(form.table+1)%32] = true
+					}
+					continue
+				}
 				if form, ok := decodeARM64RawStructureMemory(word); ok {
 					markReg(form.baseRegister())
 					if index := form.indexRegister(); index != "" {

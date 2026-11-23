@@ -678,6 +678,10 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 					add("+sve", form.spec.feature)
 					continue
 				}
+				if form, ok := decodeARM64RawSVELUTI(uint32(ins.Args[0].Imm)); ok {
+					add(arm64SVELUTIFeatures(form.spec.op)...)
+					continue
+				}
 				if _, ok := decodeARM64RawSVECharacterMatch(uint32(ins.Args[0].Imm)); ok {
 					add("+sve", "+sve2")
 				}
@@ -1049,9 +1053,7 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 			if op == "ZCDOT" {
 				add("+sve", "+sve2")
 			}
-			if op == "ZLUTI2" || op == "ZLUTI4" {
-				add("+lut", "+sve", "+sve2")
-			}
+			add(arm64SVELUTIFeatures(Op(op))...)
 			if _, ok := arm64SVEWideningFloatMLASpecs[Op(op)]; ok {
 				if sourceBits, sourceOK := arm64SVEWideningFloatMLAFeatureClass(ins); sourceOK {
 					add("+sve", "+sve2")
