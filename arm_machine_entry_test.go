@@ -63,6 +63,42 @@ func TestARMMachineEntryCapturesSourceStateWithoutTypedCallerArguments(t *testin
 	}
 }
 
+func TestARMMachineEntrySingleVFPCompleteObjects(t *testing.T) {
+	const source = `TEXT oracleEntry(SB),516,$0-0
+ MOVF $0.5,F0
+ MOVF.NE F0,F3
+ MOVF.NE F3,(g)
+ MOVF.NE (g),F3
+ MOVF.NE F3,-0x20(g)
+ MOVF.NE -0x20(g),F3
+ MOVF F3,4096(R0)
+ MOVF 4096(R0),F3
+ MOVF.P F3,4(R0)
+ MOVF.W 4(R0),F3
+ MOVF F3,-4(R13)
+ MOVF -4(R13),F3
+ RET
+`
+	requireARMGoAssemblerResult(t, source, true)
+	file, err := Parse(ArchARM, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc required")
+	}
+	for _, triple := range []string{"armv7-unknown-linux-gnueabihf", "thumbv7-pc-windows-msvc"} {
+		t.Run(triple, func(t *testing.T) {
+			ir, err := Translate(file, armMachineEntryOptions(triple))
+			if err != nil {
+				t.Fatal(err)
+			}
+			compileLLVMToObject(t, llc, triple, "single-vfp-entry.ll", "single-vfp-entry.o", ir)
+		})
+	}
+}
+
 func TestARMMachineEntryRejectsUnprovedNativeBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		name, instruction string
@@ -76,7 +112,6 @@ func TestARMMachineEntryRejectsUnprovedNativeBoundaries(t *testing.T) {
 		{"unbridged_native_call", "BL (R1)", true},
 		{"source_tail", "B external(SB)", true},
 		{"raw_effect", "WORD $0xe1a00000", false},
-		{"partial_fp_lane", "MOVF F0,F1", false},
 		{"partial_fp_gp_lane", "MOVW R1,F0", false},
 		{"unknown_system_state", "MOVW R1,CPSR", true},
 		{"outside_source_backing", "MOVW R1,-16(R13)", true},

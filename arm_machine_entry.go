@@ -138,7 +138,9 @@ func validateARMMachineEntry(fn Func, sig FuncSig, triple string) error {
 	for _, ins := range fn.Instrs[1:] {
 		op, _, _, _ := armDecodeOp(string(ins.Op))
 		switch op {
-		case "TEXT", "LABEL", "RET", "MOVW", "MOVB", "MOVBS", "MOVBU", "MOVH", "MOVHS", "MOVHU", "MOVD", "CMP", "CMN", "TST", "TEQ", "MOVM", "ADD", "SUB", "RSB", "AND", "ORR", "EOR", "BIC", "MVN", "ADC", "SBC", "RSC", "SLL", "SRL", "SRA", "MUL", "MULU", "MULA", "MULL", "MULLU", "MULAL", "MULALU":
+		case "TEXT", "LABEL", "RET", "MOVW", "MOVB", "MOVBS", "MOVBU", "MOVH", "MOVHS", "MOVHU", "MOVF", "MOVD", "MOVM",
+			"CMP", "CMN", "TST", "TEQ", "ADD", "SUB", "RSB", "AND", "ORR", "EOR", "BIC", "MVN", "ADC", "SBC", "RSC",
+			"SLL", "SRL", "SRA", "MUL", "MULU", "MULA", "MULL", "MULLU", "MULAL", "MULALU":
 		case "BL", "CALL", "BX", "B", "JMP":
 			return fmt.Errorf("%w: ARM machine-entry control transfer needs a closed native/Go call-site continuation contract: %s", ErrProbeNeedsContext, ins.Raw)
 		default:

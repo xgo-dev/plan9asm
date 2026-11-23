@@ -24,7 +24,14 @@ func armMachineEntryRegisterSource() string {
 	}
 	source.WriteString(" MOVW FPCR,R3\n MOVW R3,224(R0)\n MOVW -8(R13),R3\n MOVW R3,440(R0)\n")
 	source.WriteString(strings.SplitN(armMachineEntrySource, "\n", 2)[1])
-	return strings.Replace(source.String(), " RET\n", " MOVD $2.0,F7\n RET\n", 1)
+	const finalMoves = ` MOVD $2.0,F7
+ MOVF.NE 12(R0),F7
+ MOVF.NE F7,92(R0)
+ MOVF.NE F7,F8
+ MOVF.EQ $0.5,F9
+ RET
+`
+	return strings.Replace(source.String(), " RET\n", finalMoves, 1)
 }
 
 func armMachineEntryGoCaller() string {
@@ -120,12 +127,14 @@ func main() {
    oracle(0x89abcdef, status, fpscr, &out)
    want := uint32(77)
    if flags&4 != 0 { want = 7 }
+   var singleStore uint32
+   if flags&4 == 0 { singleStore = 0x89abcdef }
    exitStatus := status
    if WRITES_NZCV { exitStatus &= 0x08000000 }
    if out[0]&0xf8000000 != status || out[1] != out[7] || out[1] != out[109] ||
     out[2] != out[8] || out[3] != 0x89abcdef || out[4] != 0 || out[5] != 0x3ff00000 ||
     out[6] != want || out[9]&0xf8000000 != exitStatus || out[56] != fpscr || out[108] != fpscr ||
-    out[110] != 0x13579bdf || out[111] != 0x13579bdf {
+    out[23] != singleStore || out[110] != 0x13579bdf || out[111] != 0x13579bdf {
     panic(fmt.Sprintf("Go physical core flags=%x fpscr=%x out=%x", flags, fpscr, out))
    }
    for i := 0; i < 13; i++ {
@@ -149,6 +158,8 @@ func main() {
     initial := math.Float64bits(float64(i+1))
     final := initial
     if i == 7 { final = math.Float64bits(2) }
+    if (i == 7 || i == 8) && flags&4 == 0 { final |= uint64(singleStore) }
+    if i == 9 && flags&4 != 0 { final |= uint64(math.Float32bits(0.5)) }
     got := uint64(out[24+i*2]) | uint64(out[25+i*2])<<32
     exit := uint64(out[76+i*2]) | uint64(out[77+i*2])<<32
     if got != initial || exit != final {
@@ -181,11 +192,12 @@ int main(void) {
    uint32_t out[112]={0}, status=((f&15)<<28)|((f>>4)<<27), fpscr=rounding<<22;
    runOracle(out,0x89abcdefu,status,fpscr);
    uint32_t want=(f&4)?7:77;
+   uint32_t singleStore=(f&4)?0:0x89abcdefu;
    uint32_t exitStatus=WRITES_NZCV ? status&0x08000000u : status;
    if((out[0]&0xf8000000u)!=status || out[1]!=out[7] || out[1]!=out[109] ||
     out[2]!=out[8] || out[3]!=0x89abcdefu || out[4]!=0 || out[5]!=0x3ff00000 ||
     out[6]!=want || (out[9]&0xf8000000u)!=exitStatus || out[56]!=fpscr || out[108]!=fpscr ||
-    out[110]!=0x13579bdfu || out[111]!=0x13579bdfu) {
+    out[23]!=singleStore || out[110]!=0x13579bdfu || out[111]!=0x13579bdfu) {
     fprintf(stderr,"LLVM physical core flags=%x fpscr=%x entryStatus=%x exitStatus=%x sp=%x/%x/%x lr=%x/%x stack=%x fp=%x:%x pred=%x entryFpscr=%x exitFpscr=%x\n",
      f,fpscr,out[0],out[9],out[1],out[7],out[109],out[2],out[8],out[3],out[5],out[4],out[6],out[56],out[108]);
     return 1;
@@ -211,6 +223,8 @@ int main(void) {
    for(unsigned i=0; i<16; i++) {
     union { double d; uint64_t bits; } expected={(double)(i+1)}, final=expected;
     if(i==7) final.d=2.0;
+    if((i==7 || i==8) && !(f&4)) final.bits |= singleStore;
+    if(i==9 && (f&4)) final.bits |= 0x3f000000u;
     uint64_t initial=(uint64_t)out[24+i*2]|(uint64_t)out[25+i*2]<<32;
     uint64_t exit=(uint64_t)out[76+i*2]|(uint64_t)out[77+i*2]<<32;
     if(initial!=expected.bits || exit!=final.bits) {
