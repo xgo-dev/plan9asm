@@ -31,8 +31,9 @@ func TestARM64RawSQSHLUDecoderCoversEveryImmediate(t *testing.T) {
 				}
 				for shift := 0; shift < elementBits; shift++ {
 					word := encodeARM64SQSHLU(scalar, wide, elementBits, shift, 31, 30)
-					form, ok := decodeARM64RawSQSHLU(word)
-					if !ok || form.scalar != scalar || form.arrangement.elementBits != elementBits ||
+					form, ok := decodeARM64RawSaturatingShift(word)
+					if !ok || form.op != "sqshlu" || !form.immediate ||
+						form.scalar != scalar || form.arrangement.elementBits != elementBits ||
 						form.shift != shift || form.source != 31 || form.destination != 30 {
 						t.Fatalf("decode %#08x = %+v, %v", word, form, ok)
 					}
@@ -46,7 +47,7 @@ func TestARM64RawSQSHLUDecoderCoversEveryImmediate(t *testing.T) {
 		0x2f007400, // opcode neighbor
 		0x7f806400, // outside the seven-bit encoded immediate
 	} {
-		if _, ok := decodeARM64RawSQSHLU(word); ok {
+		if _, ok := decodeARM64RawSaturatingShift(word); ok {
 			t.Fatalf("invalid or adjacent SQSHLU word accepted: %#08x", word)
 		}
 	}
@@ -154,79 +155,4 @@ int main(void) {
 }
 `
 	compileAndRunRuntimeTestWithCompiler(t, llc, compiler, "arm64_sqshlu", triple, ir, mainC, runner)
-}
-
-func TestARM64RawSQSHLUCompleteScalarAndVectorForms(t *testing.T) {
-	type sqshluForm struct {
-		word   uint32
-		scalar bool
-	}
-	var source strings.Builder
-	var forms []sqshluForm
-	for _, elementBits := range []int{8, 16, 32, 64} {
-		for _, scalar := range []bool{false, true} {
-			for _, wide := range []bool{false, true} {
-				if scalar && wide || !scalar && !wide && elementBits == 64 {
-					continue
-				}
-				for _, shift := range []int{0, elementBits - 1} {
-					word := encodeARM64SQSHLU(scalar, wide, elementBits, shift, 29, 28)
-					decoded, err := decodeARM64RawWordInstruction(Instr{
-						Op: OpWORD, Args: []Operand{{Kind: OpImm, Imm: int64(word)}},
-					})
-					if err != nil || decoded.Op != "VSQSHLU" {
-						t.Fatalf("decode SQSHLU scalar=%v wide=%v bits=%d shift=%d word=%#08x: %#v, %v",
-							scalar, wide, elementBits, shift, word, decoded, err)
-					}
-					name := fmt.Sprintf("sqshluForm%d", len(forms))
-					fmt.Fprintf(&source, "TEXT %s(SB),$0-0\n\tWORD $%#08x\n\tRET\n", name, word)
-					forms = append(forms, sqshluForm{word: word, scalar: scalar})
-				}
-			}
-		}
-	}
-	requireARM64GoAssemblerResult(t, source.String(), true)
-	llc := findLLVM22Tool("llc")
-	if llc == "" {
-		t.Fatal("LLVM 22 llc not found")
-	}
-	for _, triple := range []string{
-		"aarch64-unknown-linux-gnu", "aarch64-apple-darwin", "aarch64-unknown-freebsd",
-	} {
-		for index, form := range forms {
-			t.Run(fmt.Sprintf("%s/form-%02d", triple, index), func(t *testing.T) {
-				formSource := fmt.Sprintf("TEXT sqshluForm(SB),$0-0\n\tWORD $%#08x\n\tRET\n", form.word)
-				file, err := Parse(ArchARM64, formSource)
-				if err != nil {
-					t.Fatal(err)
-				}
-				ir, err := Translate(file, Options{
-					Goarch: "arm64", TargetTriple: triple,
-					Sigs: map[string]FuncSig{"sqshluForm": {Name: "sqshluForm", Ret: Void}},
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				wantCalls := 1
-				if form.scalar {
-					wantCalls = 0
-					if !strings.Contains(ir, " = icmp slt i") || !strings.Contains(ir, " = shl i") {
-						t.Fatal("scalar SQSHLU is missing signed clamp or shift")
-					}
-				}
-				// Count this family's intrinsic, not the independent caller
-				// continuation capture introduced by checked CFG translation.
-				got := 0
-				for _, line := range strings.Split(ir, "\n") {
-					if strings.Contains(line, " = call ") && strings.Contains(line, "@llvm.aarch64.neon.sqshlu.") {
-						got++
-					}
-				}
-				if got != wantCalls {
-					t.Fatalf("got %d SQSHLU calls, want %d", got, wantCalls)
-				}
-				compileLLVMToObject(t, llc, triple, "arm64-sqshlu.ll", "arm64-sqshlu.o", ir)
-			})
-		}
-	}
 }

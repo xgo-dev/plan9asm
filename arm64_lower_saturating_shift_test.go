@@ -39,9 +39,9 @@ func TestTranslateARM64SaturatingShiftCompleteFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, intrinsic := range []string{"llvm.aarch64.neon.sqshl", "llvm.aarch64.neon.uqshl"} {
-		if !strings.Contains(ll, intrinsic) {
-			t.Fatalf("ARM64 saturating shift lowering omitted %q:\n%s", intrinsic, ll)
+	for _, op := range []string{"sqshl", "uqshl"} {
+		if got := strings.Count(ll, `asm sideeffect "`+op+" "); got != 14 {
+			t.Fatalf("got %d native %s calls, want 14:\n%s", got, op, ll)
 		}
 	}
 	llc := findLLVM22Tool("llc")
