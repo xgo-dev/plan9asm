@@ -784,7 +784,7 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 	// Collect base symbols of SB refs with numeric offsets. These are almost always
 	// global variables whose address is computed via GEP in the lowering.
 	need := map[string]bool{}
-	var tlsModel x86TLSRuntimeModel
+	var tlsRead *x86TLSRuntimeRead
 	numericalExtents := map[string]int64{}
 	if len(goStorage) == 1 && goStorage[0] != nil {
 		for _, object := range goStorage[0].objects {
@@ -835,7 +835,7 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 				}
 			}
 			if read := ins.x86TLSRuntimeRead; read != nil {
-				tlsModel = read.Model // One captured assembler profile per module.
+				tlsRead = read // One captured assembler profile per module.
 			}
 			opName := strings.ToUpper(string(ins.Op))
 			for _, arg := range ins.Args {
@@ -895,8 +895,8 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 		}
 	}
 
-	if tlsModel != 0 {
-		delete(need, emitX86TLSRuntimeDeclaration(b, tlsModel))
+	if tlsRead != nil {
+		delete(need, emitX86TLSRuntimeDeclaration(b, *tlsRead))
 	}
 	if len(need) == 0 {
 		return

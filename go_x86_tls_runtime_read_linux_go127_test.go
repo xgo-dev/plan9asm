@@ -93,3 +93,84 @@ func TestCrossLinuxRuntimeMatrixX86TLSRuntimeReads386(t *testing.T) {
 		})
 	}
 }
+
+func TestCrossLinuxRuntimeMatrixX86TLSRuntimeReadsAMD64(t *testing.T) {
+	execution := x86FloatCompareExecutionTools(t)
+	opt := findLLVM22Tool("opt")
+	if opt == "" {
+		t.Fatal("AMD64 TLS runtime reads require LLVM 22 opt")
+	}
+	const oracle = `#include <stdint.h>
+#include <stdio.h>
+
+static __attribute__((noinline)) uint64_t expected(uint64_t a, uint64_t b) {
+    return a + b;
+}
+
+__thread volatile uint64_t slots[2] __asm__("runtime.tlsg");
+extern uint64_t Value(void);
+
+int main(void) {
+    const uint64_t values[][2] = {
+        {UINT64_C(0x100000007), UINT64_C(0x200000017)},
+        {UINT64_C(0x100000007), UINT64_C(0x300000029)},
+        {UINT64_C(0xf00000013), UINT64_C(0x300000029)},
+    };
+    for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        slots[0] = values[i][0];
+        slots[1] = values[i][1];
+        if (Value() != expected(values[i][0], values[i][1])) {
+            return i + 1;
+        }
+    }
+    puts("3 AMD64 TLS states");
+    return 0;
+}
+`
+	for _, profile := range []struct {
+		name   string
+		shared bool
+	}{
+		{"local-exec", false},
+		{"initial-exec", true},
+	} {
+		t.Run(profile.name, func(t *testing.T) {
+			pkg, file, options, original, request := x86TLSMoveSourceFixture(t, "linux/amd64", profile.shared,
+				"func Value() uint64", x86TLSRuntimeReadAMD64Body)
+			ctx, cancel := runtimeOracleStageContext(t)
+			defer cancel()
+			source, err := CaptureGoX86TLSMoveSource(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer source.Close()
+			options, err = source.BindRuntimeTLSReads(ctx, file, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run(api, func(t *testing.T) {
+					ir, err := x86TLSMoveBoundAPI(t, pkg, file, original, options, api)
+					if err != nil {
+						t.Fatal(err)
+					}
+					dir := t.TempDir()
+					raw := filepath.Join(dir, "raw.ll")
+					if err := os.WriteFile(raw, []byte(ir), 0600); err != nil {
+						t.Fatal(err)
+					}
+					optimized := x86FloatCompareCaptureCommand(t, exec.Command(opt, "-passes=default<O2>", "-verify-each", "-S", raw, "-o", "-"))
+					for _, module := range []struct{ name, ir string }{{"raw", ir}, {"optimized", string(optimized)}} {
+						for _, level := range []string{"-O0", "-O2"} {
+							output := execution.compileAndRunLLVM(t, module.name, module.ir, oracle, level)
+							if string(output) != "3 AMD64 TLS states\n" {
+								t.Fatalf("%s/%s incomplete ELF TLS slot checks: %q", module.name, level, output)
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+}
