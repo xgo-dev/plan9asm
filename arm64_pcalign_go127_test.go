@@ -13,3 +13,18 @@ func TestARM64PCAlignCurrentGoCompleteFormats(t *testing.T) {
 		})
 	}
 }
+
+func TestARM64RawPCAlignmentMaxBindsGoObjectTarget(t *testing.T) {
+	for _, test := range []struct {
+		directive string
+		target    int64
+	}{
+		{"PCALIGNMAX $32,$11", 20},
+		{"PCALIGNMAX $32,$12", 32},
+		{"PCALIGNMAX $32,$13", 32},
+	} {
+		t.Run(test.directive, func(t *testing.T) {
+			checkARM64RawPCAlignment(t, test.directive, test.target)
+		})
+	}
+}

@@ -46,6 +46,8 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 
 	segment := 0
 	offset := int64(0)
+	var startAlignment int64
+	alignmentChecked, alignmentLayoutKnown := false, false
 	for i, ins := range fn.Instrs {
 		point := arm64RawLayoutPoint{segment: segment, offset: offset}
 		points[i] = point
@@ -55,6 +57,36 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 			}
 			knownLabels[ins.Args[0].Sym] = true
 			labelIndices[ins.Args[0].Sym] = i
+			continue
+		}
+
+		if ins.Op == "PCALIGN" || ins.Op == "PCALIGNMAX" {
+			alignment, _, err := arm64PCAlignment(ins)
+			if err != nil {
+				return Func{}, nil, err
+			}
+			if !alignmentChecked {
+				alignmentChecked = true
+				alignmentLayoutKnown = arm64RawAlignmentLayoutKnown(fn)
+				if alignmentLayoutKnown && arm64DeclaredFramelessText(fn) {
+					startAlignment = 2048
+				}
+			}
+			if alignment <= startAlignment {
+				padding := -offset & (alignment - 1)
+				if ins.Op == "PCALIGN" || padding <= ins.Args[1].Imm {
+					offset += padding
+				}
+				// Padding has no source instruction boundary.
+				continue
+			}
+			segment++
+			offset, startAlignment = 0, 0
+			if alignmentLayoutKnown && ins.Op == "PCALIGN" {
+				// The next source instruction starts on this boundary
+				// even when the frame prefix's size was unknown.
+				startAlignment = alignment
+			}
 			continue
 		}
 
@@ -183,6 +215,28 @@ func prepareARM64RawPCRelativeWithReturnClobbers(fn Func, returnClobbers uint32)
 		})
 	}
 	return result, dataBlobs, nil
+}
+
+// Padding depends on the original byte position. Unknown widths may introduce
+// literal pools away from the instruction that uses them. Named conditional
+// branches may gain a veneer, whereas an explicit WORD always occupies four
+// bytes. Retain separate layout segments if either makes alignment uncertain.
+func arm64RawAlignmentLayoutKnown(fn Func) bool {
+	for _, ins := range fn.Instrs {
+		if _, handled, err := arm64PCAlignment(ins); handled {
+			if err != nil {
+				return false
+			}
+			continue
+		}
+		if !ins.arm64Encoded && arm64IsConditionalBranch(arm64ControlOp(ins)) {
+			return false
+		}
+		if _, known := arm64RawKnownSourceWidth(fn, ins); !known {
+			return false
+		}
+	}
+	return true
 }
 
 // identifyARM64AnonymousData retains literal WORD islands between a

@@ -329,7 +329,11 @@ func arm64ABI0UnboundBorrowedHelper(fn Func, resolve func(string) string, sigs m
 }
 
 func abi0FramelessHelper(fn Func) bool {
-	if fn.FrameSize != 0 || fn.ArgSize != 0 || len(fn.Instrs) < 2 || fn.Instrs[0].Op != OpTEXT {
+	return fn.ArgSize == 0 && arm64DeclaredFramelessText(fn)
+}
+
+func arm64DeclaredFramelessText(fn Func) bool {
+	if fn.FrameSize != 0 || len(fn.Instrs) < 2 || fn.Instrs[0].Op != OpTEXT {
 		return false
 	}
 	_, text := splitOpcode(fn.Instrs[0].Raw)

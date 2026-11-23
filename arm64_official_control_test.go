@@ -33,6 +33,28 @@ func TestCrossLinuxRuntimeMatrixARM64OfficialControl(t *testing.T) {
 	if found := len(instructions); found != 17 && found != 25 {
 		t.Fatalf("found %d context-bound control operations, want 17 or 25 for the selected Go corpus", found)
 	}
+	for _, fixture := range []struct{ flags, prefix string }{
+		{"516", ""},
+		{"4", "PCALIGN $64\n"},
+	} {
+		source.WriteString(arm64RawAlignedBranchSource(
+			arm64OfficialRuntimeSymbol(len(instructions)), fixture.flags, fixture.prefix, "PCALIGN $32", 20,
+		))
+		instructions = append(instructions, "WORD $0xb40000a0 across PCALIGN $32")
+	}
+	fmt.Fprintf(&source, `TEXT %s(SB),516,$0-16
+MOVD data+0(FP),R8
+MOVD 0(R8),R0
+WORD $0xd2800042 // MOVZ #2,X2
+again:
+WORD $0x91000400 // ADD X0,X0,#1
+WORD $0xd1000442 // SUB X2,X2,#1
+PCALIGN $32
+WORD $0xb5ffff62 // CBNZ X2,-20
+MOVD R0,ret+8(FP)
+RET
+`, arm64OfficialRuntimeSymbol(len(instructions)))
+	instructions = append(instructions, "WORD $0xb5ffff62 across PCALIGN $32")
 	edges := []uint64{
 		0, 1, 2, 3, 4, 5, 6, 7, 0x7fffffff, 0x80000000, 0xffffffff,
 		0x7fffffffffffffff, 0x8000000000000000, ^uint64(0), 0x100000000, 0xffffffff00000000,
