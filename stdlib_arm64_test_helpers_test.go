@@ -31,7 +31,7 @@ func testGoEnv(t *testing.T, key string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-func compileLLVMToObject(t *testing.T, llc, triple, llName, objName, ll string) {
+func compileLLVMToObject(t *testing.T, llc, triple, llName, objName, ll string) string {
 	t.Helper()
 	tmp := t.TempDir()
 	llPath := filepath.Join(tmp, llName)
@@ -53,4 +53,5 @@ func compileLLVMToObject(t *testing.T, llc, triple, llName, objName, ll string) 
 		}
 		t.Fatalf("llc failed: %v\n%s", err, s)
 	}
+	return objPath
 }
