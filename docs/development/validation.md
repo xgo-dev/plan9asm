@@ -328,8 +328,9 @@ observed tool behavior or the set of unclaimed names fail the gate for review.
 
 The Wasm standard-library check uses each form's complete
 `wasm_source_contexts` inventory. It joins the original source file and
-`TEXT` symbol to a function definition in that file's generated LLVM IR,
-then requires a fresh Wasm object for the module. Directives outside a
+`TEXT` symbol to a function definition in that file's generated LLVM IR
+and to a defined text symbol in the fresh Wasm object for that module.
+The gate inspects the object with LLVM 22 `llvm-nm`. Directives outside a
 function join to the source file. The check covers the selected JS and WASI
 profiles and reports object compilation separately from execution.
 

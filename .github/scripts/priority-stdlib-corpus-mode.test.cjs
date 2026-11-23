@@ -116,6 +116,30 @@ const llvmConfigFixture = [
   '  *) exit 97 ;;', 'esac',
 ].join('\n') + '\n';
 
+const llvmNmFixture = [
+  '#!/usr/bin/env bash', 'set -euo pipefail',
+  'if [[ "$1" == --version ]]; then',
+  '  if [[ "$CORPUS_PROTOCOL_MODE" == wrong-nm ]]; then echo "LLVM version 23.0.0"; else echo "LLVM version 22.1.8"; fi',
+  '  exit',
+  'fi',
+  '[[ "$#" == 3 && "$1" == -P && "$2" == --defined-only && -s "$3" ]] || exit 98',
+  'name=$(basename "$3" .o)',
+  'printf "symbols|%s\\n" "$name" >> "$CORPUS_PROTOCOL_TRACE"',
+  '[[ "$CORPUS_PROTOCOL_MODE" != symbol-reader-exit ]] || { echo protocol-symbol-reader-failure >&2; exit 49; }',
+  'case "$name" in',
+  '  protocol.ll)',
+  '    printf "protocol.first T 0 0\\n"',
+  '    if [[ "$CORPUS_PROTOCOL_MODE" == wrong-symbol-module ]]; then printf "protocol.second T 1 0\\n"; fi ;;',
+  '  second.ll)',
+  '    case "$CORPUS_PROTOCOL_MODE" in',
+  '      missing-text-symbol|wrong-symbol-module) printf "protocol.unrelated t 0 0\\n" ;;',
+  '      non-text-symbol) printf "protocol.second D 0 0\\n" ;;',
+  '      *) printf "protocol.second t 0 0\\n" ;;',
+  '    esac ;;',
+  '  *) exit 99 ;;',
+  'esac',
+].join('\n') + '\n';
+
 function observeNativeBashExecutable() {
   const command = process.platform === 'win32'
     ? 'if [[ "$BASH" == *.exe ]]; then cygpath -w -- "$BASH"; else cygpath -w -- "$BASH.exe"; fi'
@@ -166,7 +190,9 @@ function fixture(t, mode = 'success', targets = '') {
     fs.copyFileSync(path.join(__dirname, '../../scripts', name), path.join(scripts, name));
   }
   for (const [name, source] of Object.entries({go: goFixture, scanner: scannerFixture,
-    translator: translatorFixture, llc: llvmFixture, 'llvm-config': llvmConfigFixture})) {
+    translator: translatorFixture, llc: llvmFixture, 'llvm-config': llvmConfigFixture,
+    'llvm-nm': llvmNmFixture})) {
+    if (name === 'llvm-nm' && mode === 'missing-nm') continue;
     fs.writeFileSync(path.join(bin, name), source, {mode: 0o700});
   }
   if (mode === 'broken-python') {
@@ -281,6 +307,10 @@ function wasmObjectRows(scan) {
   return ['protocol.ll', 'second.ll'].map(name => 'object|' + triple + '|' + name);
 }
 
+function wasmSymbolRows() {
+  return ['symbols|protocol.ll', 'symbols|second.ll'];
+}
+
 test('instruction-only corpus scans all 44 profiles and compiles every full contextual WASM source', t => {
   const result = fixture(t).run(['--instructions-only']);
   assert.equal(result.status, 0, result.output);
@@ -289,7 +319,11 @@ test('instruction-only corpus scans all 44 profiles and compiles every full cont
   const expected = ['build|scanner', 'build|cli'];
   for (const scan of expectedScans()) {
     expected.push(scan);
-    if (wasm.has(scan)) expected.push(scan.replace('scan|', 'transpile|'), ...wasmObjectRows(scan));
+    if (wasm.has(scan)) {
+      const symbols = wasmSymbolRows();
+      const compiled = wasmObjectRows(scan).flatMap((object, index) => [object, symbols[index]]);
+      expected.push(scan.replace('scan|', 'transpile|'), ...compiled);
+    }
   }
   assert.deepEqual(result.rows, expected,
     'WASM needs whole typed-stack source and every LLVM object; other architectures remain scan-only');
@@ -303,6 +337,7 @@ test('default corpus retains all 44 whole-source and object compilation protocol
   assert.deepEqual(translations, expectedScans().map(row => row.replace('scan|', 'transpile|')));
   assert.equal(result.rows.filter(row => row.startsWith('object|')).length, 52,
     'all 44 targets plus the second generated file in each of eight WASM profiles');
+  assert.deepEqual(result.rows.filter(row => row.startsWith('symbols|')), wasmScanRows().flatMap(wasmSymbolRows));
 });
 
 test('both corpus modes keep scan and required-tool failures fatal', async t => {
@@ -403,6 +438,31 @@ test('native corpus requires an object even when LLVM reports success', t => {
   const result = fixture(t, 'no-object', 'windows/arm64').run();
   assert.notEqual(result.status, 0, result.output);
   assert.match(result.output, /LLVM 22 produced no object for: .*protocol\.ll/);
+});
+
+test('WASM context requires its function in the actual object text symbols', async t => {
+  const missing = /WASM source function missing its defined object text symbol: protocol\/second\.s:second/;
+  const failures = {
+    'missing-text-symbol': missing,
+    'non-text-symbol': missing,
+    'wrong-symbol-module': missing,
+    'symbol-reader-exit': /protocol-symbol-reader-failure/,
+    'missing-nm': /LLVM 22 llvm-nm not found/,
+    'wrong-nm': /LLVM 22 llvm-nm not found/,
+  };
+  for (const [mode, diagnostic] of Object.entries(failures)) {
+    await t.test(mode, t => {
+      const result = fixture(t, mode, 'js/wasm/signext').run(['--instructions-only']);
+      assert.notEqual(result.status, 0, result.output);
+      assert.match(result.output, diagnostic);
+    });
+  }
+});
+
+test('native corpus object checks do not require the WASM symbol reader', t => {
+  const result = fixture(t, 'missing-nm', 'windows/arm64').run();
+  assert.equal(result.status, 0, result.output);
+  assert.deepEqual(result.rows.filter(row => row.startsWith('symbols|')), []);
 });
 
 test('corpus mode arguments reject unknown, duplicate and extra operands', async t => {

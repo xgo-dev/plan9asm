@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-find_llvm22_llc() {
+find_llvm22_tool() {
+  local tool=$1
   local llvm_config_version llvm_bin_dir candidate version
   local -a candidates=()
 
@@ -17,11 +18,11 @@ find_llvm22_llc() {
       echo "LLVM_CONFIG --bindir failed: $LLVM_CONFIG" >&2
       return 1
     fi
-    candidates+=("$llvm_bin_dir/llc")
+    candidates+=("$llvm_bin_dir/$tool")
   else
-    candidate=$(command -v llc-22 || true)
+    candidate=$(command -v "${tool}-22" || true)
     [[ -z "$candidate" ]] || candidates+=("$candidate")
-    candidate=$(command -v llc || true)
+    candidate=$(command -v "$tool" || true)
     [[ -z "$candidate" ]] || candidates+=("$candidate")
   fi
 
@@ -34,6 +35,10 @@ find_llvm22_llc() {
     fi
   done
 
-  echo "LLVM 22 llc not found; install llc-22 or set LLVM_CONFIG to LLVM 22" >&2
+  echo "LLVM 22 $tool not found; install ${tool}-22 or set LLVM_CONFIG to LLVM 22" >&2
   return 1
+}
+
+find_llvm22_llc() {
+  find_llvm22_tool llc
 }

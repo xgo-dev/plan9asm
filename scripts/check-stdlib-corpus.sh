@@ -19,6 +19,7 @@ source "$repo_root/scripts/llvm22.sh"
 if ! llc_cmd=$(find_llvm22_llc); then
   exit 1
 fi
+llvm_nm_cmd=
 if [[ "${RUNNER_OS:-}" == "Windows" ]] && command -v python >/dev/null 2>&1; then
   python_cmd=python
 elif command -v python3 >/dev/null 2>&1; then
@@ -197,6 +198,11 @@ PY
     rm "$json"
     continue
   fi
+  if [[ "$goarch" == wasm && -z "$llvm_nm_cmd" ]]; then
+    if ! llvm_nm_cmd=$(find_llvm22_tool llvm-nm); then
+      exit 1
+    fi
+  fi
 
   echo "==> transpile+compile $target_label"
   out_dir="$tmp_root/$target_name-ll"
@@ -215,8 +221,6 @@ PY
     echo "$goos/$goarch: no .ll files generated" >&2
     exit 1
   fi
-  echo "compiled corpus $target_label: ll_files=$ll_count"
-
   while IFS= read -r ll; do
     object="$tmp_root/verify-object.o"
     if [[ "$goarch" == wasm ]]; then
@@ -228,10 +232,13 @@ PY
       echo "$target_label: LLVM 22 produced no object for: $ll" >&2
       exit 1
     fi
-    if [[ "$goarch" != wasm ]]; then
+    if [[ "$goarch" == wasm ]]; then
+      "$llvm_nm_cmd" -P --defined-only "$object" > "$object.symbols"
+    else
       rm "$object"
     fi
   done < <(find "$out_dir" -name '*.ll' | sort)
+  echo "compiled corpus $target_label: ll_files=$ll_count"
 
   if [[ "$goarch" == wasm ]]; then
     # Join every source context to its own compiled module.
@@ -248,6 +255,17 @@ def llvm_defined_names(module):
         if name.startswith(b'"'):
             name = re.sub(rb'\\([0-9A-Fa-f]{2})', lambda m: bytes([int(m[1], 16)]), name[1:-1])
         names.add(name)
+    return names
+
+def wasm_object_text_names(path, label):
+    with path.open("rb") as artifact:
+        if artifact.read(8) != b"\0asm\x01\0\0\0":
+            raise SystemExit(f"{label}: invalid WASM object header: {path}")
+    names = set()
+    for line in Path(str(path) + ".symbols").read_bytes().splitlines():
+        fields = line.rsplit(None, 3)
+        if len(fields) == 4 and fields[1] in (b"T", b"t"):
+            names.add(fields[0])
     return names
 
 scan, manifest, output, goroot = map(Path, sys.argv[1:5])
@@ -276,14 +294,12 @@ for package in metadata.get("packages", [metadata]):
             raise SystemExit(f"{label}: WASM compiled IR is shared by multiple sources: {module}")
         if source in compiled_sources:
             raise SystemExit(f"{label}: duplicate WASM translation metadata for source: {source}")
-        with Path(str(module) + ".o").open("rb") as artifact:
-            if artifact.read(8) != b"\0asm\x01\0\0\0":
-                raise SystemExit(f"{label}: invalid WASM object header: {module}.o")
+        object_names = wasm_object_text_names(Path(str(module) + ".o"), label)
         symbols = {fn["symbol"]: fn["resolved"] for fn in item["functions"]}
         if len(symbols) != len(item["functions"]):
             raise SystemExit(f"{label}: duplicate WASM source function in translation metadata: {source}")
         mapped_modules.add(module)
-        compiled_sources[source] = (symbols, llvm_defined_names(module))
+        compiled_sources[source] = (symbols, llvm_defined_names(module), object_names)
 missing = {source for source, _ in contexts} - compiled_sources.keys()
 if missing:
     raise SystemExit(f"{label}: WASM sources missing compiled IR: {', '.join(sorted(missing))}")
@@ -292,14 +308,17 @@ if mapped_modules != compiled_modules:
 for source, function in sorted(contexts):
     if not function:
         continue
-    symbols, definitions = compiled_sources[source]
+    symbols, definitions, object_names = compiled_sources[source]
     resolved = symbols.get(function)
     if not resolved:
         raise SystemExit(f"{label}: WASM source function missing from translation metadata: {source}:{function}")
-    if resolved.encode("utf-8") not in definitions:
+    name = resolved.encode("utf-8")
+    if name not in definitions:
         raise SystemExit(f"{label}: WASM source function missing its LLVM definition: {source}:{function}")
+    if name not in object_names:
+        raise SystemExit(f"{label}: WASM source function missing its defined object text symbol: {source}:{function} ({resolved})")
 functions = sum(bool(function) for _, function in contexts)
-print(f"{label}: {len(forms)} WASM forms joined to {functions} source functions across {len(compiled_sources)} compiled modules")
+print(f"{label}: {len(forms)} WASM forms joined to {functions} defined object text symbols across {len(compiled_sources)} compiled modules")
 PY
   fi
 
