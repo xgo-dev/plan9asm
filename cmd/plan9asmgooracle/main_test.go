@@ -169,9 +169,13 @@ func TestReportCompletenessIsNotCounting(t *testing.T) {
 }
 
 func TestWholeFamilySelectorPreservesRows(t *testing.T) {
-	rows := []string{"000 | MOVD R0,R1", "000 | MOVD R0,R1", "001 | MOVD.P R0,8(R1)", "002 | ADD $1,R0", "not a row", "003 | RET"}
-	want := rows[:3]
-	if got := selectedRows([]byte(strings.Join(rows, "\n")), []byte("# source families\nMOVD\n")); !reflect.DeepEqual(got, want) {
+	rows := []string{
+		"000 | MOVD R0,R1", "000 | MOVD R0,R1", "001 | MOVD.P R0,8(R1)",
+		"002 | ADD $1,R0", "not a row", "003 | RET", "003 | RET",
+		"004 | WFE",
+	}
+	want := []string{rows[0], rows[1], rows[2], rows[5], rows[6]}
+	if got := selectedRows([]byte(strings.Join(rows, "\n")), []byte("# source families\nMOVD\nRET\n")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("complete selection changed row order/denominator: %q", got)
 	}
 }

@@ -51,7 +51,7 @@ type report struct {
 	Results                                           []result
 }
 
-var selectedOpcode = regexp.MustCompile(`^([A-Z][A-Z0-9.]*)\s`)
+var selectedOpcode = regexp.MustCompile(`^([A-Z][A-Z0-9.]*)(?:\s|$)`)
 
 func writeJSON(path string, value any) error {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
