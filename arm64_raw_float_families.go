@@ -43,7 +43,7 @@ var arm64RawFloatFamilies = [...]arm64RawFamily{
 		}),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawBFloatConvert, (*arm64Ctx).lowerRawBFloatConvert),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawVectorFloatRound, (*arm64Ctx).lowerRawVectorFloatRound),
-	arm64RawNoGPOrMemoryForm(decodeARM64RawVectorFloatNarrow, (*arm64Ctx).lowerRawVectorFloatNarrow),
+	arm64RawNoGPOrMemoryForm(decodeARM64RawFloatNarrow, (*arm64Ctx).lowerARM64FloatNarrow),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawVectorFloatWiden, (*arm64Ctx).lowerRawVectorFloatWiden),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawFloatMinMaxAcross, (*arm64Ctx).lowerRawFloatMinMaxAcross),
 	arm64RawNoGPOrMemoryForm(decodeARM64RawFloatPairwise, (*arm64Ctx).lowerARM64FloatPairwise),

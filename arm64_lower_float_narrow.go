@@ -5,86 +5,95 @@ import (
 	"strings"
 )
 
-type arm64RawVectorFloatNarrow struct {
-	sourceBits  int
-	upper       bool
-	source      int
-	destination int
+type arm64FloatNarrowForm struct {
+	arm64NarrowOperands
+	roundOdd bool
 }
 
-func decodeARM64RawVectorFloatNarrow(word uint32) (arm64RawVectorFloatNarrow, bool) {
-	if word&0xbfbffc00 != 0x0e216800 {
-		return arm64RawVectorFloatNarrow{}, false
+func decodeARM64RawFloatNarrow(word uint32) (arm64FloatNarrowForm, bool) {
+	const q = 1 << 30
+	form := arm64FloatNarrowForm{
+		arm64NarrowOperands: arm64NarrowOperands{
+			source: int(word >> 5 & 31), destination: int(word & 31),
+			highHalf: word&q != 0,
+		},
 	}
-	sourceBits := 32
-	if word&(1<<22) != 0 {
-		sourceBits = 64
+	switch {
+	case word&0xbfbffc00 == 0x0e216800:
+		form.bits = 16 << (word >> 22 & 1)
+	case word&0xbffffc00 == 0x2e616800:
+		form.bits, form.roundOdd = 32, true
+	case word&0xfffffc00 == 0x7e616800:
+		form.bits, form.roundOdd = 32, true
+		form.scalar, form.highHalf = true, false
+	default:
+		return arm64FloatNarrowForm{}, false
 	}
-	return arm64RawVectorFloatNarrow{
-		sourceBits:  sourceBits,
-		upper:       word&(1<<30) != 0,
-		source:      int(word>>5) & 31,
-		destination: int(word) & 31,
-	}, true
+	return form, true
 }
 
-func (c *arm64Ctx) lowerRawVectorFloatNarrow(form arm64RawVectorFloatNarrow) error {
-	return c.lowerARM64VectorFloatNarrowForm(form.sourceBits, form.upper,
-		Reg(fmt.Sprintf("V%d", form.source)), Reg(fmt.Sprintf("V%d", form.destination)))
-}
-
-func (c *arm64Ctx) lowerARM64VectorFloatNarrow(op Op, ins Instr) (ok bool, terminated bool, err error) {
+func (c *arm64Ctx) lowerARM64VectorFloatNarrow(op Op, ins Instr) (bool, bool, error) {
 	if op != "VFCVTN" && op != "VFCVTN2" {
 		return false, false, nil
 	}
-	if strings.ToUpper(string(ins.Op)) != string(op) || len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
+	if !strings.EqualFold(string(ins.Op), string(op)) || len(ins.Args) != 2 ||
+		ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
 		return true, false, fmt.Errorf("arm64 %s expects Vsrc.S4/D2 and the corresponding narrow destination and no suffix: %q", op, ins.Raw)
 	}
 	source, sourceOK := parseARM64VectorArrangement(ins.Args[0].Reg)
 	destination, destinationOK := parseARM64VectorArrangement(ins.Args[1].Reg)
-	wantDestinationLanes := source.lanes
-	if op == "VFCVTN2" {
-		wantDestinationLanes *= 2
-	}
-	validSource := sourceOK && ((source.elementBits == 32 && source.lanes == 4) || (source.elementBits == 64 && source.lanes == 2))
-	if !validSource || !destinationOK || destination != (arm64VectorArrangement{elementBits: source.elementBits / 2, lanes: wantDestinationLanes}) {
+	invalid := func() (bool, bool, error) {
 		return true, false, fmt.Errorf("arm64 %s operand arrangements are outside Go 1.27's narrowing optab: %q", op, ins.Raw)
 	}
-	return true, false, c.lowerARM64VectorFloatNarrowForm(source.elementBits, op == "VFCVTN2", ins.Args[0].Reg, ins.Args[1].Reg)
+	if !sourceOK || !destinationOK || source.elementBits < 32 {
+		return invalid()
+	}
+	form := arm64FloatNarrowForm{
+		arm64NarrowOperands: arm64NarrowOperands{bits: source.elementBits / 2, highHalf: op == "VFCVTN2"},
+	}
+	wantSource, wantDestination := form.arrangements()
+	if source != wantSource || destination != wantDestination {
+		return invalid()
+	}
+	form.source, _ = arm64ParseVReg(ins.Args[0].Reg)
+	form.destination, _ = arm64ParseVReg(ins.Args[1].Reg)
+	return true, false, c.lowerARM64FloatNarrow(form)
 }
 
-func (c *arm64Ctx) lowerARM64VectorFloatNarrowForm(sourceBits int, upper bool, sourceReg, destinationReg Reg) error {
-	destinationBits := sourceBits / 2
-	sourceLanes := 128 / sourceBits
-	sourceArrangement := arm64VectorArrangement{elementBits: sourceBits, lanes: sourceLanes}
-	source, err := c.loadARM64VectorFloat(sourceReg, sourceArrangement)
-	if err != nil {
-		return err
+func (c *arm64Ctx) lowerARM64FloatNarrow(form arm64FloatNarrowForm) error {
+	if arm64ScalarConversionNativeTarget(c.targetTriple) {
+		mnemonic := "fcvtn"
+		if form.roundOdd {
+			mnemonic = "fcvtxn"
+		}
+		return c.lowerARM64NativeNarrow(form.arm64NarrowOperands, mnemonic, 0, form.scalar)
 	}
-	sourceType, destinationType := "float", "half"
-	if sourceBits == 64 {
-		sourceType, destinationType = "double", "float"
-	}
-	converted := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = fptrunc <%d x %s> %s to <%d x %s>\n",
-		converted, sourceLanes, sourceType, source, sourceLanes, destinationType)
-	if !upper {
-		return c.storeARM64VectorFloat(destinationReg,
-			arm64VectorArrangement{elementBits: destinationBits, lanes: sourceLanes}, "%"+converted)
+	if form.roundOdd {
+		return fmt.Errorf("%w: ARM64 FCVTXN requires a native little-endian AArch64 floating-point target", ErrProbeNeedsContext)
 	}
 
-	destinationArrangement := arm64VectorArrangement{elementBits: destinationBits, lanes: sourceLanes * 2}
-	result, err := c.loadARM64VectorFloat(destinationReg, destinationArrangement)
+	sourceView, destinationView := form.arrangements()
+	source, err := c.loadARM64VectorFloat(Reg(fmt.Sprintf("V%d", form.source)), sourceView)
 	if err != nil {
 		return err
 	}
-	for lane := 0; lane < sourceLanes; lane++ {
-		element := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractelement <%d x %s> %%%s, i32 %d\n", element, sourceLanes, destinationType, converted, lane)
-		updated := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = insertelement <%d x %s> %s, %s %%%s, i32 %d\n",
-			updated, sourceLanes*2, destinationType, result, destinationType, element, sourceLanes+lane)
-		result = "%" + updated
+	sourceType := fmt.Sprintf("<%d x %s>", sourceView.lanes, arm64RawFloatType(sourceView.elementBits))
+	narrowType := fmt.Sprintf("<%d x %s>", sourceView.lanes, arm64RawFloatType(form.bits))
+	converted := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = fptrunc %s %s to %s\n", converted, sourceType, source, narrowType)
+	result := "%" + converted
+	destination := Reg(fmt.Sprintf("V%d", form.destination))
+	if form.highHalf {
+		low := arm64VectorArrangement{form.bits, sourceView.lanes}
+		old, err := c.loadARM64VectorFloat(destination, low)
+		if err != nil {
+			return err
+		}
+		indices := make([]int, destinationView.lanes)
+		for i := range indices {
+			indices[i] = i
+		}
+		result = c.arm64StructureShuffle(narrowType, old, result, indices)
 	}
-	return c.storeARM64VectorFloat(destinationReg, destinationArrangement, result)
+	return c.storeARM64VectorFloat(destination, destinationView, result)
 }

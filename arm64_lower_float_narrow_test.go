@@ -21,7 +21,7 @@ TEXT vectorfloatnarrowforms(SB),$0-0
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc"} {
+	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc", "x86_64-unknown-linux-gnu"} {
 		t.Run(triple, func(t *testing.T) {
 			ir, err := Translate(file, Options{
 				TargetTriple: triple, Goarch: "arm64",
@@ -30,7 +30,11 @@ TEXT vectorfloatnarrowforms(SB),$0-0
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"fptrunc <4 x float>", "fptrunc <2 x double>"} {
+			wantIR := []string{`asm sideeffect "fcvtn `, `asm sideeffect "fcvtn2 `}
+			if !arm64ScalarConversionNativeTarget(triple) {
+				wantIR = []string{"fptrunc <4 x float>", "fptrunc <2 x double>"}
+			}
+			for _, want := range wantIR {
 				if !strings.Contains(ir, want) {
 					t.Fatalf("ARM64 VFCVTN family omitted %q:\n%s", want, ir)
 				}
@@ -45,12 +49,21 @@ TEXT vectorfloatnarrowforms(SB),$0-0
 }
 
 func TestTranslateARM64RawVectorFloatNarrowCompleteBaseFormats(t *testing.T) {
+	instructions := []string{
+		"fcvtn v29.4h, v30.4s", "fcvtn2 v29.8h, v30.4s",
+		"fcvtn v29.2s, v30.2d", "fcvtn2 v29.4s, v30.2d",
+		"fcvtxn s29, d30", "fcvtxn v29.2s, v30.2d", "fcvtxn2 v29.4s, v30.2d",
+	}
+	words := assembleARM64LLVMWords(t, instructions, "")
 	var source strings.Builder
 	source.WriteString("TEXT rawvectorfloatnarrowforms(SB),$0-0\n")
-	for _, size := range []uint32{0, 1 << 22} { // 4S -> 4H and 2D -> 2S.
-		for _, upper := range []uint32{0, 1 << 30} { // FCVTN and FCVTN2.
-			fmt.Fprintf(&source, "\tWORD $%#08x\n", uint32(0x0e216800)|size|upper|30<<5|29)
+	for i, word := range words {
+		line := fmt.Sprintf("WORD $%#08x", word)
+		ins := Instr{Op: OpWORD, Raw: line, Args: []Operand{{Kind: OpImm, Imm: int64(word)}}}
+		if err := ProbeInstruction(ArchARM64, "arm64", ins); err != nil {
+			t.Errorf("%s: %v", instructions[i], err)
 		}
+		fmt.Fprintln(&source, line)
 	}
 	source.WriteString("\tRET\n")
 	requireARM64GoAssemblerResult(t, source.String(), true)
@@ -67,10 +80,8 @@ func TestTranslateARM64RawVectorFloatNarrowCompleteBaseFormats(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"fptrunc <4 x float>", "fptrunc <2 x double>"} {
-				if !strings.Contains(ir, want) {
-					t.Fatalf("raw floating narrow omitted %q:\n%s", want, ir)
-				}
+			if got := strings.Count(ir, `<16 x i8> asm sideeffect "fcvt`); got != len(words) {
+				t.Fatalf("got %d native floating narrowing instructions, want %d", got, len(words))
 			}
 			llc := findLLVM22Tool("llc")
 			if llc == "" {
@@ -83,12 +94,15 @@ func TestTranslateARM64RawVectorFloatNarrowCompleteBaseFormats(t *testing.T) {
 
 func TestARM64RawVectorFloatNarrowDecoderRejectsAdjacentEncodings(t *testing.T) {
 	for _, word := range []uint32{
-		0x2e216800, // FCVTXN, not FCVTN.
+		0x2e216800, // Reserved narrow width for vector FCVTXN.
+		0x7e216800, // Reserved narrow width for scalar FCVTXN.
+		0x3e616800, // Scalar FCVTXN without Q.
+		0x5e616800, // FCVTN remains vector-only.
 		0x0ea16800, // Unallocated size.
 		0x0e217800, // FCVTL, not FCVTN.
 		0x0e216c00, // Adjacent opcode.
 	} {
-		if _, ok := decodeARM64RawVectorFloatNarrow(word); ok {
+		if _, ok := decodeARM64RawFloatNarrow(word); ok {
 			t.Fatalf("floating narrow decoder accepted adjacent encoding %#08x", word)
 		}
 	}
@@ -102,6 +116,8 @@ func TestTranslateARM64VectorFloatNarrowRejectsFormsOutsideGoOptab(t *testing.T)
 		"VFCVTN V0.S2, V1.H4",
 		"VFCVTN2 V0.S4, V1.S4",
 		"VFCVTN.P V0.D2, V1.S2",
+		"VFCVTXN V0.D2, V1.S2",
+		"VFCVTXN2 V0.D2, V1.S4",
 	} {
 		t.Run(strings.ReplaceAll(instruction, " ", "_"), func(t *testing.T) {
 			source := "TEXT badvectorfloatnarrow(SB),$0-0\n\t" + instruction + "\n\tRET\n"

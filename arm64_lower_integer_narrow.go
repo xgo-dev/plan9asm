@@ -36,23 +36,9 @@ var arm64IntegerNarrowOps = [...]arm64IntegerNarrowOp{
 }
 
 type arm64IntegerNarrowForm struct {
-	op                  *arm64IntegerNarrowOp
-	bits, shift         int
-	source, destination int
-	scalar, highHalf    bool
-}
-
-func (f arm64IntegerNarrowForm) arrangements() (source, destination arm64VectorArrangement) {
-	lanes := 1
-	if !f.scalar {
-		lanes = 64 / f.bits
-	}
-	source = arm64VectorArrangement{2 * f.bits, lanes}
-	destination = arm64VectorArrangement{f.bits, lanes}
-	if f.highHalf {
-		destination.lanes *= 2
-	}
-	return source, destination
+	arm64NarrowOperands
+	op    *arm64IntegerNarrowOp
+	shift int
 }
 
 func decodeARM64RawIntegerNarrow(word uint32) (arm64IntegerNarrowForm, bool) {
@@ -63,8 +49,10 @@ func decodeARM64RawIntegerNarrow(word uint32) (arm64IntegerNarrowForm, bool) {
 		return arm64IntegerNarrowForm{}, false
 	}
 	form := arm64IntegerNarrowForm{
-		source: int(word >> 5 & 31), destination: int(word & 31),
-		scalar: scalar, highHalf: q && !scalar,
+		arm64NarrowOperands: arm64NarrowOperands{
+			source: int(word >> 5 & 31), destination: int(word & 31),
+			scalar: scalar, highHalf: q && !scalar,
+		},
 	}
 	base := word &^ commonFields
 	for i := range arm64IntegerNarrowOps {
@@ -97,7 +85,7 @@ func decodeARM64RawIntegerNarrow(word uint32) (arm64IntegerNarrowForm, bool) {
 
 func (c *arm64Ctx) lowerARM64VectorIntegerNarrow(op Op, ins Instr) (bool, bool, error) {
 	base := Op(strings.TrimSuffix(string(op), "2"))
-	form := arm64IntegerNarrowForm{highHalf: base != op}
+	form := arm64IntegerNarrowForm{arm64NarrowOperands: arm64NarrowOperands{highHalf: base != op}}
 	for i := range arm64IntegerNarrowOps {
 		if arm64IntegerNarrowOps[i].name == base {
 			form.op = &arm64IntegerNarrowOps[i]
@@ -144,37 +132,11 @@ func (c *arm64Ctx) lowerARM64VectorIntegerNarrow(op Op, ins Instr) (bool, bool, 
 }
 
 func (c *arm64Ctx) lowerARM64IntegerNarrow(form arm64IntegerNarrowForm) error {
-	sourceView, destinationView := form.arrangements()
 	if form.op.kind == arm64NarrowTruncate || !arm64ScalarConversionNativeTarget(c.targetTriple) {
+		sourceView, destinationView := form.arrangements()
 		return c.lowerARM64PortableIntegerNarrow(form, sourceView, destinationView)
 	}
-	source, err := c.loadVRegWidth(Reg(fmt.Sprintf("V%d", form.source)), sourceView.lanes*sourceView.elementBits)
-	if err != nil {
-		return err
-	}
-
-	destination := Reg(fmt.Sprintf("V%d", form.destination))
-	mnemonic := strings.ToLower(string(form.op.name[1:]))
-	arguments, constraints := "<16 x i8> "+source, "=w,w"
-	if form.highHalf {
-		// The native *2 instruction preserves the old low 64 bits.
-		old, err := c.loadVRegWidth(destination, 64)
-		if err != nil {
-			return err
-		}
-		mnemonic += "2"
-		arguments += ", <16 x i8> " + old
-		constraints += ",0"
-	}
-	assembly := fmt.Sprintf("%s %s, %s", mnemonic, arm64NativeSIMDReg(0, destinationView), arm64NativeSIMDReg(1, sourceView))
-	if form.op.shifted {
-		assembly += fmt.Sprintf(", #%d", form.shift)
-	}
-	// Saturation can set FPSR.QC even when the destination is unused.
-	result := c.newTmp()
-	c.emitMachineNeutralNativeIR("  %%%s = call <16 x i8> asm sideeffect %q, %q(%s)\n",
-		result, assembly, constraints+",~{memory}", arguments)
-	return c.storeVReg(destination, "%"+result)
+	return c.lowerARM64NativeNarrow(form.arm64NarrowOperands, strings.ToLower(string(form.op.name[1:])), form.shift, false)
 }
 
 func (c *arm64Ctx) lowerARM64PortableIntegerNarrow(form arm64IntegerNarrowForm, sourceView, destinationView arm64VectorArrangement) error {

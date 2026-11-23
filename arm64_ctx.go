@@ -639,7 +639,7 @@ func (c *arm64Ctx) scanUsedRegs() {
 					markReg(Reg(fmt.Sprintf("V%d", form.first)))
 					markReg(Reg(fmt.Sprintf("V%d", form.second)))
 				}
-				if form, ok := decodeARM64RawVectorFloatNarrow(word); ok {
+				if form, ok := decodeARM64RawFloatNarrow(word); ok {
 					markReg(Reg(fmt.Sprintf("V%d", form.source)))
 					markReg(Reg(fmt.Sprintf("V%d", form.destination)))
 				}
