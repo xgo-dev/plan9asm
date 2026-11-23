@@ -13,6 +13,11 @@ func (state *arm64ControlState) transferTypedMemory(ins Instr) bool {
 	if !valid {
 		return false
 	}
+	state.transferTypedMemoryForm(form)
+	return true
+}
+
+func (state *arm64ControlState) transferTypedMemoryForm(form arm64RawPrivateMemoryForm) {
 	memory := form.memory
 	if form.post && memory.Kind == OpMem {
 		memory.Mem.Off = 0
@@ -67,7 +72,6 @@ func (state *arm64ControlState) transferTypedMemory(ins Instr) bool {
 		base := arm64ControlBase(form.memory.Mem.Base)
 		state.regs[base] = arm64ControlOffset(arm64ControlRead(state.regs, base), form.memory.Mem.Off)
 	}
-	return true
 }
 
 func (state *arm64ControlState) readMemoryWidth(memory Operand, width int64, gp bool) arm64ControlValue {

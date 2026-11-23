@@ -168,8 +168,9 @@ func TestARM64RawPrivateFrameMemoryGrammarRejectsUncertainEffects(t *testing.T) 
 		{native: "stp x9,x10,[x11,#-16]!", mask: 31 << 5, value: 9 << 5},
 		{native: "ldp x9,x10,[sp,#16]", mask: 31 << 10, value: 9 << 10},
 		{native: "ldp d0,d1,[sp,#16]", mask: 31 << 10},
-		{native: "ldnp x9,x10,[sp,#16]"}, // No Go named non-temporal pair optab.
-		{native: "stnp x9,x10,[sp,#16]"},
+		{native: "ldnp x9,x10,[sp,#16]", mask: 31 << 10, value: 9 << 10},
+		{native: "ldnp x9,x10,[sp,#504]"},
+		{native: "stnp x9,x10,[x0]"}, // A private frame address would escape.
 		{native: "ldr x9,[sp,x0]"},
 		{native: "str x9,[sp,x0]"},
 	} {
