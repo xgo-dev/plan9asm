@@ -656,6 +656,10 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				add("+aes")
 			}
 		case ArchARM64:
+			if _, ok := arm64SVEWidthChangeSpecs[Op(op)]; ok {
+				add("+sve", "+sve2p3")
+				continue
+			}
 			if spec, ok := arm64SVEAbsoluteDifferenceSpecs[Op(op)]; ok {
 				add("+sve", spec.feature)
 				continue
@@ -680,6 +684,10 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				}
 				if form, ok := decodeARM64RawSVELUTI(uint32(ins.Args[0].Imm)); ok {
 					add(arm64SVELUTIFeatures(form.spec.op)...)
+					continue
+				}
+				if _, ok := decodeARM64RawSVEWidthChange(uint32(ins.Args[0].Imm)); ok {
+					add("+sve", "+sve2p3")
 					continue
 				}
 				if _, ok := decodeARM64RawSVECharacterMatch(uint32(ins.Args[0].Imm)); ok {

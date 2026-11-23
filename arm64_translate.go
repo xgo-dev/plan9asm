@@ -1369,6 +1369,9 @@ func (c *arm64Ctx) lowerInstr(bi int, ins Instr, emitBr arm64EmitBr, emitCondBr 
 	if ok, term, err := c.lowerARM64SVEWideningFloatMLA(op, ins); ok {
 		return term, err
 	}
+	if ok, term, err := c.lowerARM64SVEWidthChange(op, ins); ok {
+		return term, err
+	}
 	if ok, term, err := c.lowerARM64SVEMultiNarrow(op, ins); ok {
 		return term, err
 	}

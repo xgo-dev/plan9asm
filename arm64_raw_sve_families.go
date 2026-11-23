@@ -56,6 +56,7 @@ var arm64RawSVEVectorFamilies = [...]arm64RawSVEVectorFamily{
 	arm64RawSVEVectorForm(decodeARM64RawSVEPairwise, (*arm64Ctx).lowerARM64SVEPairwiseForm),
 	arm64RawSVEVectorForm(decodeARM64RawSVEAbsoluteDifference, (*arm64Ctx).lowerARM64SVEAbsoluteDifferenceForm),
 	arm64RawSVEVectorForm(decodeARM64RawSVELUTI, (*arm64Ctx).lowerARM64SVELUTIForm),
+	arm64RawSVEVectorForm(decodeARM64RawSVEWidthChange, (*arm64Ctx).lowerARM64SVEWidthChangeForm),
 	arm64RawSVEVectorForm(decodeARM64RawSVEMultiply, (*arm64Ctx).lowerRawSVEMultiply),
 	arm64RawSVEVectorForm(decodeARM64RawSVETable, (*arm64Ctx).lowerRawSVETable),
 	arm64RawSVEVectorForm(decodeARM64RawSVEUMULLB, (*arm64Ctx).lowerRawSVEUMULLB),
