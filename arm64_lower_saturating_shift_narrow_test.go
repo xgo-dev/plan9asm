@@ -96,8 +96,9 @@ func TestTranslateARM64RawSaturatingShiftNarrowCompleteArchitectureFamily(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, operation := range []string{"ashr", "lshr", "icmp", "select", "trunc", "insertelement"} {
-				if !strings.Contains(ll, " = "+operation+" ") {
+			for _, operation := range []string{"sqshrn", "sqrshrn", "sqshrun", "sqrshrun", "uqshrn", "uqrshrn"} {
+				if !strings.Contains(ll, `asm sideeffect "`+operation+" ") ||
+					!strings.Contains(ll, `asm sideeffect "`+operation+"2 ") {
 					t.Fatalf("%s omitted %s semantics:\n%s", triple, operation, ll)
 				}
 			}
@@ -135,10 +136,14 @@ func TestARM64RawSaturatingShiftNarrowDecoderCoversEveryImmediate(t *testing.T) 
 					{base: family.scalarBase, scalar: true},
 				} {
 					word := encodeARM64SaturatingShiftNarrow(form.base, destinationBits, shift, form.highHalf, 31, 30)
-					decoded, ok := decodeARM64RawSaturatingShiftNarrow(word)
-					if !ok || decoded.shift != shift || decoded.source != 31 || decoded.destination != 30 ||
+					decoded, ok := decodeARM64RawIntegerNarrow(word)
+					if !ok {
+						t.Fatalf("decoder rejected %#08x", word)
+					}
+					sourceView, destinationView := decoded.arrangements()
+					if decoded.shift != shift || decoded.source != 31 || decoded.destination != 30 ||
 						decoded.scalar != form.scalar || decoded.highHalf != form.highHalf ||
-						decoded.sourceArrangement.elementBits != destinationBits*2 || decoded.destinationArrangement.elementBits != destinationBits {
+						sourceView.elementBits != destinationBits*2 || destinationView.elementBits != destinationBits {
 						t.Fatalf("decode base=%#08x destination=%d shift=%d high=%v scalar=%v: form=%#v ok=%v",
 							form.base, destinationBits, shift, form.highHalf, form.scalar, decoded, ok)
 					}

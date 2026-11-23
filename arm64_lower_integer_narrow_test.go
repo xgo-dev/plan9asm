@@ -23,6 +23,7 @@ func TestTranslateARM64VectorIntegerNarrowCompleteGoAssemblerForms(t *testing.T)
 		"aarch64-apple-darwin",
 		"aarch64-unknown-linux-gnu",
 		"aarch64-pc-windows-msvc",
+		"x86_64-unknown-linux-gnu",
 	} {
 		file, err := Parse(ArchARM64, source.String())
 		if err != nil {
@@ -39,7 +40,13 @@ func TestTranslateARM64VectorIntegerNarrowCompleteGoAssemblerForms(t *testing.T)
 		if err != nil {
 			t.Fatalf("%s: %v", triple, err)
 		}
-		for _, want := range []string{"trunc <", "icmp slt <", "icmp sgt <", "icmp ugt <", "insertelement <"} {
+		wantIR := []string{"trunc <", "shufflevector <"}
+		if arm64ScalarConversionNativeTarget(triple) {
+			wantIR = append(wantIR, `asm sideeffect "sqxtn`, `asm sideeffect "uqxtn`, `asm sideeffect "sqxtun`)
+		} else {
+			wantIR = append(wantIR, "icmp slt <", "icmp sgt <", "icmp ugt <")
+		}
+		for _, want := range wantIR {
 			if !strings.Contains(ll, want) {
 				t.Fatalf("%s integer narrow IR omitted %q:\n%s", triple, want, ll)
 			}

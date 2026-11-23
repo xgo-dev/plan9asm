@@ -144,9 +144,6 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 	if ok, terminated, err := c.lowerARM64VectorIntegerNarrow(op, ins); ok {
 		return ok, terminated, err
 	}
-	if ok, terminated, err := c.lowerARM64VectorSaturatingShiftNarrow(op, ins); ok {
-		return ok, terminated, err
-	}
 	if ok, terminated, err := c.lowerARM64VectorShiftNarrow(op, ins); ok {
 		return ok, terminated, err
 	}
