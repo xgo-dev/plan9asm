@@ -46,7 +46,7 @@ func TestTranslateARM64SVEFloatUnaryCompleteGo127Family(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{`"target-features"="+fptoint,+sve"`, "@llvm.aarch64.sve.fabs.nxv", "@llvm.fptosi.sat.nxv2i64.nxv2f64", "@llvm.aarch64.sve.frecpe.x.nxv", "@llvm.aarch64.sve.frsqrte.x.nxv", "@llvm.aarch64.sve.fsqrt.nxv"} {
+			for _, want := range []string{`"target-features"="+sve,+sve2p2"`, "@llvm.aarch64.sve.fabs.nxv", `asm sideeffect "frint64z $0.d, $1/z, $2.d"`, "@llvm.aarch64.sve.frecpe.x.nxv", "@llvm.aarch64.sve.frsqrte.x.nxv", "@llvm.aarch64.sve.fsqrt.nxv"} {
 				if !strings.Contains(ll, want) {
 					t.Fatalf("%s SVE floating unary lowering omitted %q:\n%s", triple, want, ll)
 				}

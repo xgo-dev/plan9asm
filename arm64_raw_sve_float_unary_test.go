@@ -2,6 +2,8 @@ package plan9asm
 
 import (
 	"fmt"
+	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -28,6 +30,17 @@ func arm64RawSVEFloatUnaryNativeForms() []string {
 
 func TestARM64RawSVEFloatUnaryCompleteFormats(t *testing.T) {
 	lines := arm64RawSVEFloatUnaryNativeForms()
+	register := regexp.MustCompile(`\b([zp])[0-9]+\b`)
+	sizedRound := regexp.MustCompile(`(?m)\bfrint(?:32|64)[xz]\s+z[^\r\n]+`)
+	normalize := func(line string) string {
+		return register.ReplaceAllString(strings.Join(strings.Fields(line), " "), "$1")
+	}
+	var wanted []string
+	for _, line := range lines {
+		if sizedRound.MatchString(line) {
+			wanted = append(wanted, normalize(line))
+		}
+	}
 	var source strings.Builder
 	source.WriteString("TEXT rawunary(SB),$0-0\n")
 	for _, word := range assembleARM64LLVMWords(t, lines, "+sve2p2,+fptoint") {
@@ -38,9 +51,9 @@ func TestARM64RawSVEFloatUnaryCompleteFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	llc := findLLVM22Tool("llc")
-	if llc == "" {
-		t.Fatal("LLVM 22 llc not found")
+	llc, objdump := findLLVM22Tool("llc"), findLLVM22Tool("llvm-objdump")
+	if llc == "" || objdump == "" {
+		t.Fatal("LLVM 22 llc and llvm-objdump are required")
 	}
 	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc"} {
 		t.Run(triple, func(t *testing.T) {
@@ -50,6 +63,22 @@ func TestARM64RawSVEFloatUnaryCompleteFormats(t *testing.T) {
 				t.Fatal(err)
 			}
 			compileLLVMToObject(t, llc, triple, "rawunary.ll", "rawunary.o", ir)
+			// The floating result has no user in this fixture. The native
+			// rounding must survive because active lanes can update FPSR.
+			object := compileLLVMToObject(t, llc, triple, "rawunary-opt.ll", "rawunary-opt.o", armFloatEffectOptimizedIR(t, ir))
+			ctx, cancel := runtimeOracleStageContext(t)
+			defer cancel()
+			code, err := runtimeOracleCombinedOutput(ctx, exec.CommandContext(ctx, objdump, "-d", "--mattr=+sve2p2", object))
+			if err != nil {
+				t.Fatalf("disassemble optimized sized rounding: %v\n%s", err, code)
+			}
+			got := sizedRound.FindAllString(string(code), -1)
+			for i := range got {
+				got[i] = normalize(got[i])
+			}
+			if strings.Join(got, "\n") != strings.Join(wanted, "\n") {
+				t.Fatalf("optimized rounding encodings = %q, want %q", got, wanted)
+			}
 		})
 	}
 }

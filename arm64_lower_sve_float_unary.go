@@ -2,16 +2,13 @@ package plan9asm
 
 import (
 	"fmt"
-	"math"
 	"strings"
 )
 
 type arm64SVEFloatUnarySpec struct {
 	intrinsic   string
 	unpred      bool
-	sdOnly      bool
-	integerBits int
-	fptoint     bool
+	sizedRound  string
 	rawBase     uint32
 	rawZeroBase uint32
 }
@@ -21,10 +18,10 @@ var arm64SVEFloatUnarySpecs = map[Op]arm64SVEFloatUnarySpec{
 	"ZFNEG":     {intrinsic: "fneg", rawBase: 0x041da000, rawZeroBase: 0x040da000},
 	"ZFRECPE":   {intrinsic: "frecpe.x", unpred: true, rawBase: 0x650e3000},
 	"ZFRECPX":   {intrinsic: "frecpx", rawBase: 0x650ca000, rawZeroBase: 0x641b8000},
-	"ZFRINT32X": {intrinsic: "rint", sdOnly: true, integerBits: 32, fptoint: true, rawBase: 0x6511a000, rawZeroBase: 0x641ca000},
-	"ZFRINT32Z": {intrinsic: "trunc", sdOnly: true, integerBits: 32, fptoint: true, rawBase: 0x6510a000, rawZeroBase: 0x641c8000},
-	"ZFRINT64X": {intrinsic: "rint", sdOnly: true, integerBits: 64, fptoint: true, rawBase: 0x6515a000, rawZeroBase: 0x641da000},
-	"ZFRINT64Z": {intrinsic: "trunc", sdOnly: true, integerBits: 64, fptoint: true, rawBase: 0x6514a000, rawZeroBase: 0x641d8000},
+	"ZFRINT32X": {sizedRound: "frint32x", rawBase: 0x6511a000, rawZeroBase: 0x641ca000},
+	"ZFRINT32Z": {sizedRound: "frint32z", rawBase: 0x6510a000, rawZeroBase: 0x641c8000},
+	"ZFRINT64X": {sizedRound: "frint64x", rawBase: 0x6515a000, rawZeroBase: 0x641da000},
+	"ZFRINT64Z": {sizedRound: "frint64z", rawBase: 0x6514a000, rawZeroBase: 0x641d8000},
 	"ZFRINTA":   {intrinsic: "frinta", rawBase: 0x6504a000, rawZeroBase: 0x64198000},
 	"ZFRINTI":   {intrinsic: "frinti", rawBase: 0x6507a000, rawZeroBase: 0x6419e000},
 	"ZFRINTM":   {intrinsic: "frintm", rawBase: 0x6502a000, rawZeroBase: 0x6418c000},
@@ -41,13 +38,13 @@ var arm64SVEFloatUnarySpecs = map[Op]arm64SVEFloatUnarySpec{
 func decodeARM64RawSVEFloatUnary(word uint32) (Instr, bool) {
 	size := word >> 22 & 3
 	for op, spec := range arm64SVEFloatUnarySpecs {
-		if !spec.sdOnly && size == 0 {
+		if spec.sizedRound == "" && size == 0 {
 			continue
 		}
 		mask, zeroMask := uint32(0x00c01fff), uint32(0x00c01fff)
 		if spec.unpred {
 			mask = 0x00c003ff
-		} else if spec.sdOnly {
+		} else if spec.sizedRound != "" {
 			// Go's SzSD1718 and SzSD1415 put the S/D selector in
 			// different positions for merging and zeroing encodings.
 			mask, zeroMask = 0x00021fff, 0x00005fff
@@ -57,7 +54,7 @@ func decodeARM64RawSVEFloatUnary(word uint32) (Instr, bool) {
 			continue
 		}
 		width := "BHSD"[size]
-		if spec.sdOnly {
+		if spec.sizedRound != "" {
 			shift := uint(17)
 			if zero {
 				shift = 14
@@ -120,7 +117,7 @@ func (c *arm64Ctx) lowerARM64SVEFloatUnary(op Op, ins Instr) (ok bool, terminate
 				return true, false, fmt.Errorf("arm64 %s requires P0..P7/M or P0..P7/Z: %q", op, ins.Raw)
 			}
 		}
-		if !sourceOK || !destinationOK || sourceBits != destinationBits || (spec.sdOnly && sourceBits == 16) {
+		if !sourceOK || !destinationOK || sourceBits != destinationBits || (spec.sizedRound != "" && sourceBits == 16) {
 			return true, false, fmt.Errorf("arm64 %s vector widths do not match its Go 1.27 form: %q", op, ins.Raw)
 		}
 		form.elementBits = sourceBits
@@ -136,31 +133,14 @@ func (c *arm64Ctx) lowerARM64SVEFloatUnaryForm(spec arm64SVEFloatUnarySpec, form
 	if err != nil {
 		return err
 	}
+	if spec.sizedRound != "" {
+		return c.lowerARM64SVESizedRound(spec.sizedRound, form, source, vectorType)
+	}
 	_, _, lanes, err := arm64SVEFloatType(form.elementBits)
 	if err != nil {
 		return err
 	}
 	mangle := fmt.Sprintf("nxv%d%s", lanes, map[int]string{16: "f16", 32: "f32", 64: "f64"}[form.elementBits])
-	if spec.integerBits != 0 {
-		calculated, err := c.lowerARM64SVEFRIntSized(spec, source, vectorType, mangle, lanes, form.elementBits)
-		if err != nil {
-			return err
-		}
-		predicate, predicateType, err := c.loadPRegElements(form.predicate, form.elementBits)
-		if err != nil {
-			return err
-		}
-		inactive := "zeroinitializer"
-		if !form.zeroing {
-			inactive, _, err = c.loadRawSVEFloatVector(form.destination, form.elementBits)
-			if err != nil {
-				return err
-			}
-		}
-		selected := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select %s %s, %s %s, %s %s\n", selected, predicateType, predicate, vectorType, calculated, vectorType, inactive)
-		return c.storeRawSVEFloatVector(form.destination, form.elementBits, "%"+selected, vectorType)
-	}
 	result := c.newTmp()
 	if spec.unpred {
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.aarch64.sve.%s.%s(%s %s)\n", result, vectorType, spec.intrinsic, mangle, vectorType, source)
@@ -196,32 +176,30 @@ func (c *arm64Ctx) lowerARM64SVEFloatUnaryForm(spec arm64SVEFloatUnarySpec, form
 	return c.storeRawSVEFloatVector(form.destination, form.elementBits, "%"+result, vectorType)
 }
 
-func (c *arm64Ctx) lowerARM64SVEFRIntSized(spec arm64SVEFloatUnarySpec, source, vectorType, mangle string, lanes, elementBits int) (string, error) {
-	rounded := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %s)\n", rounded, vectorType, spec.intrinsic, mangle, vectorType, source)
-	integerType := fmt.Sprintf("<vscale x %d x i%d>", lanes, spec.integerBits)
-	integers := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = call %s @llvm.fptosi.sat.nxv%di%d.%s(%s %%%s)\n", integers, integerType, lanes, spec.integerBits, mangle, vectorType, rounded)
-	converted := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = sitofp %s %%%s to %s\n", converted, integerType, integers, vectorType)
-	minimum := -math.Ldexp(1, spec.integerBits-1)
-	upper := math.Ldexp(1, spec.integerBits-1)
-	minimumVector, err := c.arm64SVEFloatSplat(minimum, elementBits)
+func (c *arm64Ctx) lowerARM64SVESizedRound(mnemonic string, form arm64SVEFloatUnaryForm, source, vectorType string) error {
+	predicate, predicateType, err := c.loadPRegElements(form.predicate, form.elementBits)
 	if err != nil {
-		return "", err
+		return err
 	}
-	upperVector, err := c.arm64SVEFloatSplat(upper, elementBits)
-	if err != nil {
-		return "", err
+	width := 's'
+	if form.elementBits == 64 {
+		width = 'd'
 	}
-	geMinimum := c.newTmp()
-	belowUpper := c.newTmp()
-	valid := c.newTmp()
-	fixed := c.newTmp()
-	predicateType := fmt.Sprintf("<vscale x %d x i1>", lanes)
-	fmt.Fprintf(c.b, "  %%%s = fcmp oge %s %%%s, %s\n", geMinimum, vectorType, rounded, minimumVector)
-	fmt.Fprintf(c.b, "  %%%s = fcmp olt %s %%%s, %s\n", belowUpper, vectorType, rounded, upperVector)
-	fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %%%s\n", valid, predicateType, geMinimum, belowUpper)
-	fmt.Fprintf(c.b, "  %%%s = select %s %%%s, %s %%%s, %s %s\n", fixed, predicateType, valid, vectorType, converted, vectorType, minimumVector)
-	return "%" + fixed, nil
+	mode, constraints := 'z', "=w,@3Upl,w,~{memory}"
+	arguments := fmt.Sprintf("%s %s, %s %s", predicateType, predicate, vectorType, source)
+	if !form.zeroing {
+		merge, _, err := c.loadRawSVEFloatVector(form.destination, form.elementBits)
+		if err != nil {
+			return err
+		}
+		mode, constraints = 'm', "=w,@3Upl,w,0,~{memory}"
+		arguments += ", " + vectorType + " " + merge
+	}
+	// The instruction preserves signed zero and only evaluates active
+	// lanes. Keep its rounding mode and FPSR effects on dead results too.
+	assembly := fmt.Sprintf("%s $0.%c, $1/%c, $2.%c", mnemonic, width, mode, width)
+	result := c.newTmp()
+	c.emitMachineNeutralNativeIR("  %%%s = call %s asm sideeffect %q, %q(%s)\n",
+		result, vectorType, assembly, constraints, arguments)
+	return c.storeRawSVEFloatVector(form.destination, form.elementBits, "%"+result, vectorType)
 }

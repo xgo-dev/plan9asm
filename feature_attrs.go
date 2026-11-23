@@ -716,8 +716,8 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				}
 				if decoded, ok := decodeARM64RawSVEFloatUnary(uint32(ins.Args[0].Imm)); ok {
 					add("+sve")
-					if arm64SVEFloatUnarySpecs[decoded.Op].fptoint {
-						add("+fptoint")
+					if arm64SVEFloatUnarySpecs[decoded.Op].sizedRound != "" {
+						add("+sve2p2")
 					}
 				}
 				if _, ok := decodeARM64RawSVEFloatCompare(uint32(ins.Args[0].Imm)); ok {
@@ -1120,8 +1120,8 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 			}
 			if spec, ok := arm64SVEFloatUnarySpecs[Op(op)]; ok {
 				add("+sve")
-				if spec.fptoint {
-					add("+fptoint")
+				if spec.sizedRound != "" {
+					add("+sve2p2")
 				}
 			}
 			if spec, ok := arm64SVEIntegerUnarySpecs[Op(op)]; ok {
