@@ -60,8 +60,8 @@ func x86VectorDependencyByteEffect(op Op, ins Instr, arch string) (x86TypedByteE
 		if err != nil {
 			return x86TypedByteEffect{}, true, err
 		}
-		if form.spec.legacy || form.spec.mmx || form.mask >= 0 || form.broadcast || form.zeroing || !x86LowVEXVectorOperands(ins) {
-			return x86TypedByteEffect{}, true, goAMD64FrameContext("shuffle effect requires its separate non-VEX consumer: %s", ins.Op)
+		if form.spec.legacy || form.spec.mmx {
+			return x86TypedByteEffect{}, true, goAMD64FrameContext("shuffle effect requires a vector-encoded result: %s", ins.Op)
 		}
 		return x86ImmediateShuffleDependencyEffect(ins, form), true, nil
 	}

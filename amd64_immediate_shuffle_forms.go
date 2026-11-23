@@ -32,9 +32,8 @@ type x86ImmediateShuffleForm struct {
 	broadcast, zeroing        bool
 }
 
-// Immediate shuffles read one complete source, including the word half left
-// in place. Unlike PSHUFB, the old destination is never an input unless it
-// aliases that source. Memory extent/alignment remain separate obligations.
+// Legacy immediate shuffles read one complete source, including the word half
+// left in place. Unlike PSHUFB, the destination is not a separate input.
 func x86TypedImmediateShuffleByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, bool, error) {
 	local := ins
 	local.Op = op
@@ -48,20 +47,26 @@ func x86TypedImmediateShuffleByteEffect(op Op, ins Instr, arch string) (x86Typed
 	return x86ImmediateShuffleDependencyEffect(ins, form), true, nil
 }
 
-// The admitted encoding chooses upper writes and memory alignment; both use
-// one source-only dependency shape. This descriptor does not admit a form.
+// The encoding chooses upper writes, memory alignment and the source tuple.
+// Only merging masks read the previous destination as a separate input.
 func x86ImmediateShuffleDependencyEffect(ins Instr, form x86ImmediateShuffleForm) x86TypedByteEffect {
 	vector := x86TypedVectorEffect{x86TypedVectorUpperPreserve, 16}
 	if !form.spec.legacy {
 		vector = x86TypedVectorEffect{x86TypedVectorUpperZero, 1}
 	}
-	return x86TypedByteEffect{
+	sourceWidth := form.byteWidth
+	if form.memory >= 0 {
+		sourceWidth = form.memoryBytes
+	}
+	effect := x86TypedByteEffect{
 		vector: vector,
 		operands: []x86TypedByteOperand{
-			{index: 1, operand: form.source, width: int64(form.byteWidth), read: true},
+			{index: 1, operand: form.source, width: int64(sourceWidth), read: true},
 			{index: form.destination, operand: ins.Args[form.destination], width: int64(form.byteWidth), write: true},
 		},
 	}
+	effect.addWritemask(ins, form.mask, form.zeroing)
+	return effect
 }
 
 // This supplies encoding, native access extent and byte selectors, not source

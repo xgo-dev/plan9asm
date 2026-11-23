@@ -196,6 +196,12 @@ func fixedLocalOfficialStackSource(t *testing.T, name string, ins Instr, memory 
 		origin = -memory.Off
 	}
 	effective := origin + memory.Off
+	scalarIndex := memory.Index != "" && !vsib
+	if scalarIndex {
+		// Use a nonzero original index so the typed access covers the
+		// instruction's scale as well as its displacement.
+		effective += memory.Scale
+	}
 	start, end := effective&^7, (effective+width+7)&^7
 	frame := end
 	if pointerEnd := (origin + 8) &^ 7; memory.Base == BP && pointerEnd > frame {
@@ -222,8 +228,8 @@ func fixedLocalOfficialStackSource(t *testing.T, name string, ins Instr, memory 
 	if vexMask != "" {
 		fmt.Fprintf(&body, "VPCMPEQD %s,%s,%s\n", vexMask, vexMask, vexMask)
 	}
-	if memory.Index != "" && !vsib {
-		fmt.Fprintf(&body, "MOVQ $0,%s\n", memory.Index)
+	if scalarIndex {
+		fmt.Fprintf(&body, "MOVQ $1,%s\n", memory.Index)
 	}
 	if memory.Base == BP {
 		// Derive BP from the captured private frame; the original negative

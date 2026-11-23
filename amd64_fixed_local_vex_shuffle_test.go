@@ -78,15 +78,15 @@ func TestGoAMD64FixedLocalVEXShuffleBoundaries(t *testing.T) {
 			}
 		})
 		for _, suffix := range []string{
-			" $0,Z1,Z2", " $0,X16,X2", " $0,X1,X16", " $0,X1,K1,X2",
-			".Z $0,X1,K1,X2", ".BCST $0,(SI),X2", " $0,M0,M1",
+			" $0,X1,Z2", " $0,X1,K0,X2", ".Z $0,X1,X2",
+			".BCST $0,X1,X2", " $-1,Z1,Z2", " $0,M0,M1",
 			" $-129,X1,X2", " $256,X1,X2", " $0.5,X1,X2", " $missing,X1,X2",
 		} {
 			operation := name + suffix
 			t.Run(operation, func(t *testing.T) {
 				ins := x86YMMReadSource(t, operation)
 				if effect, known, err := fixedLocalVectorByteEffect(ins); known && err == nil {
-					t.Fatal("separate EVEX/MMX or invalid syntax acquired VEX metadata", operation, effect)
+					t.Fatal("invalid shuffle acquired a fixed-frame effect", operation, effect)
 				}
 			})
 		}
