@@ -69,7 +69,11 @@ func (c *amd64Ctx) lowerX86UndefinedTrap(op Op, ins Instr) (bool, bool, error) {
 	}
 	// Use the exact architectural fault instruction, not merely unreachable
 	// or a target-dependent generic trap that may select a different signal.
-	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", spec.native, "~{memory}")
-	c.b.WriteString("  unreachable\n")
+	c.emitX86TerminalTrap(spec.native)
 	return true, true, nil
+}
+
+func (c *amd64Ctx) emitX86TerminalTrap(assembly string) {
+	fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", assembly, "~{memory}")
+	c.b.WriteString("  unreachable\n")
 }

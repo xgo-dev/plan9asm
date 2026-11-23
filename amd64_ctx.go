@@ -339,6 +339,9 @@ func (c *amd64Ctx) scanUsedRegs() {
 			if op == "LAHF" || op == "SAHF" {
 				markReg(AX)
 			}
+			if _, known := x86DecimalSpecs[Op(op)]; known {
+				markReg(AX)
+			}
 			if spec, ok := amd64ImplicitSystemSpecs[Op(op)]; ok {
 				registers := spec.inputs | spec.outputs
 				if registers&amd64ImplicitAX != 0 {

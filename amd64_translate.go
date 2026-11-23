@@ -766,6 +766,19 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 		// metadata, but the directives do not change its numerical state.
 		return false, err
 	}
+	if form, known, err := x86DecimalProperties(Op(op), ins, c.goarch); known {
+		if err != nil {
+			return false, err
+		}
+		if form.divideError() {
+			if !x86ScalarFloatIntegerNativeTarget(c.goarch, c.targetTriple) {
+				return false, fmt.Errorf("%w: raw AAM with zero radix requires a native 386 divide-error path", ErrProbeNeedsContext)
+			}
+			c.emitX86TerminalTrap(".byte 0xd4, 0")
+			return true, nil
+		}
+		return false, c.lowerX86Decimal(form)
+	}
 	switch Op(op) {
 	case "LOCK":
 		return false, c.namedLockPrefixBinding(bi, ii, ins)

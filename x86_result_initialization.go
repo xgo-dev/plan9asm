@@ -628,7 +628,8 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			}
 			continue
 		}
-		if _, terminal, err := x86UndefinedTrapProperties(ins.Op, ins, goarch); !control && terminal && err == nil {
+		_, undefinedTrap, trapErr := x86UndefinedTrapProperties(ins.Op, ins, goarch)
+		if !control && (undefinedTrap && trapErr == nil || x86DecimalDivideError(ins, goarch)) {
 			terminals[pc] = true
 			continue // A complete architectural trap has no input effects or normal successor.
 		}
