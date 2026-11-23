@@ -898,6 +898,71 @@ func TestInitializedContextReprobeScalarNumericMemory(t *testing.T) {
 	}
 }
 
+func TestInitializedContextReprobeScalarReadAccumulatorRoles(t *testing.T) {
+	for _, mode := range []struct{ arch, widths string }{{"386", "WL"}, {"amd64", "WLQ"}} {
+		t.Run(mode.arch, func(t *testing.T) {
+			type source struct {
+				operands, profile string
+			}
+			rows := []source{
+				{"DX, CX", "scalar-register"},
+				{"3(BX), DX", "scalar-memory"},
+				{"-7(BX)(CX*2), DX", "scalar-memory"},
+				{"3(DX), DX", "scalar-numeric-memory"},
+				{"7(BX)(BX*2), DX", "scalar-numeric-memory"},
+			}
+			forms := make(map[string]*formStat)
+			want := make(map[string]map[string]bool)
+			line := 0
+			for _, stem := range []string{"BSF", "BSR", "CRC32"} {
+				widths := mode.widths
+				if stem == "CRC32" {
+					widths = "B" + widths
+				}
+				for _, width := range widths {
+					for _, row := range rows {
+						raw := stem + string(width) + " " + row.operands
+						ins := compactProbeInstructions(t, raw)[0]
+						err := plan9asm.ProbeInstruction(plan9asm.ArchAMD64, mode.arch, ins)
+						if !errors.Is(err, plan9asm.ErrProbeNeedsContext) {
+							t.Fatalf("%s: expected a missing input before initialization, got %v", raw, err)
+						}
+						key := plan9asm.DescribeInstruction(plan9asm.ArchAMD64, mode.arch, ins).Form
+						if forms[key] == nil {
+							forms[key] = &formStat{}
+						}
+						line++
+						captureContextSource(forms, plan9asm.ArchAMD64, mode.arch, ins,
+							initializedContextSource{File: "accumulator.s", Function: "probe", Line: line}, err)
+						if want[row.profile] == nil {
+							want[row.profile] = make(map[string]bool)
+						}
+						want[row.profile][raw] = true
+					}
+				}
+			}
+			for _, profile := range []string{"scalar-register", "scalar-memory", "scalar-numeric-memory"} {
+				t.Run(profile, func(t *testing.T) {
+					evidence, err := runInitializedContextReprobe(forms, profile, mode.arch, "")
+					if err != nil || evidence.Status != "pass" || evidence.EligibleCases != len(want[profile]) ||
+						len(evidence.UnregisteredCases) != line-len(want[profile]) {
+						t.Fatalf("selected %d/%d rows, status=%s, err=%v",
+							evidence.EligibleCases, len(want[profile]), evidence.Status, err)
+					}
+					for _, row := range evidence.Cases {
+						if !want[profile][row.OriginalInstruction.Raw] ||
+							row.MemoryPointerArgument != (profile == "scalar-memory") ||
+							row.NumericAddressArgument != (profile == "scalar-numeric-memory") ||
+							row.LLVMObjectCompilation.Status != "pass" || row.RuntimeExecution.Status != "not_run" {
+							t.Fatalf("wrong source role or object receipt: %+v", row)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestInitializedContextReprobeScalarMoveFamily(t *testing.T) {
 	for _, mode := range []struct {
 		arch   string

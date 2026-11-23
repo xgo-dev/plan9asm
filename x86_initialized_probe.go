@@ -502,7 +502,20 @@ func initializedX86GPInputs(goarch string, ins Instr) (x86TypedByteEffect, bool)
 		}}, true
 	}
 	effect, known, err := x86TypedGPByteEffect(ins.Op, ins, goarch)
+	if !known {
+		effect, known, err = initializedX86GPAccumulatorRead(ins, goarch)
+	}
 	return effect, known && err == nil
+}
+
+// These read-only memory families also consume the old destination. Use the
+// same byte dependencies as their lowering, including BSF/BSR's zero-input
+// preservation and CRC32's low dword accumulator on every source width.
+func initializedX86GPAccumulatorRead(ins Instr, goarch string) (x86TypedByteEffect, bool, error) {
+	if effect, known, err := x86TypedBitScanByteEffect(ins, goarch); known {
+		return effect, true, err
+	}
+	return x86TypedCRC32ByteEffect(ins.Op, ins, goarch)
 }
 
 // InitializedScalarMemoryProbeSequence supplies one explicit pointer
@@ -513,7 +526,7 @@ func InitializedScalarMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bo
 }
 
 // InitializedScalarNumericMemoryProbeSequence supplies a machine-word address
-// when a native arithmetic read shares its base with another numerical input.
+// when a paired native read shares its base with another numerical input.
 // The caller must supply a valid effective address to execute the fixture.
 func InitializedScalarNumericMemoryProbeSequence(goarch string, ins Instr) ([]Instr, bool, error) {
 	return initializedScalarMemoryProbeSequence(goarch, ins, true)
@@ -539,12 +552,11 @@ func initializedScalarMemoryProbeSequence(goarch string, ins Instr, numericAddre
 		}
 	}
 	if numericAddress {
-		form, known, err := x86ScalarArithmeticNativeReadProperties(ins, goarch)
-		if !known || err != nil {
-			return nil, false, nil
+		_, known, err := x86ScalarArithmeticNativeReadProperties(ins, goarch)
+		if !known && err == nil {
+			_, known, err = initializedX86GPAccumulatorRead(ins, goarch)
 		}
-		destination, valid := initializedX86GPRegister(goarch, form.destination)
-		if !valid || base != destination && base != index {
+		if !known || err != nil {
 			return nil, false, nil
 		}
 	}
@@ -610,7 +622,7 @@ func initializedScalarMemoryProbeSequence(goarch string, ins Instr, numericAddre
 			seeded[register] = true
 		}
 	}
-	hasMemory := false
+	hasMemory, sharedBase := false, index == base
 	for _, input := range effect.operands {
 		if input.operand.Kind == OpMem {
 			if input.index != memoryIndex || input.width < 1 || input.width > 8 {
@@ -627,6 +639,7 @@ func initializedScalarMemoryProbeSequence(goarch string, ins Instr, numericAddre
 			return nil, false, nil
 		}
 		if root == base {
+			sharedBase = true
 			continue // The final machine-word argument load supplies these same bits.
 		}
 		value := int64(0x01020202)
@@ -638,7 +651,7 @@ func initializedScalarMemoryProbeSequence(goarch string, ins Instr, numericAddre
 		}
 		seed(root, value)
 	}
-	if !hasMemory {
+	if !hasMemory || numericAddress && !sharedBase {
 		return nil, false, nil
 	}
 	if index != "" && index != base {
