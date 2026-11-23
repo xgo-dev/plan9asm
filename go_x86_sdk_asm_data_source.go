@@ -376,7 +376,11 @@ func (source *GoX86SDKASMDataSource) digest() ([32]byte, error) {
 // protects artifacts during reentrant Verify/Readback/Close callbacks; only a
 // private standard context enters the serialized command/guard operation.
 // Every postcheck must still match the exact original generation.
-func (source *GoX86SDKASMDataSource) Verify(ctx context.Context) (result error) {
+func (source *GoX86SDKASMDataSource) Verify(ctx context.Context) error {
+	return source.verify(ctx, nil)
+}
+
+func (source *GoX86SDKASMDataSource) verify(ctx context.Context, frame *GoAMD64FrameSource) (result error) {
 	if source == nil || source.identity != source {
 		return sdkASMDataContext("copied, missing or uninitialized source")
 	}
@@ -424,10 +428,10 @@ func (source *GoX86SDKASMDataSource) Verify(ctx context.Context) (result error) 
 	if !current {
 		return sdkASMDataContext("source closed or revoked during context callbacks")
 	}
-	return errors.Join(source.verifyState(private), private.Err())
+	return errors.Join(source.verifyState(private, frame), private.Err())
 }
 
-func (source *GoX86SDKASMDataSource) verifyState(ctx context.Context) error {
+func (source *GoX86SDKASMDataSource) verifyState(ctx context.Context, frame *GoAMD64FrameSource) error {
 	if source.guard != source.originalGuard || source.guard == nil || source.guard.identity != source.guard ||
 		source.guard.ready || source.guard.request.NumericalReads != nil || source.guard.numericalOrigin != nil || source.guard.downloadedOrigin != nil {
 		return sdkASMDataContext("source borrowed a foreign frame, origin or numerical capability")
@@ -456,6 +460,13 @@ func (source *GoX86SDKASMDataSource) verifyState(ctx context.Context) error {
 		return sdkASMDataContext("complete SDK source/export/selection graph changed: %v", err)
 	}
 	source.observation.Commands = commands
+	if frame != nil {
+		// The frame uses this fresh SDK graph and the same artifact lease.
+		// Keep the final input and state checks after the frame comparison.
+		if err := frame.verifySDKFrameState(source); err != nil {
+			return err
+		}
+	}
 	if err := source.guard.verifyInputs(); err != nil {
 		return err
 	}

@@ -240,7 +240,8 @@ func (source *GoAMD64FrameSource) sdkFrameRecords() (map[string]goAMD64FrameFunc
 
 func (source *GoAMD64FrameSource) verifySDKFrame(ctx context.Context) (result error) {
 	origin := source.sdkFrame
-	if origin == nil || origin.identity != source || origin.owner == nil || origin.owner.source == nil {
+	if origin == nil || origin.identity != source || origin.owner == nil ||
+		origin.owner.identity != origin.owner || origin.owner.source == nil {
 		return goAMD64FrameContext("copied or missing SDK-primary native frame owner")
 	}
 	defer func() {
@@ -250,35 +251,29 @@ func (source *GoAMD64FrameSource) verifySDKFrame(ctx context.Context) (result er
 			source.mu.Unlock()
 		}
 	}()
-	// SDK Verify samples caller contexts outside all frame/operation locks.
-	if err := origin.owner.Verify(ctx); err != nil {
-		return err
-	}
-	data := origin.owner.source
-	data.operation.Lock()
+	return origin.owner.source.verify(ctx, source)
+}
+
+// The SDK owner holds its operation lock while checking the frame witness.
+func (source *GoAMD64FrameSource) verifySDKFrameState(data *GoX86SDKASMDataSource) error {
 	source.mu.Lock()
-	err := func() error {
-		if !source.ready || !reflect.DeepEqual(source.request, origin.request) ||
-			!reflect.DeepEqual(source.selection, data.guard.selection) || !reflect.DeepEqual(source.env, data.guard.env) ||
-			!reflect.DeepEqual(source.imports, data.guard.imports) || !reflect.DeepEqual(source.inputs, data.guard.inputs) ||
-			source.directoryInventory != data.guard.directoryInventory {
-			return goAMD64FrameContext("SDK-primary native frame source/profile/complete input identity changed")
-		}
-		if err := source.verifyInputs(); err != nil {
-			return err
-		}
-		functions, declarations, err := source.sdkFrameRecords()
-		if err != nil || !reflect.DeepEqual(functions, source.functions) || !reflect.DeepEqual(declarations, source.declarations) {
-			return goAMD64FrameContext("SDK-primary original typed/native frame witness changed: %v", err)
-		}
-		return nil
-	}()
-	source.mu.Unlock()
-	data.operation.Unlock()
-	if err != nil {
+	defer source.mu.Unlock()
+	origin := source.sdkFrame
+	if origin == nil || origin.identity != source || origin.owner == nil || origin.owner.source != data ||
+		!source.ready || !reflect.DeepEqual(source.request, origin.request) ||
+		!reflect.DeepEqual(source.selection, data.guard.selection) || !reflect.DeepEqual(source.env, data.guard.env) ||
+		!reflect.DeepEqual(source.imports, data.guard.imports) || !reflect.DeepEqual(source.inputs, data.guard.inputs) ||
+		source.directoryInventory != data.guard.directoryInventory {
+		return goAMD64FrameContext("SDK-primary native frame source/profile/complete input identity changed")
+	}
+	if err := source.verifyInputs(); err != nil {
 		return err
 	}
-	return origin.owner.Verify(ctx)
+	functions, declarations, err := source.sdkFrameRecords()
+	if err != nil || !reflect.DeepEqual(functions, source.functions) || !reflect.DeepEqual(declarations, source.declarations) {
+		return goAMD64FrameContext("SDK-primary original typed/native frame witness changed: %v", err)
+	}
+	return nil
 }
 
 func (source *GoAMD64FrameSource) closeSDKFrame() error {
