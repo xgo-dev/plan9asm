@@ -14,6 +14,13 @@ import (
 	"github.com/xgo-dev/plan9asm/internal/gostaticstorage"
 )
 
+const x86TLSRuntimeRead386Body = `MOVL (TLS),AX
+MOVL 8(TLS),DX
+ADDL AX,AX
+ADDL DX,AX
+MOVL AX,ret+0(FP)
+RET`
+
 func TestGoX86TLSRuntimeRead386Relocations(t *testing.T) {
 	llc, readobj := findLLVM22Tool("llc"), findLLVM22Tool("llvm-readobj")
 	if llc == "" || readobj == "" {
@@ -31,7 +38,7 @@ func TestGoX86TLSRuntimeRead386Relocations(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%s/shared=%v", profile.target, profile.shared), func(t *testing.T) {
 			pkg, file, options, original, request := x86TLSMoveSourceFixture(t, profile.target, profile.shared,
-				"func Value() uint32", "MOVL (TLS),AX\nMOVL 8(TLS),DX\nXORL DX,AX\nMOVL AX,ret+0(FP)\nRET")
+				"func Value() uint32", x86TLSRuntimeRead386Body)
 			ctx, cancel := runtimeOracleStageContext(t)
 			defer cancel()
 			source, err := CaptureGoX86TLSMoveSource(ctx, request)
