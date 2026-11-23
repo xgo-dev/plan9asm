@@ -175,7 +175,7 @@ func TestARM64RawStateDecodersHaveSharedEffectsAndLowering(t *testing.T) {
 		"arm64_lower_word_streaming_mode.go", "arm64_lower_word_za_zero.go",
 		"arm64_lower_word_sme_mopa.go", "arm64_lower_word_sme_tile_memory.go",
 		"arm64_lower_ic.go", "arm64_lower_word_rndr.go", "arm64_lower_word_casp.go",
-		"arm64_lower_cache_maintenance.go",
+		"arm64_lower_cache_maintenance.go", "arm64_lower_prefetch.go",
 		"arm64_nzcv_transport.go",
 		"arm64_raw_non_temporal_pair.go", "arm64_raw_unprivileged_transfer.go",
 	} {

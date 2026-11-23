@@ -6,6 +6,7 @@ package plan9asm
 var arm64RawStateFamilies = [...]arm64RawFamily{
 	arm64RawForm(decodeARM64RawNonTemporalPair, (*arm64Ctx).lowerARM64NonTemporalPair, arm64NonTemporalPair.effects),
 	arm64RawForm(decodeARM64RawUnprivilegedTransfer, (*arm64Ctx).lowerARM64UnprivilegedTransfer, arm64UnprivilegedTransfer.effects),
+	arm64RawForm(decodeARM64RawPrefetch, (*arm64Ctx).lowerARM64PrefetchForm, arm64PrefetchForm.effects),
 	arm64RawForm(decodeARM64RawNZCV, (*arm64Ctx).lowerARM64NZCV,
 		func(form arm64NZCVForm) arm64RawContinuationEffects {
 			reads, writes := form.gpEffects()

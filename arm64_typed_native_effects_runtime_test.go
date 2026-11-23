@@ -25,6 +25,17 @@ func TestCrossLinuxRuntimeMatrixARM64TypedNativeEffects(t *testing.T) {
 	} {
 		fmt.Fprintf(&source, "PRFM (R0),%s\n", hint)
 	}
+	fmt.Fprintln(&source, "MOVD $1,R2")
+	for _, word := range assembleARM64LLVMWords(t, []string{
+		"prfum pldl1keep, [x0, #-3]",
+		"prfum pstl1strm, [x0, #11]",
+		"prfm pldl2keep, [x0, w2, uxtw #3]",
+		"prfm pldl2strm, [x0, w2, sxtw #0]",
+		"prfm pstl2keep, [x0, x2, sxtx #3]",
+		"prfm pstl2strm, [x0, xzr]",
+	}, "") {
+		fmt.Fprintf(&source, "WORD $%#08x\n", word)
+	}
 	fmt.Fprintln(&source, "MRS DCZID_EL0,R3\nADD $9,R1,R0\nCINC NE,R0,R0\nRET")
 	const declarations = "func ReadDCZID() uint64\nfunc ReadDCZIDRaw() uint64\nfunc PrefetchHints(*byte,uint64) uint64\n"
 	goMain := "package main\n" + declarations + `func main() {

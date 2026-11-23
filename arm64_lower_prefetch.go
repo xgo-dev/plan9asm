@@ -29,6 +29,77 @@ var arm64PrefetchOperations = map[arm64PrefetchOperation]uint8{
 	"PSTL3STRM": 21,
 }
 
+type arm64PrefetchKind uint8
+
+const (
+	arm64PrefetchScaled arm64PrefetchKind = iota
+	arm64PrefetchUnscaled
+	arm64PrefetchIndexed
+	arm64PrefetchRange
+)
+
+type arm64PrefetchExtension struct {
+	name  string
+	width int
+}
+
+var arm64PrefetchExtensions = [...]arm64PrefetchExtension{
+	{"uxtw", 32}, {"lsl", 64}, {"sxtw", 32}, {"sxtx", 64},
+}
+
+type arm64PrefetchForm struct {
+	kind        arm64PrefetchKind
+	base, index Reg
+	hint        uint8
+	offset      int64
+	extension   arm64PrefetchExtension
+	shift       int
+}
+
+func decodeARM64RawPrefetch(word uint32) (arm64PrefetchForm, bool) {
+	var form arm64PrefetchForm
+	form.hint = uint8(word & 31)
+	switch {
+	case word&0xffc00000 == 0xf9800000: // PRFM unsigned, scaled imm12.
+		form.kind = arm64PrefetchScaled
+		form.offset = int64(word>>10&0xfff) * 8
+	case word&0xffe00c00 == 0xf8800000: // PRFUM signed, unscaled imm9.
+		form.kind = arm64PrefetchUnscaled
+		form.offset = int64(int32(word<<11) >> 23)
+	case word&0xffe04c00 == 0xf8a04800: // Register class, option<1> must be set.
+		form.index = arm64PrefetchRegister(word>>16&31, ZR)
+		optionHigh, optionLow, scaled := word>>15&1, word>>13&1, word>>12&1
+		if form.hint >= 24 { // Rt[4:3]=11 selects range, not an indexed hint.
+			form.kind = arm64PrefetchRange
+			form.hint = uint8(optionHigh<<5 | optionLow<<4 | scaled<<3 | word&7)
+		} else {
+			form.kind = arm64PrefetchIndexed
+			form.extension = arm64PrefetchExtensions[optionHigh<<1|optionLow]
+			form.shift = int(scaled) * 3
+		}
+	default:
+		return arm64PrefetchForm{}, false // Literal PRFM needs a source layout proof.
+	}
+	form.base = arm64PrefetchRegister(word>>5&31, SP)
+	return form, true
+}
+
+func arm64PrefetchRegister(encoded uint32, register31 Reg) Reg {
+	if encoded == 31 {
+		return register31
+	}
+	return Reg(fmt.Sprintf("R%d", encoded))
+}
+
+func (f arm64PrefetchForm) effects() arm64RawContinuationEffects {
+	base, _ := arm64StackIndex(f.base)
+	reads := arm64RawGPBit(base)
+	if index, ok := arm64StackIndex(f.index); ok {
+		reads |= arm64RawGPBit(index)
+	}
+	return arm64RawContinuationEffects{gpReads: reads, readsSP: base == 31}
+}
+
 func (c *arm64Ctx) lowerARM64Prefetch(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	if op == "RPRFM" {
 		return c.lowerARM64RangePrefetch(ins)
@@ -45,7 +116,11 @@ func (c *arm64Ctx) lowerARM64Prefetch(op Op, ins Instr) (ok bool, terminated boo
 		return true, false, fmt.Errorf("arm64 PRFM address is outside Go's C_UOREG32K class: %q", ins.Raw)
 	}
 
-	var hint uint8
+	form := arm64PrefetchForm{kind: arm64PrefetchScaled, base: memory.Base}
+	if form.base == ZR {
+		// Go accepts ZR as a base spelling, and the encoded Rn=31 denotes SP.
+		form.base = SP
+	}
 	switch operation := ins.Args[1]; operation.Kind {
 	case OpIdent:
 		name := arm64PrefetchOperation(strings.ToUpper(strings.TrimSpace(operation.Ident)))
@@ -53,32 +128,20 @@ func (c *arm64Ctx) lowerARM64Prefetch(op Op, ins Instr) (ok bool, terminated boo
 		if !exists {
 			return true, false, fmt.Errorf("arm64 PRFM operation %q is outside Go's prfopfield table: %q", name, ins.Raw)
 		}
-		hint = value
+		form.hint = value
 	case OpImm:
-		if operation.ImmRaw != "" || operation.Imm < 0 || operation.Imm > 31 {
+		if operation.ImmRaw != "" || operation.ImmIsFloat || operation.Imm < 0 || operation.Imm > 31 {
 			return true, false, fmt.Errorf("arm64 PRFM numeric operation must be in [0,31]: %q", ins.Raw)
 		}
-		hint = uint8(operation.Imm)
+		form.hint = uint8(operation.Imm)
 	default:
 		return true, false, fmt.Errorf("arm64 PRFM operation must be a Go prfop name or $0..$31: %q", ins.Raw)
 	}
 
-	baseReg := memory.Base
-	if baseReg == ZR {
-		// Register number 31 in an AArch64 memory operand denotes SP. Go's
-		// parser accepts ZR here and its encoder consequently emits SP.
-		baseReg = SP
-	}
-	base, err := c.loadReg(baseReg)
-	if err != nil {
-		return true, false, err
-	}
 	// Go's case-91 encoder shifts directly and therefore discards the low
 	// three offset bits without issuing offsetshift's usual odd-offset error.
-	encodedOffset := memory.Off &^ 7
-	assembly := fmt.Sprintf("prfm #%d, [$0, #%d]", hint, encodedOffset)
-	c.emitMachineNeutralNativeIR("  call void asm sideeffect %q, %q(i64 %s)\n", assembly, "r,~{memory}", base)
-	return true, false, nil
+	form.offset = memory.Off &^ 7
+	return true, false, c.lowerARM64PrefetchForm(form)
 }
 
 var arm64RangePrefetchOperations = map[string]uint8{
@@ -114,17 +177,55 @@ func (c *arm64Ctx) lowerARM64RangePrefetch(ins Instr) (ok bool, terminated bool,
 	default:
 		return true, false, fmt.Errorf("arm64 RPRFM operation must be a range-prefetch name or $0..$63: %q", ins.Raw)
 	}
-	baseValue, err := c.loadReg(base)
+	return true, false, c.lowerARM64PrefetchForm(arm64PrefetchForm{
+		kind: arm64PrefetchRange, base: base, index: rangeRegister, hint: hint,
+	})
+}
+
+func (c *arm64Ctx) lowerARM64PrefetchForm(form arm64PrefetchForm) error {
+	base, err := c.loadReg(form.base)
 	if err != nil {
-		return true, false, err
+		return err
 	}
-	rangeValue, err := c.loadReg(rangeRegister)
+	if form.kind == arm64PrefetchScaled || form.kind == arm64PrefetchUnscaled {
+		mnemonic := "prfm"
+		if form.kind == arm64PrefetchUnscaled {
+			mnemonic = "prfum"
+		}
+		assembly := fmt.Sprintf("%s #%d, [$0, #%d]", mnemonic, form.hint, form.offset)
+		c.emitMachineNeutralNativeIR("  call void asm sideeffect %q, %q(i64 %s)\n", assembly, "r,~{memory}", base)
+		return nil
+	}
+
+	index := "$1"
+	width := 64
+	if form.kind == arm64PrefetchIndexed {
+		width = form.extension.width
+	}
+	if form.index == ZR {
+		index = "xzr"
+		if width == 32 {
+			index = "wzr"
+		}
+	} else if width == 32 {
+		index = "${1:w}"
+	}
+	var assembly string
+	if form.kind == arm64PrefetchRange {
+		assembly = fmt.Sprintf("rprfm #%d, %s, [$0]", form.hint, index)
+	} else {
+		assembly = fmt.Sprintf("prfm #%d, [$0, %s, %s #%d]", form.hint, index, form.extension.name, form.shift)
+	}
+	if form.index == ZR {
+		c.emitMachineNeutralNativeIR("  call void asm sideeffect %q, %q(i64 %s)\n", assembly, "r,~{memory}", base)
+		return nil
+	}
+	indexValue, err := c.loadRegisterWidth(form.index, width)
 	if err != nil {
-		return true, false, err
+		return err
 	}
-	assembly := fmt.Sprintf("rprfm #%d, $1, [$0]", hint)
-	c.emitMachineNeutralNativeIR("  call void asm sideeffect %q, %q(i64 %s, i64 %s)\n", assembly, "r,r,~{memory}", baseValue, rangeValue)
-	return true, false, nil
+	c.emitMachineNeutralNativeIR("  call void asm sideeffect %q, %q(i64 %s, i64 %s)\n", assembly, "r,r,~{memory}", base, indexValue)
+	return nil
 }
 
 // arm64PRFMOffsetAccepted mirrors autoclass/oregclass plus cmp(C_UOREG32K,

@@ -353,6 +353,9 @@ func arm64ControlDecode(ins Instr) Instr {
 			if _, system := decodeARM64RawSystemOperation(uint32(ins.Args[0].Imm)); system {
 				return ins
 			}
+			if _, prefetch := decodeARM64RawPrefetch(uint32(ins.Args[0].Imm)); prefetch {
+				return ins
+			}
 			if _, transfer := decodeARM64RawMemoryTransfer(uint32(ins.Args[0].Imm)); transfer {
 				return ins // Keep the exact native memory effect for the original WORD.
 			}

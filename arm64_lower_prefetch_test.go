@@ -101,6 +101,8 @@ func TestTranslateARM64PrefetchRejectsFormsOutsideGoAssemblerTable(t *testing.T)
 		"PRFM R0, PLDL1KEEP",
 		"PRFM (R0)",
 		"PRFM.P (R0), PLDL1KEEP",
+		"PRFM (R1)(R2), PLDL1KEEP",
+		"PRFUM -8(R1), PLDL1KEEP",
 	} {
 		source := "TEXT bad(SB),$0-0\n\t" + instruction + "\n\tRET\n"
 		requireARM64GoAssemblerResult(t, source, false)
@@ -114,6 +116,20 @@ func TestTranslateARM64PrefetchRejectsFormsOutsideGoAssemblerTable(t *testing.T)
 			Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
 		}); err == nil {
 			t.Fatalf("Translate accepted %q outside Go 1.27's PRFM forms", instruction)
+		}
+	}
+}
+
+func TestARM64RawPrefetchRejectsAdjacentEncodings(t *testing.T) {
+	for word, description := range map[uint32]string{
+		0xf9400000:             "scaled LDR",
+		0xf8400000:             "unscaled LDUR",
+		0xf8a00820:             "reserved subword index",
+		0xf8a04838 ^ (1 << 14): "reserved subword index with range selector",
+		0xd800000a:             "literal prefetch requiring layout proof",
+	} {
+		if form, ok := decodeARM64RawPrefetch(word); ok {
+			t.Errorf("%s (%#08x) decoded as %+v", description, word, form)
 		}
 	}
 }
