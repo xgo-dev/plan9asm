@@ -306,6 +306,17 @@ func (c *arm64Ctx) scanUsedRegs() {
 					}
 					continue
 				}
+				if form, ok := decodeARM64RawSVEAbsoluteDifference(word); ok {
+					c.usedZRegs[form.first] = true
+					c.usedZRegs[form.destination] = true
+					if form.second >= 0 {
+						c.usedZRegs[form.second] = true
+					}
+					if form.predicate >= 0 {
+						c.usedPRegs[form.predicate] = true
+					}
+					continue
+				}
 				if form, ok := decodeARM64RawStructureMemory(word); ok {
 					markReg(form.baseRegister())
 					if index := form.indexRegister(); index != "" {
@@ -501,11 +512,6 @@ func (c *arm64Ctx) scanUsedRegs() {
 					}
 				}
 				if decoded, ok := decodeARM64RawSVEUnpack(word); ok {
-					for _, operand := range decoded.Args {
-						markOp(operand)
-					}
-				}
-				if decoded, ok := decodeARM64RawSVEAddPairwiseLong(word); ok {
 					for _, operand := range decoded.Args {
 						markOp(operand)
 					}

@@ -80,7 +80,14 @@ func TestTranslateARM64SVEPairwiseSVE2P3(t *testing.T) {
 			}
 			object := compileLLVMToObject(t, llc, triple, "pairwise.ll", "pairwise.o", namedIR)
 			if triple == arm64LinuxGNUTriple {
-				requireARM64SVEPairwiseObjectWords(t, object, words, native)
+				masks := make([]uint32, len(native))
+				for i, instruction := range native {
+					masks[i] = 0xffe0fc00
+					if strings.Contains(instruction, "/m,") {
+						masks[i] = 0xffffe000
+					}
+				}
+				requireARM64ObjectWordSequence(t, object, words, masks, native)
 			}
 		})
 	}
@@ -96,7 +103,9 @@ func TestTranslateARM64SVEPairwiseSVE2P3(t *testing.T) {
 	}
 }
 
-func requireARM64SVEPairwiseObjectWords(t *testing.T, object string, expected []uint32, assembly []string) {
+// A mask retains opcode and element width while excluding register fields
+// chosen by the backend allocator.
+func requireARM64ObjectWordSequence(t *testing.T, object string, expected, masks []uint32, assembly []string) {
 	t.Helper()
 	f, err := elf.Open(object)
 	if err != nil {
@@ -111,19 +120,15 @@ func requireARM64SVEPairwiseObjectWords(t *testing.T, object string, expected []
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Keep opcode and element width. LLVM chooses the physical register fields.
 	next := 0
 	for offset := 0; offset+4 <= len(code) && next < len(expected); offset += 4 {
 		actual := f.ByteOrder.Uint32(code[offset : offset+4])
-		mask := uint32(0xffe0fc00)
-		if strings.Contains(assembly[next], "/m,") {
-			mask = 0xffffe000
-		}
+		mask := masks[next]
 		if actual&mask == expected[next]&mask {
 			next++
 		}
 	}
 	if next != len(expected) {
-		t.Fatalf("after %d of %d expected pairwise operations, object lacks %q", next, len(expected), assembly[next])
+		t.Fatalf("after %d of %d expected operations, object lacks %q", next, len(expected), assembly[next])
 	}
 }

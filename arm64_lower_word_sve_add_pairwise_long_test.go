@@ -77,12 +77,12 @@ func TestDecodeARM64RawSVEAddPairwiseLongRegistersAndBoundaries(t *testing.T) {
 		0x4445a000, 0x4485a000, 0x44c5a000,
 	} {
 		word := base | 23<<5 | 5<<10 | 17
-		decoded, ok := decodeARM64RawSVEAddPairwiseLong(word)
+		decoded, ok := decodeARM64RawSVEAbsoluteDifference(word)
 		if !ok {
 			t.Fatalf("failed to decode %#08x", word)
 		}
-		if !strings.HasPrefix(string(decoded.Args[0].Reg), "Z23.") || decoded.Args[1].Reg != "P5.M" || !strings.HasPrefix(string(decoded.Args[2].Reg), "Z17.") {
-			t.Fatalf("wrong register fields for %#08x: %+v", word, decoded.Args)
+		if decoded.first != 23 || decoded.second != -1 || decoded.predicate != 5 || decoded.destination != 17 {
+			t.Fatalf("wrong register fields for %#08x: %+v", word, decoded)
 		}
 	}
 
@@ -91,7 +91,7 @@ func TestDecodeARM64RawSVEAddPairwiseLongRegistersAndBoundaries(t *testing.T) {
 		0x4444e000, // Adjacent encoding with bit 14 set.
 		0x4446a000, // Adjacent opcode with bit 17 set.
 	} {
-		if decoded, ok := decodeARM64RawSVEAddPairwiseLong(word); ok {
+		if decoded, ok := decodeARM64RawSVEAbsoluteDifference(word); ok {
 			t.Fatalf("accepted unrelated encoding %#08x as %+v", word, decoded)
 		}
 	}

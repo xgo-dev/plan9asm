@@ -54,6 +54,7 @@ func arm64RawSVEVectorForm[T any](decode func(uint32) (T, bool), lower func(*arm
 
 var arm64RawSVEVectorFamilies = [...]arm64RawSVEVectorFamily{
 	arm64RawSVEVectorForm(decodeARM64RawSVEPairwise, (*arm64Ctx).lowerARM64SVEPairwiseForm),
+	arm64RawSVEVectorForm(decodeARM64RawSVEAbsoluteDifference, (*arm64Ctx).lowerARM64SVEAbsoluteDifferenceForm),
 	arm64RawSVEVectorForm(decodeARM64RawSVEMultiply, (*arm64Ctx).lowerRawSVEMultiply),
 	arm64RawSVEVectorForm(decodeARM64RawSVETable, (*arm64Ctx).lowerRawSVETable),
 	arm64RawSVEVectorForm(decodeARM64RawSVEUMULLB, (*arm64Ctx).lowerRawSVEUMULLB),
@@ -167,8 +168,6 @@ var arm64RawSVEFamilies = [...]arm64RawSVEFamily{
 		lower: arm64RawSVENamed((*arm64Ctx).lowerARM64SVEFloatDivideScale)},
 	{decode: decodeARM64RawSVEUnpack,
 		lower: arm64RawSVENamed((*arm64Ctx).lowerARM64SVEUnpack)},
-	{decode: decodeARM64RawSVEAddPairwiseLong,
-		lower: arm64RawSVENamed((*arm64Ctx).lowerARM64SVEAbsoluteDifference)},
 	{decode: decodeARM64RawSVEIntegerMinMax,
 		lower: arm64RawSVENamed((*arm64Ctx).lowerARM64SVEMinMax)},
 	{decode: decodeARM64RawSVEIntegerMinMaxReduction,

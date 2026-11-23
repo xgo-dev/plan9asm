@@ -1,54 +1,95 @@
 package plan9asm
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
 
-func arm64SVEAbsoluteDifferenceCompleteForms() string {
+func arm64SVEAbsoluteDifferenceCompleteForms() (string, []string, []uint32) {
 	var source strings.Builder
+	var assembly []string
+	var masks []uint32
 	source.WriteString("TEXT sveabsdiffforms(SB),$0-0\n")
-	for _, op := range []string{"ZSABA", "ZUABA"} {
-		for _, width := range []string{"B", "H", "S", "D"} {
-			source.WriteString("\t" + op + " Z1." + width + ", Z2." + width + ", Z3." + width + "\n")
+	widths := [...]string{"b", "h", "s", "d"}
+	const vectors = 0xffe0fc00
+	const merging = 0xffffe000
+	for _, op := range []string{"saba", "uaba"} {
+		for _, width := range widths {
+			fmt.Fprintf(&source, "\tZ%s Z29.%[2]s, Z30.%[2]s, Z31.%[2]s\n", strings.ToUpper(op), strings.ToUpper(width))
+			assembly = append(assembly, fmt.Sprintf("%s z31.%[2]s, z30.%[2]s, z29.%[2]s", op, width))
+			masks = append(masks, vectors)
 		}
 	}
-	for _, op := range []string{"ZSABD", "ZUABD"} {
-		for predicate, width := range []string{"B", "H", "S", "D"} {
-			source.WriteString("\t" + op + " Z4." + width + ", Z5." + width + ", P" + string(rune('0'+predicate)) + ".M, Z5." + width + "\n")
+	for _, op := range []string{"sabd", "uabd"} {
+		for _, width := range widths {
+			fmt.Fprintf(&source, "\tZ%s Z29.%[2]s, Z31.%[2]s, P7.M, Z31.%[2]s\n", strings.ToUpper(op), strings.ToUpper(width))
+			assembly = append(assembly, fmt.Sprintf("%s z31.%[2]s, p7/m, z31.%[2]s, z29.%[2]s", op, width))
+			masks = append(masks, merging)
 		}
 	}
-	for _, op := range []string{"ZSABALB", "ZSABALT", "ZUABALB", "ZUABALT", "ZSABDLB", "ZSABDLT", "ZUABDLB", "ZUABDLT"} {
-		for _, narrowWidth := range []string{"B", "H", "S"} {
-			wideWidth := map[string]string{"B": "H", "H": "S", "S": "D"}[narrowWidth]
-			source.WriteString("\t" + op + " Z6." + narrowWidth + ", Z7." + narrowWidth + ", Z8." + wideWidth + "\n")
+	for _, op := range []string{"sabalb", "sabalt", "uabalb", "uabalt", "sabdlb", "sabdlt", "uabdlb", "uabdlt", "sabal", "uabal"} {
+		for index, narrow := range widths[:3] {
+			wide := widths[index+1]
+			fmt.Fprintf(&source, "\tZ%s Z29.%[2]s, Z30.%[2]s, Z31.%[3]s\n",
+				strings.ToUpper(op), strings.ToUpper(narrow), strings.ToUpper(wide))
+			assembly = append(assembly, fmt.Sprintf("%s z31.%s, z30.%[3]s, z29.%[3]s", op, wide, narrow))
+			masks = append(masks, vectors)
 		}
 	}
-	for _, op := range []string{"ZSADALP", "ZUADALP"} {
-		for predicate, narrowWidth := range []string{"B", "H", "S"} {
-			wideWidth := map[string]string{"B": "H", "H": "S", "S": "D"}[narrowWidth]
-			source.WriteString("\t" + op + " Z9." + narrowWidth + ", P" + string(rune('4'+predicate)) + ".M, Z10." + wideWidth + "\n")
+	for _, op := range []string{"sadalp", "uadalp"} {
+		for index, narrow := range widths[:3] {
+			wide := widths[index+1]
+			fmt.Fprintf(&source, "\tZ%s Z29.%s, P7.M, Z31.%s\n",
+				strings.ToUpper(op), strings.ToUpper(narrow), strings.ToUpper(wide))
+			assembly = append(assembly, fmt.Sprintf("%s z31.%s, p7/m, z29.%s", op, wide, narrow))
+			masks = append(masks, merging)
 		}
 	}
 	source.WriteString("\tRET\n")
-	return source.String()
+	return source.String(), assembly, masks
 }
 
 func TestTranslateARM64SVEAbsoluteDifferenceCompleteGo127Family(t *testing.T) {
-	source := arm64SVEAbsoluteDifferenceCompleteForms()
+	source, assembly, masks := arm64SVEAbsoluteDifferenceCompleteForms()
 	requireARM64SVEGoAssemblerResult(t, source, true)
 	file, err := Parse(ArchARM64, source)
 	if err != nil {
 		t.Fatal(err)
 	}
+	words := assembleARM64LLVMWords(t, assembly, "+sve2p3")
+	var rawSource strings.Builder
+	rawSource.WriteString("TEXT sveabsdiffforms(SB),$0-0\n")
+	for _, word := range words {
+		fmt.Fprintf(&rawSource, "\tWORD $%#08x\n", word)
+	}
+	rawSource.WriteString("\tRET\n")
+	rawFile, err := Parse(ArchARM64, rawSource.String())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, triple := range []string{"aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc"} {
 		t.Run(triple, func(t *testing.T) {
-			ll, err := Translate(file, Options{TargetTriple: triple, Goarch: "arm64", Sigs: map[string]FuncSig{"sveabsdiffforms": {Name: "sveabsdiffforms", Ret: Void}}})
+			options := Options{
+				TargetTriple: triple, Goarch: "arm64",
+				Sigs: map[string]FuncSig{"sveabsdiffforms": {Name: "sveabsdiffforms", Ret: Void}},
+			}
+			ll, err := Translate(file, options)
 			if err != nil {
 				t.Fatal(err)
 			}
+			raw, err := Translate(rawFile, options)
+			if err != nil {
+				t.Fatalf("translate raw absolute-difference forms: %v", err)
+			}
+			// Translation gives each module a unique buffer name.
+			_, namedBody, namedOK := strings.Cut(ll, "\ntarget triple")
+			_, rawBody, rawOK := strings.Cut(raw, "\ntarget triple")
+			if !namedOK || !rawOK || namedBody != rawBody {
+				t.Fatal("named and raw encodings did not lower identically")
+			}
 			for _, want := range []string{
-				`"target-features"="+sve,+sve2"`,
+				`"target-features"="+sve,+sve2,+sve2p3"`,
 				"@llvm.aarch64.sve.saba.nxv16i8",
 				"@llvm.aarch64.sve.uaba.nxv2i64",
 				"@llvm.aarch64.sve.sabd.nxv8i16",
@@ -68,7 +109,10 @@ func TestTranslateARM64SVEAbsoluteDifferenceCompleteGo127Family(t *testing.T) {
 			if llc == "" {
 				t.Fatal("LLVM 22 llc not found")
 			}
-			compileLLVMToObject(t, llc, triple, "arm64-sve-absolute-difference.ll", "arm64-sve-absolute-difference.o", ll)
+			object := compileLLVMToObject(t, llc, triple, "arm64-sve-absolute-difference.ll", "arm64-sve-absolute-difference.o", ll)
+			if triple == arm64LinuxGNUTriple {
+				requireARM64ObjectWordSequence(t, object, words, masks, assembly)
+			}
 		})
 	}
 }
@@ -82,6 +126,9 @@ func TestTranslateARM64SVEAbsoluteDifferenceRejectsFormsOutsideGo127Table(t *tes
 		"ZSABD Z1.S, Z2.S, P0.M, Z3.S",
 		"ZSABALB Z1.B, Z2.H, Z3.H",
 		"ZUABALT Z1.S, Z2.S, Z3.S",
+		"ZSABAL Z1.B, Z2.H, Z3.H",
+		"ZUABAL Z1.S, Z2.S, Z3.S",
+		"ZSABAL Z1.D, Z2.D, Z3.D",
 		"ZSABDLB Z1.D, Z2.D, Z3.D",
 		"ZUABDLT Z1.H, Z2.H, Z3.H",
 		"ZSADALP Z1.B, P0, Z2.H",

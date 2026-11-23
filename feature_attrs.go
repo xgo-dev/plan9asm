@@ -656,6 +656,10 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				add("+aes")
 			}
 		case ArchARM64:
+			if spec, ok := arm64SVEAbsoluteDifferenceSpecs[Op(op)]; ok {
+				add("+sve", spec.feature)
+				continue
+			}
 			if _, matched, err := parseARM64SVECnt(arm64ControlOp(ins), ins); matched && err == nil {
 				add("+sve")
 			}
@@ -670,6 +674,10 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				add("+dit")
 			}
 			if op == "WORD" && len(ins.Args) == 1 && ins.Args[0].Kind == OpImm && ins.Args[0].ImmRaw == "" {
+				if form, ok := decodeARM64RawSVEAbsoluteDifference(uint32(ins.Args[0].Imm)); ok {
+					add("+sve", form.spec.feature)
+					continue
+				}
 				if _, ok := decodeARM64RawSVECharacterMatch(uint32(ins.Args[0].Imm)); ok {
 					add("+sve", "+sve2")
 				}
@@ -1265,12 +1273,6 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 			if _, ok := arm64SVEShiftLongIntrinsics[Op(op)]; ok {
 				add("+sve", "+sve2")
 			}
-			if spec, ok := arm64SVEAbsoluteDifferenceSpecs[Op(op)]; ok {
-				add("+sve")
-				if spec.kind != arm64SVEAbsoluteDifference {
-					add("+sve2")
-				}
-			}
 			if _, ok := arm64SVEHalvingAddSubIntrinsics[Op(op)]; ok {
 				add("+sve", "+sve2")
 			}
@@ -1484,9 +1486,6 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 				}
 				if _, ok := decodeARM64RawSVEUnpack(word); ok {
 					add("+sve")
-				}
-				if _, ok := decodeARM64RawSVEAddPairwiseLong(word); ok {
-					add("+sve", "+sve2")
 				}
 				if _, ok := decodeARM64RawSVEIntegerMinMax(word); ok {
 					add("+sve")
