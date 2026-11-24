@@ -1,7 +1,9 @@
 package plan9asm
 
 import (
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -158,14 +160,33 @@ func TestX86ResultTypedVectorEffectUnifiedSemantics(t *testing.T) {
 	t.Run("DecodedRawVPMULLWRetainsPublicABI0CheckAndLoweringBoundary", func(t *testing.T) {
 		// LONG $0xd0d5f1c5 decodes to VPMULLW X0,X1,X2. Public ABI0 result
 		// checking must keep accepting initialized per-lane inputs on both 386
-		// and amd64, while full lowering keeps rejecting unbound raw forms.
+		// and amd64, while full lowering keeps rejecting unbound raw forms
+		// (unlike the mnemonic form, which must translate cleanly).
+		resolveSym := func(name string) string {
+			return strings.TrimPrefix(name, "·")
+		}
 		for _, arch := range []string{"386", "amd64"} {
 			triple := "x86_64-unknown-linux-gnu"
 			if arch == "386" {
 				triple = "i386-unknown-linux-gnu"
 			}
-			body := "PXOR X0,X0\nPXOR X1,X1\nLONG $0xd0d5f1c5\nPEXTRD $0,X2,AX\nMOVL AX,ret0+0(FP)\nRET"
-			_, file, sig, _ := x86ResultInitializationFixture(t, arch, "func Value() uint32", body)
+			mnemonicBody := "PXOR X0,X0\nPXOR X1,X1\nVPMULLW X0,X1,X2\nPEXTRD $0,X2,AX\nMOVL AX,ret0+0(FP)\nRET"
+			_, mnemonicFile, mnemonicSig, _ := x86ResultInitializationFixture(t, arch, "func Value() uint32", mnemonicBody)
+			ir, err := Translate(mnemonicFile, Options{
+				Goarch:       arch,
+				TargetTriple: triple,
+				Sigs:         map[string]FuncSig{mnemonicSig.Name: mnemonicSig},
+				ResolveSym:   resolveSym,
+			})
+			if err != nil {
+				t.Fatalf("%s Translate(mnemonic VPMULLW) = %v, want nil", arch, err)
+			}
+			if !strings.Contains(ir, "define ") || !strings.Contains(ir, "@Value(") {
+				t.Fatalf("%s Translate(mnemonic VPMULLW) missing @Value definition:\n%s", arch, ir)
+			}
+
+			rawBody := "PXOR X0,X0\nPXOR X1,X1\nLONG $0xd0d5f1c5\nPEXTRD $0,X2,AX\nMOVL AX,ret0+0(FP)\nRET"
+			_, file, sig, _ := x86ResultInitializationFixture(t, arch, "func Value() uint32", rawBody)
 			decoded, err := normalizeX86RawFile(file, arch)
 			if err != nil {
 				t.Fatalf("%s normalizeX86RawFile: %v", arch, err)
@@ -173,14 +194,19 @@ func TestX86ResultTypedVectorEffectUnifiedSemantics(t *testing.T) {
 			if err := CheckX86ABI0ResultInitialization(decoded.Funcs[0], sig, arch); err != nil {
 				t.Fatalf("%s CheckX86ABI0ResultInitialization(decoded VPMULLW) = %v, want nil", arch, err)
 			}
-			// Lowering must still independently reject unbound raw VPMULLW.
-			if _, err := Translate(file, Options{
+			// Lowering must still independently reject unbound raw VPMULLW
+			// (reaching lowering rather than failing early on signature lookup).
+			_, err = Translate(file, Options{
 				Goarch:       arch,
 				TargetTriple: triple,
 				Sigs:         map[string]FuncSig{sig.Name: sig},
-				ResolveSym:   func(name string) string { return name },
-			}); err == nil {
+				ResolveSym:   resolveSym,
+			})
+			if err == nil {
 				t.Fatalf("%s Translate unexpectedly accepted unbound decoded VPMULLW", arch)
+			}
+			if !errors.Is(err, ErrProbeNeedsContext) || !strings.Contains(err.Error(), "result initialization: unclosed source effect") {
+				t.Fatalf("%s Translate(raw VPMULLW) = %v, want ErrProbeNeedsContext result initialization rejection", arch, err)
 			}
 		}
 	})
