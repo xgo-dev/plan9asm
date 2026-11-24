@@ -92,6 +92,8 @@ func TestX86NamedLEAStaticAddressResultThreeAPIs(t *testing.T) {
 	}
 }
 
+const x86StaticLEAPushedDeltaWithRead = "PUSHL $cell<>+4(SB)\nPOPL AX\nMOVL cell<>(SB),DX"
+
 func x86StaticLEADeltaSource(arch, first string) (assembly, declaration string) {
 	const data = "DATA cell<>+0(SB)/4,$3\nGLOBL cell<>(SB),16,$16\n"
 	width, word, result := "Q", 8, "uint64"
@@ -110,7 +112,12 @@ func TestX86OwnedStaticLEADeltaOriginalGoAndLLVM(t *testing.T) {
 	for _, target := range x86RawReturnTargets {
 		first := []string{"MOVQ $cell<>+4(SB),AX", "LEAQ cell<>+4(SB),AX"}
 		if target.arch == "386" {
-			first = []string{"MOVL $cell<>+4(SB),AX", "LEAL cell<>+4(SB),AX", "PUSHL $cell<>+4(SB)\nPOPL AX"}
+			first = []string{
+				"MOVL $cell<>+4(SB),AX",
+				"LEAL cell<>+4(SB),AX",
+				"PUSHL $cell<>+4(SB)\nPOPL AX",
+				x86StaticLEAPushedDeltaWithRead,
+			}
 		}
 		for _, producer := range first {
 			source, declaration := x86StaticLEADeltaSource(target.arch, producer)

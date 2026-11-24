@@ -77,7 +77,7 @@ func TestCrossLinuxRuntimeMatrixX86OwnedStaticLEADelta(t *testing.T) {
 		arch, triple, first, cType, compiler string
 		runPrefix                            []string
 	}{
-		{"386", "i386-unknown-linux-gnu", "PUSHL $cell<>+4(SB)\nPOPL AX", "unsigned int",
+		{"386", "i386-unknown-linux-gnu", x86StaticLEAPushedDeltaWithRead, "unsigned int",
 			"i686-linux-gnu-gcc", []string{"qemu-i386", "-L", "/usr/i686-linux-gnu"}},
 		{"amd64", "x86_64-unknown-linux-gnu", "LEAQ cell<>+4(SB),AX", "unsigned long", "cc", nil},
 	} {

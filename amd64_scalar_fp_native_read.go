@@ -693,9 +693,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86LoweredStackNativeRead(ins, state, owned, resultOffset, arch); known {
 			return accepted
 		}
-		if accepted, known := c.stackAddressImmediateTransfer(ins, state, owned, resultOffset, arch); known {
-			return accepted
-		}
 		if accepted, known := x86LoweredStackNativeStore(ins, state, owned, resultOffset, arch); known {
 			return accepted
 		}

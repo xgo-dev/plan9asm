@@ -187,6 +187,13 @@ func (c *amd64Ctx) scalarStaticAddressValueTransfer(ins Instr, state *x86ResultS
 	if values == nil {
 		return false, false
 	}
+	if ins.Op == "PUSHL" && len(ins.Args) == 1 && x86AbsoluteRelocationSource(ins.Args[0], arch, 32) &&
+		x86ResultNamedPredicateInstruction(ins) && ins.x86NumericalRead == nil &&
+		c.ownsStaticAddressImmediate(ins.Args[0], arch) {
+		// A bound immediate supplies one complete word to the private
+		// stack. The same transfer runs in both result-check paths.
+		return x86ResultBoundValueStackStep(ins, state, owned, 0, arch, x86StackValueOwnedAddress)
+	}
 	word := x86ResultPointerWord(arch)
 	var address x86StaticSBAddress
 	var immediate, valid bool
