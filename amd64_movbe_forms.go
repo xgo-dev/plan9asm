@@ -65,33 +65,3 @@ func x86RawMOVBESource(ins Instr, arch string) bool {
 	_, known, err := x86MOVBEProperties(ins.Op, ins, arch)
 	return known && err == nil && x86RawOrdinaryVectorSource(ins, arch)
 }
-
-func x86LoweredMOVBEResultStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
-	form, known, err := x86MOVBEProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	local := ins
-	if !x86ResultNamedPredicateInstruction(ins) {
-		if !x86RawMOVBESource(ins, arch) {
-			return false, true
-		}
-		local.x86Encoded, local.x86SourceRaw = false, nil
-	}
-	width := int64(form.bits / 8)
-	if form.store && x86OrdinaryNativeMemoryOperand(form.destination, arch) {
-		address := x86ResultIncomingPointerAddressIdentity(form.destination, state, arch) ||
-			x86ResultSharedNumericalAddress(local, form.destination, state, arch, form.source)
-		return address && x86ResultRead(form.source, width, state, owned, arch), true
-	}
-	if !form.store && x86OrdinaryNativeMemoryOperand(form.source, arch) {
-		if !x86ResultReadWithNativeContinuation(local, form.source, width, state, owned, arch, true) {
-			return false, true
-		}
-		return x86ResultStore(form.destination, width, state, owned, resultOffset, arch), true
-	}
-	if x86ResultNamedPredicateInstruction(ins) {
-		return false, false // Logical storage remains in the ordinary strict transfer.
-	}
-	return x86ResultTransfer(local, state, owned, resultOffset, arch), true
-}

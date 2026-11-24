@@ -170,7 +170,7 @@ func TestX86RawIntegerCompareLiteralEveryInputByteAndTuple(t *testing.T) {
 					bytes &^= uint64(1) << uint(missing)
 				}
 				state.writeVector(0, 64, bytes, false)
-				accepted, known := x86ResultVectorCompareStep(ins, &state, nil, "amd64")
+				accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, false)
 				if !known || accepted != (missing < 0) || state.flags != 0x3f {
 					t.Fatal("comparison invented an input byte or changed FLAGS", row.name, missing)
 				}
@@ -178,7 +178,7 @@ func TestX86RawIntegerCompareLiteralEveryInputByteAndTuple(t *testing.T) {
 					t.Fatal("comparison lost its mask/vector destination", row.name)
 				}
 				state.loweredStaticReads[address]--
-				if accepted, _ := x86ResultVectorCompareStep(ins, &state, nil, "amd64"); accepted {
+				if accepted, _ := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, false); accepted {
 					t.Fatal("comparison accepted an incomplete tuple", row.name)
 				}
 			}

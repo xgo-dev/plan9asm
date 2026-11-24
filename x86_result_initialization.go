@@ -1399,9 +1399,6 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 	if accepted, known := x86ResultMoveHalfStep(ins, state, owned, resultOffset, arch, false); known {
 		return accepted
 	}
-	if accepted, known := x86ResultDuplicateMoveStep(ins, state, owned, arch, false); known {
-		return accepted
-	}
 	if accepted, known := x86ResultSegmentQueryStep(ins, state, owned, arch, false); known {
 		return accepted
 	}
@@ -1432,44 +1429,17 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 	if accepted, known := x86ResultDirectionStep(ins, state, arch); known {
 		return accepted
 	}
-	if accepted, known := x86ResultVectorTestStep(ins, state, owned, arch); known {
-		return accepted
-	}
 	if accepted, known := x86ResultBitScanStep(ins, state, owned, arch); known {
 		return accepted
 	}
 	if accepted, known := x86ResultNumericalReadStep(ins, state, owned, resultOffset, arch); known {
 		return accepted
 	}
-	if accepted, known := x86ResultPackedZeroExtendStep(ins, state, owned, arch, false); known {
-		return accepted
-	}
-	if accepted, known := x86ResultPackedSignExtendStep(ins, state, owned, arch, false); known {
-		return accepted
-	}
-	if accepted, known := x86ResultByteShuffleStep(ins, state, owned, arch); known {
-		return accepted
-	}
-	if accepted, known := x86ResultImmediateShuffleStep(ins, state, owned, arch); known {
-		return accepted
-	}
 	if accepted, known := x86ResultMoveMaskStep(ins, state, owned, resultOffset, arch); known {
-		return accepted
-	}
-	if accepted, known := x86ResultCOMIStep(ins, state, owned, arch); known {
-		return accepted
-	}
-	if accepted, known := x86ResultScalarFloatIntegerStep(ins, state, owned, resultOffset, arch); known {
 		return accepted
 	}
 	if _, known, err := x86DirectiveProperties(ins); known {
 		return err == nil // Numerical only; never native layout/caller authority.
-	}
-	if accepted, known := x86ResultVectorCompareStep(ins, state, owned, arch); known {
-		return accepted
-	}
-	if accepted, known := x86ResultPackedTestMaskStep(ins, state, owned, arch, false); known {
-		return accepted
 	}
 	if form, known, err := x86VectorZeroProperties(ins, arch); known {
 		if err != nil {
@@ -1480,15 +1450,6 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 			state.writeVector(register, 64, state.vectorBytes(register)|zeroed, false)
 		}
 		return true
-	}
-	if accepted, known := x86ResultPackedShiftStep(ins, state, owned, arch); known {
-		return accepted
-	}
-	if accepted, known := x86ResultCLMULStep(ins, state, owned, arch); known {
-		return accepted
-	}
-	if accepted, known := x86ResultBroadcastStep(ins, state, owned, arch); known {
-		return accepted
 	}
 	if accepted, known := x86ResultSwapStep(ins, state, arch); known {
 		return accepted
@@ -1504,12 +1465,6 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 		return err == nil && x86ResultGPSIMDTransfer(ins, form, state, owned, resultOffset, arch)
 	}
 	if accepted, recognized := x86ResultScalarLaneStep(ins, state, owned, resultOffset, arch); recognized {
-		return accepted
-	}
-	if accepted, known := x86ResultSHAStep(ins, state, owned, arch, false); known {
-		return accepted
-	}
-	if accepted, known := x86ResultAESStep(ins, state, owned, arch); known {
 		return accepted
 	}
 	if accepted, known := x86ResultCallerAddressTest(ins, state, owned, arch); known {

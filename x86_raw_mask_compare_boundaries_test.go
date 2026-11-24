@@ -41,12 +41,12 @@ func TestX86RawMaskCompareSelectorAndNativeAuthorityStayBound(t *testing.T) {
 		state.pointerGP[6], state.masks[1] = true, true
 		state.writeVector(4, 64, ^uint64(0), false)
 		before := state.clone()
-		if accepted, known := x86ResultVectorCompareStepWithRead(ins, &state, nil, arch, false); !known || accepted || !reflect.DeepEqual(state, before) {
+		if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, false); !known || accepted || !reflect.DeepEqual(state, before) {
 			t.Fatal("standalone compare query borrowed the paired native read", arch)
 		}
 		want := before.clone()
 		want.masks[2] = true
-		if accepted, known := x86LoweredImmediatePackedCompareStep(ins, &state, nil, arch); !known || !accepted || !reflect.DeepEqual(state, want) {
+		if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted || !reflect.DeepEqual(state, want) {
 			t.Fatal("paired raw compare changed independent flags/pointer/vector facts", arch)
 		}
 		for _, mutate := range []func(*Instr){
@@ -59,7 +59,7 @@ func TestX86RawMaskCompareSelectorAndNativeAuthorityStayBound(t *testing.T) {
 			changed.Args = append([]Operand(nil), ins.Args...)
 			mutate(&changed)
 			state = before.clone()
-			if accepted, known := x86LoweredImmediatePackedCompareStep(changed, &state, nil, arch); !known || accepted || !reflect.DeepEqual(state, before) {
+			if accepted, known := x86ResultTypedVectorEffectStep(changed, &state, nil, arch, true, true); !known || accepted || !reflect.DeepEqual(state, before) {
 				t.Fatal("changed raw selector/operand/encoding acquired a numerical continuation", arch, changed.Raw)
 			}
 		}

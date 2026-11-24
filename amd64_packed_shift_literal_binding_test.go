@@ -93,7 +93,7 @@ func TestX86PackedShiftRawKeepsNamedBitDependenciesSeparate(t *testing.T) {
 	state := x86ResultState{}
 	state.writeVector(1, 16, 1, true)
 	ins := x86ScalarLaneInstruction(t, "VPSRLW $4,X1,X0")
-	accepted, known := x86ResultPackedShiftStepWithRead(ins, &state, nil, "amd64", true)
+	accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", true, true)
 	want := x86ResultShiftBits{input: 1, register: 0, width: 16, lane: 16, count: 4}
 	if !accepted || !known || state.shiftBits != want {
 		t.Fatal("genuine named input lost its adjacent bit dependency", accepted, known, state.shiftBits)

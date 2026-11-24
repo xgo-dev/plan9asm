@@ -308,15 +308,19 @@ func TestX86PackedShiftRawStandaloneCannotBorrowNamedAuthority(t *testing.T) {
 			state.masks[1] = true
 			control := state.clone()
 			named := x86ScalarLaneInstruction(t, row.instruction())
-			if accepted, known := x86ResultPackedShiftStep(named, &control, nil, "amd64"); !known || !accepted {
+			if accepted, known := x86ResultTypedVectorEffectStep(named, &control, nil, "amd64", false, false); !known || !accepted {
 				t.Fatal("independently initialized genuine named shift lost its existing NUM consumer")
 			}
-			for _, nativeRead := range []bool{false, true} {
-				candidate := state.clone()
-				accepted, known := x86ResultPackedShiftStepWithRead(ins, &candidate, nil, "amd64", nativeRead)
-				if !known || accepted || !reflect.DeepEqual(candidate, state) {
-					t.Fatal("standalone raw shift borrowed named or lowering-local source authority", nativeRead)
-				}
+			candidate := state.clone()
+			accepted, known := x86ResultTypedVectorEffectStep(ins, &candidate, nil, "amd64", false, false)
+			if !known || accepted || !reflect.DeepEqual(candidate, state) {
+				t.Fatal("standalone raw shift borrowed named or lowering-local source authority")
+			}
+			forged := cloneX86ReplayInstrs([]Instr{ins})[0]
+			forged.x86SourceRaw = nil
+			candidate = state.clone()
+			if accepted, known := x86ResultTypedVectorEffectStep(forged, &candidate, nil, "amd64", true, true); !known || accepted || !reflect.DeepEqual(candidate, state) {
+				t.Fatal("unauthenticated raw shift borrowed paired lowering source authority")
 			}
 		})
 	}

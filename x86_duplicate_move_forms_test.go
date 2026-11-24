@@ -63,7 +63,7 @@ func TestX86DuplicateMoveEverySelectedByteAndIndependentState(t *testing.T) {
 								current.vectorUpper[0] &^= uint64(1) << uint(missing)
 							}
 							initial := current.clone()
-							if accepted, known := x86ResultDuplicateMoveStep(ins, &current, nil, arch, false); !known || accepted || !reflect.DeepEqual(current, initial) {
+							if accepted, known := x86ResultTypedVectorEffectStep(ins, &current, nil, arch, false, false); !known || accepted || !reflect.DeepEqual(current, initial) {
 								t.Fatal("unknown selected byte acquired NUM or partially changed a failed state", missing)
 							}
 						}

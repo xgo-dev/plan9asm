@@ -68,11 +68,11 @@ func TestX86VectorTestPairedBytesFlagsAndStandaloneBoundary(t *testing.T) {
 					state.writeVector(1, width, state.vectorBytes(1)&^(uint64(1)<<uint(missing)), true)
 				}
 				before := state.clone()
-				if accepted, known := x86ResultVectorTestStep(ins, &state, nil, arch); !known || accepted ||
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, false); !known || accepted ||
 					!reflect.DeepEqual(state, before) {
 					t.Fatal("standalone vector test acquired native backing or changed a failed state", arch, row)
 				}
-				accepted, known := x86LoweredVectorTestResultStep(ins, &state, nil, arch)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 				want := before.clone()
 				if missing < 0 {
 					want.flags = x86ByteFlagsAll

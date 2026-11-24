@@ -96,7 +96,7 @@ func TestX86PackedZeroExtendNativeResultBoundaries(t *testing.T) {
 				state.pointerGP[base], state.gp[index] = true, 0xff
 				state.writeVector(1, 64, 0xa5a5000000000000, false)
 				before := state.clone()
-				if accepted, known := x86ResultPackedZeroExtendStep(ins, &state, nil, "amd64", true); !accepted || !known {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", true, true); !accepted || !known {
 					t.Fatal("paired native read has no conditional numerical bytes")
 				}
 				want := uint64(0xa5a500000000ffff)
@@ -131,7 +131,7 @@ func TestX86PackedZeroExtendNativeResultBoundaries(t *testing.T) {
 						rejected.pointerGP[index], rejected.gp[index] = true, 0
 					}
 					expected := rejected.clone()
-					if accepted, _ := x86ResultPackedZeroExtendStep(changed, &rejected, nil, "amd64", true); accepted || !reflect.DeepEqual(rejected, expected) {
+					if accepted, _ := x86ResultTypedVectorEffectStep(changed, &rejected, nil, "amd64", true, true); accepted || !reflect.DeepEqual(rejected, expected) {
 						t.Fatal("unbound origin/address acquired native result bytes", mutation)
 					}
 				}

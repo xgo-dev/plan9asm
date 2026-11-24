@@ -83,47 +83,6 @@ func (form x86MULXForm) needsNativeProof(ins Instr, arch string) bool {
 		frameSource || x86LogicalSourceFrameRegister(form.low.Reg, arch) || x86LogicalSourceFrameRegister(form.high.Reg, arch)
 }
 
-func x86LoweredMULXResultStep(ins Instr, state *x86ResultState, owned []bool,
-	resultOffset int64, arch string) (bool, bool) {
-	form, known, err := x86MULXProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	local := ins
-	if !x86ResultNamedPredicateInstruction(ins) {
-		if !x86RawMULXSource(ins, arch) {
-			return false, true
-		}
-		local.x86Encoded, local.x86SourceRaw = false, nil
-	}
-	if !x86RegisterAddressedNativeMemoryOperand(form.source, arch) {
-		next := state.clone()
-		next.loweredStaticReads, next.goReadOnlyRead = state.loweredStaticReads, state.goReadOnlyRead
-		if x86ResultTransfer(local, &next, owned, resultOffset, arch) {
-			*state = next
-			return true, true
-		}
-		if form.needsNativeProof(ins, arch) {
-			return false, true // Raw, physical-frame and native roles retain their strict input contract.
-		}
-		return x86MULXUnknownNumericalResults(local, state, owned, arch), true
-	}
-	effect, _, _ := x86TypedMULXByteEffect(local.Op, local, arch)
-	// Consume both the effective address and numerical DX before replacing
-	// either destination. An opaque DX address is not a numerical DX value.
-	for _, input := range effect.operands {
-		if input.read && !x86ResultReadWithNativeContinuation(local, input.operand, input.width, state, owned, arch, true) {
-			return false, true
-		}
-	}
-	for _, output := range effect.operands {
-		if output.write && !x86ResultStore(output.operand, output.width, state, owned, resultOffset, arch) {
-			return false, true
-		}
-	}
-	return true, true
-}
-
 // Only the existing named, non-native, nontrapping numerical domain may
 // leave scratch products unknown. Readable storage and pointer/NUM roles remain
 // strict; both output dependencies must survive until any observable use.

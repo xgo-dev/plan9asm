@@ -50,7 +50,7 @@ func TestX86ArithmeticShiftSharedTypedResultGrammar(t *testing.T) {
 				state := x86ResultState{flags: x86ByteFlagsAll}
 				state.writeVector(0, 64, ^uint64(0), false)
 				state.writeVector(1, 64, ^uint64(0), false)
-				if accepted, known := x86ResultPackedShiftStep(ins, &state, nil, arch); !known || !accepted {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, false); !known || !accepted {
 					t.Errorf("initialized arithmetic result rejected: %s/%s", arch, row)
 				}
 			}

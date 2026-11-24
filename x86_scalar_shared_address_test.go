@@ -133,7 +133,7 @@ func TestX86ScalarSharedAddressRequiresWholeInputs(t *testing.T) {
 			head string
 			step func(Instr, *x86ResultState, []bool, int64, string) (bool, bool)
 		}{
-			{"MOVBEW", x86LoweredMOVBEResultStep},
+			{"MOVBEW", x86LoweredTypedGPEffectStep},
 			{"SHLW CL,", x86LoweredScalarShiftMemory},
 		} {
 			t.Run(arch+"/"+form.head, func(t *testing.T) {

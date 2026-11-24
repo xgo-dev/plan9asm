@@ -86,24 +86,6 @@ func x86TypedBLSByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, b
 
 // Only the paired exact-width volatile emitter consumes this continuation.
 // This creates no pointee, caller, frame or raw-entry capability.
-func x86LoweredBLSNativeRead(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
-	form, known, err := x86BLSProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	if form.source.Kind != OpMem || form.source.Mem.Sym != "" {
-		return false, false
-	}
-	width := int64(form.spec.bits / 8)
-	if !x86ResultReadWithNativeContinuation(ins, form.source, width, state, owned, arch, true) ||
-		!x86ResultStore(form.destination, width, state, owned, resultOffset, arch) {
-		return false, true
-	}
-	effect, _, _ := x86TypedBLSByteEffect(ins.Op, ins, arch)
-	state.flags = state.flags&^effect.flagsKilled | effect.flagsDefined
-	return true, true
-}
-
 func (c *amd64Ctx) evalBLSSource(ins Instr, form x86BLSForm, typ LLVMType) (string, error) {
 	if form.source.Kind == OpFP && x86ResultNamedPredicateInstruction(ins) {
 		if value, handled, err := c.loadIntegerFPBytesMode(form.source.FPOffset, typ, true); handled || err != nil {

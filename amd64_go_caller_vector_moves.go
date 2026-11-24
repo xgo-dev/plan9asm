@@ -635,3 +635,32 @@ func x86CallerPermute128Step(ins *Instr, form x86Permute128Form, state *x86Sourc
 	state.vectors[x86CallerVectorRoot(ins.Args[form.destination].Reg)] = ^uint64(0)
 	return true
 }
+
+func x86CallerByteShuffleStep(ins *Instr, form x86PackedBinaryForm, state *x86SourceStackState, proof *x86GoCallerRegionProof) bool {
+	if form.mask >= 0 && !state.masks[ins.Args[form.mask].Reg] {
+		return false
+	}
+	width := x86CallerVectorByteMask(int64(form.byteWidth))
+	control := uint64(0)
+	if form.memory >= 0 {
+		if form.legacy || !x86CallerOrdinaryMemoryStep(ins, form.memory, state, proof, int64(form.memoryBytes), false) {
+			return false
+		}
+		control = width
+	} else {
+		control = state.vectors[x86CallerVectorRoot(ins.Args[form.first].Reg)]
+	}
+	data := state.vectors[x86CallerVectorRoot(ins.Args[form.second].Reg)]
+	destination := x86CallerVectorRoot(ins.Args[form.destination].Reg)
+	old := state.vectors[destination]
+	known := x86ByteShuffleDefinedBytes(form.byteWidth, control, data)
+	if form.mask >= 0 && !form.zeroing {
+		known &= old
+	}
+	if form.legacy {
+		state.vectors[destination] = old&^width | known
+	} else {
+		state.vectors[destination] = ^width | known
+	}
+	return true
+}

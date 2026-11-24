@@ -34,7 +34,7 @@ func TestX86CLMULNativeEverySelectedByteAndWholeMemoryRole(t *testing.T) {
 							}
 						}
 						expected.writeVector(destination, row.width, defined, row.encoding == "legacy")
-						if accepted, known := x86LoweredCLMULStep(ins, &state, nil, arch); !known || !accepted || !reflect.DeepEqual(state, expected) {
+						if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted || !reflect.DeepEqual(state, expected) {
 							t.Fatal("CLMUL invented a selected qword, consumed an ignored one or changed independent state", input, missing, accepted, known)
 						}
 					}
@@ -42,19 +42,19 @@ func TestX86CLMULNativeEverySelectedByteAndWholeMemoryRole(t *testing.T) {
 				if row.memory {
 					state := x86RawMoveInitializedState()
 					before := state.clone()
-					if accepted, known := x86ResultCLMULStep(ins, &state, nil, arch); !known || accepted || !reflect.DeepEqual(state, before) {
+					if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, false); !known || accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("standalone result observer acquired paired native memory")
 					}
 					state.pointerGP[3] = false // A paired read can consume complete numerical BX.
 					before = state.clone()
-					if accepted, known := x86LoweredCLMULStep(ins, &state, nil, arch); !known || !accepted || !reflect.DeepEqual(state, before) {
+					if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("numerical CLMUL read changed independent state or acquired a pointer role")
 					}
 					for _, available := range []uint8{0, 1} {
 						partial := before.clone()
 						partial.gp[3] = available
 						unchanged := partial.clone()
-						if accepted, _ := x86LoweredCLMULStep(ins, &partial, nil, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+						if accepted, _ := x86ResultTypedVectorEffectStep(ins, &partial, nil, arch, true, true); accepted || !reflect.DeepEqual(partial, unchanged) {
 							t.Fatal("CLMUL acquired unknown or partial numerical address bytes", available)
 						}
 					}
@@ -101,7 +101,7 @@ func TestX86CLMULNativeEditedSelectorAndOriginRejectAtomically(t *testing.T) {
 					control.edit(&changed)
 					state := x86RawMoveInitializedState()
 					before := state.clone()
-					if accepted, _ := x86LoweredCLMULStep(changed, &state, nil, arch); accepted ||
+					if accepted, _ := x86ResultTypedVectorEffectStep(changed, &state, nil, arch, true, true); accepted ||
 						x86RawCLMULSource(changed, arch) || !reflect.DeepEqual(state, before) {
 						t.Fatal("edited selector, tuple or source acquired a CLMUL native result or partially changed state", control.name)
 					}

@@ -54,35 +54,3 @@ func x86TypedPackedTestMaskByteEffect(op Op, ins Instr, arch string) (x86TypedBy
 	effect.requiresResultProof = true
 	return effect, true, nil
 }
-
-func x86ResultPackedTestMaskStep(ins Instr, state *x86ResultState, owned []bool, arch string, native bool) (bool, bool) {
-	f, known, err := x86PackedTestMaskProperties(ins.Op, ins, arch)
-	if !known || err != nil || !x86ResultNamedPredicateInstruction(ins) {
-		return false, known
-	}
-	if f.mask >= 0 {
-		mask, _ := amd64ParseKReg(ins.Args[f.mask].Reg)
-		if !state.masks[mask] {
-			return false, true
-		}
-	}
-	for _, index := range []int{f.first, f.second} {
-		operand := ins.Args[index]
-		if index == f.memory {
-			if !x86ResultReadWithNativeContinuation(ins, operand, int64(f.memoryBytes), state, owned, arch, native) {
-				return false, true
-			}
-			continue
-		}
-		vector, valid := amd64VectorRegisterIndex(operand.Reg, f.byteWidth)
-		required := x86CallerVectorByteMask(int64(f.byteWidth))
-		if !valid || state.vectorBytes(vector)&required != required {
-			return false, true
-		}
-	}
-	// Even equal source registers depend on their actual intersection bits.
-	// Disabled and high K bits are written zero, never merged from old K.
-	destination, _ := amd64ParseKReg(ins.Args[f.destination].Reg)
-	state.masks[destination] = true
-	return true, true
-}

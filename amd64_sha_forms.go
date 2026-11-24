@@ -166,37 +166,6 @@ func x86TypedSHAByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, b
 	return e, true, nil
 }
 
-func x86ResultSHAStep(ins Instr, state *x86ResultState, owned []bool, arch string, native bool) (bool, bool) {
-	f, known, err := x86SHAProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	if !x86ResultNamedPredicateInstruction(ins) {
-		if !x86RawOrdinaryVectorSourceAt(ins, arch, f.source) {
-			return false, true
-		}
-		ins.x86Encoded, ins.x86SourceRaw = false, nil
-	}
-	input := uint64(0xffff)
-	if f.memory >= 0 {
-		if !x86ResultReadWithNativeContinuation(ins, f.sourceOperand, 16, state, owned, arch, native) {
-			return false, true
-		}
-	} else {
-		index, _ := amd64ParseXReg(f.sourceOperand.Reg)
-		input = state.vectorBytes(index)
-	}
-	destination, _ := amd64ParseXReg(ins.Args[f.destination].Reg)
-	defined := x86SHADefinedBytes(f, input, state.vectorBytes(destination), state.vectorBytes(0))
-	state.writeVector(destination, 16, defined, true)
-	return true, true
-}
-
-func x86RawSHASource(ins Instr, arch string) bool {
-	f, known, err := x86SHAProperties(ins.Op, ins, arch)
-	return known && err == nil && x86RawOrdinaryVectorSourceAt(ins, arch, f.source)
-}
-
 func fixedLocalSHAStep(ins *Instr, state *x86FixedLocalState, proof *x86FixedLocalProof, residue int) (bool, error) {
 	f, known, err := x86SHAProperties(ins.Op, *ins, "amd64")
 	if !known {

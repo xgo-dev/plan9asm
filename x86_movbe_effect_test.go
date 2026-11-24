@@ -127,7 +127,7 @@ func TestX86MOVBERawIdentityCannotSupplyPointerOrNumericalBytes(t *testing.T) {
 							state.pointerGP[0], state.gp[0] = false, 0xff
 						}
 						before := state.clone()
-						accepted, _ := x86LoweredMOVBEResultStep(changed, &state, nil, 0, arch)
+						accepted, _ := x86LoweredTypedGPEffectStep(changed, &state, nil, 0, arch)
 						if control.name == "origin" && strings.HasPrefix(operands, "(") {
 							if !accepted || x86RawMOVBESource(changed, arch) || !reflect.DeepEqual(before, state) {
 								t.Fatal("named numerical MOVBE read changed state or acquired raw identity")
@@ -147,7 +147,7 @@ func TestX86MOVBERawIdentityCannotSupplyPointerOrNumericalBytes(t *testing.T) {
 						state.pointerGP[3] = true
 					}
 					before := state.clone()
-					accepted, known := x86LoweredMOVBEResultStep(ins, &state, nil, 0, arch)
+					accepted, known := x86LoweredTypedGPEffectStep(ins, &state, nil, 0, arch)
 					want := !strings.HasPrefix(operands, "BX")
 					expected := before.clone()
 					if want {
@@ -164,7 +164,7 @@ func TestX86MOVBERawIdentityCannotSupplyPointerOrNumericalBytes(t *testing.T) {
 							partial := before.clone()
 							partial.gp[0] = available
 							unchanged := partial.clone()
-							if accepted, _ := x86LoweredMOVBEResultStep(ins, &partial, nil, 0, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+							if accepted, _ := x86LoweredTypedGPEffectStep(ins, &partial, nil, 0, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
 								t.Fatal("MOVBE read acquired unknown or partial address bytes", available)
 							}
 						}

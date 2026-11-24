@@ -70,14 +70,14 @@ func TestX86PackedCompareLaneLoweringDefinedness(t *testing.T) {
 						before, expected := state, state
 						lane := (uint64(1)<<uint(row.bytes) - 1) << uint(missing/row.bytes*row.bytes)
 						expected.writeVector(2, row.width, full&^lane, row.legacy)
-						accepted, known := x86ResultVectorCompareStepWithRead(ins, &state, nil, arch, true)
+						accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 						if !known || !accepted || !reflect.DeepEqual(state, expected) {
 							t.Fatalf("input%d byte%d must invalidate exactly its complete comparison lane: accepted=%t known=%t", input, missing, accepted, known)
 						}
 						// A lowering-local numerical projection must not silently
 						// relax the standalone complete-input observer.
 						strict := before
-						if accepted, _ := x86ResultVectorCompareStep(ins, &strict, nil, arch); accepted || !reflect.DeepEqual(strict, before) {
+						if accepted, _ := x86ResultTypedVectorEffectStep(ins, &strict, nil, arch, false, false); accepted || !reflect.DeepEqual(strict, before) {
 							t.Fatal("partial lowered bytes escaped into the standalone query")
 						}
 					}
@@ -192,7 +192,7 @@ func TestX86PackedCompareLaneRawAndKBoundaries(t *testing.T) {
 						state.xmm[0] &^= 1
 					}
 					before := state
-					if accepted, known := x86ResultVectorCompareStepWithRead(ins, &state, nil, "amd64", true); !known || accepted || !reflect.DeepEqual(state, before) {
+					if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", true, true); !known || accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("partial vector bytes or an unknown mask became a completely known K result")
 					}
 				})
@@ -211,7 +211,7 @@ func TestX86PackedCompareLaneMemoryNeedsWholeTuple(t *testing.T) {
 					state.writeVector(row.second(), 64, uint64(1)<<uint(row.bytes)-1, false)
 					state.loweredStaticReads = map[x86StaticSBAddress]int64{{symbol: "tuple<>"}: available}
 					before := state
-					if accepted, known := x86ResultVectorCompareStepWithRead(ins, &state, nil, arch, true); !known || accepted || !reflect.DeepEqual(state, before) {
+					if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("a partial initialized result reduced the source's original full memory tuple", available)
 					}
 				}
@@ -222,14 +222,14 @@ func TestX86PackedCompareLaneMemoryNeedsWholeTuple(t *testing.T) {
 				before, expected := state.clone(), state.clone()
 				defined := uint64(1)<<uint(row.bytes) - 1
 				expected.writeVector(2, row.width, defined, row.legacy)
-				if accepted, known := x86ResultVectorCompareStepWithRead(ins, &state, nil, arch, true); !known || !accepted || !reflect.DeepEqual(state, expected) {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted || !reflect.DeepEqual(state, expected) {
 					t.Fatal("numerical native comparison invented unrelated bytes or pointer facts")
 				}
 				for _, available := range []uint8{0, 1} {
 					partial := before.clone()
 					partial.gp[6] = available
 					unchanged := partial.clone()
-					if accepted, _ := x86ResultVectorCompareStepWithRead(ins, &partial, nil, arch, true); accepted || !reflect.DeepEqual(partial, unchanged) {
+					if accepted, _ := x86ResultTypedVectorEffectStep(ins, &partial, nil, arch, true, true); accepted || !reflect.DeepEqual(partial, unchanged) {
 						t.Fatal("partial comparison borrowed unknown or partial address bytes", available)
 					}
 				}

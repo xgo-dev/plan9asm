@@ -49,7 +49,7 @@ func TestX86ImplicitMultiplyNativeMemoryEveryByteAndExactOutputState(t *testing.
 					if accept {
 						expected = x86ImplicitMultiplyNativeExpected(before, row.bits, arch)
 					}
-					got, known := x86LoweredImplicitMultiplyNativeRead(ins, &state, nil, 0, arch)
+					got, known := x86LoweredTypedGPEffectStep(ins, &state, nil, 0, arch)
 					if !known || got != accept || !reflect.DeepEqual(state, expected) {
 						t.Fatal("native multiplication changed its exact byte/FLAGS/storage domain", seed, needed, got, state, expected)
 					}
@@ -69,13 +69,13 @@ func TestX86ImplicitMultiplyNativeMemoryEveryByteAndExactOutputState(t *testing.
 					}
 					state := before.clone()
 					if missing == "pointer" {
-						accepted, known := x86LoweredImplicitMultiplyNativeRead(ins, &state, nil, 0, arch)
+						accepted, known := x86LoweredTypedGPEffectStep(ins, &state, nil, 0, arch)
 						if !known || !accepted || !reflect.DeepEqual(state, x86ImplicitMultiplyNativeExpected(before, row.bits, arch)) {
 							t.Fatal("complete numerical address changed the product or acquired a pointer role")
 						}
 						continue
 					}
-					if accepted, known := x86LoweredImplicitMultiplyNativeRead(ins, &state, nil, 0, arch); !known || accepted || !reflect.DeepEqual(state, before) {
+					if accepted, known := x86LoweredTypedGPEffectStep(ins, &state, nil, 0, arch); !known || accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("a rejected native input invented permission or partially mutated state", missing)
 					}
 				}
@@ -85,7 +85,7 @@ func TestX86ImplicitMultiplyNativeMemoryEveryByteAndExactOutputState(t *testing.
 				before := original.clone()
 				before.gp[ax], before.gp[dx], before.pointerGP[dx] = 255, 0, true
 				state := before.clone()
-				if accepted, known := x86LoweredImplicitMultiplyNativeRead(alias, &state, nil, 0, arch); !known || !accepted ||
+				if accepted, known := x86LoweredTypedGPEffectStep(alias, &state, nil, 0, arch); !known || !accepted ||
 					!reflect.DeepEqual(state, x86ImplicitMultiplyNativeExpected(before, row.bits, arch)) {
 					t.Fatal("DX address/result alias was read after write or acquired missing upper bytes")
 				}

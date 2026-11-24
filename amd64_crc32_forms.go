@@ -96,16 +96,3 @@ func x86TypedCRC32ByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect,
 		{index: 1, operand: form.destination, width: 4, read: true, write: true},
 	}}, true, nil // CRC32 preserves all six status bits and DF.
 }
-
-func x86LoweredCRC32NativeRead(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
-	form, known, err := x86CRC32Properties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	if !x86ResultNamedPredicateInstruction(ins) ||
-		!x86ResultRead(form.destination, 4, state, owned, arch) ||
-		!x86ResultReadWithNativeContinuation(ins, form.source, int64(form.bits/8), state, owned, arch, true) {
-		return false, true
-	}
-	return x86ResultStore(form.destination, 4, state, owned, resultOffset, arch), true
-}

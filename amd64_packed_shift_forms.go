@@ -203,3 +203,60 @@ func x86PackedShiftMemoryValid(operand Operand, goarch string) bool {
 	}
 	return x86MemoryRegisterEncodingValid(operand.Mem, goarch)
 }
+
+func x86PackedShiftByteInputs(form x86PackedShiftForm, output int) (data, count uint64) {
+	laneBytes := form.laneBits / 8
+	if form.countMode == x86PackedShiftBytes {
+		laneBytes = 16
+	}
+	lane, at := output/laneBytes*laneBytes, output%laneBytes
+	first, last := at*8, at*8+7
+	if form.countOperand.Kind == OpImm {
+		shift := int(uint8(form.countOperand.Imm))
+		if form.countMode == x86PackedShiftBytes {
+			shift *= 8
+		}
+		if form.left {
+			first, last = first-shift, last-shift
+		} else {
+			first, last = first+shift, last+shift
+		}
+	} else {
+		if form.left {
+			first = 0
+		} else {
+			last = laneBytes*8 - 1
+		}
+		count = 255 // The upper qword of a uniform register count is ignored.
+		if form.countMode == x86PackedShiftPerLane {
+			count = x86CallerVectorByteMask(int64(laneBytes)) << uint(lane)
+		}
+	}
+	if first < 0 {
+		first = 0
+	}
+	if form.arithmetic && first >= laneBytes*8 {
+		first = laneBytes*8 - 1 // Every shifted-out bit reads the sign bit.
+	}
+	if last >= laneBytes*8 {
+		last = laneBytes*8 - 1
+	}
+	if first <= last {
+		data = x86CallerVectorByteMask(int64(last/8-first/8+1)) << uint(lane+first/8)
+	}
+	return data, count
+}
+
+func x86PackedShiftDefinedBytes(form x86PackedShiftForm, data, counts, old uint64) uint64 {
+	var known uint64
+	for output := 0; output < form.byteWidth; output++ {
+		dataMask, countMask := x86PackedShiftByteInputs(form, output)
+		if data&dataMask == dataMask && counts&countMask == countMask {
+			known |= uint64(1) << uint(output)
+		}
+	}
+	if form.mask >= 0 && !form.zeroing {
+		known &= old
+	}
+	return known
+}

@@ -86,7 +86,7 @@ func TestX86AESFamilyOriginalSDKMemhash386GlobalBoundary(t *testing.T) {
 				}
 				state := x86ResultState{}
 				state.xmm[0] = 0xffff
-				if ok, known := x86ResultAESStep(ins, &state, nil, "386"); !known || ok {
+				if ok, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "386", false, false); !known || ok {
 					t.Fatal("dynamic SB numerical values borrowed unproved initialized/extent authority", ins)
 				}
 			}

@@ -83,37 +83,3 @@ func x86RawADXSource(ins Instr, arch string) bool {
 	source := ins.Args[0]
 	return source.Kind == OpReg || source.Kind == OpMem && x86OrdinaryNativeMemoryOperand(source, arch)
 }
-
-func x86LoweredADXResultStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
-	form, known, err := x86ADXProperties(ins.Op, ins, arch)
-	if !known {
-		return false, false
-	}
-	if err != nil {
-		return false, true
-	}
-	local := ins
-	if !x86ResultNamedPredicateInstruction(ins) {
-		if !x86RawADXSource(ins, arch) {
-			return false, true
-		}
-		local.x86Encoded, local.x86SourceRaw, local.x86AddressBits = false, nil, 0
-	}
-	if !x86OrdinaryNativeMemoryOperand(form.source, arch) {
-		return x86ResultTransfer(local, state, owned, resultOffset, arch), true
-	}
-	effect, _, err := x86TypedADXByteEffect(local.Op, local, arch)
-	if err != nil || state.flags&effect.flagsRead != effect.flagsRead {
-		return false, true
-	}
-	for _, input := range effect.operands {
-		if input.read && !x86ResultReadWithNativeContinuation(local, input.operand, input.width, state, owned, arch, true) {
-			return false, true
-		}
-	}
-	if !x86ResultStore(form.destination, int64(form.spec.bits/8), state, owned, resultOffset, arch) {
-		return false, true
-	}
-	state.flags = state.flags&^effect.flagsKilled | effect.flagsDefined
-	return true, true
-}

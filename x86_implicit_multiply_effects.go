@@ -84,32 +84,3 @@ func x86TypedImplicitMultiplyByteEffect(op Op, ins Instr, arch string) (x86Typed
 // the exact volatile source load. Reuse the complete implicit effect, not a
 // second opcode, accumulator-width or FLAGS table. Standalone queries and
 // caller/frame/raw registries keep their independent storage obligations.
-func x86LoweredImplicitMultiplyNativeRead(ins Instr, state *x86ResultState, owned []bool,
-	resultOffset int64, arch string) (bool, bool) {
-	form, known, err := x86ImplicitMultiplyProperties(ins.Op, ins, arch)
-	if !known || form.source.Kind != OpMem || form.source.Mem.Sym != "" {
-		return false, false // Existing register, FP/AUTO and static roles remain separate.
-	}
-	if err != nil || !x86ResultNamedPredicateInstruction(ins) || ins.x86NumericalRead != nil ||
-		form.source.Mem.Segment != "" || !x86RegisterAddressedNativeMemoryOperand(form.source, arch) {
-		return false, true
-	}
-	effect, known, err := x86TypedImplicitMultiplyByteEffect(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, true
-	}
-	// Read the original address and accumulator before either AX or DX is
-	// overwritten. In particular a DX address is not a numerical DX input.
-	for _, operand := range effect.operands {
-		if operand.read && !x86ResultReadWithNativeContinuation(ins, operand.operand, operand.width, state, owned, arch, true) {
-			return false, true
-		}
-	}
-	for _, operand := range effect.operands {
-		if operand.write && !x86ResultStore(operand.operand, operand.width, state, owned, resultOffset, arch) {
-			return false, true
-		}
-	}
-	state.flags = state.flags&^effect.flagsKilled | effect.flagsDefined
-	return true, true
-}

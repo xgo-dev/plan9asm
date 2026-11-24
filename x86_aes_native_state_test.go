@@ -16,12 +16,12 @@ func TestX86AESNativePreservesIndependentStateAndStandaloneBoundary(t *testing.T
 				state.pointerGP[6], state.gp[3], state.xmm[1] = true, 0x55, 0xffff
 				state.masks[2], state.vectorUpper[1], state.vectorUpper[2] = true, 0x12340000, 0x56780000
 				before := state.clone()
-				if accepted, known := x86ResultAESStep(ins, &state, nil, arch); !known || accepted || !reflect.DeepEqual(state, before) {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, false); !known || accepted || !reflect.DeepEqual(state, before) {
 					t.Fatal("standalone AES acquired native backing or mutated a failed proof", arch, name)
 				}
 				want := state.clone()
 				want.writeVector(destination, 16, 0xffff, !strings.HasPrefix(name, "V"))
-				if accepted, known := x86LoweredAESResultStep(ins, &state, nil, arch); !known || !accepted || !reflect.DeepEqual(state, want) {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted || !reflect.DeepEqual(state, want) {
 					t.Fatal("AES continuation changed an independent GP, flag, mask or vector alias", arch, name, flags)
 				}
 			}
@@ -50,7 +50,7 @@ func TestX86AESKeyAssistRequiresOnlyItsNumericalRegisterSubwords(t *testing.T) {
 				}
 				want := before.clone()
 				want.writeVector(2, 16, defined, !strings.HasPrefix(name, "V"))
-				accepted, known := x86LoweredAESResultStep(ins, &state, nil, arch)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 				if !known || !accepted || !reflect.DeepEqual(state, want) {
 					t.Fatal("key assist invented used bytes or required irrelevant register data", arch, name, missing, accepted)
 				}
@@ -96,7 +96,7 @@ func TestX86AESRawIdentityCannotBorrowPrivateControlOrInputs(t *testing.T) {
 					state.pointerGP[6], state.gp[6] = false, 0xff
 				}
 				before := state.clone()
-				accepted, known := x86LoweredAESResultStep(changed, &state, nil, arch)
+				accepted, known := x86ResultTypedVectorEffectStep(changed, &state, nil, arch, true, true)
 				if x86ResultNamedPredicateInstruction(changed) {
 					expected := before.clone()
 					expected.writeVector(destination, 16, 0xffff, !strings.HasPrefix(name, "V"))
@@ -107,7 +107,7 @@ func TestX86AESRawIdentityCannotBorrowPrivateControlOrInputs(t *testing.T) {
 						partial := before.clone()
 						partial.gp[6] = available
 						unchanged := partial.clone()
-						if accepted, _ := x86LoweredAESResultStep(changed, &partial, nil, arch); accepted || !reflect.DeepEqual(partial, unchanged) {
+						if accepted, _ := x86ResultTypedVectorEffectStep(changed, &partial, nil, arch, true, true); accepted || !reflect.DeepEqual(partial, unchanged) {
 							t.Fatal("named AES borrowed unknown or partial address bytes", arch, name, available)
 						}
 					}

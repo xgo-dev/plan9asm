@@ -123,37 +123,6 @@ func x86CLMULDefinedBytes(f x86CLMULForm, source, second uint64) uint64 {
 	return known
 }
 
-func x86ResultCLMULStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	f, known, err := x86CLMULProperties(ins.Op, ins, arch)
-	if !known {
-		return false, false
-	}
-	if err != nil {
-		return false, true
-	}
-	return x86ResultCLMULTransfer(ins, f, state, owned, arch, false)
-}
-
-// Keep the complete captured form across a source-local provenance projection.
-// Memory always consumes the original full tuple; numerical availability still
-// depends only on the two selected qwords of each independent 128-bit lane.
-func x86ResultCLMULTransfer(ins Instr, f x86CLMULForm, state *x86ResultState,
-	owned []bool, arch string, nativeRead bool) (bool, bool) {
-	source := x86CallerVectorByteMask(int64(f.byteWidth))
-	if f.memory >= 0 {
-		if !x86ResultReadWithNativeContinuation(ins, ins.Args[f.memory], int64(f.byteWidth), state, owned, arch, nativeRead) {
-			return false, true
-		}
-	} else {
-		index, _ := amd64VectorRegisterIndex(ins.Args[f.source].Reg, f.byteWidth)
-		source = state.vectorBytes(index)
-	}
-	second, _ := amd64VectorRegisterIndex(ins.Args[f.second].Reg, f.byteWidth)
-	destination, _ := amd64VectorRegisterIndex(ins.Args[f.destination].Reg, f.byteWidth)
-	state.writeVector(destination, f.byteWidth, x86CLMULDefinedBytes(f, source, state.vectorBytes(second)), f.legacy)
-	return true, true
-}
-
 func x86CallerCLMULStep(ins Instr, f x86CLMULForm, state *x86SourceStackState) bool {
 	if f.memory >= 0 {
 		return false // A registered byte effect grants no new native read proof.

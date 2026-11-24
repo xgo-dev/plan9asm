@@ -96,34 +96,3 @@ func x86RawTernaryGPSource(ins Instr, arch string) bool {
 	_, known, err := x86TernaryGPProperties(ins.Op, ins, arch)
 	return known && err == nil && x86RawOrdinaryVectorSource(ins, arch)
 }
-
-func x86LoweredTernaryGPResultStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
-	form, known, err := x86TernaryGPProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	if x86ResultNamedPredicateInstruction(ins) && !x86OrdinaryNativeMemoryOperand(form.first, arch) {
-		return false, false // Ordinary named register/logical storage uses the strict transfer.
-	}
-	local := ins
-	if !x86ResultNamedPredicateInstruction(ins) {
-		if !x86RawTernaryGPSource(ins, arch) {
-			return false, true
-		}
-		local.x86Encoded, local.x86SourceRaw = false, nil
-	}
-	if !x86OrdinaryNativeMemoryOperand(form.first, arch) {
-		return x86ResultTransfer(local, state, owned, resultOffset, arch), true
-	}
-	effect, _, _ := x86TypedTernaryGPByteEffect(local.Op, local, arch)
-	for _, input := range effect.operands {
-		if input.read && !x86ResultReadWithNativeContinuation(local, input.operand, input.width, state, owned, arch, true) {
-			return false, true
-		}
-	}
-	if !x86ResultStore(form.destination, int64(form.spec.bits/8), state, owned, resultOffset, arch) {
-		return false, true
-	}
-	state.flags = state.flags&^effect.flagsKilled | effect.flagsDefined
-	return true, true
-}

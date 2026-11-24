@@ -61,7 +61,7 @@ func TestX86RawZeroExtendSourceIdentityAndPreservedDomains(t *testing.T) {
 					}
 					state := x86FMA3ResultInputState()
 					before := state.clone()
-					if accepted, _ := x86ResultPackedZeroExtendStep(changed, &state, nil, mode, true); accepted || !reflect.DeepEqual(state, before) {
+					if accepted, _ := x86ResultTypedVectorEffectStep(changed, &state, nil, mode, true, true); accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("unbound physical widening changed numerical state")
 					}
 				})

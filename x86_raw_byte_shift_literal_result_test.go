@@ -98,12 +98,12 @@ func TestX86RawByteShiftLiteralEverySelectorAndExtent(t *testing.T) {
 					t.Fatal("literal has no DATA address")
 				}
 				state := x86ResultState{flags: 0x3f, loweredStaticReads: map[x86StaticSBAddress]int64{address: int64(width)}}
-				if accepted, known := x86ResultPackedShiftStep(ins, &state, nil, "amd64"); !accepted || !known ||
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, false); !accepted || !known ||
 					state.vectorBytes(31) != ^uint64(0) || state.flags != 0x3f {
 					t.Fatal("exact constant did not define output bytes", left, width, count)
 				}
 				state.loweredStaticReads[address]--
-				if accepted, _ := x86ResultPackedShiftStep(ins, &state, nil, "amd64"); accepted {
+				if accepted, _ := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, false); accepted {
 					t.Fatal("even a saturating count requires the entire memory tuple", left, width, count)
 				}
 			}

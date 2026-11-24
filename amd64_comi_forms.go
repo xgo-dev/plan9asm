@@ -127,31 +127,3 @@ func x86TypedCOMIByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, 
 		vector: x86TypedVectorEffect{upperWrite: x86TypedVectorNoWrite, memoryAlignment: 1},
 	}, true, nil
 }
-
-func x86ResultCOMIStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	return x86ResultCOMIStepWithRead(ins, state, owned, arch, false)
-}
-
-// Only the paired native comparison supplies conditional numerical inputs.
-// Its complete opcode preserves the scalar read, MXCSR and exception effects;
-// no memory backing or reusable input fact reaches the declaration observer.
-func x86ResultCOMIStepWithRead(ins Instr, state *x86ResultState, owned []bool, arch string, nativeRead bool) (bool, bool) {
-	form, known, err := x86COMIProperties(ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	width := int64(form.spec.bits / 8)
-	for _, operand := range ins.Args {
-		if operand.Kind == OpReg {
-			index, _ := amd64ParseXReg(operand.Reg)
-			mask := x86CallerVectorByteMask(width)
-			if state.vectorBytes(index)&mask != mask {
-				return false, true
-			}
-		} else if !x86ResultReadWithNativeContinuation(ins, operand, width, state, owned, arch, nativeRead) {
-			return false, true
-		}
-	}
-	state.flags = x86ByteFlagsAll
-	return true, true
-}

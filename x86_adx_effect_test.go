@@ -141,7 +141,7 @@ func TestX86ADXRawDefaultModeAndOriginCannotBeRebound(t *testing.T) {
 					state := x86ResultState{flags: x86ByteFlagsAll}
 					state.gp[0], state.gp[3] = 0xff, 0xff
 					before := state.clone()
-					accepted, known := x86LoweredADXResultStep(changed, &state, nil, 0, arch)
+					accepted, known := x86LoweredTypedGPEffectStep(changed, &state, nil, 0, arch)
 					if accepted || !known || x86RawADXSource(changed, arch) || !reflect.DeepEqual(before, state) {
 						t.Fatal("changed ADX origin/mode borrowed a numerical continuation", accepted, known)
 					}

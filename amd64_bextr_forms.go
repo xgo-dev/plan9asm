@@ -24,33 +24,3 @@ func x86TypedScalarBitFieldByteEffect(op Op, ins Instr, arch string) (x86TypedBy
 
 // A paired native read supplies numerical source bytes only if it continues.
 // It grants no caller, extent, raw-entry or reusable native-memory capability.
-func x86ResultScalarBitFieldStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64,
-	arch string, nativeRead bool) (bool, bool) {
-	effect, known, err := x86TypedScalarBitFieldByteEffect(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	if !x86ResultNamedPredicateInstruction(ins) {
-		return false, true
-	}
-	for _, operand := range effect.operands {
-		if !operand.read {
-			continue
-		}
-		if operand.operand.Kind == OpReg {
-			index, _, valid := x86ResultGP(operand.operand.Reg, operand.width, arch)
-			if !valid || state.pointerGP[index] {
-				return false, true
-			}
-		}
-		if !x86ResultReadWithNativeContinuation(ins, operand.operand, operand.width, state, owned, arch, nativeRead) {
-			return false, true
-		}
-	}
-	output := effect.operands[2]
-	if !x86ResultStore(output.operand, output.width, state, owned, resultOffset, arch) {
-		return false, true
-	}
-	state.flags = state.flags&^effect.flagsKilled | effect.flagsDefined
-	return true, true
-}

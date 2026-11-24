@@ -102,41 +102,6 @@ func x86TypedScalarFloatIntegerByteEffect(op Op, ins Instr, arch string) (x86Typ
 	}, true, nil // Integer FLAGS are unchanged, independently of MXCSR.
 }
 
-func x86ResultScalarFloatIntegerStep(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string) (bool, bool) {
-	return x86ResultScalarFloatIntegerStepWithRead(ins, state, owned, resultOffset, arch, false)
-}
-
-// Only lowering the original native conversion may consume an opaque pointer
-// as a conditional m32/m64 input. The same opcode preserves exact access and
-// MXCSR exceptions even for dead results. The strict observer cannot borrow
-// this continuation; neither path creates pointee, raw, frame or caller facts.
-func x86ResultScalarFloatIntegerStepWithRead(ins Instr, state *x86ResultState, owned []bool, resultOffset int64, arch string, native bool) (bool, bool) {
-	f, known, err := x86ScalarFloatIntegerProperties(ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	if native && !x86ResultNamedPredicateInstruction(ins) {
-		if !x86RawScalarFloatIntegerSource(ins, arch) {
-			return false, true
-		}
-		// Only this exact original opcode owns its native access. Keep its
-		// physical EVEX metadata and every input obligation unchanged.
-		ins.x86Encoded, ins.x86SourceRaw = false, nil
-	}
-	width := int64(f.spec.inputBits / 8)
-	source := ins.Args[0]
-	if source.Kind == OpReg {
-		index, _ := amd64ParseXReg(source.Reg) // The shared grammar bound it.
-		mask := x86CallerVectorByteMask(width)
-		if state.vectorBytes(index)&mask != mask {
-			return false, true
-		}
-	} else if !x86ResultReadWithNativeContinuation(ins, source, width, state, owned, arch, native) {
-		return false, true
-	}
-	return x86ResultStore(ins.Args[1], int64(f.outputBits/8), state, owned, resultOffset, arch), true
-}
-
 func x86ScalarFloatIntegerNativeTarget(arch, triple string) bool {
 	parts := strings.Split(triple, "-")
 	if len(parts) < 3 {

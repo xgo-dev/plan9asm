@@ -41,7 +41,7 @@ func TestX86CRC32SparseNUMFlagsAndSourceBoundaries(t *testing.T) {
 							indexMask = 15
 						}
 						accepted := mask&15 == 15 && sourceMask&indexMask == indexMask
-						if got, known := x86LoweredCRC32NativeRead(native, &state, nil, 0, arch); !known || got != accepted {
+						if got, known := x86LoweredTypedGPEffectStep(native, &state, nil, 0, arch); !known || got != accepted {
 							t.Fatal("native CRC inferred input/address knowledge", mask, sourceMask, got, known)
 						}
 						if accepted {
@@ -74,12 +74,12 @@ func TestX86CRC32SparseNUMFlagsAndSourceBoundaries(t *testing.T) {
 					if origin == "numerical-address" {
 						want := before.clone()
 						want.gp[0] = 255
-						if accepted, known := x86LoweredCRC32NativeRead(changed, &state, nil, 0, arch); !known || !accepted || !reflect.DeepEqual(state, want) {
+						if accepted, known := x86LoweredTypedGPEffectStep(changed, &state, nil, 0, arch); !known || !accepted || !reflect.DeepEqual(state, want) {
 							t.Fatal("numeric CRC source changed exact result or independent state")
 						}
 						continue
 					}
-					if accepted, known := x86LoweredCRC32NativeRead(changed, &state, nil, 0, arch); !known || accepted || !reflect.DeepEqual(state, before) {
+					if accepted, known := x86LoweredTypedGPEffectStep(changed, &state, nil, 0, arch); !known || accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("unbound CRC origin gained a conditional read", origin)
 					}
 				}

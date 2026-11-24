@@ -221,6 +221,49 @@ func x86ResultTypedVectorEffectStep(ins Instr, state *x86ResultState, owned []bo
 				x86LegacyAlternatingRoundMemorySource(local, local.Args[form.first], arch))
 			return x86ScalarFPFloatBinaryTransferWithRead(local, form, state, owned, arch, read), true
 		}
+		if f, known, err := x86AESProperties(ins.Op, ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			if !x86ResultNamedPredicateInstruction(ins) {
+				if !nativeRead || !x86RawAESSource(ins, arch) {
+					return false, true
+				}
+				ins.x86Encoded, ins.x86SourceRaw = false, nil
+			}
+			read := func(index int) (uint64, bool) {
+				a := ins.Args[index]
+				if index == f.source {
+					a = f.sourceOperand
+				}
+				if a.Kind == OpReg {
+					i, valid := amd64VectorRegisterIndex(a.Reg, f.byteWidth)
+					if !valid || i >= len(state.xmm) {
+						return 0, false
+					}
+					return state.vectorBytes(i), true
+				}
+				return x86CallerVectorByteMask(int64(f.byteWidth)),
+					x86ResultReadWithNativeContinuation(ins, a, int64(f.byteWidth), state, owned, arch, nativeRead && index == f.source)
+			}
+			source, valid := read(f.source)
+			if !valid {
+				return false, true
+			}
+			input := uint64(0)
+			if f.state >= 0 {
+				input, valid = read(f.state)
+				if !valid {
+					return false, true
+				}
+			}
+			destination, _ := amd64VectorRegisterIndex(ins.Args[f.destination].Reg, f.byteWidth)
+			if destination >= len(state.xmm) {
+				return false, true
+			}
+			state.writeVector(destination, f.byteWidth, x86AESDefinedBytes(f, source, input), !f.spec.vector)
+			return true, true
+		}
 	}
 
 	switch op0 {
@@ -297,7 +340,61 @@ func x86ResultTypedVectorEffectStep(ins Instr, state *x86ResultState, owned []bo
 	}
 
 	switch op0 {
+	case 'C', 'U', 'V':
+		// Scalar float comparisons to FLAGS (COMISS/SD, UCOMISS/SD, V*COMI*).
+		if form, known, err := x86COMIProperties(ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			if !x86ResultNamedPredicateInstruction(ins) && !ins.x86RIPLiteral {
+				if !nativeRead || !form.spec.vector || !x86RawCOMISource(ins, arch) {
+					return false, true
+				}
+				ins.x86Encoded, ins.x86SourceRaw = false, nil
+			}
+			width := int64(form.spec.bits / 8)
+			for _, operand := range ins.Args {
+				if operand.Kind == OpReg {
+					index, _ := amd64ParseXReg(operand.Reg)
+					mask := x86CallerVectorByteMask(width)
+					if state.vectorBytes(index)&mask != mask {
+						return false, true
+					}
+				} else if !x86ResultReadWithNativeContinuation(ins, operand, width, state, owned, arch, nativeRead) {
+					return false, true
+				}
+			}
+			state.flags = x86ByteFlagsAll
+			return true, true
+		}
+	}
+
+	switch op0 {
 	case 'C', 'V':
+		// Scalar float -> GP integer conversions (CVTS*2SI, VCVTS*2SI/USI).
+		if f, known, err := x86ScalarFloatIntegerProperties(ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			if nativeRead && !x86ResultNamedPredicateInstruction(ins) {
+				if !x86RawScalarFloatIntegerSource(ins, arch) {
+					return false, true
+				}
+				ins.x86Encoded, ins.x86SourceRaw = false, nil
+			}
+			width := int64(f.spec.inputBits / 8)
+			source := ins.Args[0]
+			if source.Kind == OpReg {
+				index, _ := amd64ParseXReg(source.Reg)
+				mask := x86CallerVectorByteMask(width)
+				if state.vectorBytes(index)&mask != mask {
+					return false, true
+				}
+			} else if !x86ResultReadWithNativeContinuation(ins, source, width, state, owned, arch, nativeRead) {
+				return false, true
+			}
+			return x86ResultStore(ins.Args[1], int64(f.outputBits/8), state, owned, 0, arch), true
+		}
 		// Scalar precision conversions (CVTSS2SD, CVTSD2SS, VCVTSS2SD, VCVTSD2SS).
 		if form, known, err := x86ScalarPrecisionProperties(ins.Op, ins, arch); known {
 			if err != nil {
@@ -409,6 +506,34 @@ func x86ResultTypedVectorEffectStep(ins Instr, state *x86ResultState, owned []bo
 			operandBuf[1] = x86TypedByteOperand{operand: ins.Args[form.second], width: width, read: required != 0 || form.second == form.memory, requiredBytes: required}
 			operandBuf[2] = x86TypedByteOperand{operand: ins.Args[form.destination], width: width, write: true}
 			effect := x86TypedByteEffect{operands: operandBuf[:3], vector: x86ResultVectorUpperWrite(form.legacy)}
+			return x86ResultApplyTypedVectorEffect(ins, effect, state, owned, arch, nativeRead), true
+		}
+	}
+
+	switch op0 {
+	case 'M', 'V':
+		if form, known, err := x86DuplicateMoveProperties(ins.Op, ins, arch); known {
+			if err != nil || !x86ResultNamedPredicateInstruction(ins) {
+				return false, true
+			}
+			srcWidth := int64(form.byteWidth)
+			if form.memory >= 0 {
+				srcWidth = int64(form.memoryBytes)
+			}
+			operandBuf[0] = x86TypedByteOperand{operand: form.source, width: srcWidth, read: true, requiredBytes: form.sourceMask()}
+			operandBuf[1] = x86TypedByteOperand{
+				operand: ins.Args[form.destination], width: int64(form.byteWidth),
+				read: form.mask >= 0 && !form.zeroing, write: true,
+			}
+			n := 2
+			if form.mask >= 0 {
+				operandBuf[n] = x86TypedByteOperand{operand: ins.Args[form.mask], width: 8, read: true}
+				n++
+			}
+			effect := x86TypedByteEffect{
+				operands: operandBuf[:n], vector: x86ResultVectorUpperWrite(form.legacy),
+				requireLegacyNativeMemory: form.legacy && form.spec.laneBytes == 4,
+			}
 			return x86ResultApplyTypedVectorEffect(ins, effect, state, owned, arch, nativeRead), true
 		}
 	}
@@ -538,6 +663,34 @@ func x86ResultTypedVectorEffectStep(ins Instr, state *x86ResultState, owned []bo
 				requireLegacyNativeMemory: form.legacy, softRegisterInputs: true,
 			}
 			return x86ResultApplyTypedVectorEffect(ins, effect, state, owned, arch, nativeRead), true
+		}
+	}
+
+	switch op0 {
+	case 'S':
+		if f, known, err := x86SHAProperties(ins.Op, ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			if !x86ResultNamedPredicateInstruction(ins) {
+				if !x86RawOrdinaryVectorSourceAt(ins, arch, f.source) {
+					return false, true
+				}
+				ins.x86Encoded, ins.x86SourceRaw = false, nil
+			}
+			input := uint64(0xffff)
+			if f.memory >= 0 {
+				if !x86ResultReadWithNativeContinuation(ins, f.sourceOperand, 16, state, owned, arch, nativeRead) {
+					return false, true
+				}
+			} else {
+				index, _ := amd64ParseXReg(f.sourceOperand.Reg)
+				input = state.vectorBytes(index)
+			}
+			destination, _ := amd64ParseXReg(ins.Args[f.destination].Reg)
+			defined := x86SHADefinedBytes(f, input, state.vectorBytes(destination), state.vectorBytes(0))
+			state.writeVector(destination, 16, defined, true)
+			return true, true
 		}
 	}
 
@@ -714,10 +867,233 @@ func x86ResultTypedVectorEffectStep(ins Instr, state *x86ResultState, owned []bo
 			state.writeVector(destination, form.byteWidth, defined, form.legacy)
 			return true, true
 		}
+		// Packed zero/sign extend (PMOVZX*, PMOVSX*, VPMOVZX*, VPMOVSX*).
+		if form, known, err := x86PackedZeroExtendProperties(ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			if !x86ResultNamedPredicateInstruction(ins) {
+				if !nativeRead || !x86RawZeroExtendSource(ins, arch) {
+					return false, true
+				}
+				ins.x86Encoded, ins.x86SourceRaw = false, nil
+			}
+			return x86ResultPackedExtendTransfer(ins, form, state, owned, arch, nativeRead), true
+		}
+		if form, known, err := x86PackedSignExtendProperties(ins, arch); known {
+			if err != nil || !x86ResultNamedPredicateInstruction(ins) {
+				return false, true
+			}
+			return x86ResultPackedExtendTransfer(ins, form, state, owned, arch, nativeRead), true
+		}
+		// Byte shuffle (PSHUFB, VPSHUFB).
+		if form, known, err := x86ByteShuffleProperties(ins.Op, ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			if !x86ResultCheckKMask(ins, form.mask, state) {
+				return false, true
+			}
+			control, ok := x86ResultReadVectorSourceMask(ins, ins.Args[form.first], form.memory >= 0,
+				form.byteWidth, form.memoryBytes, form.byteWidth, state, owned, arch, nativeRead)
+			if !ok {
+				return false, true
+			}
+			data, _ := amd64VectorRegisterIndex(ins.Args[form.second].Reg, form.byteWidth)
+			destination, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
+			initialized := x86ByteShuffleDefinedBytes(form.byteWidth, control, state.vectorBytes(data))
+			if form.mask >= 0 && !form.zeroing {
+				initialized &= state.vectorBytes(destination)
+			}
+			state.writeVector(destination, form.byteWidth, initialized, form.legacy)
+			return true, true
+		}
+		// Immediate shuffle (PSHUFD/HW/LW, VPSHUF*).
+		if form, known, err := x86ImmediateShuffleProperties(ins, arch); known {
+			if err != nil || form.spec.mmx {
+				return false, true
+			}
+			if !x86ResultCheckKMask(ins, form.mask, state) {
+				return false, true
+			}
+			if form.memory >= 0 {
+				if _, static := x86StaticSBReadAddress(form.source, arch); form.spec.legacy && !static &&
+					(!nativeRead || !x86OrdinaryNativeMemoryOperand(form.source, arch)) {
+					return false, true
+				}
+			}
+			source, ok := x86ResultReadVectorSourceMask(ins, form.source, form.memory >= 0,
+				form.byteWidth, form.memoryBytes, form.memoryBytes, state, owned, arch, nativeRead)
+			if !ok {
+				return false, true
+			}
+			var defined uint64
+			for output := 0; output < form.byteWidth; output++ {
+				defined |= (source >> uint(form.sourceByte(output)) & 1) << uint(output)
+			}
+			destination, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
+			if form.mask >= 0 && !form.zeroing {
+				defined &= state.vectorBytes(destination)
+			}
+			state.writeVector(destination, form.byteWidth, defined, form.spec.legacy)
+			return true, true
+		}
+		// Vector test (PTEST, VPTEST, VTESTPS, VTESTPD).
+		if form, known, err := x86VectorTestProperties(ins.Op, ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			if !x86ResultNamedPredicateInstruction(ins) {
+				if !nativeRead || !x86RawVectorTestSource(ins, arch) {
+					return false, true
+				}
+				ins.x86Encoded, ins.x86SourceRaw = false, nil
+			}
+			for role, operand := range ins.Args {
+				if operand.Kind != OpReg {
+					if !nativeRead || role != 0 || !x86ResultReadWithNativeContinuation(ins, operand,
+						int64(form.byteWidth), state, owned, arch, true) {
+						return false, true
+					}
+					continue
+				}
+				index, valid := amd64VectorRegisterIndex(operand.Reg, form.byteWidth)
+				mask := x86CallerVectorByteMask(int64(form.byteWidth))
+				if !valid || arch == "386" && index >= 8 || state.vectorBytes(index)&mask != mask {
+					return false, true
+				}
+			}
+			state.flags = x86ByteFlagsAll
+			return true, true
+		}
+		// Packed integer compare (PCMPEQ*, PCMPGT*, VPCMP*).
+		if form, known, err := x86PackedIntegerCompareProperties(ins.Op, ins, arch); known {
+			if err != nil || form.mmx {
+				return false, true
+			}
+			if nativeRead && !x86ResultNamedPredicateInstruction(ins) {
+				if !x86RawPackedIntegerCompareSource(ins, arch) {
+					return false, true
+				}
+				local := ins
+				local.x86Encoded, local.x86SourceRaw = false, nil
+				return x86ResultVectorCompareTransfer(local, form, state, owned, arch, true)
+			}
+			if nativeRead && !form.maskResult && form.mask < 0 && x86ResultNamedPredicateInstruction(ins) {
+				return x86ResultNamedCompareLaneTransfer(ins, form, state, owned, arch)
+			}
+			return x86ResultVectorCompareTransfer(ins, form, state, owned, arch, nativeRead)
+		}
+		if immForm, known, err := x86ImmediatePackedCompareProperties(ins.Op, ins, arch); known {
+			if err != nil || immForm.mmx {
+				return false, true
+			}
+			if nativeRead && !x86ResultNamedPredicateInstruction(ins) {
+				if !x86RawImmediatePackedCompareSource(ins, arch) {
+					return false, true
+				}
+				ins.x86Encoded, ins.x86SourceRaw = false, nil
+			}
+			return x86ResultVectorCompareTransfer(ins, immForm.x86PackedIntegerCompareForm, state, owned, arch, nativeRead)
+		}
+		// Packed shift (PSLL*, PSRL*, PSRA*, VPSLL*, VPSRL*, VPSRA*).
+		if form, known, err := x86PackedShiftProperties(ins.Op, ins, arch); known {
+			if err != nil || form.mmx {
+				return false, true
+			}
+			literal := x86RawByteShiftLiteralForm(ins, arch)
+			if !literal && !x86ResultNamedPredicateInstruction(ins) {
+				if !nativeRead || !x86RawPackedShiftSource(ins, arch) {
+					return false, true
+				}
+				local := ins
+				local.x86Encoded, local.x86SourceRaw = false, nil
+				local.x86PackedShiftEncoding, local.x86PackedShiftW = x86RawPackedShiftAbsent, false
+				return x86ResultPackedShiftInputs(local, form, state, owned, arch, true), true
+			}
+			if !literal && (ins.x86PackedShiftEncoding != x86RawPackedShiftAbsent || ins.x86PackedShiftW) {
+				return false, true
+			}
+			var pending x86ResultShiftBits
+			if nativeRead && ins.Args[form.data].Kind == OpReg {
+				input, _ := amd64VectorRegisterIndex(ins.Args[form.data].Reg, form.byteWidth)
+				destination, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
+				pending = x86ResultShiftBitSource(ins, form, state.vectorBytes(input), destination)
+			}
+			if !x86ResultPackedShiftInputs(ins, form, state, owned, arch, nativeRead) {
+				return false, true
+			}
+			if nativeRead {
+				state.shiftBits = pending
+			}
+			return true, true
+		}
+		// Carryless multiply (PCLMULQDQ, VPCLMULQDQ).
+		if f, known, err := x86CLMULProperties(ins.Op, ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			local := ins
+			if !x86ResultNamedPredicateInstruction(ins) {
+				if !nativeRead || !x86RawCLMULSource(ins, arch) {
+					return false, true
+				}
+				local.x86Encoded, local.x86SourceRaw = false, nil
+			}
+			source := x86CallerVectorByteMask(int64(f.byteWidth))
+			if f.memory >= 0 {
+				if !x86ResultReadWithNativeContinuation(local, local.Args[f.memory], int64(f.byteWidth), state, owned, arch, nativeRead) {
+					return false, true
+				}
+			} else {
+				index, _ := amd64VectorRegisterIndex(local.Args[f.source].Reg, f.byteWidth)
+				source = state.vectorBytes(index)
+			}
+			second, _ := amd64VectorRegisterIndex(local.Args[f.second].Reg, f.byteWidth)
+			destination, _ := amd64VectorRegisterIndex(local.Args[f.destination].Reg, f.byteWidth)
+			state.writeVector(destination, f.byteWidth, x86CLMULDefinedBytes(f, source, state.vectorBytes(second)), f.legacy)
+			return true, true
+		}
 	}
 
 	// VEX/EVEX-only families (all start with 'V').
 	if op0 == 'V' {
+		// Packed test to K-mask (VPTESTM*, VPTESTNM*).
+		if f, known, err := x86PackedTestMaskProperties(ins.Op, ins, arch); known {
+			if err != nil || !x86ResultNamedPredicateInstruction(ins) {
+				return false, true
+			}
+			firstWidth, secondWidth := int64(f.byteWidth), int64(f.byteWidth)
+			if f.memory == f.first {
+				firstWidth = int64(f.memoryBytes)
+			} else if f.memory == f.second {
+				secondWidth = int64(f.memoryBytes)
+			}
+			operandBuf[0] = x86TypedByteOperand{operand: ins.Args[f.first], width: firstWidth, read: true}
+			operandBuf[1] = x86TypedByteOperand{operand: ins.Args[f.second], width: secondWidth, read: true}
+			operandBuf[2] = x86TypedByteOperand{operand: ins.Args[f.destination], width: 8, write: true}
+			n := 3
+			if f.mask >= 0 {
+				operandBuf[n] = x86TypedByteOperand{operand: ins.Args[f.mask], width: 8, read: true}
+				n++
+			}
+			effect := x86TypedByteEffect{operands: operandBuf[:n], vector: x86ResultVectorUpperWrite(false)}
+			return x86ResultApplyTypedVectorEffect(ins, effect, state, owned, arch, nativeRead), true
+		}
+		// Scalar, block and K-data broadcasts (VPBROADCAST*, VBROADCAST*).
+		if f, known, err := x86BroadcastProperties(ins.Op, ins, arch); known {
+			if err != nil {
+				return false, true
+			}
+			local := ins
+			if !x86ResultNamedPredicateInstruction(ins) {
+				if !nativeRead || !x86RawBroadcastSource(ins, arch) {
+					return false, true
+				}
+				local.x86Encoded, local.x86SourceRaw = false, nil
+			}
+			return x86ResultBroadcastTransfer(local, f, state, owned, arch, nativeRead, false)
+		}
 		// Named half-precision conversions (VCVTPH2PS, VCVTPS2PH).
 		if f, known, err := x86NamedHalfProperties(ins.Op, ins, arch); known {
 			if err != nil || f.undefinedOpcode() {
@@ -1230,4 +1606,128 @@ func x86ResultPackedVectorRead(operand Operand, width int64, state *x86ResultSta
 	index, valid := amd64VectorRegisterIndex(operand.Reg, int(width))
 	mask := x86CallerVectorByteMask(width)
 	return valid && (arch != "386" || index < 8) && mask != 0 && state.vectorBytes(index)&mask == mask
+}
+
+func x86ResultPackedExtendTransfer(ins Instr, form x86PackedExtendForm, state *x86ResultState,
+	owned []bool, arch string, conditionalNativeRead bool) bool {
+	if !x86ResultCheckKMask(ins, form.mask, state) {
+		return false
+	}
+	var input uint64
+	if form.memory >= 0 {
+		if !x86ResultReadWithNativeContinuation(ins, ins.Args[0], int64(form.memoryBytes), state, owned, arch, conditionalNativeRead) {
+			return false
+		}
+		input = x86CallerVectorByteMask(int64(form.memoryBytes))
+	} else {
+		index, _ := amd64VectorRegisterIndex(ins.Args[0].Reg, form.sourceRegisterBytes)
+		input = state.vectorBytes(index)
+	}
+	destination, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
+	initialized := x86PackedExtendDefinedBytes(form, input, state.vectorBytes(destination))
+	state.writeVector(destination, form.byteWidth, initialized, !form.spec.vector)
+	return true
+}
+
+func x86ResultNamedCompareLaneTransfer(ins Instr, form x86PackedIntegerCompareForm,
+	state *x86ResultState, owned []bool, arch string) (bool, bool) {
+	required := x86CallerVectorByteMask(int64(form.byteWidth))
+	defined := required
+	if !form.identicalVectorInputs(ins) {
+		for _, input := range []int{form.first, form.second} {
+			operand := ins.Args[input]
+			if input == form.first {
+				operand = form.source
+			}
+			if input == form.memory {
+				if !x86ResultReadWithNativeContinuation(ins, operand, int64(form.memoryBytes), state, owned, arch, true) {
+					return false, true
+				}
+				continue
+			}
+			index, valid := amd64VectorRegisterIndex(operand.Reg, form.byteWidth)
+			if !valid {
+				return false, true
+			}
+			defined &= state.vectorBytes(index)
+		}
+	}
+	laneBytes := form.spec.laneBits / 8
+	for offset := 0; offset < form.byteWidth; offset += laneBytes {
+		lane := x86CallerVectorByteMask(int64(laneBytes)) << uint(offset)
+		if defined&lane != lane {
+			defined &^= lane
+		}
+	}
+	destination, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
+	state.writeVector(destination, form.byteWidth, defined, form.legacy)
+	return true, true
+}
+
+func x86ResultVectorCompareTransfer(ins Instr, form x86PackedIntegerCompareForm, state *x86ResultState,
+	owned []bool, arch string, nativeRead bool) (bool, bool) {
+	if !x86ResultCheckKMask(ins, form.mask, state) {
+		return false, true
+	}
+	required := x86CallerVectorByteMask(int64(form.byteWidth))
+	for _, input := range []int{form.first, form.second} {
+		if form.identicalVectorInputs(ins) {
+			break
+		}
+		operand := ins.Args[input]
+		if input == form.first {
+			operand = form.source
+		}
+		if input == form.memory {
+			if !x86ResultReadWithNativeContinuation(ins, operand, int64(form.memoryBytes), state, owned, arch, nativeRead) {
+				return false, true
+			}
+			continue
+		}
+		index, valid := amd64VectorRegisterIndex(operand.Reg, form.byteWidth)
+		if !valid || state.vectorBytes(index)&required != required {
+			return false, true
+		}
+	}
+	destination := ins.Args[form.destination].Reg
+	if form.maskResult {
+		index, _ := amd64ParseKReg(destination)
+		state.masks[index] = true
+	} else {
+		index, _ := amd64VectorRegisterIndex(destination, form.byteWidth)
+		state.writeVector(index, form.byteWidth, required, form.legacy)
+	}
+	return true, true
+}
+
+func x86ResultPackedShiftInputs(ins Instr, form x86PackedShiftForm, state *x86ResultState, owned []bool, arch string, nativeRead bool) bool {
+	if !x86ResultCheckKMask(ins, form.mask, state) {
+		return false
+	}
+	if form.memory >= 0 {
+		memory := ins.Args[form.memory]
+		if _, static := x86StaticSBReadAddress(memory, arch); form.legacy && !static &&
+			(!nativeRead || !x86OrdinaryNativeMemoryOperand(memory, arch)) {
+			return false
+		}
+		if !x86ResultReadWithNativeContinuation(ins, memory, int64(form.memoryBytes), state, owned, arch, nativeRead) {
+			return false
+		}
+	}
+	bytes := func(index int) uint64 {
+		if index == form.memory {
+			return x86CallerVectorByteMask(int64(form.byteWidth))
+		}
+		operand := ins.Args[index]
+		register, _ := amd64VectorRegisterIndex(operand.Reg, amd64VectorByteWidth(operand.Reg))
+		return state.vectorBytes(register)
+	}
+	data, counts := bytes(form.data), ^uint64(0)
+	if form.countOperand.Kind != OpImm {
+		counts = bytes(form.count)
+	}
+	destination, _ := amd64VectorRegisterIndex(ins.Args[form.destination].Reg, form.byteWidth)
+	state.writeVector(destination, form.byteWidth,
+		x86PackedShiftDefinedBytes(form, data, counts, state.vectorBytes(destination)), form.legacy)
+	return true
 }

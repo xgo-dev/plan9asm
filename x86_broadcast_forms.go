@@ -108,16 +108,6 @@ func x86BroadcastProperties(op Op, ins Instr, arch string) (x86BroadcastForm, bo
 	return f, true, x86Mode32VectorRegisterContext(ins, arch)
 }
 
-// A broadcast reads its exact scalar/block source and defines the complete
-// destination width. A low-X source cannot stand in for a wider block input.
-func x86ResultBroadcastStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	return x86ResultBroadcastStepWithRead(ins, state, owned, arch, false)
-}
-
-func x86ResultBroadcastStepWithRead(ins Instr, state *x86ResultState, owned []bool, arch string, nativeRead bool) (bool, bool) {
-	return x86ResultBroadcastInputs(ins, state, owned, arch, nativeRead, false)
-}
-
 func x86ResultBroadcastInputs(ins Instr, state *x86ResultState, owned []bool, arch string, nativeRead, boundLiteral bool) (bool, bool) {
 	f, known, err := x86BroadcastProperties(ins.Op, ins, arch)
 	if !known {

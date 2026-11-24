@@ -421,7 +421,7 @@ func TestX86ScalarFloatIntegerRawSavedFlagsAndExactPostDomains(t *testing.T) {
 					if got != want {
 						t.Error("raw scalar output did not revoke exactly its GP caller-address destination", got, want)
 					}
-					accepted, known := x86ResultScalarFloatIntegerStepWithRead(ins, &state, nil, 0, arch, true)
+					accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 					if !known || !accepted || state.flags != before.flags || state.direction != before.direction || !reflect.DeepEqual(state.valueStack, before.valueStack) {
 						t.Error("raw conversion altered six status flags, DF, saved bytes or ID", known, accepted)
 					}

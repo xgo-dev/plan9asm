@@ -89,33 +89,3 @@ func x86ResultPredicateEdge(state x86ResultState, ins Instr, edge int) x86Result
 	}
 	return state
 }
-
-func x86ResultVectorTestStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	return x86ResultVectorTestStepWithRead(ins, state, owned, arch, false)
-}
-
-func x86ResultVectorTestStepWithRead(ins Instr, state *x86ResultState, owned []bool, arch string, native bool) (bool, bool) {
-	form, known, err := x86VectorTestProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	if !x86ResultNamedPredicateInstruction(ins) {
-		return false, true
-	}
-	for role, operand := range ins.Args {
-		if operand.Kind != OpReg {
-			if !native || role != 0 || !x86ResultReadWithNativeContinuation(ins, operand,
-				int64(form.byteWidth), state, owned, arch, true) {
-				return false, true // Shape cannot supply native memory or alignment.
-			}
-			continue
-		}
-		index, valid := amd64VectorRegisterIndex(operand.Reg, form.byteWidth)
-		mask := x86CallerVectorByteMask(int64(form.byteWidth))
-		if !valid || arch == "386" && index >= 8 || state.vectorBytes(index)&mask != mask {
-			return false, true
-		}
-	}
-	state.flags = x86ByteFlagsAll
-	return true, true
-}

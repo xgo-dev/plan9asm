@@ -89,7 +89,7 @@ func TestX86MULXUnknownScratchTransferKeepsBothOutputsUnknown(t *testing.T) {
 				before.canonicalGP[1], before.canonicalGP[3] = 0xff, 0xff
 				before.pointerGP[1], before.pointerGP[3] = true, true // Old destinations are never inputs.
 				state := before.clone()
-				if accepted, known := x86LoweredMULXResultStep(ins, &state, nil, 0, arch); !accepted || !known {
+				if accepted, known := x86LoweredTypedGPEffectStep(ins, &state, nil, 0, arch); !accepted || !known {
 					t.Fatal("closed nontrapping scratch operation was rejected")
 				}
 				want := uint8(0xf0)
@@ -104,7 +104,7 @@ func TestX86MULXUnknownScratchTransferKeepsBothOutputsUnknown(t *testing.T) {
 				opaque := before.clone()
 				opaque.pointerGP[2] = true
 				original := opaque.clone()
-				if accepted, _ := x86LoweredMULXResultStep(ins, &opaque, nil, 0, arch); accepted || !reflect.DeepEqual(opaque, original) {
+				if accepted, _ := x86LoweredTypedGPEffectStep(ins, &opaque, nil, 0, arch); accepted || !reflect.DeepEqual(opaque, original) {
 					t.Fatal("unknown-result fallback consumed an opaque pointer or mutated a rejected state")
 				}
 				if !x86TypedFPResultNeedsProof(Func{Instrs: []Instr{ins}}, FuncSig{Ret: Void}, arch) {

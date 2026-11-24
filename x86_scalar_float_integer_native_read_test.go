@@ -201,14 +201,14 @@ func TestX86ScalarFloatIntegerNativeEffectsDoNotGrantObserverBytes(t *testing.T)
 				state := &x86ResultState{flags: 0x3f}
 				state.pointerGP[7] = true
 				before := state.clone()
-				accepted, known := x86ResultScalarFloatIntegerStep(ins, state, nil, 0, arch)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, state, nil, arch, false, false)
 				if !known || accepted || !reflect.DeepEqual(*state, before) {
 					t.Fatal("strict observer borrowed a native read or mutated failed state", known, accepted)
 				}
 				ins = x86ScalarLaneInstruction(t, name+" X1,AX")
 				state.writeVector(1, 64, ^uint64(0), false)
 				before = state.clone()
-				accepted, known = x86ResultScalarFloatIntegerStep(ins, state, nil, 0, arch)
+				accepted, known = x86ResultTypedVectorEffectStep(ins, state, nil, arch, false, false)
 				if !known || !accepted || state.flags != before.flags || state.vectorBytes(1) != before.vectorBytes(1) || state.pointerGP[7] != before.pointerGP[7] {
 					t.Fatal("conversion changed FLAGS, its source, or independent pointer identity", known, accepted)
 				}

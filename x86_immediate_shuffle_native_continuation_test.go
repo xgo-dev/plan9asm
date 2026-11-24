@@ -118,7 +118,7 @@ func TestX86ImmediateShuffleNativeReadDoesNotInventInputsOrQueryRights(t *testin
 		instruction := x86ScalarLaneInstruction(t, "VPSHUFD.BCST $27,(AX),Z1")
 		state := x86ResultState{flags: x86ByteFlagsAll}
 		state.pointerGP[0], state.callerAddressGP[0] = true, true
-		if accepted, known := x86ResultImmediateShuffleStep(instruction, &state, nil, arch); accepted || !known {
+		if accepted, known := x86ResultTypedVectorEffectStep(instruction, &state, nil, arch, false, false); accepted || !known {
 			t.Fatal("standalone result query acquired a paired native-read contract", arch, accepted, known)
 		}
 	}

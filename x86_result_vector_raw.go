@@ -479,3 +479,194 @@ func x86RawPackedConversionSource(ins Instr, arch string) bool {
 	form, known, err := x86PackedConversionProperties(ins, arch)
 	return known && err == nil && !form.mmx
 }
+
+func x86RawAESSource(ins Instr, arch string) bool {
+	form, known, err := x86AESProperties(ins.Op, ins, arch)
+	return known && err == nil && x86RawOrdinaryVectorSourceAt(ins, arch, form.source)
+}
+
+func x86RawSHASource(ins Instr, arch string) bool {
+	f, known, err := x86SHAProperties(ins.Op, ins, arch)
+	return known && err == nil && x86RawOrdinaryVectorSourceAt(ins, arch, f.source)
+}
+
+func x86RawCLMULSource(ins Instr, arch string) bool {
+	f, known, err := x86CLMULProperties(ins.Op, ins, arch)
+	return known && err == nil && x86RawOrdinaryVectorSourceAt(ins, arch, f.source)
+}
+
+func x86RawVectorTestSource(ins Instr, arch string) bool {
+	_, known, err := x86VectorTestProperties(ins.Op, ins, arch)
+	return known && err == nil && x86RawOrdinaryVectorSource(ins, arch)
+}
+
+func x86RawBroadcastSource(ins Instr, arch string) bool {
+	_, known, err := x86BroadcastProperties(ins.Op, ins, arch)
+	return known && err == nil && x86RawOrdinaryVectorSource(ins, arch)
+}
+
+type x86RawCOMIIdentity struct {
+	arch          string
+	encoded, evex bool
+}
+
+func x86COMIRawIdentity(ins Instr, arch string) x86RawCOMIIdentity {
+	form, known, err := x86COMIProperties(ins, arch)
+	if !known || err != nil || !form.spec.vector {
+		return x86RawCOMIIdentity{}
+	}
+	return x86RawCOMIIdentity{arch, ins.x86Encoded, ins.x86ScalarFlagCompareEVEX}
+}
+
+func x86RawCOMISource(ins Instr, arch string) bool {
+	origin := ins.x86SourceRaw
+	identity := x86COMIRawIdentity(ins, arch)
+	return origin != nil && identity.arch != "" && origin.comi.arch == arch &&
+		origin.comi == identity && x86RawOrdinaryVectorSource(ins, arch)
+}
+
+func x86COMIRawReplayRequired(fn Func, arch string) bool {
+	hasRaw := func(instructions []Instr) bool {
+		for _, instruction := range instructions {
+			form, known, _ := x86COMIProperties(instruction, arch)
+			if known && form.spec.vector && (instruction.x86SourceRaw != nil ||
+				instruction.x86Encoded || instruction.x86ScalarFlagCompareEVEX) {
+				return true
+			}
+		}
+		return false
+	}
+	return hasRaw(fn.Instrs) || fn.x86RawReplay != nil && hasRaw(fn.x86RawReplay.decoded)
+}
+
+type x86RawPackedShiftEncoding uint8
+
+const (
+	x86RawPackedShiftAbsent x86RawPackedShiftEncoding = iota
+	x86RawPackedShiftVEX
+	x86RawPackedShiftEVEX
+)
+
+type x86RawPackedShiftIdentity struct {
+	arch     string
+	encoding x86RawPackedShiftEncoding
+	w        bool
+}
+
+func x86PackedShiftRawIdentity(ins Instr, arch string) x86RawPackedShiftIdentity {
+	form, known, err := x86PackedShiftProperties(ins.Op, ins, arch)
+	if !known || err != nil || form.legacy || !ins.x86Encoded ||
+		ins.x86PackedShiftEncoding != x86RawPackedShiftVEX && ins.x86PackedShiftEncoding != x86RawPackedShiftEVEX {
+		return x86RawPackedShiftIdentity{}
+	}
+	return x86RawPackedShiftIdentity{arch, ins.x86PackedShiftEncoding, ins.x86PackedShiftW}
+}
+
+func x86RawPackedShiftEncodingSource(ins Instr, arch string) bool {
+	form, known, err := x86PackedShiftProperties(ins.Op, ins, arch)
+	origin := ins.x86SourceRaw
+	return known && err == nil && !form.legacy && origin != nil && origin.packedShift.arch == arch &&
+		origin.packedShift == x86PackedShiftRawIdentity(ins, arch) && origin.op == ins.Op &&
+		origin.vectorBytes == ins.x86VectorBytes && origin.addressBits == ins.x86AddressBits &&
+		(reflect.DeepEqual(origin.args, ins.Args) || x86RawLiteralSourceIdentity(ins, arch))
+}
+
+func x86RawPackedShiftSource(ins Instr, arch string) bool {
+	form, known, err := x86PackedShiftProperties(ins.Op, ins, arch)
+	if !known || err != nil || !x86RawPackedShiftEncodingSource(ins, arch) ||
+		x86Mode32VectorRegisterContext(ins, arch) != nil {
+		return false
+	}
+	source := form.data
+	if form.memory >= 0 {
+		source = form.memory
+	}
+	return x86RawOrdinaryVectorSourceAt(ins, arch, source)
+}
+
+func x86PackedShiftRawReplayRequired(fn Func, arch string) bool {
+	if fn.x86RawReplay == nil {
+		return false
+	}
+	for _, ins := range fn.x86RawReplay.decoded {
+		if form, known, _ := x86PackedShiftProperties(ins.Op, ins, arch); known && !form.legacy {
+			return true
+		}
+	}
+	return false
+}
+
+func x86RawPackedIntegerCompareSource(ins Instr, arch string) bool {
+	form, known, err := x86PackedIntegerCompareProperties(ins.Op, ins, arch)
+	return known && err == nil && !form.mmx && x86RawOrdinaryVectorSourceAt(ins, arch, form.first)
+}
+
+func x86RawImmediatePackedCompareSource(ins Instr, arch string) bool {
+	_, known, err := x86ImmediatePackedCompareProperties(ins.Op, ins, arch)
+	return known && err == nil && x86RawOrdinaryVectorSourceAt(ins, arch, 1)
+}
+
+type x86RawLegacyFloatCompareIdentity struct {
+	arch    string
+	encoded bool
+}
+
+func x86LegacyFloatCompareRawIdentity(ins Instr, arch string) x86RawLegacyFloatCompareIdentity {
+	form, known, err := x86FloatCompareProperties(ins, arch)
+	if !known || err != nil || !form.legacy {
+		return x86RawLegacyFloatCompareIdentity{}
+	}
+	return x86RawLegacyFloatCompareIdentity{arch: arch, encoded: ins.x86Encoded}
+}
+
+func x86RawLegacyFloatCompareSource(ins Instr, arch string) bool {
+	form, known, err := x86FloatCompareProperties(ins, arch)
+	origin := ins.x86SourceRaw
+	return known && err == nil && form.legacy && origin != nil &&
+		origin.legacyFloatCompare.arch == arch &&
+		origin.legacyFloatCompare == x86LegacyFloatCompareRawIdentity(ins, arch) &&
+		x86RawOrdinaryVectorSourceAt(ins, arch, form.first)
+}
+
+type x86RawScalarFloatIntegerIdentity struct {
+	arch          string
+	encoded, evex bool
+}
+
+func x86ScalarFloatIntegerRawIdentity(ins Instr, arch string) x86RawScalarFloatIntegerIdentity {
+	form, known, err := x86ScalarFloatIntegerProperties(ins, arch)
+	if !known || err != nil || form.evex != ins.x86ScalarFloatIntegerEVEX {
+		return x86RawScalarFloatIntegerIdentity{}
+	}
+	return x86RawScalarFloatIntegerIdentity{arch, ins.x86Encoded, ins.x86ScalarFloatIntegerEVEX}
+}
+
+func x86RawScalarFloatIntegerSource(ins Instr, arch string) bool {
+	origin := ins.x86SourceRaw
+	identity := x86ScalarFloatIntegerRawIdentity(ins, arch)
+	return origin != nil && identity.arch == arch && origin.scalarFloatInteger == identity &&
+		x86RawOrdinaryVectorSource(ins, arch)
+}
+
+// Raw-only guards delegating to x86ResultTypedVectorEffectStep for direct
+// raw-origin mutation unit tests.
+func x86LoweredRawBroadcastStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
+	if x86ResultNamedPredicateInstruction(ins) {
+		return false, false
+	}
+	return x86ResultTypedVectorEffectStep(ins, state, owned, arch, true, true)
+}
+
+func x86LoweredPackedIntegerCompareStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
+	if x86ResultNamedPredicateInstruction(ins) {
+		return false, false
+	}
+	return x86ResultTypedVectorEffectStep(ins, state, owned, arch, true, true)
+}
+
+func x86LoweredRawPackedShiftStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
+	if x86ResultNamedPredicateInstruction(ins) {
+		return false, false
+	}
+	return x86ResultTypedVectorEffectStep(ins, state, owned, arch, true, true)
+}

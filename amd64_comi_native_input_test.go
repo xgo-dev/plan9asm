@@ -153,7 +153,7 @@ func TestX86COMINativeReadPreservesUnrelatedState(t *testing.T) {
 				}
 				state.writeVector(1, 64, bytes, false)
 				before := state.clone()
-				if accepted, known := x86ResultCOMIStep(ins, &state, nil, arch); !known || accepted || !reflect.DeepEqual(state, before) {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, false); !known || accepted || !reflect.DeepEqual(state, before) {
 					t.Fatal("standalone observer borrowed a conditional native read", arch, op, missing)
 				}
 				width := 4
@@ -161,7 +161,7 @@ func TestX86COMINativeReadPreservesUnrelatedState(t *testing.T) {
 					width = 8
 				}
 				want := missing < 0 || missing >= width
-				accepted, known := x86ResultCOMIStepWithRead(ins, &state, nil, arch, true)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 				if want {
 					before.flags = x86ByteFlagsAll
 				}

@@ -271,43 +271,6 @@ func x86IMULImmediateValue(value int64, bits int) string {
 // The explicit IMUL emitter uses evalSizedNativeGPSource's exact volatile read.
 // Continuing past it supplies only this instruction's numerical source bytes;
 // the existing effect still owns old-destination, immediate and FLAGS roles.
-func x86LoweredExplicitIMULNativeRead(ins Instr, state *x86ResultState, owned []bool,
-	resultOffset int64, arch string) (bool, bool) {
-	form, known, err := x86ExplicitIMULProperties(ins.Op, ins, arch)
-	if !known || err != nil || form.source.Kind != OpMem || form.source.Mem.Sym != "" ||
-		!x86OrdinaryNativeMemoryOperand(form.source, arch) || ins.x86NumericalRead != nil {
-		return false, false // Logical fields, static sources and actual source certificates keep their own consumers.
-	}
-	if !x86ResultNamedPredicateInstruction(ins) {
-		return false, true
-	}
-	effect := x86ExplicitIMULByteEffect(form)
-	if effect.dynamicMemory || state.flags&effect.flagsRead != effect.flagsRead {
-		return false, true
-	}
-	for _, operand := range effect.operands {
-		if !operand.read {
-			continue
-		}
-		if operand.operand.Kind == OpReg {
-			index, _, valid := x86ResultGP(operand.operand.Reg, operand.width, arch)
-			if !valid || state.pointerGP[index] {
-				return false, true
-			}
-		}
-		if !x86ResultReadWithNativeGPContinuation(ins, operand.operand, operand.width, state, owned, arch) {
-			return false, true
-		}
-	}
-	for _, operand := range effect.operands {
-		if operand.write && !x86ResultStore(operand.operand, operand.width, state, owned, resultOffset, arch) {
-			return false, true
-		}
-	}
-	state.flags = state.flags&^effect.flagsKilled | effect.flagsDefined
-	return true, true
-}
-
 func x86IMULEncodedImmediate(value int64, bits int) int64 {
 	switch bits {
 	case 16:

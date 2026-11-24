@@ -17,7 +17,7 @@ func TestX86AESDeadRegisterResultsStayUnknownWithoutChangingFlags(t *testing.T) 
 			state.pointerGP[6], state.gp[3], state.masks[2] = true, 0x55, true
 			want := state.clone()
 			want.writeVector(destination, 16, 0, !strings.HasPrefix(name, "V"))
-			accepted, known := x86LoweredAESResultStep(x86ScalarLaneInstruction(t, row), &state, nil, arch)
+			accepted, known := x86ResultTypedVectorEffectStep(x86ScalarLaneInstruction(t, row), &state, nil, arch, true, true)
 			if !known || !accepted || !reflect.DeepEqual(state, want) {
 				t.Fatal("dead nontrapping AES result must remain unknown without erasing independent FLAGS", arch, row)
 			}
