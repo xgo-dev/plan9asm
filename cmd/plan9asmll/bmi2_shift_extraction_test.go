@@ -7,7 +7,7 @@ import (
 )
 
 func TestExtractSupportedOpsBMI2ShiftRotateTypedTable(t *testing.T) {
-	const file = "amd64_lower_bmi2_shift.go"
+	const file = "amd64_lower_compact.go"
 	source, err := os.ReadFile(filepath.Join("../..", file))
 	if err != nil {
 		t.Fatal(err)

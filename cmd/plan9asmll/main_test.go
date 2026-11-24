@@ -1653,12 +1653,12 @@ func TestExtractSupportedOpsFindsARMShifterAndMultiplySpecifications(t *testing.
 }
 
 func TestExtractSupportedOpsFindsCompleteADXSpecTable(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("../..", "amd64_lower_adx.go"))
+	data, err := os.ReadFile(filepath.Join("../..", "amd64_lower_compact.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "amd64_lower_adx.go"), data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "amd64_lower_compact.go"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "translate.go"), []byte("package plan9asm\n"), 0600); err != nil {
@@ -1728,12 +1728,12 @@ func TestExtractSupportedOpsFindsCompleteBLSSpecTable(t *testing.T) {
 }
 
 func TestExtractSupportedOpsFindsCompleteArithmeticShiftSpecTable(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("../..", "amd64_lower_arithmetic_shift.go"))
+	data, err := os.ReadFile(filepath.Join("../..", "amd64_lower_compact.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "amd64_lower_arithmetic_shift.go"), data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "amd64_lower_compact.go"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "translate.go"), []byte("package plan9asm\n"), 0600); err != nil {
@@ -1785,12 +1785,12 @@ func TestExtractSupportedOpsFindsCompleteHorizontalIntegerSpecTable(t *testing.T
 }
 
 func TestExtractSupportedOpsFindsCompleteHorizontalFloatSpecTable(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("../..", "amd64_lower_horizontal_float.go"))
+	data, err := os.ReadFile(filepath.Join("../..", "amd64_lower_compact.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "amd64_lower_horizontal_float.go"), data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "amd64_lower_compact.go"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "translate.go"), []byte("package plan9asm\n"), 0600); err != nil {

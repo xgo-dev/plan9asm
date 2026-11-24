@@ -10,7 +10,7 @@ root_partitions=16
 shards=32
 case "$flavor" in
   test) timeout=45m ;;
-  pr-test) timeout=25m; root_partitions=8; shards=32 ;;
+  pr-test) timeout=30m; root_partitions=16; shards=32 ;;
   race) timeout=60m; flags=(-race); root_partitions=32; shards=64 ;;
   coverage) timeout=45m; flags=(-coverprofile=coverage-root.out); root_partitions=32; shards=64 ;;
   *) echo "unknown module suite role" >&2; exit 1 ;;

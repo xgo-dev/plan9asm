@@ -227,10 +227,11 @@ func TestCIPRGateBoundedBudgetAndCoverage(t *testing.T) {
 		"pull_request:",
 		"cancel-in-progress: true",
 		"bash scripts/test-module-ci.sh pr-test execute ${{ matrix.module-owner }} ${{ matrix.root-partition }}",
-		"module-role: [root-0, root-1, root-2, root-3, root-4, root-5, root-6, root-7, profile, other]",
+		"module-role: [root-0, root-1, root-2, root-3, root-4, root-5, root-6, root-7,",
+		"root-8, root-9, root-10, root-11, root-12, root-13, root-14, root-15, profile, other]",
 		"go-version: '1.20.x'",
 		"go test -race -count=1",
-		"-shards 4",
+		"-shards 8",
 		"for target_goos in android freebsd linux netbsd openbsd plan9; do",
 	} {
 		if !strings.Contains(text, required) {
