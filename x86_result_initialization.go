@@ -387,6 +387,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		stringCount := state.stringCount
 		cpuidRootLeaf := state.cpuidRootLeaf
 		ordinaryStep := false
+		relativeAdjusted := false
 		keptPointer := -1
 		var spilledOrigin uint16
 		defer func() {
@@ -413,6 +414,7 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			ordinaryStep = true
 			if relativeStack != nil {
 				if form, adjusted := relativeStack.adjustments[ordinal]; adjusted {
+					relativeAdjusted = true
 					state.flags = form.relativeFlags()
 					if state.relativeScratch != 0 {
 						return state.adjustRelativeValueStack(form, arch)
@@ -481,6 +483,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 		state.callerAddressGP = x86ResultCallerAddressesAfterTransfer(ins, before, state.callerAddressGP, state.callerAddressFP, arch)
 		if keptPointer >= 0 {
 			state.callerAddressGP[keptPointer] = true
+		}
+		if state.ownedStaticAddrGP != nil {
+			x86ResultOwnedStaticAddrAfter(ins, state, arch, relativeAdjusted)
 		}
 		if state.stringCursorGP != [16]bool{} {
 			if _, stringMemory, _ := x86StringInstructionProperties(ins, arch); !stringMemory {
@@ -921,10 +926,11 @@ type x86ResultState struct {
 
 	// Incoming pointer identities are not numerical register bytes. This is
 	// only an initialization observation, never a pointee/backing permission.
-	pointerFP      map[int64]bool // immutable after deriving the actual ABI0 layout
-	pointerGP      [16]bool
-	dataBPReads    bool     // Immutable whole-source scope for the paired packed reader.
-	stringCursorGP [16]bool // Caller-derived indexes usable by the paired string helper.
+	pointerFP         map[int64]bool // immutable after deriving the actual ABI0 layout
+	pointerGP         [16]bool
+	ownedStaticAddrGP *[16]bool // Owned native-word SB LEA identities; never numerical bytes or dereference authority.
+	dataBPReads       bool      // Immutable whole-source scope for the paired packed reader.
+	stringCursorGP    [16]bool  // Caller-derived indexes usable by the paired string helper.
 	// A separate actual typed-entry address-bit domain. SDK literal/OR
 	// carriers never seed it; no numerical GP or memory facts follow.
 	callerAddressFP        map[int64]bool // immutable shared entry layout
@@ -954,6 +960,7 @@ func (state *x86ResultState) revokeABICallRegisters() {
 	state.nativeMMX = [8]uint8{}
 	state.masks = [8]bool{}
 	state.pointerGP = [16]bool{}
+	state.ownedStaticAddrGP = nil
 	state.stringCursorGP = [16]bool{}
 	state.callerAddressGP = [16]bool{}
 	state.callerAddressOrigin = [16]uint16{}
@@ -981,6 +988,10 @@ func (state x86ResultState) clone() x86ResultState {
 		aliases := *state.boolFrameGP
 		state.boolFrameGP = &aliases
 	}
+	if state.ownedStaticAddrGP != nil {
+		addrs := *state.ownedStaticAddrGP
+		state.ownedStaticAddrGP = &addrs
+	}
 	state.auto = append([]bool(nil), state.auto...)
 	if state.mode32Frame != nil {
 		frame := *state.mode32Frame
@@ -999,6 +1010,10 @@ func (state x86ResultState) clone() x86ResultState {
 		stack := *state.valueStack
 		stack.bytes = append([]uint8(nil), stack.bytes...)
 		stack.refinable = append([]uint8(nil), stack.refinable...)
+		if stack.ownedStaticAddrCells != nil {
+			cells := *stack.ownedStaticAddrCells
+			stack.ownedStaticAddrCells = &cells
+		}
 		if stack.correlation != nil {
 			copy := *stack.correlation
 			copy.bytes = append([][8]uint8(nil), copy.bytes...)
@@ -1142,6 +1157,20 @@ func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 			merged.resultAddressGP[index] = x86ResultSlotAddress{}
 		}
 	}
+	if merged.ownedStaticAddrGP != nil {
+		if other.ownedStaticAddrGP == nil {
+			merged.ownedStaticAddrGP = nil
+		} else {
+			anyOwned := false
+			for index := range merged.ownedStaticAddrGP {
+				merged.ownedStaticAddrGP[index] = merged.ownedStaticAddrGP[index] && other.ownedStaticAddrGP[index]
+				anyOwned = anyOwned || merged.ownedStaticAddrGP[index]
+			}
+			if !anyOwned {
+				merged.ownedStaticAddrGP = nil
+			}
+		}
+	}
 	for index := range merged.xmm {
 		merged.xmm[index] &= other.xmm[index]
 		merged.vectorUpper[index] &= other.vectorUpper[index]
@@ -1164,9 +1193,24 @@ func (state x86ResultState) intersect(other x86ResultState) x86ResultState {
 			merged.valueStack.bytes, merged.valueStack.invalid = nil, true
 			merged.valueStack.refinable = nil
 			merged.valueStack.pointerCells = [8]uint64{}
+			merged.valueStack.ownedStaticAddrCells = nil
 		} else {
 			for index := range merged.valueStack.pointerCells {
 				merged.valueStack.pointerCells[index] &= other.valueStack.pointerCells[index]
+			}
+			if merged.valueStack.ownedStaticAddrCells != nil {
+				if other.valueStack.ownedStaticAddrCells == nil {
+					merged.valueStack.ownedStaticAddrCells = nil
+				} else {
+					var any uint64
+					for index := range merged.valueStack.ownedStaticAddrCells {
+						merged.valueStack.ownedStaticAddrCells[index] &= other.valueStack.ownedStaticAddrCells[index]
+						any |= merged.valueStack.ownedStaticAddrCells[index]
+					}
+					if any == 0 {
+						merged.valueStack.ownedStaticAddrCells = nil
+					}
+				}
 			}
 			if merged.valueStack.refinable != nil || other.valueStack.refinable != nil {
 				left, right := merged.valueStack.refinable, other.valueStack.refinable
@@ -1314,6 +1358,7 @@ func x86ResultStore(arg Operand, width int64, state *x86ResultState, owned []boo
 		index, mask, valid := x86ResultGP(arg.Reg, width, arch)
 		if valid {
 			state.pointerGP[index] = false
+			state.setOwnedStaticAddr(index, false)
 			state.gp[index] |= mask
 			if width == 4 || width == 8 {
 				state.gp[index] = 0xff
@@ -1549,6 +1594,9 @@ func x86ResultTransfer(ins Instr, state *x86ResultState, owned []bool, resultOff
 		return accepted
 	}
 	if accepted, known := x86ResultCallerAddressDifferenceStep(ins, state, arch); known {
+		return accepted
+	}
+	if accepted, known := x86ResultOwnedStaticAddressStep(ins, state, arch); known {
 		return accepted
 	}
 	if accepted, known := x86ResultPointerMaskStep(ins, state, owned, resultOffset, arch); known {

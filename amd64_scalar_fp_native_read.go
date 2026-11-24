@@ -93,6 +93,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		(nativeMMX != nil || x86LogicalScalarResultNeedsProof(sig, arch) || strings.HasSuffix(fn.Sym, "<ABIInternal>")) {
 		return fmt.Errorf("%w: mixed relative stack needs ordinary ABI0 emission", ErrProbeNeedsContext)
 	}
+	if strictErr != nil && c.ownsStaticLEAResult(fn, sig, arch) {
+		return nil
+	}
 	if effect, unclosed := strictErr.(*x86UnclosedSourceEffectError); unclosed && !c.useHardwareX87() {
 		form, known, err := x86X87ValueProperties(effect.instruction, arch)
 		if known && err == nil && form.spec.kind == x86X87NativeMath {

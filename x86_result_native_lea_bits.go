@@ -51,6 +51,7 @@ func x86ResultNativeLEAAddressBitsStep(ins Instr, state *x86ResultState, owned [
 	state.gp[register] &^= mask
 	state.canonicalGP[register] &^= mask
 	state.pointerGP[register] = false
+	state.setOwnedStaticAddr(register, false)
 	if output.width == 4 {
 		// The architectural upper32 zero is numerical; the low address
 		// bytes remain in the disjoint one-store observation domain.

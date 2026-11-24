@@ -90,7 +90,7 @@ func TestWindowsUnwindCurrentPatchProducerSchema(t *testing.T) {
 		relocationMax:    106,
 		listingAlignment: true,
 	}
-	for _, version := range []string{"go1.27.1", "go1.27.2", "go1.27.3"} {
+	for _, version := range []string{"go1.27.0", "go1.27.1", "go1.27.2", "go1.27.3"} {
 		t.Run(version, func(t *testing.T) {
 			if got, ok := windowsUnwindFormat(version); !ok || got != want {
 				t.Fatalf("audited Windows producer/schema missing or changed: %#v, registered=%t", got, ok)

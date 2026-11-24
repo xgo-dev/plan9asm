@@ -202,7 +202,7 @@ func TestWindowsUnwindHistoricalSchemaActualSDK(t *testing.T) {
 	if _, err := ObserveWindowsAMD64AssemblyUnwind(data, append(append([]byte(nil), builtin...), '\n')); !errors.Is(err, ErrContext) {
 		t.Fatal("changed builtin source accepted", err)
 	}
-	if version != "go1.27.1" && version != "go1.27.2" && version != "go1.27.3" {
+	if version != "go1.27.0" && version != "go1.27.1" && version != "go1.27.2" && version != "go1.27.3" {
 		if _, err := objectBody(data, "windows/amd64"); !errors.Is(err, ErrContext) {
 			t.Fatal("Windows role widened generic compiler object admission", err)
 		}

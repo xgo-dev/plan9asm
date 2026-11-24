@@ -62,6 +62,7 @@ func x86ResultUnknownSBAddressStep(ins Instr, state *x86ResultState, arch string
 		state.canonicalGP[index] |= 0xf0
 	}
 	state.pointerGP[index], state.callerAddressGP[index] = false, false
+	state.setOwnedStaticAddr(index, false)
 	state.callerAddressOrigin[index] = 0
 	state.resultAddressGP[index] = x86ResultSlotAddress{}
 	state.predicate = x86ResultPredicate{}

@@ -9,7 +9,8 @@ type x86ResultValueStack struct {
 	id      bool // ID is separate from the six arithmetic flags and DF.
 	// Eight bounded bitmap words cover at most 504 private byte positions.
 	// Mode32 uses only the first four; unused positions must remain zero.
-	pointerCells [8]uint64
+	pointerCells         [8]uint64
+	ownedStaticAddrCells *[8]uint64 // Nil unless an owned static SB LEA word was pushed; never numerical bytes.
 	// Nil means the existing ordinary NUM bytes. FLAGS pushes additionally
 	// retain precisely which source bits the adjacent mask may refine. Keep
 	// those masks in stack-byte order through mixed widths, not GP positions.
@@ -206,6 +207,7 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 	if push {
 		bits := ^uint64(0)
 		pointer := false
+		ownedStaticAddr := false
 		if spec.mode == amd64StackPushValue {
 			arg := ins.Args[0]
 			if x86SegmentRegisterOperand(arg) {
@@ -217,11 +219,12 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 					return false, true
 				}
 				pointer = width == x86ResultPointerWord(arch) && state.pointerGP[index]
+				ownedStaticAddr = width == x86ResultPointerWord(arch) && state.hasOwnedStaticAddr(index)
 				// This is a bit-preserving private copy, not a numerical use.
 				// Retain only independently known source bytes.
 				bits = 0
 				for offset := int64(0); offset < width; offset++ {
-					if !pointer && state.gp[index]&(1<<uint(offset)) != 0 {
+					if !pointer && !ownedStaticAddr && state.gp[index]&(1<<uint(offset)) != 0 {
 						bits |= uint64(255) << uint(8*offset)
 					}
 				}
@@ -277,10 +280,14 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 		if pointer {
 			stack.markPointerCell(len(stack.bytes))
 		}
+		if ownedStaticAddr {
+			stack.markOwnedStaticAddrCell(len(stack.bytes))
+		}
 		return true, true
 	}
 	bits := ^uint64(0)
 	pointer := false
+	ownedStaticAddr := false
 	refinable := bits
 	var origins [32]uint8
 	if !state.shapeOnly {
@@ -288,6 +295,7 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 			return false, true
 		}
 		pointer = width == x86ResultPointerWord(arch) && stack.pointerCell(len(stack.bytes))
+		ownedStaticAddr = width == x86ResultPointerWord(arch) && stack.ownedStaticAddrCell(len(stack.bytes))
 		stack.revokePointerCells(len(stack.bytes)-storage, len(stack.bytes), int(x86ResultPointerWord(arch)))
 		bits = 0
 		refinable = 0
@@ -348,6 +356,7 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 			state.gp[index] |= 0xf0
 		}
 		state.pointerGP[index], state.callerAddressGP[index] = pointer, false
+		state.setOwnedStaticAddr(index, ownedStaticAddr)
 		state.canonicalGP[index] &^= mask
 		// Preserve partial-bit knowledge for exactly the next instruction.
 		// Whole known bytes outside a narrow POP remain independently known.

@@ -17,7 +17,7 @@ var generatedFuncdataSourceRoles = map[string]string{
 // GeneratedFuncdataSources reads the required producer facts through the live
 // factory's guarded reader. It supplies no DATA, GC, native or numerical role.
 func GeneratedFuncdataSources(version string, read func(string) ([]byte, error)) error {
-	if version != "go1.27.1" && version != "go1.27.2" && version != "go1.27.3" || read == nil {
+	if version != "go1.27.0" && version != "go1.27.1" && version != "go1.27.2" && version != "go1.27.3" || read == nil {
 		return contextError("unregistered generated FUNCDATA source/schema")
 	}
 	for role, expected := range generatedFuncdataSourceRoles {

@@ -15,7 +15,7 @@ var generatedFloatPoolSourceRoles = map[string]string{
 // GeneratedFloatPoolSources checks observation-only producer source identity.
 // It does not make generated pools eligible for literal or numerical readers.
 func GeneratedFloatPoolSources(version string, read func(string) ([]byte, error)) error {
-	if version != "go1.27.1" && version != "go1.27.2" && version != "go1.27.3" || read == nil {
+	if version != "go1.27.0" && version != "go1.27.1" && version != "go1.27.2" && version != "go1.27.3" || read == nil {
 		return contextError("unregistered generated float-pool source/schema")
 	}
 	for role, expected := range generatedFloatPoolSourceRoles {

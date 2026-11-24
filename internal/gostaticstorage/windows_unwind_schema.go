@@ -53,7 +53,7 @@ func windowsUnwindFormat(version string) (windowsUnwindSchema, bool) {
 			"7dc5b3b8dff057b9f7e8c75afacecadc238f7538995f161bd55576ad448a4101",
 			25, 14, 16, 103, false,
 		}
-	case "go1.27.1", "go1.27.2", "go1.27.3":
+	case "go1.27.0", "go1.27.1", "go1.27.2", "go1.27.3":
 		schema = windowsUnwindSchema{
 			"836468efd5f9e8b71f828b4c0e5b7fc5fc2eb99842b5f16ca5b47c1eb611b86e",
 			"8f38ef757cdebb27963ee9befe24dd8041b86d217937db30f13e4d3d91207311",

@@ -182,6 +182,157 @@ func (c *amd64Ctx) ownsStaticAddressImmediate(source Operand, arch string) bool 
 	return valid && immediate && c.fpStaticAddressValues.objects[resolveAssemblyDataSymbol(address.symbol, c.resolve)]
 }
 
+func (state *x86ResultState) hasOwnedStaticAddr(index int) bool {
+	return state.ownedStaticAddrGP != nil && index >= 0 && index < len(state.ownedStaticAddrGP) && state.ownedStaticAddrGP[index]
+}
+
+func (state *x86ResultState) setOwnedStaticAddr(index int, value bool) {
+	if index < 0 || index >= 16 {
+		return
+	}
+	if value {
+		if state.ownedStaticAddrGP == nil {
+			state.ownedStaticAddrGP = new([16]bool)
+		}
+		state.ownedStaticAddrGP[index] = true
+		return
+	}
+	if state.ownedStaticAddrGP == nil || !state.ownedStaticAddrGP[index] {
+		return
+	}
+	state.ownedStaticAddrGP[index] = false
+	for _, live := range state.ownedStaticAddrGP {
+		if live {
+			return
+		}
+	}
+	state.ownedStaticAddrGP = nil
+}
+
+// Revoke owned static SB LEA identities after any transfer that overwrites a GP,
+// while preserving fresh native-word SB LEA, relative stack adjustments, and
+// private stack PUSH/POP transitions.
+func x86ResultOwnedStaticAddrAfter(ins Instr, state *x86ResultState, arch string, relativeAdjusted bool) {
+	if state.ownedStaticAddrGP == nil || relativeAdjusted {
+		return
+	}
+	word := x86ResultPointerWord(arch)
+	if _, _, width, _, known := x86SBLEAWriteShape(ins, arch); known && width == word {
+		return
+	}
+	if spec, known, err := x86StackWidthProperties(ins, arch); known && err == nil {
+		switch spec.mode {
+		case amd64StackPushValue, amd64StackPushFlags, amd64StackPopFlags:
+			return
+		case amd64StackPopValue:
+			if int64(spec.bits/8) == word {
+				return
+			}
+		}
+	}
+	live := x86ResultCallerAddressesAfter(ins, *state.ownedStaticAddrGP, nil, arch)
+	any := false
+	for index := range state.ownedStaticAddrGP {
+		if !live[index] {
+			state.ownedStaticAddrGP[index] = false
+		}
+		any = any || state.ownedStaticAddrGP[index]
+	}
+	if !any {
+		state.ownedStaticAddrGP = nil
+	}
+}
+
+// Propagate owned static SB LEA identities across native-word GP copies and
+// discharge native-word address differences (SUB) into complete numerical bytes
+// without ever granting numerical memory, LEAW upper-byte or raw-store roles.
+func x86ResultOwnedStaticAddressStep(ins Instr, state *x86ResultState, arch string) (bool, bool) {
+	if state.ownedStaticAddrGP == nil || state.shapeOnly ||
+		!x86ResultNamedPredicateInstruction(ins) || len(ins.Args) != 2 ||
+		ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
+		return false, false
+	}
+	word := x86ResultPointerWord(arch)
+	move, sub, wordMask := Op("MOVQ"), Op("SUBQ"), uint8(0xff)
+	if arch == "386" {
+		move, sub, wordMask = "MOVL", "SUBL", 0x0f
+	}
+	view := x86SourceMoveInstruction(ins, arch)
+	src, _, validSrc := x86ResultGP(view.Args[0].Reg, word, arch)
+	dst, _, validDst := x86ResultGP(view.Args[1].Reg, word, arch)
+	if !validSrc || !validDst {
+		return false, false
+	}
+	if view.Op == move && state.hasOwnedStaticAddr(src) {
+		state.gp[dst], state.canonicalGP[dst] = 0, 0
+		if word == 4 {
+			state.gp[dst], state.canonicalGP[dst] = 0xf0, 0xf0
+		}
+		state.pointerGP[dst], state.callerAddressGP[dst], state.callerAddressOrigin[dst] = false, false, 0
+		state.resultAddressGP[dst] = x86ResultSlotAddress{}
+		if state.boolFrameGP != nil {
+			state.boolFrameGP[dst] = x86ResultSlotAddress{}
+		}
+		state.setOwnedStaticAddr(dst, true)
+		return true, true
+	}
+	if ins.Op != sub || (!state.hasOwnedStaticAddr(src) && !state.hasOwnedStaticAddr(dst)) {
+		return false, false
+	}
+	operandReady := func(reg int) bool {
+		if state.hasOwnedStaticAddr(reg) {
+			return true
+		}
+		return !state.pointerGP[reg] && !state.callerAddressGP[reg] && state.gp[reg]&wordMask == wordMask
+	}
+	if !operandReady(src) || !operandReady(dst) {
+		return false, true
+	}
+	effect, known, err := x86TypedInstructionByteEffect(ins.Op, ins, arch)
+	if !known || err != nil || effect.dynamicMemory {
+		return false, true
+	}
+	state.gp[dst] = 0xff
+	state.canonicalGP[dst] = 0
+	if word == 4 {
+		state.canonicalGP[dst] = 0xf0
+	}
+	state.pointerGP[dst], state.callerAddressGP[dst], state.callerAddressOrigin[dst] = false, false, 0
+	state.resultAddressGP[dst] = x86ResultSlotAddress{}
+	if state.boolFrameGP != nil {
+		state.boolFrameGP[dst] = x86ResultSlotAddress{}
+	}
+	state.setOwnedStaticAddr(dst, false)
+	state.flags = state.flags&^effect.flagsKilled | effect.flagsDefined
+	return true, true
+}
+
+// A leaf can return the full bits of a same-module LEA. Keep the value in
+// the address-only transport proof so it never supplies numerical inputs or
+// storage authority to another instruction.
+func (c *amd64Ctx) ownsStaticLEAResult(fn Func, sig FuncSig, arch string) bool {
+	if !x86NativeWordIntegerResult(sig, arch) || c.fpStaticAddressValues == nil || c.resolve == nil {
+		return false
+	}
+	word := x86ResultPointerWord(arch)
+	seenLEA := false
+	transport := x86AddressResultTransportRole(fn, sig, arch, func(ins Instr) (int, bool) {
+		if address, immediate, dest, known := x86StaticAddressValueMove(ins, arch); known && immediate {
+			name := resolveAssemblyDataSymbol(address.symbol, c.resolve)
+			return dest, c.fpStaticAddressValues.objects[name]
+		}
+		dest, _, width, mem, known := x86SBLEAWriteShape(ins, arch)
+		if !known || width != word {
+			return 0, false
+		}
+		address, valid := x86StaticSBSourceAddress(Operand{Kind: OpMem, Mem: mem}, arch)
+		owned := valid && c.fpStaticAddressValues.objects[resolveAssemblyDataSymbol(address.symbol, c.resolve)]
+		seenLEA = seenLEA || owned
+		return dest, owned
+	})
+	return transport && seenLEA
+}
+
 func (c *amd64Ctx) scalarStaticAddressValueTransfer(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
 	values := c.fpStaticAddressValues
 	if values == nil {
@@ -195,22 +346,35 @@ func (c *amd64Ctx) scalarStaticAddressValueTransfer(ins Instr, state *x86ResultS
 		return x86ResultBoundValueStackStep(ins, state, owned, 0, arch, x86StackValueOwnedAddress)
 	}
 	word := x86ResultPointerWord(arch)
-	var address x86StaticSBAddress
-	var immediate, valid bool
-	var index int
 	if ins.Op == "LEAL" || ins.Op == "LEAQ" {
 		destination, _, width, memory, known := x86SBLEAWriteShape(ins, arch)
 		if !known || width != word {
 			return false, false
 		}
-		// The native-word LEA and MOV of an owned address both produce
-		// the complete relocated bits. An effective index, partial write
-		// or unresolved object belongs to the separate address-only rules.
-		address, valid = x86StaticSBSourceAddress(Operand{Kind: OpMem, Mem: memory}, arch)
-		immediate, index = true, destination
-	} else {
-		address, immediate, index, valid = x86StaticAddressValueMove(ins, arch)
+		// Keep native-word owned SB LEA in its own disjoint address identity
+		// domain instead of numerical GP bytes. This preserves PUSH/POP/ADJSP
+		// and address-difference SUB without granting dereference, LEAW upper
+		// byte or arbitrary static store/return permissions.
+		address, valid := x86StaticSBSourceAddress(Operand{Kind: OpMem, Mem: memory}, arch)
+		if !valid || !values.objects[resolveAssemblyDataSymbol(address.symbol, c.resolve)] {
+			return false, false
+		}
+		state.gp[destination] = 0
+		state.canonicalGP[destination] = 0
+		if word == 4 {
+			state.gp[destination] = 0xf0
+			state.canonicalGP[destination] = 0xf0
+		}
+		state.pointerGP[destination], state.callerAddressGP[destination], state.callerAddressOrigin[destination] = false, false, 0
+		state.resultAddressGP[destination] = x86ResultSlotAddress{}
+		if state.boolFrameGP != nil {
+			state.boolFrameGP[destination] = x86ResultSlotAddress{}
+		}
+		state.predicate = x86ResultPredicate{}
+		state.setOwnedStaticAddr(destination, true)
+		return true, true
 	}
+	address, immediate, index, valid := x86StaticAddressValueMove(ins, arch)
 	if !valid {
 		return false, false
 	}

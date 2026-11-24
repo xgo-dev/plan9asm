@@ -49,10 +49,7 @@ func TestX86LEASBUnknownAddressDoesNotGrantFacts(t *testing.T) {
 			widths, move = append(widths, "Q"), "MOVQ"
 		}
 		for _, width := range widths {
-			symbols := []string{"·unbound<>(SB)"}
-			if x86LEAWidth(Op("LEA"+width), target.arch) != x86ResultPointerWord(target.arch) {
-				symbols = append(symbols, "·table<>(SB)") // An owned partial write still lacks a whole address.
-			}
+			symbols := []string{"·unbound<>(SB)", "·table<>(SB)"}
 			for _, test := range []struct{ name, before, after string }{
 				{"NUM-result", "", "MOVL DX,ret+RESULT(FP)"},
 				{"NUM-compare", "", "TESTW DX,DX\nMOVL $0,CX\nSETEQ CL\nMOVL CX,ret+RESULT(FP)"},
@@ -226,7 +223,7 @@ func TestX86LEASBUnknownAddressReachingIndexAndUnrelatedPointers(t *testing.T) {
 				{"partial", "MOVB $1,CX\n", false},
 				{"opaque-pointer", "MOVL p+0(FP),CX\n", false},
 				{"prior-unbound-address", "LEAL ·unbound<>(SB),CX\n", false},
-				{"prior-owned-address", "LEAL ·table<>(SB),CX\n", true},
+				{"prior-owned-address", "LEAL ·table<>(SB),CX\n", false},
 			} {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(target.triple+"/"+width+"/index/"+test.name+"/"+api, func(t *testing.T) {
