@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -93,6 +94,82 @@ func TestX86NamedLEAStaticAddressResultThreeAPIs(t *testing.T) {
 }
 
 const x86StaticLEAPushedDeltaWithRead = "PUSHL $cell<>+4(SB)\nPOPL AX\nMOVL cell<>(SB),DX"
+const x86StaticLEAPushedDeltaWithADJSP = "ADJSP $4\nPUSHL $cell<>+4(SB)\nPOPL AX\nADJSP $-4"
+const x86StaticLEAPushedDeltaWithADJSPAndRead = "ADJSP $4\nPUSHL $cell<>+4(SB)\nPOPL AX\nMOVL cell<>(SB),DX\nADJSP $-4"
+const x86StaticLEAPushedDeltaWithADJSPAMD64 = "ADJSP $8\nLEAQ cell<>+4(SB),AX\nPUSHQ AX\nPOPQ AX\nADJSP $-8"
+const x86StaticLEAPushedDeltaWithADJSPAndReadAMD64 = "ADJSP $8\nLEAQ cell<>+4(SB),AX\nPUSHQ AX\nPOPQ AX\nMOVL cell<>(SB),DX\nADJSP $-8"
+
+func TestX86ADJSPStaticAddressComposition(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc required")
+	}
+	for _, target := range x86RawReturnTargets {
+		producers := []struct{ name, body string }{
+			{"adjsp-push-pop", x86StaticLEAPushedDeltaWithADJSPAMD64},
+			{"adjsp-push-pop-static-read", x86StaticLEAPushedDeltaWithADJSPAndReadAMD64},
+		}
+		if target.arch == "386" {
+			producers = []struct{ name, body string }{
+				{"adjsp-push-pop", x86StaticLEAPushedDeltaWithADJSP},
+				{"adjsp-push-pop-static-read", x86StaticLEAPushedDeltaWithADJSPAndRead},
+			}
+		}
+		for _, producer := range producers {
+			source, declaration := x86StaticLEADeltaSource(target.arch, producer.body)
+			x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run(target.triple+"/"+producer.name+"/"+api, func(t *testing.T) {
+					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(ir, "ptrtoint ptr") {
+						t.Fatal("relative stack composition lost its relocated address bits")
+					}
+					x86PackedStringCompileObject(t, llc, target.triple, ir, "-O0")
+					x86PackedStringCompileObject(t, llc, target.triple, x86DwordProductIROptimize(t, ir), "-O2")
+				})
+			}
+		}
+
+		// Negative controls: relative stack composition must keep unbound symbol,
+		// partial address, stack depth, out-of-bounds and uninitialized byte checks.
+		base, declaration := x86StaticLEADeltaSource(target.arch, producers[0].body)
+		width := "Q"
+		if target.arch == "386" {
+			width = "L"
+		}
+		negatives := []struct{ name, source string }{
+			{"unbound-lea-symbol", strings.Replace(base, "LEA"+width+" cell<>(SB),CX", "LEA"+width+" external(SB),CX", 1)},
+			{"partial-lea-width", strings.Replace(base, "LEA"+width+" cell<>(SB),CX", "LEAW cell<>(SB),CX", 1)},
+			{"imbalanced-adjsp", strings.Replace(base, "ADJSP $-", "ADJSP $-2\n// dropped ", 1)},
+			{"uninitialized-stack-read", strings.Replace(base, "ADJSP $-", "MOVL 0(SP),DX\nADDL DX,AX\nADJSP $-", 1)},
+			{"oob-stack-read", strings.Replace(base, "ADJSP $-", "MOVL 16(SP),DX\nADDL DX,AX\nADJSP $-", 1)},
+		}
+		if target.arch == "386" {
+			negatives = append(negatives,
+				struct{ name, source string }{"unbound-push-symbol", strings.Replace(base, "PUSHL $cell<>+4(SB)", "PUSHL $external(SB)", 1)},
+				struct{ name, source string }{"static-read-uninitialized-stack", strings.Replace(
+					func() string {
+						s, _ := x86StaticLEADeltaSource("386", x86StaticLEAPushedDeltaWithADJSPAndRead)
+						return s
+					}(),
+					"ADJSP $-4", "MOVL 0(SP),BX\nADDL BX,AX\nADJSP $-4", 1)},
+			)
+		}
+		for _, neg := range negatives {
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run(target.triple+"/reject/"+neg.name+"/"+api, func(t *testing.T) {
+					ir, err := x86ScalarFPBitViewAPI(t, neg.source, declaration, target.arch, target.triple, api)
+					if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+						t.Fatalf("%s unexpectedly accepted: ir=%d err=%v", neg.name, len(ir), err)
+					}
+				})
+			}
+		}
+	}
+}
 
 func x86StaticLEADeltaSource(arch, first string) (assembly, declaration string) {
 	const data = "DATA cell<>+0(SB)/4,$3\nGLOBL cell<>(SB),16,$16\n"

@@ -89,13 +89,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 	}
 	strictErr := checkX86ScalarFPResultInitializationWithStack(fn, sig, arch, relative)
-	if relative != nil && relative.scratch != 0 {
-		if strictErr != nil {
-			return strictErr
-		}
-		if nativeMMX != nil || x86LogicalScalarResultNeedsProof(sig, arch) || strings.HasSuffix(fn.Sym, "<ABIInternal>") {
-			return fmt.Errorf("%w: mixed relative stack needs ordinary ABI0 emission", ErrProbeNeedsContext)
-		}
+	if relative != nil && relative.scratch != 0 &&
+		(nativeMMX != nil || x86LogicalScalarResultNeedsProof(sig, arch) || strings.HasSuffix(fn.Sym, "<ABIInternal>")) {
+		return fmt.Errorf("%w: mixed relative stack needs ordinary ABI0 emission", ErrProbeNeedsContext)
 	}
 	if effect, unclosed := strictErr.(*x86UnclosedSourceEffectError); unclosed && !c.useHardwareX87() {
 		form, known, err := x86X87ValueProperties(effect.instruction, arch)
@@ -972,7 +968,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	if customRegisterBool || customRegisterVoid || logicalScalar {
 		return checkX86LogicalRegisterResultInitialization(fn, sig, arch, transfer, customRegisterBool, true)
 	}
-	vectorEntry := arch == "amd64" && nativeMMX == nil && fn.FrameSize == 0 &&
+	vectorEntry := arch == "amd64" && nativeMMX == nil && relative == nil && fn.FrameSize == 0 &&
 		(len(sig.Frame.Params) != 0 || len(sig.Frame.Results) != 0)
 	if vectorEntry && fn.x86ResultFlowBudget == nil {
 		// Keep the original paired attempt and optional entry fallback in one
@@ -981,7 +977,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 	}
 	entry := x86ABI0ResultEntry{
 		direction: c.abi0EntryDirection, mode32Calls: c.mode32FrameCalls(fn),
-		dataBPReads: c.dataBPSource,
+		dataBPReads: c.dataBPSource, relative: relative,
 	}
 	if err := checkX86ABI0ResultInitializationWithEntry(fn, sig, arch, transfer, true, false, true, entry); err != nil {
 		if !vectorEntry || x86ResultHasIndexOnlyVSIB(fn, arch) || !x86OrdinaryScalarCodegenSource(fn, sig, arch) {
@@ -989,6 +985,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		return c.checkLoweredVectorEntry(fn, sig, arch, transfer, err)
 	}
+	c.relativeStack = relative
 	c.abi0Mode32Calls = entry.mode32Calls
 	c.nativeMMXRegion = nativeMMX
 	return nil

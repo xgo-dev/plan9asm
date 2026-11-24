@@ -126,9 +126,19 @@ func (c *amd64Ctx) checkStaticIntegerResultInitialization() error {
 	}
 	if !x86DirectStaticRegisterResultCandidate(fn, sig, arch) {
 		// The same exact scalar/static MOV effects compose with the actual
-		// ABI0 declaration. No fabricated FP field supplies a register result,
-		// and no direct-register result can satisfy an unwritten FP result.
-		return checkX86ABI0ResultInitializationAtSource(fn, sig, arch, transfer, true)
+		// ABI0 declaration and bounded relative stack plan. No fabricated FP
+		// field supplies a register result, and no direct-register result can
+		// satisfy an unwritten FP result.
+		relative, err := x86PlanRelativeStack(fn, arch)
+		if err != nil {
+			return err
+		}
+		if err := checkX86ABI0ResultInitializationWithEntry(fn, sig, arch, transfer, true, false, false,
+			x86ABI0ResultEntry{relative: relative}); err != nil {
+			return err
+		}
+		c.relativeStack = relative
+		return nil
 	}
 	return checkX86ResultSourceFlow(fn, x86ResultState{}, nil, 0, arch, transfer,
 		func(state x86ResultState, _ int) error {

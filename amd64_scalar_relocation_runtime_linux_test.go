@@ -74,14 +74,19 @@ func TestCrossLinuxRuntimeMatrixX86OwnedStaticLEADelta(t *testing.T) {
 		t.Fatal("LLVM 22 llc required")
 	}
 	for _, target := range []struct {
-		arch, triple, first, cType, compiler string
-		runPrefix                            []string
+		name, arch, triple, first, cType, compiler string
+		runPrefix                                  []string
 	}{
-		{"386", "i386-unknown-linux-gnu", x86StaticLEAPushedDeltaWithRead, "unsigned int",
+		{"386/push-read", "386", "i386-unknown-linux-gnu", x86StaticLEAPushedDeltaWithRead, "unsigned int",
 			"i686-linux-gnu-gcc", []string{"qemu-i386", "-L", "/usr/i686-linux-gnu"}},
-		{"amd64", "x86_64-unknown-linux-gnu", "LEAQ cell<>+4(SB),AX", "unsigned long", "cc", nil},
+		{"386/adjsp", "386", "i386-unknown-linux-gnu", x86StaticLEAPushedDeltaWithADJSP, "unsigned int",
+			"i686-linux-gnu-gcc", []string{"qemu-i386", "-L", "/usr/i686-linux-gnu"}},
+		{"386/adjsp-read", "386", "i386-unknown-linux-gnu", x86StaticLEAPushedDeltaWithADJSPAndRead, "unsigned int",
+			"i686-linux-gnu-gcc", []string{"qemu-i386", "-L", "/usr/i686-linux-gnu"}},
+		{"amd64/lea", "amd64", "x86_64-unknown-linux-gnu", "LEAQ cell<>+4(SB),AX", "unsigned long", "cc", nil},
+		{"amd64/adjsp", "amd64", "x86_64-unknown-linux-gnu", x86StaticLEAPushedDeltaWithADJSPAMD64, "unsigned long", "cc", nil},
 	} {
-		t.Run(target.arch, func(t *testing.T) {
+		t.Run(target.name, func(t *testing.T) {
 			source, declaration := x86StaticLEADeltaSource(target.arch, target.first)
 			const goMain = "package main\nfunc main() { if got := Value(); got != 4 { panic(got) } }\n"
 			original := x86OrderingHintBuildOriginal(t, t.TempDir(), "linux", target.arch,
