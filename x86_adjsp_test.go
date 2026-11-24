@@ -348,3 +348,130 @@ func TestX86ADJSPMixedStack(t *testing.T) {
 		}
 	}
 }
+
+type x86ADJSPVectorCopyCase struct {
+	opcode, register, mode string
+	width, lane            int
+}
+
+func x86ADJSPVectorCopyCases() []x86ADJSPVectorCopyCase {
+	var cases []x86ADJSPVectorCopyCase
+	for _, row := range []struct {
+		opcode string
+		widths int
+		lane   int // Zero for forms without a writemask.
+	}{
+		{"MOVUPS", 16, 0}, {"MOVUPD", 16, 0}, {"MOVOU", 16, 0},
+		{"VMOVDQU", 32, 0}, {"VMOVUPS", 64, 4}, {"VMOVUPD", 64, 8},
+		{"VMOVDQU8", 64, 1}, {"VMOVDQU16", 64, 2}, {"VMOVDQU32", 64, 4}, {"VMOVDQU64", 64, 8},
+	} {
+		modes := []string{"unmasked"}
+		if row.lane != 0 {
+			modes = append(modes, "merge-load", "zero-load", "masked-store")
+		}
+		for axis, register := range []string{"X0", "Y0", "Z0"} {
+			width := 16 << axis
+			if width > row.widths {
+				break
+			}
+			for _, mode := range modes {
+				cases = append(cases, x86ADJSPVectorCopyCase{row.opcode, register, mode, width, row.lane})
+			}
+		}
+	}
+	return append(cases, x86ADJSPVectorCopyCase{"MOVUPS", "X0", "mixed", 16, 0})
+}
+
+func (row x86ADJSPVectorCopyCase) want() uint64 {
+	const fill = uint64(0x07070707)
+	if row.lane == 0 || row.mode == "unmasked" {
+		return fill<<32 | fill
+	}
+	var keep uint64
+	if row.mode != "zero-load" {
+		keep = 0x22222222
+	}
+	mask := uint64(0xffffffff)
+	if row.lane < 4 {
+		mask = uint64(1)<<uint(8*row.lane) - 1
+	}
+	return keep<<32 | fill&mask | keep&^mask
+}
+
+func (row x86ADJSPVectorCopyCase) source(name string) string {
+	opcode, register, mode, width := row.opcode, row.register, row.mode, row.width
+	var source strings.Builder
+	fmt.Fprintf(&source, "TEXT ·%s(SB),516,$0-8\n", name)
+	if mode == "mixed" {
+		source.WriteString("PUSHW $0\n")
+	}
+	source.WriteString("ADJSP $192\n")
+	for offset := 0; offset < width; offset += 4 {
+		fmt.Fprintf(&source, "MOVL $0x07070707,%d(SP)\n", 1+offset)
+		if mode == "merge-load" || mode == "masked-store" {
+			fmt.Fprintf(&source, "MOVL $0x22222222,%d(SP)\n", 97+offset)
+		}
+	}
+	if row.lane != 0 && mode != "unmasked" {
+		source.WriteString("MOVL $1,AX\nKMOVW AX,K1\n")
+	}
+	switch mode {
+	case "merge-load":
+		fmt.Fprintf(&source, "%[1]s 97(SP),%[2]s\n%[1]s 1(SP),K1,%[2]s\n%[1]s %[2]s,97(SP)\n", opcode, register)
+	case "zero-load":
+		fmt.Fprintf(&source, "%[1]s.Z 1(SP),K1,%[2]s\n%[1]s %[2]s,97(SP)\n", opcode, register)
+	case "masked-store":
+		fmt.Fprintf(&source, "%[1]s 1(SP),%[2]s\n%[1]s %[2]s,K1,97(SP)\n", opcode, register)
+	default:
+		fmt.Fprintf(&source, "%[1]s 1(SP),%[2]s\n%[1]s %[2]s,97(SP)\n", opcode, register)
+	}
+	fmt.Fprintf(&source, "MOVL 97(SP),AX\nMOVL %d(SP),BX\nADJSP $-192\n", 97+width-4)
+	if mode == "mixed" {
+		source.WriteString("POPW CX\n")
+	}
+	source.WriteString("MOVL AX,ret+0(FP)\nMOVL BX,ret+4(FP)\nRET\n")
+	return source.String()
+}
+
+func TestX86ADJSPUnalignedVectorCopies(t *testing.T) {
+	const declaration = "func Copy() uint64"
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc is required")
+	}
+	for _, target := range []struct{ arch, triple string }{
+		{"386", "i386-unknown-linux-gnu"}, {"amd64", "x86_64-unknown-linux-gnu"},
+	} {
+		for _, row := range x86ADJSPVectorCopyCases() {
+			t.Run(fmt.Sprintf("%s/%s/%s/%s", target.arch, row.opcode, row.register, row.mode), func(t *testing.T) {
+				source := row.source("Copy")
+				goAssemblerOracleOutput(t, target.arch, source, "", true)
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+					if err != nil {
+						t.Fatalf("%s lost the vector stack span: %v", api, err)
+					}
+					if row.mode == "masked-store" {
+						compileLLVMToObject(t, llc, target.triple, api+".ll", api+".o", ir)
+					} else {
+						x86ScalarFPNamedConstantResult(t, ir, "Copy", []uint64{row.want()})
+					}
+				}
+			})
+		}
+		source := (x86ADJSPVectorCopyCase{"MOVUPS", "X0", "unmasked", 16, 0}).source("Copy")
+		for _, row := range []struct{ name, source string }{
+			{"out-of-range", strings.Replace(source, "MOVUPS X0,97(SP)", "MOVUPS X0,177(SP)", 1)},
+			{"uninitialized", strings.Replace(source, "MOVL $0x07070707,13(SP)\n", "", 1)},
+			{"aligned", strings.ReplaceAll(source, "MOVUPS", "MOVAPS")},
+		} {
+			t.Run(target.arch+"/"+row.name, func(t *testing.T) {
+				goAssemblerOracleOutput(t, target.arch, row.source, "", true)
+				_, err := x86ScalarFPBitViewAPI(t, row.source, declaration, target.arch, target.triple, "Go")
+				if !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatalf("invalid vector stack span was accepted: %v", err)
+				}
+			})
+		}
+	}
+}

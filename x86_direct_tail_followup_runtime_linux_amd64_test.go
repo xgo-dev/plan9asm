@@ -46,6 +46,7 @@ int main(void) {
 		declarations+x86OfficialSymbolJumpDeclarations, goMain, cMain, "7 Go branch results\n")
 	t.Run("ADJSP", func(t *testing.T) {
 		x86ADJSPCarryRuntime(t, "amd64", execution)
+		x86ADJSPVectorCopyRuntime(t, "amd64", execution)
 	})
 }
 
@@ -104,6 +105,7 @@ int main(void) {
 		x86Official386ContextDeclarations, goMain, cMain, "10 Go 386 results\n")
 	t.Run("ADJSP", func(t *testing.T) {
 		x86ADJSPCarryRuntime(t, "386", execution)
+		x86ADJSPVectorCopyRuntime(t, "386", execution)
 	})
 }
 
@@ -151,6 +153,29 @@ int main(void) {
 `
 	x86DirectTailCheckCallRuntime(t, arch, execution, source, declarations, goMain, cMain,
 		"ADJSP carry 0 3 0, frame 42 0, scratch 7, mixed 2 7 7 7\n")
+}
+
+func x86ADJSPVectorCopyRuntime(t *testing.T, arch string, execution x86FloatCompareExecution) {
+	t.Helper()
+	var source, declarations, goChecks, cDeclarations, cChecks strings.Builder
+	for index, row := range x86ADJSPVectorCopyCases() {
+		name := fmt.Sprintf("Copy%d", index)
+		source.WriteString(row.source(name))
+		fmt.Fprintf(&declarations, "func %s() uint64\n", name)
+		fmt.Fprintf(&cDeclarations, "extern uint64_t %s(void);\n", name)
+		if !strings.HasPrefix(row.opcode, "V") {
+			// Original Go execution on the ordinary x86 runners uses SSE2.
+			// The independent native AVX512 suite owns original EVEX execution.
+			fmt.Fprintf(&goChecks, "if %s() != %#x { panic(%q) }\n", name, row.want(), row.opcode)
+		}
+		fmt.Fprintf(&cChecks, "if (%s() != UINT64_C(%#x)) { fprintf(stderr, %q); return 1; }\n",
+			name, row.want(), fmt.Sprintf("%s %s %s\n", row.opcode, row.register, row.mode))
+	}
+	const message = "ADJSP vector copies match"
+	goMain := "func main() {\n" + goChecks.String() + "fmt.Println(\"" + message + "\")\n}\n"
+	cMain := "#include <stdint.h>\n#include <stdio.h>\n" + cDeclarations.String() +
+		"int main(void) {\n" + cChecks.String() + "puts(\"" + message + "\");\nreturn 0;\n}\n"
+	x86DirectTailCheckCallRuntime(t, arch, execution, source.String(), declarations.String(), goMain, cMain, message+"\n")
 }
 
 // The Linux AMD64 owner must execute both native ISA modes. Other hosts retain

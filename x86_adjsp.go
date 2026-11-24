@@ -298,10 +298,22 @@ func x86RelativeStack(fn Func, arch string) (*x86RelativeStackPlan, error) {
 	return plan, nil
 }
 
-// Only ordinary, fixed-width scalar effects use the logical byte object.
-// Address formation, bit strings, alignment-sensitive forms and native
-// memory effects keep their separate contracts.
+// Only ordinary accesses with a bounded byte span use the logical object.
+// Address formation, bit strings and memory effects that require the original
+// native instruction keep their separate contracts.
 func x86RelativeStackAccessWidth(ins Instr, index int, arch string) int64 {
+	if form, known, err := x86LegacyPackedMoveProperties(ins.Op, ins, arch); known {
+		if err == nil && !form.aligned && form.memory == index {
+			return 16
+		}
+		return 0
+	}
+	if form, known, err := amd64PackedVectorMoveProperties(ins, arch); known {
+		if err == nil && !form.spec.aligned && !form.undefinedOpcode() && form.memory == index {
+			return int64(form.byteWidth)
+		}
+		return 0
+	}
 	if form, known, err := x86ScalarCompareProperties(ins.Op, ins, arch); known && err == nil && form.memory == index {
 		return int64(form.bits / 8)
 	}
