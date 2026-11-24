@@ -232,6 +232,9 @@ func x86RelativeStack(fn Func, arch string) (*x86RelativeStackPlan, error) {
 				return fail(ins)
 			}
 		}
+		if x86InertNOP(ins, arch) {
+			continue // A checked NOP operand neither reads nor exports SP.
+		}
 		var arguments []string
 		var projected Instr
 		for index, operand := range ins.Args {
@@ -241,7 +244,7 @@ func x86RelativeStack(fn Func, arch string) (*x86RelativeStackPlan, error) {
 			if stack && spec.mode == amd64StackPopValue && operand.Kind == OpFP {
 				return fail(ins) // The original named FP operand would move by the POP width.
 			}
-			if operand.Kind != OpMem || operand.Mem.Base != SP || x86InertNOP(ins, arch) {
+			if operand.Kind != OpMem || operand.Mem.Base != SP {
 				continue
 			}
 			if arguments == nil {

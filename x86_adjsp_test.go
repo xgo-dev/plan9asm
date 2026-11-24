@@ -194,6 +194,7 @@ func TestX86ADJSPKeepsLogicalFrameCells(t *testing.T) {
 func x86ADJSPPhysicalScratchSource(name string) string {
 	return fmt.Sprintf(`TEXT ·%s(SB),516,$0-4
 ADJSP $128
+NOP SP
 MOVL $6,124(SP)
 ADDL $1,124(SP)
 ADJSP $32
@@ -241,6 +242,7 @@ RET
 			{"uninitialized", strings.Replace(source, "MOVL $6,124(SP)", "NOP", 1)},
 			{"released", strings.Replace(source, "ADJSP $32", "ADJSP $-128\nADJSP $160", 1)},
 			{"escaped", strings.Replace(source, "MOVL 156(SP),AX", "LEAL 156(SP),AX", 1)},
+			{"physical-sp-value", strings.Replace(source, "NOP SP", "MOVL SP,AX", 1)},
 		} {
 			t.Run(target.arch+"/"+row.name, func(t *testing.T) {
 				goAssemblerOracleOutput(t, target.arch, row.source, "", true)
