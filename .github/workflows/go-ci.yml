@@ -87,6 +87,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Install LLVM 22
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
+
       - name: Setup Go
         timeout-minutes: 10
         uses: ./.github/actions/setup-go
@@ -112,6 +116,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Install LLVM 22
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
 
       - name: Setup Go
         timeout-minutes: 10
@@ -264,6 +272,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Install LLVM 22
+        timeout-minutes: 14
+        run: bash scripts/install-ci-llvm22-ubuntu.sh
 
       - name: Setup Go
         timeout-minutes: 10
