@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const test = require('node:test');
 
-const workflow = fs.readFileSync('.github/workflows/go-ci.yml', 'utf8');
+const workflow = fs.readFileSync('.github/workflows/go-ci-full.yml', 'utf8');
 const nested = fs.readFileSync('.github/workflows/linux-cli-module.yml', 'utf8');
 function job(name, source = workflow) {
   const marker = `\n  ${name}:\n`;

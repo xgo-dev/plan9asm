@@ -7,7 +7,7 @@ const test = require('node:test');
 const {jobBody, jobNeeds} = require('./workflow-needs.cjs');
 
 const directory = path.join(__dirname, '../workflows');
-const goCI = fs.readFileSync(path.join(directory, 'go-ci.yml'), 'utf8');
+const goCI = fs.readFileSync(path.join(directory, 'go-ci-full.yml'), 'utf8');
 const runtimeFile = path.join(directory, 'runtime-integration.yml');
 const runtime = fs.existsSync(runtimeFile) ? fs.readFileSync(runtimeFile, 'utf8') : '';
 const benchmarkScript = fs.readFileSync(path.join(__dirname, '../../scripts/benchmark-compile.sh'), 'utf8');

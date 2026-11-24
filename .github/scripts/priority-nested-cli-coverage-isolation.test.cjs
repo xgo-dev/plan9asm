@@ -7,7 +7,7 @@ const test = require('node:test');
 const {jobBody, jobNeeds, requireJobNeeds} = require('./workflow-needs.cjs');
 const {requireNode22Setup} = require('./node22-setup.cjs');
 
-const workflow = fs.readFileSync(path.join(__dirname, '../workflows/go-ci.yml'), 'utf8');
+const workflow = fs.readFileSync(path.join(__dirname, '../workflows/go-ci-full.yml'), 'utf8');
 const nested = fs.readFileSync(path.join(__dirname, '../workflows/linux-cli-module.yml'), 'utf8');
 const driver = fs.readFileSync(path.join(__dirname, '../../scripts/test-linux-cli-module-ci.sh'), 'utf8');
 const producer = 'nested-cli-coverage';

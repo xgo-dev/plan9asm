@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const {jobBody} = require('./workflow-needs.cjs');
 
-const source = fs.readFileSync(path.join(__dirname, '../workflows/go-ci.yml'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../workflows/go-ci-full.yml'), 'utf8');
 const nested = fs.readFileSync(path.join(__dirname, '../workflows/linux-cli-module.yml'), 'utf8');
 const exactSDK = '1.27.2';
 const minors = ['1.20.x', '1.21.x', '1.22.x', '1.23.x', '1.24.x',

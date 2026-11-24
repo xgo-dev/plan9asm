@@ -7,7 +7,7 @@ const {spawnSync} = require('node:child_process');
 const { test } = require('node:test');
 const {jobBody, jobNeeds} = require('./workflow-needs.cjs');
 
-const workflow = fs.readFileSync(path.join(__dirname, '../workflows/go-ci.yml'), 'utf8');
+const workflow = fs.readFileSync(path.join(__dirname, '../workflows/go-ci-full.yml'), 'utf8');
 
 function jobSection(name, source = workflow) {
   return jobBody(source, name);

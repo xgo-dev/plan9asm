@@ -7,9 +7,10 @@ const {jobBody} = require('./workflow-needs.cjs');
 const {requireNode22Setup} = require('./node22-setup.cjs');
 
 const roles = {
-  'go-ci.yml': ['ci_policy', 'cross-runtime', 'cross-runtime-verify', 'test', 'nested-cli',
+  'go-ci-full.yml': ['ci_policy', 'cross-runtime', 'cross-runtime-verify', 'test', 'nested-cli',
     'nested-cli-coverage', 'race', 'coverage', 'module-completion'],
   'windows-module.yml': ['root-parts', 'other-owners', 'complete'],
+  'go-ci.yml': ['ci_policy', 'test', 'race-core', 'nested-cli', 'cross-runtime'],
   'runtime-integration.yml': ['ci_policy'],
 };
 
@@ -19,7 +20,7 @@ const roles = {
 const cliWorkflow = '.github/workflows/linux-cli-module.yml';
 const usesReusableCLI = fs.existsSync(cliWorkflow);
 if (usesReusableCLI) {
-  roles['go-ci.yml'] = ['ci_policy', 'cross-runtime', 'cross-runtime-verify', 'test',
+  roles['go-ci-full.yml'] = ['ci_policy', 'cross-runtime', 'cross-runtime-verify', 'test',
     'race', 'coverage', 'module-completion'];
   roles['linux-cli-module.yml'] = ['root-parts', 'complete'];
 }
@@ -44,7 +45,7 @@ function requireCLICaller(body, coverage) {
 
 if (usesReusableCLI) {
   test('both complete CLI callers preserve their exact reusable runtime obligations', () => {
-    const workflow = fs.readFileSync('.github/workflows/go-ci.yml', 'utf8');
+    const workflow = fs.readFileSync('.github/workflows/go-ci-full.yml', 'utf8');
     for (const [name, coverage] of [['nested-cli', false], ['nested-cli-coverage', true]]) {
       const body = jobBody(workflow, name);
       requireCLICaller(body, coverage);
@@ -96,7 +97,7 @@ function requireRuntimeNodeDependencies(source) {
 }
 
 function requireFormalRuntimeDependencies(readWorkflow) {
-  const pending = ['go-ci.yml'];
+  const pending = ['go-ci-full.yml'];
   const observed = new Map();
   while (pending.length) {
     const name = pending.pop();
@@ -112,10 +113,10 @@ function requireFormalRuntimeDependencies(readWorkflow) {
 }
 
 test('actual cross-runtime and module consumers independently require verified Node', () => {
-  const workflow = fs.readFileSync('.github/workflows/go-ci.yml', 'utf8');
+  const workflow = fs.readFileSync('.github/workflows/go-ci-full.yml', 'utf8');
   const readWorkflow = name => fs.readFileSync('.github/workflows/' + name, 'utf8');
   const observed = requireFormalRuntimeDependencies(readWorkflow);
-  assert.deepEqual(observed.get('go-ci.yml'),
+  assert.deepEqual(observed.get('go-ci-full.yml'),
     ['ci_policy', 'coverage', 'cross-runtime', 'cross-runtime-verify',
       'module-completion', 'race', 'test']);
   const added = workflow + '\n  new-cross-consumer:\n    env:\n' +
@@ -129,7 +130,7 @@ test('actual cross-runtime and module consumers independently require verified N
     "      PLAN9ASM_CROSS_EXEC: '1'\n    steps:\n      - run: go run ./cmd/plan9asmtest\n";
   const caller = workflow + '\n  new-reusable-consumer:\n' +
     '    uses: ./.github/workflows/new-consumer.yml\n';
-  const fixture = source => name => name === 'go-ci.yml' ? caller
+  const fixture = source => name => name === 'go-ci-full.yml' ? caller
     : name === 'new-consumer.yml' ? source : readWorkflow(name);
   assert.throws(() => requireFormalRuntimeDependencies(fixture(consumer)),
     /exactly one verified Node setup/);
@@ -167,7 +168,7 @@ for (const [file, jobs] of Object.entries(roles)) {
 }
 
 test('policy checks execute only after their own verified Node installation', () => {
-  for (const file of ['go-ci.yml', 'runtime-integration.yml']) {
+  for (const file of ['go-ci.yml', 'go-ci-full.yml', 'runtime-integration.yml']) {
     const body = jobBody(fs.readFileSync('.github/workflows/' + file, 'utf8'), 'ci_policy');
     const setup = nodeStep(body);
     assert.ok(body.indexOf(setup) < body.indexOf('run: node --test '));

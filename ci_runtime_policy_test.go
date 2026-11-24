@@ -8,7 +8,7 @@ import (
 )
 
 func TestCIFullSuitesHaveExplicitTimeout(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/go-ci.yml")
+	data, err := os.ReadFile(".github/workflows/go-ci-full.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestCIShellScriptsUseLFOnEveryHost(t *testing.T) {
 }
 
 func TestCIFullSuitesInstallWASMExecutionRuntime(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/go-ci.yml")
+	data, err := os.ReadFile(".github/workflows/go-ci-full.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestCIFullSuitesInstallWASMExecutionRuntime(t *testing.T) {
 }
 
 func TestCIFullSuitesInstallIA32ExecutionToolchain(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/go-ci.yml")
+	data, err := os.ReadFile(".github/workflows/go-ci-full.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestCIFullSuitesInstallIA32ExecutionToolchain(t *testing.T) {
 }
 
 func TestCICrossRuntimeUsesPinnedQEMU(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/go-ci.yml")
+	data, err := os.ReadFile(".github/workflows/go-ci-full.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestCICrossRuntimeUsesPinnedQEMU(t *testing.T) {
 }
 
 func TestCIFullSuitesInstallRequiredQEMU(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/go-ci.yml")
+	data, err := os.ReadFile(".github/workflows/go-ci-full.yml")
 	if err != nil {
 		t.Fatal(err)
 	}

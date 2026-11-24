@@ -7,7 +7,7 @@ const { test } = require('node:test');
 const {requireJobNeeds} = require('./workflow-needs.cjs');
 
 const workflow = fs.readFileSync(
-  path.join(__dirname, '../workflows/go-ci.yml'), 'utf8',
+  path.join(__dirname, '../workflows/go-ci-full.yml'), 'utf8',
 );
 const script = fs.readFileSync(
   path.join(__dirname, '../../scripts/test-module-ci.sh'), 'utf8',

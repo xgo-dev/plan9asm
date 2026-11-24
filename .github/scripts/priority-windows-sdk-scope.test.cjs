@@ -51,7 +51,7 @@ test('shared Windows execution and fresh completion pin one exact SDK', () => {
 
 test('main Windows caller retains the shared executor and aggregate scope', () => {
   for (const [file, name] of [
-    ['go-ci.yml', 'windows-module'],
+    ['go-ci-full.yml', 'windows-module'],
   ]) {
     const workflow = fs.readFileSync(path.join(__dirname, '../workflows', file), 'utf8');
     const body = jobBody(workflow, name);

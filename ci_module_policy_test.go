@@ -8,7 +8,7 @@ import (
 )
 
 func TestCIModuleSuitesKeepExhaustiveUnixAndWindowsRoles(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/go-ci.yml")
+	data, err := os.ReadFile(".github/workflows/go-ci-full.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,6 +213,33 @@ func TestCIWindowsModulesKeepCompleteCoverageAndBudgets(t *testing.T) {
 	for _, required := range []string{"-module", "-timeout=30m", "-workers=2", "-module-root-partitions=$parts", "-tags=byollvm", "-verify-module="} {
 		if !strings.Contains(string(script), required) {
 			t.Fatalf("Windows module driver lost %s", required)
+		}
+	}
+}
+
+func TestCIPRGateBoundedBudgetAndCoverage(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/go-ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, required := range []string{
+		"pull_request:",
+		"cancel-in-progress: true",
+		"bash scripts/test-module-ci.sh pr-test execute ${{ matrix.module-owner }} ${{ matrix.root-partition }}",
+		"module-role: [root-0, root-1, root-2, root-3, root-4, root-5, root-6, root-7, profile, other]",
+		"go-version: '1.20.x'",
+		"go test -race -count=1",
+		"-shards 4",
+		"for target_goos in android freebsd linux netbsd openbsd plan9; do",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("PR gate go-ci.yml missing %q", required)
+		}
+	}
+	for _, disallowed := range []string{"windows-module.yml", "root-16", "go-version: '1.21.x'", "go-version: '1.22.x'"} {
+		if strings.Contains(text, disallowed) {
+			t.Errorf("PR gate go-ci.yml must stay bounded (<20m) and leave exhaustive matrix to go-ci-full.yml: found %q", disallowed)
 		}
 	}
 }

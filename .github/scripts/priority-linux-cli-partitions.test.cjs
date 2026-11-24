@@ -9,7 +9,7 @@ const test = require('node:test');
 const {jobBody, jobNeeds} = require('./workflow-needs.cjs');
 
 const root = path.join(__dirname, '../..');
-const workflow = fs.readFileSync(path.join(root, '.github/workflows/go-ci.yml'), 'utf8');
+const workflow = fs.readFileSync(path.join(root, '.github/workflows/go-ci-full.yml'), 'utf8');
 function optional(name) {
   return fs.existsSync(path.join(root, name)) ? fs.readFileSync(path.join(root, name), 'utf8') : '';
 }

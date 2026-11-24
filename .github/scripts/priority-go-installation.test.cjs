@@ -12,7 +12,7 @@ const action = fs.readFileSync('.github/actions/setup-go/action.yml', 'utf8');
 test('Go setup keeps writable local caches without accessing the account cache quota', () => {
   assert.match(action, /^        cache: false$/m);
   assert.doesNotMatch(action, /^  cache:/m);
-  for (const name of ['go-ci.yml', 'windows-module.yml', 'runtime-integration.yml', 'linux-cli-module.yml']) {
+  for (const name of ['go-ci.yml', 'go-ci-full.yml', 'windows-module.yml', 'runtime-integration.yml', 'linux-cli-module.yml']) {
     const source = fs.readFileSync(path.join('.github/workflows', name), 'utf8');
     const steps = source.split(/(?=^      - )/m).filter(step =>
       /uses: \.\/\.github\/actions\/setup-go\n/.test(step));
@@ -27,7 +27,7 @@ test('Go setup keeps writable local caches without accessing the account cache q
 });
 
 test('formal Go setup has its own bounded installation deadline', () => {
-  for (const name of ['go-ci.yml', 'windows-module.yml', 'runtime-integration.yml', 'linux-cli-module.yml']) {
+  for (const name of ['go-ci.yml', 'go-ci-full.yml', 'windows-module.yml', 'runtime-integration.yml', 'linux-cli-module.yml']) {
     const source = fs.readFileSync(path.join('.github/workflows', name), 'utf8');
     const steps = source.split(/(?=^      - )/m).filter(step =>
       /uses: \.\/\.github\/actions\/setup-go\n/.test(step));
