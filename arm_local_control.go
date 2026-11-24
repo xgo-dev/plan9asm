@@ -39,19 +39,78 @@ func armNamedLocalCall(ins Instr) bool {
 	return op.Kind == OpIdent || op.Kind == OpLabel || op.Kind == OpMem && op.Mem.Base == PC
 }
 
-func armHasNamedLocalCall(fn Func) bool {
+func armLinkControlCandidates(fn Func) (localCall, callerReturn bool) {
+	var branches uint16
+	var copies [15]uint16
 	for _, ins := range fn.Instrs {
 		if armNamedLocalCall(ins) {
-			return true
+			return true, false
+		}
+		if armRegisterReturnCandidate(ins) {
+			if index, ok := armLocalLinkIndex(ins.Args[0].Mem.Base); ok {
+				branches |= 1 << uint(index)
+			}
+		}
+		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
+			continue
+		}
+		op, _, _ := strings.Cut(string(ins.Op), ".")
+		if op != "MOVW" {
+			continue
+		}
+		from, src := armLocalLinkIndex(ins.Args[0].Reg)
+		to, dst := armLocalLinkIndex(ins.Args[1].Reg)
+		if src && dst {
+			copies[from] |= 1 << uint(to)
 		}
 	}
-	return false
+	if branches == 0 {
+		return false, false
+	}
+	// This only selects the proof. Reachability, predication and overwrites
+	// are checked on the CFG before any register can be used as a return.
+	links := uint16(1 << 14)
+	for links&branches == 0 {
+		before := links
+		for index, destinations := range copies {
+			if links&(1<<uint(index)) != 0 {
+				links |= destinations
+			}
+		}
+		if links == before {
+			return false, false
+		}
+	}
+	return false, true
+}
+
+func armRegisterReturnCandidate(ins Instr) bool {
+	if len(ins.Args) != 1 || ins.Args[0].Kind != OpMem || ins.Args[0].Mem.Base == PC {
+		return false
+	}
+	op, _, _ := strings.Cut(string(ins.Op), ".")
+	return op == "B" || op == "JMP" || op == "BX"
 }
 
 func armLocalReturnCandidate(ins Instr) bool {
 	op, _, _, _ := armDecodeOp(string(ins.Op))
-	return op == "RET" || (op == "B" || op == "JMP") &&
-		len(ins.Args) == 1 && ins.Args[0].Kind == OpMem && ins.Args[0].Mem.Base != PC
+	return op == "RET" || armRegisterReturnCandidate(ins)
+}
+
+func armCallerLinkLeaf(fn Func) bool {
+	// Go suppresses the frame for zero-local leaves. As in arm.preprocess,
+	// even an unreachable call-shaped source instruction makes it nonleaf.
+	if fn.FrameSize != 0 {
+		return false
+	}
+	for _, ins := range fn.Instrs {
+		op, _, _ := strings.Cut(string(ins.Op), ".")
+		switch op {
+		case "BL", "CALL", "BX", "DIV", "DIVU", "MOD", "MODU", "DUFFCOPY", "DUFFZERO":
+			return false
+		}
+	}
+	return true
 }
 
 type armLocalControl struct {
@@ -76,6 +135,7 @@ type armLocalTransfer struct {
 	callee    int
 	link      Reg
 	returns   []int
+	exchange  bool // A Go BX rewrites LR and scratch R11 before transferring.
 }
 
 // An ordinary integer has no link set. At joins it can coexist with link IDs,
@@ -117,7 +177,8 @@ func armMergeLinks(left, right []int) []int {
 }
 
 func (c *armCtx) prepareARMLocalControl(fn Func) error {
-	if !armHasNamedLocalCall(fn) {
+	localCall, callerReturn := armLinkControlCandidates(fn)
+	if !localCall && (!callerReturn || c.sig.ARMEntry != nil) {
 		return nil
 	}
 	noFrame, err := armSourceNoFrame(fn)
@@ -129,9 +190,13 @@ func (c *armCtx) prepareARMLocalControl(fn Func) error {
 	}
 	for i, reg := range c.sig.ArgRegs {
 		if i < len(c.sig.Args) && reg == armLinkRegister {
+			if !localCall {
+				return nil // This signature binds R14 as an explicit input.
+			}
 			return fmt.Errorf("%w: ARM local calls in %q require LR as a return link", ErrProbeNeedsContext, fn.Sym)
 		}
 	}
+	noFrame = noFrame || !localCall && armCallerLinkLeaf(fn)
 
 	names := newAssemblyBlockNames(fn)
 	indices := make(map[string]int, len(c.blocks))
@@ -182,10 +247,14 @@ func (c *armCtx) prepareARMLocalControl(fn Func) error {
 		case op == "RET" && len(last.Args) == 0:
 			transfer.kind, transfer.link = armLocalReturn, armLinkRegister
 		default:
-			if len(last.Args) == 1 && (op != "RET" || noFrame) {
+			// B/JMP register forms have no condition except AL in Go's
+			// optab. BX admits predication, but changes the link when taken.
+			registerForm := op == "BX" || (op == "B" || op == "JMP") && condition == ""
+			if len(last.Args) == 1 && (registerForm || op == "RET" && noFrame) {
 				arg := last.Args[0]
 				if _, ok := armLocalLinkIndex(arg.Mem.Base); ok && armPlainBranchMemory(arg) && arg.Mem.Off == 0 {
 					transfer.kind, transfer.link = armLocalReturn, arg.Mem.Base
+					transfer.exchange = op == "BX"
 					break
 				}
 			}
@@ -279,6 +348,9 @@ func (plan *armLocalControl) proveLinks(fn Func, blocks []armBlock, sig FuncSig,
 						return armLocalLinkError(fn, last, "cannot exit through this caller link")
 					}
 				default:
+					if transfer.exchange {
+						return armLocalLinkError(fn, last, "BX rewrites LR before a local continuation")
+					}
 					send(link, state)
 					plan.successor[i] = armAddLink(plan.successor[i], link)
 				}

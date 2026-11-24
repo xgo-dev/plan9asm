@@ -33,7 +33,8 @@ var armCondCodes = map[string]bool{
 
 func armSplitBlocks(fn Func) []armBlock {
 	names := newAssemblyBlockNames(fn)
-	localCalls := armHasNamedLocalCall(fn)
+	localCall, callerReturn := armLinkControlCandidates(fn)
+	linkControl := localCall || callerReturn
 	blocks := []armBlock{{name: names.fresh("entry"), synthetic: true}}
 	cur := 0
 	anon := 0
@@ -49,14 +50,16 @@ func armSplitBlocks(fn Func) []armBlock {
 			return true
 		}
 		if _, undefined := armRawUndefinedEncoding(ins); undefined {
-			return localCalls // Same CFG boundary as named UNDEF.
+			return linkControl // Same CFG boundary as named UNDEF.
 		}
 		baseOp, _, _, _ := armDecodeOp(string(ins.Op))
 		switch baseOp {
 		case "RET", "UNDEF":
-			return localCalls
+			return linkControl
 		case "BL", "CALL":
-			return localCalls && armNamedLocalCall(ins)
+			return localCall && armNamedLocalCall(ins)
+		case "BX":
+			return linkControl && armRegisterReturnCandidate(ins)
 		case "B", "JMP":
 			return true
 		case "BEQ", "BNE", "BLT", "BGE", "BGT", "BLE", "BHS", "BHI", "BLS", "BLO", "BCC", "BCS", "BMI", "BPL", "BVS", "BVC":
