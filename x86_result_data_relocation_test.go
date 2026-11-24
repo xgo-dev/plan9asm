@@ -80,7 +80,6 @@ func TestX86NamedLEAStaticAddressResultThreeAPIs(t *testing.T) {
 				for _, test := range []struct{ name, before, after string }{
 					{"unowned source", "LEA" + width + " bytes<>+3(SB),AX", "LEA" + width + " external(SB),AX"},
 					{"missing result", "MOV" + width + " AX,ret+0(FP)\n", ""},
-					{"numeric consumer", "MOV" + width + " AX,ret+0(FP)", "ADD" + width + " $1,AX\nMOV" + width + " AX,ret+0(FP)"},
 					{"partial address", "LEA" + width + " bytes<>+3(SB),AX", "LEAW bytes<>+3(SB),AX"},
 				} {
 					changed := strings.Replace(source, test.before, test.after, 1)
@@ -89,6 +88,46 @@ func TestX86NamedLEAStaticAddressResultThreeAPIs(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+func x86StaticLEADeltaSource(arch, first string) (assembly, declaration string) {
+	const data = "DATA cell<>+0(SB)/4,$3\nGLOBL cell<>(SB),16,$16\n"
+	width, word, result := "Q", 8, "uint64"
+	if arch == "386" {
+		width, word, result = "L", 4, "uint32"
+	}
+	return data + fmt.Sprintf("TEXT ·Value(SB),516,$0-%d\n%s\nLEA%s cell<>(SB),CX\nSUB%s CX,AX\nMOV%s AX,ret+0(FP)\nRET\n",
+		word, first, width, width, width), "func Value() " + result
+}
+
+func TestX86OwnedStaticLEADeltaOriginalGoAndLLVM(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc required")
+	}
+	for _, target := range x86RawReturnTargets {
+		first := []string{"MOVQ $cell<>+4(SB),AX", "LEAQ cell<>+4(SB),AX"}
+		if target.arch == "386" {
+			first = []string{"MOVL $cell<>+4(SB),AX", "LEAL cell<>+4(SB),AX", "PUSHL $cell<>+4(SB)\nPOPL AX"}
+		}
+		for _, producer := range first {
+			source, declaration := x86StaticLEADeltaSource(target.arch, producer)
+			x86LEAActualTargetGoObject(t, target.arch, target.triple, source)
+			for _, api := range []string{"text", "module", "Go"} {
+				t.Run(target.triple+"/"+producer+"/"+api, func(t *testing.T) {
+					ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(ir, "ptrtoint ptr") {
+						t.Fatal("LEA lost its actual relocated address bits")
+					}
+					x86PackedStringCompileObject(t, llc, target.triple, ir, "-O0")
+					x86PackedStringCompileObject(t, llc, target.triple, x86DwordProductIROptimize(t, ir), "-O2")
+				})
+			}
 		}
 	}
 }

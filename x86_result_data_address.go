@@ -182,38 +182,28 @@ func (c *amd64Ctx) ownsStaticAddressImmediate(source Operand, arch string) bool 
 	return valid && immediate && c.fpStaticAddressValues.objects[resolveAssemblyDataSymbol(address.symbol, c.resolve)]
 }
 
-// A leaf can return the full bits of a same-module LEA. Keep the value in
-// the address-only transport proof so it never supplies numerical inputs or
-// storage authority to another instruction.
-func (c *amd64Ctx) ownsStaticLEAResult(fn Func, sig FuncSig, arch string) bool {
-	if !x86NativeWordIntegerResult(sig, arch) || c.fpStaticAddressValues == nil || c.resolve == nil {
-		return false
-	}
-	word := x86ResultPointerWord(arch)
-	seenLEA := false
-	transport := x86AddressResultTransportRole(fn, sig, arch, func(ins Instr) (int, bool) {
-		if address, immediate, dest, known := x86StaticAddressValueMove(ins, arch); known && immediate {
-			name := resolveAssemblyDataSymbol(address.symbol, c.resolve)
-			return dest, c.fpStaticAddressValues.objects[name]
-		}
-		dest, _, width, mem, known := x86SBLEAWriteShape(ins, arch)
-		if !known || width != word {
-			return 0, false
-		}
-		address, valid := x86StaticSBSourceAddress(Operand{Kind: OpMem, Mem: mem}, arch)
-		owned := valid && c.fpStaticAddressValues.objects[resolveAssemblyDataSymbol(address.symbol, c.resolve)]
-		seenLEA = seenLEA || owned
-		return dest, owned
-	})
-	return transport && seenLEA
-}
-
 func (c *amd64Ctx) scalarStaticAddressValueTransfer(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
 	values := c.fpStaticAddressValues
 	if values == nil {
 		return false, false
 	}
-	address, immediate, index, valid := x86StaticAddressValueMove(ins, arch)
+	word := x86ResultPointerWord(arch)
+	var address x86StaticSBAddress
+	var immediate, valid bool
+	var index int
+	if ins.Op == "LEAL" || ins.Op == "LEAQ" {
+		destination, _, width, memory, known := x86SBLEAWriteShape(ins, arch)
+		if !known || width != word {
+			return false, false
+		}
+		// The native-word LEA and MOV of an owned address both produce
+		// the complete relocated bits. An effective index, partial write
+		// or unresolved object belongs to the separate address-only rules.
+		address, valid = x86StaticSBSourceAddress(Operand{Kind: OpMem, Mem: memory}, arch)
+		immediate, index = true, destination
+	} else {
+		address, immediate, index, valid = x86StaticAddressValueMove(ins, arch)
+	}
 	if !valid {
 		return false, false
 	}
@@ -221,7 +211,6 @@ func (c *amd64Ctx) scalarStaticAddressValueTransfer(ins Instr, state *x86ResultS
 	if immediate && !values.objects[address.symbol] || !immediate && !values.cells[address] {
 		return false, false
 	}
-	word := x86ResultPointerWord(arch)
 	if !x86ResultStore(ins.Args[1], word, state, owned, 0, arch) {
 		return false, true
 	}

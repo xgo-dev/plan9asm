@@ -7,22 +7,7 @@ package plan9asm
 // whole-source obligation. In particular, a partial or missing result cannot
 // escape the numerical-family routing check merely because its type is ptr.
 func x86OpaqueAddressPointerResultRole(fn Func, sig FuncSig, arch string) bool {
-	if sig.Ret != Ptr {
-		return false
-	}
-	return x86AddressResultTransportRole(fn, sig, arch, func(ins Instr) (int, bool) {
-		_, immediate, destination, known := x86StaticAddressValueMove(ins, arch)
-		return destination, known && immediate
-	})
-}
-
-func x86NativeWordIntegerResult(sig FuncSig, arch string) bool {
-	return len(sig.Frame.Results) == 1 &&
-		(arch == "386" && sig.Ret == I32 || arch == "amd64" && sig.Ret == I64)
-}
-
-func x86AddressResultTransportRole(fn Func, sig FuncSig, arch string, addressProducer func(Instr) (int, bool)) bool {
-	if len(sig.Args) != 0 || len(sig.Frame.Params) != 0 ||
+	if sig.Ret != Ptr || len(sig.Args) != 0 || len(sig.Frame.Params) != 0 ||
 		len(sig.Frame.Results) != 1 || !x86DirectGPFPResultSourceRole(fn, sig, arch) {
 		return false
 	}
@@ -49,7 +34,7 @@ func x86AddressResultTransportRole(fn Func, sig FuncSig, arch string, addressPro
 		if original.Op == "NOP" && len(original.Args) == 0 {
 			continue
 		}
-		if destination, known := addressProducer(original); known {
+		if _, immediate, destination, known := x86StaticAddressValueMove(original, arch); known && immediate {
 			defined |= 1 << uint(destination)
 			continue
 		}
@@ -83,4 +68,9 @@ func x86AddressResultTransportRole(fn Func, sig FuncSig, arch string, addressPro
 		}
 	}
 	return false
+}
+
+func x86NativeWordIntegerResult(sig FuncSig, arch string) bool {
+	return len(sig.Frame.Results) == 1 &&
+		(arch == "386" && sig.Ret == I32 || arch == "amd64" && sig.Ret == I64)
 }

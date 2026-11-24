@@ -68,6 +68,44 @@ func TestCrossLinuxRuntimeMatrixX86ScalarAbsoluteRelocation(t *testing.T) {
 	}
 }
 
+func TestCrossLinuxRuntimeMatrixX86OwnedStaticLEADelta(t *testing.T) {
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc required")
+	}
+	for _, target := range []struct {
+		arch, triple, first, cType, compiler string
+		runPrefix                            []string
+	}{
+		{"386", "i386-unknown-linux-gnu", "PUSHL $cell<>+4(SB)\nPOPL AX", "unsigned int",
+			"i686-linux-gnu-gcc", []string{"qemu-i386", "-L", "/usr/i686-linux-gnu"}},
+		{"amd64", "x86_64-unknown-linux-gnu", "LEAQ cell<>+4(SB),AX", "unsigned long", "cc", nil},
+	} {
+		t.Run(target.arch, func(t *testing.T) {
+			source, declaration := x86StaticLEADeltaSource(target.arch, target.first)
+			const goMain = "package main\nfunc main() { if got := Value(); got != 4 { panic(got) } }\n"
+			original := x86OrderingHintBuildOriginal(t, t.TempDir(), "linux", target.arch,
+				"package main\n"+declaration+"\n", source, goMain)
+			command := runtimeOracleGuestArguments(t, target.runPrefix, original)
+			x86FloatCompareCaptureCommand(t, exec.Command(command[0], command[1:]...))
+
+			driver := "extern " + target.cType + " Value(void);\nint main(void) { return Value() != 4; }\n"
+			for _, api := range []string{"text", "module", "Go"} {
+				ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+				if err != nil {
+					t.Fatal(api, err)
+				}
+				for _, level := range []int{0, 2} {
+					t.Run(fmt.Sprintf("%s/O%d", api, level), func(t *testing.T) {
+						compileAndRunRuntimeTestWithCompiler(t, llc, []string{target.compiler, "-no-pie"},
+							"static_lea_delta", target.triple, ir, driver, target.runPrefix, level)
+					})
+				}
+			}
+		})
+	}
+}
+
 const x86ScalarRelocationOriginalGo = `package main
 import ("fmt"; "unsafe")
 var cell = [32]byte{0xa7}

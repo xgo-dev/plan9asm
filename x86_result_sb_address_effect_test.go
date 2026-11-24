@@ -49,6 +49,10 @@ func TestX86LEASBUnknownAddressDoesNotGrantFacts(t *testing.T) {
 			widths, move = append(widths, "Q"), "MOVQ"
 		}
 		for _, width := range widths {
+			symbols := []string{"·unbound<>(SB)"}
+			if x86LEAWidth(Op("LEA"+width), target.arch) != x86ResultPointerWord(target.arch) {
+				symbols = append(symbols, "·table<>(SB)") // An owned partial write still lacks a whole address.
+			}
 			for _, test := range []struct{ name, before, after string }{
 				{"NUM-result", "", "MOVL DX,ret+RESULT(FP)"},
 				{"NUM-compare", "", "TESTW DX,DX\nMOVL $0,CX\nSETEQ CL\nMOVL CX,ret+RESULT(FP)"},
@@ -57,16 +61,18 @@ func TestX86LEASBUnknownAddressDoesNotGrantFacts(t *testing.T) {
 				{"caller-address", move + " p+0(FP),DX\n", "CMPW DX,$0"},
 				{"old-result-address", "LEA" + strings.TrimPrefix(move, "MOV") + " ret+RESULT(FP),DX\n", "MOVL $7,(DX)"},
 			} {
-				for _, api := range []string{"text", "module", "Go"} {
-					t.Run(target.triple+"/"+width+"/"+test.name+"/"+api, func(t *testing.T) {
-						declaration := "func view(p *byte) uint32"
-						body := "MOVL $7,ret+RESULT(FP)\n" + test.before + "LEA" + width + " ·table<>(SB),DX\n" + test.after
-						source := x86LEASBUnknownAddressSource(t, target.arch, declaration, body)
-						ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
-						if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
-							t.Fatalf("SB address created numerical/caller/result/native authority: IR=%d error=%v", len(ir), err)
-						}
-					})
+				for _, symbol := range symbols {
+					for _, api := range []string{"text", "module", "Go"} {
+						t.Run(target.triple+"/"+width+"/"+symbol+"/"+test.name+"/"+api, func(t *testing.T) {
+							declaration := "func view(p *byte) uint32"
+							body := "MOVL $7,ret+RESULT(FP)\n" + test.before + "LEA" + width + " " + symbol + ",DX\n" + test.after
+							source := x86LEASBUnknownAddressSource(t, target.arch, declaration, body)
+							ir, err := x86ScalarFPBitViewAPI(t, source, declaration, target.arch, target.triple, api)
+							if !errors.Is(err, ErrProbeNeedsContext) || ir != "" {
+								t.Fatalf("unbound or partial SB address created numerical/native facts: IR=%d error=%v", len(ir), err)
+							}
+						})
+					}
 				}
 			}
 		}
@@ -219,7 +225,8 @@ func TestX86LEASBUnknownAddressReachingIndexAndUnrelatedPointers(t *testing.T) {
 				{"unknown", "", false},
 				{"partial", "MOVB $1,CX\n", false},
 				{"opaque-pointer", "MOVL p+0(FP),CX\n", false},
-				{"prior-SB-address", "LEAL ·table<>(SB),CX\n", false},
+				{"prior-unbound-address", "LEAL ·unbound<>(SB),CX\n", false},
+				{"prior-owned-address", "LEAL ·table<>(SB),CX\n", true},
 			} {
 				for _, api := range []string{"text", "module", "Go"} {
 					t.Run(target.triple+"/"+width+"/index/"+test.name+"/"+api, func(t *testing.T) {
