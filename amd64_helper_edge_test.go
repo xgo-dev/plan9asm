@@ -69,10 +69,10 @@ func TestAMD64CtxHelperEdges(t *testing.T) {
 		t.Fatalf("amd64ValueAsI64(unsupported) = (%q, %v, %v)", got, ok, err)
 	}
 
-	if err := c.pushStackWidth(64, "7"); err != nil {
+	if err := c.pushStackWidth(64, "7", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := c.popStackWidth(64); err != nil || got == "" {
+	if got, err := c.popStackWidth(64, ""); err != nil || got == "" {
 		t.Fatalf("popStackWidth(64) returned %q, %v", got, err)
 	}
 

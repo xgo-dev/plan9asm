@@ -77,7 +77,7 @@ type amd64Ctx struct {
 	vspSlot            string // i64 offset of the current private SP
 	usesPrivateStack   bool
 	localStackSlot     string // byte-addressable backing storage for x86 SP references
-	logicalAUTOBase    string // immutable entry-SP SSA address, not a source pointer fact
+	logicalAUTOBase    string // Immutable pointer to the first byte of the logical frame.
 	logicalAUTOExtent  int    // proved ordinary logical frame bytes above entry SP
 	physicalSPWithAUTO bool   // separate source proof owns bare nonnegative SP offsets
 	sourceStack        *x86SourceStackProof
@@ -400,7 +400,7 @@ func (c *amd64Ctx) scanUsedRegs() {
 				markReg(BX)
 			}
 			if _, stack := amd64StackWidthSpecs[Op(op)]; stack {
-				if c.goarch == "386" {
+				if c.relativeStack != nil || c.goarch == "386" {
 					markReg(SP)
 				} else {
 					c.usesPrivateStack = true
@@ -588,7 +588,7 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i64\n", addr, base)
 			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", addr, spSlot)
 			if c.logicalAUTOExtent != 0 {
-				c.logicalAUTOBase = "%" + addr
+				c.logicalAUTOBase = "%" + base
 			}
 			if bpSlot, ok := c.regSlot[BP]; ok && c.goarch != "386" && c.frameSize > 0 {
 				// Go saves BP before reserving TEXT's local frame. Thus a source
@@ -941,6 +941,9 @@ func (c *amd64Ctx) stackOffsetRange() (minOff, maxOff int64) {
 const max386LocalStackMovement = int64(1 << 20)
 
 func (c *amd64Ctx) stackMovementBudget() (int64, error) {
+	if c.relativeStack != nil {
+		return 0, nil // The validated depth is already covered by logical AUTO storage.
+	}
 	// The local stack models bounded movement relative to its initial SP. Some
 	// runtime routines explicitly rebase SP from a saved context; those writes
 	// intentionally leave this local object and do not contribute to its size.
@@ -968,9 +971,6 @@ func (c *amd64Ctx) stackMovementBudget() (int64, error) {
 					return 0, err
 				}
 			case "ADJSP":
-				if c.relativeStack != nil {
-					continue
-				}
 				form, err := parseX86StackAdjustment(ins, c.goarch)
 				if err != nil {
 					return 0, err
@@ -2326,6 +2326,11 @@ func (c *amd64Ctx) addrFromPlainMem(mem MemRef) (addrI64 string, err error) {
 }
 
 func (c *amd64Ctx) ptrFromMem(mem MemRef) (ptr, ptrType string, err error) {
+	if _, certified := c.fixedMemRoles[mem]; !certified && mem.Segment == "" {
+		if pointer, logical, err := c.logicalAUTOPointer(mem); logical {
+			return pointer, "ptr", err
+		}
+	}
 	addr, err := c.addrFromPlainMem(mem)
 	if err != nil {
 		return "", "", err

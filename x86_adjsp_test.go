@@ -252,3 +252,97 @@ RET
 		}
 	}
 }
+
+func x86ADJSPMixedStackSources(arch string) (flags, value, memory, named string) {
+	suffix, width := "L", 4
+	if arch == "amd64" {
+		suffix, width = "Q", 8
+	}
+	flags = fmt.Sprintf(`TEXT ·Value(SB),516,$0-4
+CLC
+PUSHF%[1]s
+ADJSP $128
+SETCS AL
+MOVB $1,128(SP)
+ADJSP $-128
+CLC
+POPF%[1]s
+SETCS BL
+MOVBLZX AL,AX
+MOVBLZX BL,BX
+ADDL BX,AX
+MOVL AX,ret+0(FP)
+RET
+`, suffix)
+	value = fmt.Sprintf(`TEXT ·Value(SB),516,$0-4
+PUSH%[1]s $6
+ADJSP $129
+ADDL $1,129(SP)
+PUSHW $0
+POPW CX
+ADJSP $-129
+POP%[1]s AX
+MOVL AX,ret+0(FP)
+RET
+`, suffix)
+	memory = fmt.Sprintf(`TEXT ·Value(SB),516,$0-4
+ADJSP $%[2]d
+MOV%[1]s $7,0(SP)
+PUSH%[1]s 0(SP)
+MOV%[1]s $0,%[2]d(SP)
+POP%[1]s 0(SP)
+MOVL 0(SP),AX
+ADJSP $-%[2]d
+MOVL AX,ret+0(FP)
+RET
+`, suffix, width)
+	named = fmt.Sprintf(`TEXT ·Value(SB),4,$32-4
+MOVL $0,spill-16(SP)
+ADJSP $128
+PUSH%[1]s $7
+POP%[1]s spill-%[2]d(SP)
+MOVL spill-16(SP),AX
+ADJSP $-128
+MOVL AX,ret+0(FP)
+RET
+`, suffix, 16+width)
+	return
+}
+
+func TestX86ADJSPMixedStack(t *testing.T) {
+	for _, target := range []struct{ arch, triple string }{
+		{"386", "i386-unknown-linux-gnu"}, {"amd64", "x86_64-unknown-linux-gnu"},
+	} {
+		flags, value, memory, named := x86ADJSPMixedStackSources(target.arch)
+		for _, row := range []struct {
+			name, source string
+			want         uint64
+		}{{"flags", flags, 2}, {"value", value, 7}, {"memory", memory, 7}, {"named-pop", named, 7}} {
+			t.Run(target.arch+"/"+row.name, func(t *testing.T) {
+				goAssemblerOracleOutput(t, target.arch, row.source, "", true)
+				for _, api := range []string{"text", "module", "Go"} {
+					ir, err := x86ScalarFPBitViewAPI(t, row.source, "func Value() uint32", target.arch, target.triple, api)
+					if err != nil {
+						t.Fatalf("%s lost initialized private stack storage: %v", api, err)
+					}
+					x86ScalarFPNamedConstantResult(t, ir, "Value", []uint64{row.want})
+				}
+			})
+		}
+		fullArithmeticFlags := strings.Replace(flags, "CLC\nPUSHF", "MOVL $1,CX\nADDL $0,CX\nCLD\nPUSHF", 1)
+		for _, row := range []struct{ name, source string }{
+			{"partly-defined-flags", strings.Replace(flags, "MOVB $1,128(SP)", "MOVL 128(SP),CX", 1)},
+			{"ambient-flags", strings.Replace(fullArithmeticFlags, "MOVB $1,128(SP)", "MOVB 129(SP),CL", 1)},
+			{"released-value", strings.Replace(value, "ADDL $1,129(SP)", "ADJSP $-133\nADJSP $133\nADDL $1,129(SP)", 1)},
+			{"pop-beyond-live-storage", strings.Replace(memory, " 0(SP)\nMOVL 0(SP),AX", " 8(SP)\nMOVL 0(SP),AX", 1)},
+		} {
+			t.Run(target.arch+"/"+row.name, func(t *testing.T) {
+				goAssemblerOracleOutput(t, target.arch, row.source, "", true)
+				_, err := x86ScalarFPBitViewAPI(t, row.source, "func Value() uint32", target.arch, target.triple, "Go")
+				if !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatalf("unproved private stack effect was accepted: %v", err)
+				}
+			})
+		}
+	}
+}

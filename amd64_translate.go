@@ -649,8 +649,20 @@ func (c *amd64Ctx) lowerBlocks() error {
 
 func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emitCondBr amd64EmitCondBr) (terminated bool, err error) {
 	if c.relativeStack != nil {
-		if projected, found := c.relativeStack.emission[c.blockBase[bi]+ii]; found {
+		pc := c.blockBase[bi] + ii
+		if projected, found := c.relativeStack.emission[pc]; found {
 			ins = projected
+		}
+		if offset, found := c.relativeStack.transports[pc]; found {
+			address, logical, err := c.logicalAUTOPointer(MemRef{Base: SP, Off: offset})
+			if err != nil {
+				return false, err
+			}
+			if !logical {
+				return false, fmt.Errorf("%w: missing relative stack storage for %q", ErrProbeNeedsContext, ins.Raw)
+			}
+			_, terminated, err := c.lowerStackWidth(ins, address)
+			return terminated, err
 		}
 	}
 	c.namedAtomicLock = bi >= 0 && bi < len(c.blocks) && ii > 0 && ii <= len(c.blocks[bi].instrs) &&

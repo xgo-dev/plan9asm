@@ -23,6 +23,67 @@ func x86ResultValueStackLimit(arch string) int {
 	return (x86PrivateStackWords - 1) * int(x86ResultPointerWord(arch))
 }
 
+func (state *x86ResultState) adjustRelativeValueStack(form x86RelativeStackStep, arch string) bool {
+	if state.shapeOnly {
+		return true
+	}
+	stack := state.valueStack
+	if stack.invalid || int64(len(stack.bytes)) != form.before {
+		return false
+	}
+	next := int(form.before + form.amount)
+	if form.amount > 0 {
+		stack.bytes = append(stack.bytes, make([]uint8, form.amount)...)
+		if stack.refinable != nil {
+			stack.refinable = append(stack.refinable, make([]uint8, form.amount)...)
+		}
+	} else {
+		stack.revokePointerCells(next, len(stack.bytes), int(x86ResultPointerWord(arch)))
+		stack.bytes = stack.bytes[:next]
+		if stack.refinable != nil {
+			stack.refinable = stack.refinable[:next]
+		}
+	}
+	return true
+}
+
+// The lower address indices of the shared object belong to dynamic SP.
+// Map that part of each scalar access into descending stack-byte order.
+// The returned offset starts the remainder in the fixed AUTO frame.
+func (state *x86ResultState) accessRelativeStackBytes(offset, end int, arch string, write bool) (int, bool) {
+	if offset >= state.relativeScratch {
+		return offset, true
+	}
+	fixed := end
+	if fixed > state.relativeScratch {
+		fixed = state.relativeScratch
+	}
+	if state.shapeOnly {
+		return fixed, true
+	}
+	stack := state.valueStack
+	begin, limit := state.relativeScratch-fixed, state.relativeScratch-offset
+	if limit > len(stack.bytes) {
+		return 0, false
+	}
+	if write {
+		stack.revokePointerCells(begin, limit, int(x86ResultPointerWord(arch)))
+		for index := begin; index < limit; index++ {
+			stack.bytes[index] = 0xff
+			if stack.refinable != nil {
+				stack.refinable[index] = 0xff
+			}
+		}
+	} else {
+		for _, known := range stack.bytes[begin:limit] {
+			if known != 0xff {
+				return 0, false
+			}
+		}
+	}
+	return fixed, true
+}
+
 // Private numerical storage and ID survive these independently accepted
 // transfers. This is not the stronger inert-source rule: a vector product
 // changes data registers, but neither accesses SP nor changes private FLAGS.
@@ -93,7 +154,7 @@ func x86ResultValueStackContinuation(ins Instr, state *x86ResultState, arch stri
 	}
 	// On 386 the private byte stack moves the simulated SP. An AUTO access
 	// cannot borrow the independent unchanged-SP local-byte proof while live.
-	if arch == "386" {
+	if arch == "386" && state.relativeScratch == 0 {
 		if x86InertNOP(ins, arch) {
 			return true
 		}
@@ -135,7 +196,7 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 	if spec.mode == amd64StackPopValue && ins.Args[0].Kind == OpReg && ins.Args[0].Reg == SP {
 		return false, true // Numerical storage cannot rebind the physical/private stack pointer.
 	}
-	if len(stack.bytes)%2 != 0 || len(stack.bytes) > x86ResultValueStackLimit(arch) ||
+	if state.relativeScratch == 0 && len(stack.bytes)%2 != 0 || len(stack.bytes) > x86ResultValueStackLimit(arch) ||
 		!stack.pointerCellsBounded(arch) ||
 		stack.refinable != nil && len(stack.refinable) != len(stack.bytes) ||
 		stack.correlation != nil && (arch != "386" || len(stack.correlation.bytes) != len(stack.bytes)) {
@@ -182,6 +243,12 @@ func x86ResultBoundValueStackStep(ins Instr, state *x86ResultState, owned []bool
 			}
 			if !stack.id && spec.bits > 16 {
 				bits &^= 1 << 21
+			}
+			if state.relativeScratch != 0 {
+				// A physical alias must not observe synthetic system flags.
+				// These bits are outside the ordinary arithmetic/DF/ID model.
+				const systemFlags = 1<<8 | 1<<9 | 3<<12 | 1<<14 | 7<<18
+				bits &^= systemFlags
 			}
 		}
 		if state.shapeOnly {

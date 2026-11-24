@@ -126,7 +126,7 @@ func x86StackWidthProperties(ins Instr, arch string) (amd64StackWidthSpec, bool,
 	return spec, true, nil
 }
 
-func (c *amd64Ctx) lowerStackWidth(ins Instr) (ok bool, terminated bool, err error) {
+func (c *amd64Ctx) lowerStackWidth(ins Instr, relativeAddress string) (ok bool, terminated bool, err error) {
 	spec, known, err := x86StackWidthProperties(ins, c.goarch)
 	if !known || err != nil {
 		return known, false, err
@@ -138,9 +138,9 @@ func (c *amd64Ctx) lowerStackWidth(ins Instr) (ok bool, terminated bool, err err
 		if spec.bits != 64 {
 			value = c.truncI64(value, amd64StackLLVMType(spec.bits))
 		}
-		return true, false, c.pushStackWidth(spec.bits, value)
+		return true, false, c.pushStackWidth(spec.bits, value, relativeAddress)
 	case amd64StackPopFlags:
-		value, err := c.popStackWidth(spec.bits)
+		value, err := c.popStackWidth(spec.bits, relativeAddress)
 		if err != nil {
 			return true, false, err
 		}
@@ -175,9 +175,9 @@ func (c *amd64Ctx) lowerStackWidth(ins Instr) (ok bool, terminated bool, err err
 			default:
 				panic("invalid x86 segment stack width")
 			}
-			return true, false, c.pushStackWidth(bits, value)
+			return true, false, c.pushStackWidth(bits, value, relativeAddress)
 		}
-		value, err := c.popStackWidth(bits)
+		value, err := c.popStackWidth(bits, relativeAddress)
 		if err != nil {
 			return true, false, err
 		}
@@ -198,14 +198,14 @@ func (c *amd64Ctx) lowerStackWidth(ins Instr) (ok bool, terminated bool, err err
 		if err != nil {
 			return true, false, err
 		}
-		return true, false, c.pushStackWidth(spec.bits, value)
+		return true, false, c.pushStackWidth(spec.bits, value, relativeAddress)
 	}
 
-	value, err := c.popStackWidth(spec.bits)
+	value, err := c.popStackWidth(spec.bits, relativeAddress)
 	if err != nil {
 		return true, false, err
 	}
-	return true, false, c.storeStackWidth(operand, spec.bits, value)
+	return true, false, c.storeStackWidth(operand, spec.bits, value, relativeAddress != "")
 }
 
 func validateX86OrdinaryStackWidthMode(arch, op string, bits int, ins Instr) error {
@@ -252,46 +252,50 @@ func amd64StackLLVMType(bits int) LLVMType {
 	}
 }
 
-func (c *amd64Ctx) pushStackWidth(bits int, value string) error {
+func (c *amd64Ctx) pushStackWidth(bits int, value, address string) error {
 	typ := amd64StackLLVMType(bits)
-	if c.sourceStack != nil {
-		return c.pushSourceStackValue(typ, int64(bits/8), value)
-	}
-	if c.goarch == "386" {
-		switch bits {
-		case 16:
-			return c.pushI16(value)
-		case 32:
-			return c.pushI32(value)
+	if address == "" {
+		if c.sourceStack != nil {
+			return c.pushSourceStackValue(typ, int64(bits/8), value)
 		}
-		return fmt.Errorf("386 cannot push %d-bit stack values", bits)
+		if c.goarch == "386" {
+			switch bits {
+			case 16:
+				return c.pushI16(value)
+			case 32:
+				return c.pushI32(value)
+			}
+			return fmt.Errorf("386 cannot push %d-bit stack values", bits)
+		}
+		address = c.privateAMD64StackAddress(bits/8, true)
 	}
-	address := c.privateAMD64StackAddress(bits/8, true)
 	fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", typ, value, address)
 	return nil
 }
 
-func (c *amd64Ctx) popStackWidth(bits int) (string, error) {
+func (c *amd64Ctx) popStackWidth(bits int, address string) (string, error) {
 	typ := amd64StackLLVMType(bits)
-	if c.sourceStack != nil {
-		return c.popSourceStackValue(typ, int64(bits/8))
-	}
-	if c.goarch == "386" {
-		switch bits {
-		case 16:
-			return c.popI16()
-		case 32:
-			return c.popI32()
+	if address == "" {
+		if c.sourceStack != nil {
+			return c.popSourceStackValue(typ, int64(bits/8))
 		}
-		return "", fmt.Errorf("386 cannot pop %d-bit stack values", bits)
+		if c.goarch == "386" {
+			switch bits {
+			case 16:
+				return c.popI16()
+			case 32:
+				return c.popI32()
+			}
+			return "", fmt.Errorf("386 cannot pop %d-bit stack values", bits)
+		}
+		address = c.privateAMD64StackAddress(bits/8, false)
 	}
-	address := c.privateAMD64StackAddress(bits/8, false)
 	value := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", value, typ, address)
 	return "%" + value, nil
 }
 
-func (c *amd64Ctx) storeStackWidth(destination Operand, bits int, value string) error {
+func (c *amd64Ctx) storeStackWidth(destination Operand, bits int, value string, relative bool) error {
 	typ := amd64StackLLVMType(bits)
 	switch destination.Kind {
 	case OpReg:
@@ -301,7 +305,11 @@ func (c *amd64Ctx) storeStackWidth(destination Operand, bits int, value string) 
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(c.b, "  store volatile %s %s, %s %s, align 1\n", typ, value, ptrType, ptr)
+		volatile := "volatile "
+		if relative && destination.Mem.Base == SP {
+			volatile = "" // The checked destination is in the private local object.
+		}
+		fmt.Fprintf(c.b, "  store %s%s %s, %s %s, align 1\n", volatile, typ, value, ptrType, ptr)
 		return nil
 	case OpSym:
 		ptr, err := c.ptrFromSB(destination.Sym)

@@ -236,6 +236,12 @@ func checkX86ABI0ResultInitializationWithEntry(fn Func, sig FuncSig, goarch stri
 	}
 	if relativeStack != nil && relativeStack.extent != 0 {
 		autoExtent = relativeStack.extent
+		if relativeStack.scratch != 0 {
+			if initial.valueStack != nil {
+				return fail("relative stack already has an independent FLAGS binding")
+			}
+			initial.relativeScratch = relativeStack.scratch
+		}
 	}
 	initial.auto = make([]bool, autoExtent)
 	owned := make([]bool, frame)
@@ -408,6 +414,9 @@ func checkX86ResultSourceFlowWithTrapOnly(fn Func, initial x86ResultState, owned
 			if relativeStack != nil {
 				if form, adjusted := relativeStack.adjustments[ordinal]; adjusted {
 					state.flags = form.relativeFlags()
+					if state.relativeScratch != 0 {
+						return state.adjustRelativeValueStack(form, arch)
+					}
 					if form.amount < 0 && relativeStack.extent != 0 {
 						// Only live reservations own initialized bytes. A later
 						// reservation must supply them again even at the same address.
@@ -872,10 +881,11 @@ func x86ResultScalarBytes(typ LLVMType, arch string) int64 {
 }
 
 type x86ResultState struct {
-	fp          []bool
-	auto        []bool
-	gp          [16]uint8
-	mode32Frame *x86Mode32FrameState // Bounded original physical TEXT frame, if independently proved.
+	fp              []bool
+	auto            []bool
+	relativeScratch int // Initial AUTO indices mapped to the reaching value stack.
+	gp              [16]uint8
+	mode32Frame     *x86Mode32FrameState // Bounded original physical TEXT frame, if independently proved.
 	// Canonical FP is allocated only for the independent bounded ABI0 bool
 	// role. It neither replaces numerical initialization nor extends FP slots.
 	canonicalFP                         []bool
@@ -1258,7 +1268,12 @@ func x86ResultRead(arg Operand, width int64, state *x86ResultState, owned []bool
 		if !valid {
 			return false // An initialized pointer does not initialize its pointee.
 		}
-		for index := offset; index < offset+int(width); index++ {
+		end := offset + int(width)
+		offset, valid = state.accessRelativeStackBytes(offset, end, arch, false)
+		if !valid {
+			return false
+		}
+		for index := offset; index < end; index++ {
 			if !state.auto[index] {
 				return false
 			}
@@ -1277,7 +1292,12 @@ func x86ResultStore(arg Operand, width int64, state *x86ResultState, owned []boo
 		if state.mode32Frame != nil {
 			state.mode32Frame.clearSpills(offset, int(width))
 		}
-		for index := offset; index < offset+int(width); index++ {
+		end := offset + int(width)
+		offset, valid = state.accessRelativeStackBytes(offset, end, arch, true)
+		if !valid {
+			return false
+		}
+		for index := offset; index < end; index++ {
 			state.auto[index] = true
 		}
 		return true

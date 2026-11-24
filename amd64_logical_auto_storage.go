@@ -2,10 +2,9 @@ package plan9asm
 
 import "fmt"
 
-// Ordinary logical AUTO bytes use immutable entry SP plus the frame extent,
-// not addresses below the mutable physical/private SP. Private PUSH storage
-// must not overwrite them. This consumes an existing complete source proof;
-// independently bound native/caller storage keeps its own address projection.
+// Logical AUTO bytes are relative to the immutable frame. A relative stack
+// plan projects its dynamic bytes and fixed AUTO bytes into one object.
+// Independently bound native/caller storage has its own address projection.
 func (c *amd64Ctx) prepareLogicalAUTOStorage() error {
 	fn := c.fpScalarSource
 	if !c.fpScalarChecked || c.fpScalarCheckErr != nil || c.sourceStack != nil || c.fixedLocal != nil ||
@@ -52,6 +51,16 @@ func (c *amd64Ctx) prepareLogicalAUTOStorage() error {
 }
 
 func (c *amd64Ctx) logicalAUTOAddress(mem MemRef) (string, bool, error) {
+	pointer, logical, err := c.logicalAUTOPointer(mem)
+	if !logical || err != nil {
+		return "", logical, err
+	}
+	address := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", address, pointer)
+	return "%" + address, true, nil
+}
+
+func (c *amd64Ctx) logicalAUTOPointer(mem MemRef) (string, bool, error) {
 	if c.logicalAUTOExtent == 0 || mem.Base != SP {
 		return "", false, nil
 	}
@@ -69,7 +78,7 @@ func (c *amd64Ctx) logicalAUTOAddress(mem MemRef) (string, bool, error) {
 	if offset == 0 {
 		return c.logicalAUTOBase, true, nil
 	}
-	address := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", address, c.logicalAUTOBase, offset)
-	return "%" + address, true, nil
+	pointer := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %d\n", pointer, c.logicalAUTOBase, offset)
+	return "%" + pointer, true, nil
 }

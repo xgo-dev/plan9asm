@@ -119,7 +119,9 @@ type x86RelativeStackPlan struct {
 	adjustments map[int]x86RelativeStackStep // Original source ordinals.
 	accesses    map[int]Instr                // Same source instructions with projected operands.
 	emission    map[int]Instr                // Linear emission positions, including TEXT.
+	transports  map[int]int64                // Physical PUSH/POP slots in the same local object.
 	extent      int
+	scratch     int // Maximum dynamic depth when the value stack owns these bytes.
 }
 
 type x86RelativeStackStep struct {
@@ -190,10 +192,38 @@ func x86RelativeStack(fn Func, arch string) (*x86RelativeStackPlan, error) {
 			continue
 		}
 		codePC := len(plan.depths) // The emitter includes the original TEXT.
-		plan.depths = append(plan.depths, depth)
-		if _, stack, _ := x86StackWidthProperties(ins, arch); stack {
-			return fail(ins) // The private PUSH/POP data path has a separate backing object.
+		addressDepth := depth
+		spec, stack, err := x86StackWidthProperties(ins, arch)
+		if stack {
+			if err != nil {
+				return nil, err
+			}
+			if len(ins.Args) != 0 && x86SegmentRegisterOperand(ins.Args[0]) {
+				return fail(ins)
+			}
+			width := int64(spec.bits / 8)
+			slot := depth
+			switch spec.mode {
+			case amd64StackPushValue, amd64StackPushFlags:
+				depth += width
+				slot = depth
+			case amd64StackPopValue, amd64StackPopFlags:
+				depth -= width
+				// POP computes a memory destination after incrementing SP.
+				addressDepth = depth
+			}
+			if depth < 0 || depth > limit {
+				return fail(ins)
+			}
+			if depth > maxDepth {
+				maxDepth = depth
+			}
+			if plan.transports == nil {
+				plan.transports = make(map[int]int64)
+			}
+			plan.transports[codePC] = -fn.FrameSize - slot
 		}
+		plan.depths = append(plan.depths, depth)
 		switch ins.Op {
 		case OpCALL, "DUFFCOPY", "DUFFZERO", "ENTER", "ENTERW", "ENTERL", "ENTERQ", "LEAVE", "LEAVEW", "LEAVEL", "LEAVEQ":
 			return fail(ins)
@@ -208,6 +238,9 @@ func x86RelativeStack(fn Func, arch string) (*x86RelativeStackPlan, error) {
 			if root, valid := x86CallerGP(operand.Reg); valid && root == SP || operand.Mem.Index == SP {
 				return fail(ins)
 			}
+			if stack && spec.mode == amd64StackPopValue && operand.Kind == OpFP {
+				return fail(ins) // The original named FP operand would move by the POP width.
+			}
 			if operand.Kind != OpMem || operand.Mem.Base != SP || x86InertNOP(ins, arch) {
 				continue
 			}
@@ -218,15 +251,26 @@ func x86RelativeStack(fn Func, arch string) (*x86RelativeStackPlan, error) {
 			if len(arguments) != len(ins.Args) {
 				return fail(ins)
 			}
+			off := operand.Mem.Off
+			live := fn.FrameSize + addressDepth
+			width := x86RelativeStackAccessWidth(ins, index, arch)
+			if stack {
+				width = int64(spec.bits / 8)
+			}
 			if named := x86ResultAUTOLiteral.FindStringSubmatch(arguments[index]); named != nil {
-				if _, ok := parseNamedStackConstantOffset(named[1]); ok {
-					continue // The existing named-AUTO validator checks its full width.
+				if offset, ok := parseNamedStackConstantOffset(named[1]); ok {
+					if !stack || spec.mode != amd64StackPopValue {
+						continue // The existing named-AUTO validator checks its full width.
+					}
+					// cmd/asm encodes the named displacement with the depth before
+					// POP, so the actual destination advances by another width.
+					if offset != off || off < -fn.FrameSize || off > -2*width {
+						return fail(ins)
+					}
+					off += live + width
 				}
 			}
-			off := operand.Mem.Off
-			live := fn.FrameSize + depth
-			width := x86RelativeStackAccessWidth(ins, index, arch)
-			if operand.Mem != (MemRef{Base: SP, Off: off}) || width == 0 || off < 0 || off > live-width {
+			if operand.Mem != (MemRef{Base: SP, Off: operand.Mem.Off}) || width == 0 || off < 0 || off > live-width {
 				return fail(ins)
 			}
 			if projected.Args == nil {
@@ -242,7 +286,10 @@ func x86RelativeStack(fn Func, arch string) (*x86RelativeStackPlan, error) {
 			plan.accesses[ordinal], plan.emission[codePC] = projected, projected
 		}
 	}
-	if len(plan.accesses) != 0 {
+	if len(plan.transports) != 0 {
+		plan.scratch = int(maxDepth)
+	}
+	if len(plan.accesses) != 0 || plan.scratch != 0 {
 		plan.extent = int(fn.FrameSize + maxDepth)
 	}
 	return plan, nil

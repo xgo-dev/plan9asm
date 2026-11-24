@@ -116,7 +116,9 @@ func (c *amd64Ctx) emitNativeMMXRegion(plan *x86NativeMMXRegion) error {
 			if plan.frameSize != int64(c.logicalAUTOExtent) || c.logicalAUTOBase == "" {
 				return fmt.Errorf("%w: native MMX region lost its 386 TEXT storage", ErrProbeNeedsContext)
 			}
-			value = c.logicalAUTOBase
+			address := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", address, c.logicalAUTOBase)
+			value = "%" + address
 		} else {
 			var err error
 			value, err = c.loadReg(reg)

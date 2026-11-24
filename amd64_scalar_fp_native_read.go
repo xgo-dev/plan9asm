@@ -89,6 +89,14 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 	}
 	strictErr := checkX86ScalarFPResultInitializationWithStack(fn, sig, arch, relative)
+	if relative != nil && relative.scratch != 0 {
+		if strictErr != nil {
+			return strictErr
+		}
+		if nativeMMX != nil || x86LogicalScalarResultNeedsProof(sig, arch) || strings.HasSuffix(fn.Sym, "<ABIInternal>") {
+			return fmt.Errorf("%w: mixed relative stack needs ordinary ABI0 emission", ErrProbeNeedsContext)
+		}
+	}
 	if strictErr != nil && c.ownsStaticLEAResult(fn, sig, arch) {
 		return nil
 	}
