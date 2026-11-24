@@ -281,7 +281,7 @@ func translateFuncARMMachineEntry(b *strings.Builder, fn Func, sig FuncSig, reso
 
 // Go asm5's ARFE row uses this unconditional LDM with writeback and SPSR
 // restore even when the spelling supplies a condition-code suffix.
-const armExceptionReturnWord = 0xe8fd8000
+const armExceptionReturnWord uint32 = 0xe8fd8000
 
 func armExceptionReturnForm(ins Instr) (bool, error) {
 	if ins.Op == OpWORD {

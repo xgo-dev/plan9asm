@@ -326,7 +326,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t pkgs < <(go list ./internal/... | grep -Ev '/internal/(sdkfrontend|gostaticstorage)$')
+          go test -race -count=1 -timeout=5m ./internal/ownedprocess
+          mapfile -t pkgs < <(go list ./internal/... | grep -Ev '/internal/(sdkfrontend|gostaticstorage|ownedprocess)$')
           go test -race -count=1 -timeout=15m "${pkgs[@]}"
           go test -race -count=1 -timeout=15m -run '^(TestX86ResultTypedVectorEffect|TestX86ADJSPStaticAddressComposition|TestX86OwnedStaticLEADelta|TestX86StaticIntegerSBAddresses|TestX86NativeLEAWRetainedPointer|TestX86OwnedPackedArithmeticRetainsAuthorityBoundaries)$' .
 
