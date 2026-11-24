@@ -67,11 +67,3 @@ func x86GFNIProperties(op Op, ins Instr, arch string) (x86GFNIForm, bool, error)
 	}
 	return form, true, nil
 }
-
-func x86ResultGFNIStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	form, known, err := x86GFNIProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	return x86ResultFixedVectorInputs(ins, form.x86PackedBinaryForm, false, state, owned, arch), true
-}

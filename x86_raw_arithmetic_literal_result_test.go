@@ -141,12 +141,12 @@ func TestX86RawArithmeticLiteralKeepsLaneAndTupleDependencies(t *testing.T) {
 							want &^= uint64(1) << uint(missing)
 						}
 					}
-					if accepted, known := x86ResultVectorArithmeticStep(ins, &state, nil, "amd64"); !accepted || !known ||
+					if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, false); !accepted || !known ||
 						state.vectorBytes(2) != want || state.flags != 0x3f {
 						t.Fatal("arithmetic invented source/merge bytes or changed FLAGS", row.name, input, missing)
 					}
 					state.loweredStaticReads[address]--
-					if accepted, _ := x86ResultVectorArithmeticStep(ins, &state, nil, "amd64"); accepted {
+					if accepted, _ := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, false); accepted {
 						t.Fatal("arithmetic accepted an incomplete tuple", row.name)
 					}
 				}

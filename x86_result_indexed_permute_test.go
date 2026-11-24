@@ -42,7 +42,7 @@ func TestX86IndexedPermuteResultRequiresCompleteTablesIndicesAndMerge(t *testing
 								state.writeVector(reg, 64, bits, false)
 							}
 							before := state.clone()
-							accepted, known := x86ResultIndexedPermuteStep(ins, &state, nil, "amd64")
+							accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, false)
 							if !known || accepted != (missing < 0) {
 								t.Fatal("table/index/merge byte dependency lost", input, missing, accepted, known)
 							}

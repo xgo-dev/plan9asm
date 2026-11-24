@@ -79,7 +79,7 @@ func TestX86RawFMA3PrivateFlagsSpanNativeInstruction(t *testing.T) {
 						x86PreservesNumericalSourceState(ins) {
 						t.Fatal("exact FMA lost private control or acquired an inert-data role", arch, index, row.instruction(), direction)
 					}
-					accepted, known := x86ResultFMA3Step(ins, &state, nil, arch, true)
+					accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 					if !known || !accepted || state.flags != before.flags || state.direction != before.direction ||
 						!reflect.DeepEqual(state.valueStack, before.valueStack) {
 						t.Fatal("FMA changed saved bytes, ID, FLAGS or DF", arch, index, row.instruction())
@@ -91,7 +91,7 @@ func TestX86RawFMA3PrivateFlagsSpanNativeInstruction(t *testing.T) {
 						unknown := before.clone()
 						unknown.writeVector(missing, 64, 0, false)
 						unchanged := unknown.clone()
-						accepted, known := x86ResultFMA3Step(ins, &unknown, nil, arch, true)
+						accepted, known := x86ResultTypedVectorEffectStep(ins, &unknown, nil, arch, true, true)
 						if !known || accepted || !reflect.DeepEqual(unknown, unchanged) {
 							t.Fatalf("saved FLAGS initialized an absent vector source: %s row=%d register=%d", arch, index, missing)
 						}

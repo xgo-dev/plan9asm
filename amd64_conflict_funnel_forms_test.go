@@ -209,7 +209,7 @@ func TestX86ConflictFunnelNativeContinuationKeepsAddressAndOriginBoundaries(t *t
 				}
 				want := before.clone()
 				want.writeVector(2, 16, 0xffff, false)
-				accepted, known := x86LoweredFixedVectorNativeRead(ins, &state, nil, arch)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 				if !accepted || !known || !reflect.DeepEqual(state, want) {
 					t.Fatal("paired native read lost its exact output or changed independent state", accepted, known)
 				}
@@ -234,7 +234,7 @@ func TestX86ConflictFunnelNativeContinuationKeepsAddressAndOriginBoundaries(t *t
 						changed.x86RawNearReturn = new(x86RawNearReturnForm)
 					}
 					original := input.clone()
-					if accepted, _ := x86LoweredFixedVectorNativeRead(changed, &input, nil, arch); accepted || !reflect.DeepEqual(input, original) {
+					if accepted, _ := x86ResultTypedVectorEffectStep(changed, &input, nil, arch, true, true); accepted || !reflect.DeepEqual(input, original) {
 						t.Fatal("unproved source or address acquired native result bytes", mutation)
 					}
 				}

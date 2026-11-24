@@ -21,11 +21,3 @@ type x86PackedAverageForm = x86PackedPhysicalForm
 func x86PackedAverageProperties(op Op, ins Instr, arch string) (x86PackedAverageForm, bool, error) {
 	return x86PackedPhysicalProperties(op, ins, arch, x86PackedAverage)
 }
-
-func x86ResultPackedAverageStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	form, known, err := x86PackedAverageProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	return x86ResultFixedVectorInputs(ins, form.x86PackedBinaryForm, false, state, owned, arch), true
-}

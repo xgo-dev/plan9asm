@@ -139,7 +139,7 @@ func TestX86TernaryIndependentLiteralOwnerKeepsCompleteInputs(t *testing.T) {
 			case "removed origin":
 				changed.x86SourceRaw = nil
 			}
-			if accepted, known := x86ResultTernaryLogicStep(changed, &state, nil, "amd64"); !known || accepted != (mutation == "none") {
+			if accepted, known := x86ResultTypedVectorEffectStep(changed, &state, nil, "amd64", false, false); !known || accepted != (mutation == "none") {
 				t.Fatal("literal borrowed missing DATA, mask or identity", row.row, mutation, accepted, known)
 			}
 		}

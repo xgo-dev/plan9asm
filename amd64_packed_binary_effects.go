@@ -6,30 +6,57 @@ import "strings"
 // preserves its upper alias, and VEX/EVEX clears it. EVEX merges read the
 // active-width destination before writing it.
 func x86PackedBinaryDependencyEffect(ins Instr, form x86PackedBinaryForm, source Operand) x86TypedByteEffect {
+	var buf [5]x86TypedByteOperand
+	effect, n := x86PackedBinaryDependencyEffectInto(&buf, ins, form, source)
+	effect.operands = append([]x86TypedByteOperand(nil), buf[:n]...)
+	return effect
+}
+
+func x86PackedBinaryDependencyEffectInto(dst *[5]x86TypedByteOperand, ins Instr, form x86PackedBinaryForm, source Operand) (x86TypedByteEffect, int) {
 	width := int64(form.byteWidth)
 	sourceWidth := width
 	if form.memory >= 0 {
 		sourceWidth = int64(form.memoryBytes)
 	}
-	count := 2
-	if !form.legacy {
-		count = 3
-	}
-	capacity := count
-	if form.mask >= 0 {
-		capacity++
-	}
-	effect := x86TypedByteEffect{operands: make([]x86TypedByteOperand, count, capacity)}
-	effect.operands[0] = x86TypedByteOperand{index: form.first, operand: source, width: sourceWidth, read: true}
-	effect.operands[1] = x86TypedByteOperand{index: form.second, operand: ins.Args[form.second], width: width, read: true, write: form.legacy}
+	var effect x86TypedByteEffect
+	dst[0] = x86TypedByteOperand{index: form.first, operand: source, width: sourceWidth, read: true}
+	dst[1] = x86TypedByteOperand{index: form.second, operand: ins.Args[form.second], width: width, read: true, write: form.legacy}
+	n := 2
 	if form.legacy && !form.mmx {
 		effect.vector = x86TypedVectorEffect{x86TypedVectorUpperPreserve, width}
 	} else if !form.legacy {
 		effect.vector = x86TypedVectorEffect{x86TypedVectorUpperZero, 1}
-		effect.operands[2] = x86TypedByteOperand{index: form.destination, operand: ins.Args[form.destination], width: width, write: true}
+		dst[2] = x86TypedByteOperand{index: form.destination, operand: ins.Args[form.destination], width: width, write: true}
+		n = 3
 	}
-	effect.addWritemask(ins, form.mask, form.zeroing)
+	if form.mask >= 0 {
+		dst[n-1].read = !form.zeroing
+		dst[n] = x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true}
+		n++
+	}
+	return effect, n
+}
+
+// x86PackedBinaryLaneEffect extends the shared packed-binary dependency
+// descriptor with per-lane byte propagation for lane-independent arithmetic.
+func x86PackedBinaryLaneEffect(ins Instr, form x86PackedBinaryForm, laneBytes uint8) x86TypedByteEffect {
+	var buf [5]x86TypedByteOperand
+	effect, n := x86PackedBinaryLaneEffectInto(&buf, ins, form, laneBytes)
+	effect.operands = append([]x86TypedByteOperand(nil), buf[:n]...)
 	return effect
+}
+
+func x86PackedBinaryLaneEffectInto(dst *[5]x86TypedByteOperand, ins Instr, form x86PackedBinaryForm, laneBytes uint8) (x86TypedByteEffect, int) {
+	effect, n := x86PackedBinaryDependencyEffectInto(dst, ins, form, ins.Args[form.first])
+	effect.vectorLaneBytes = laneBytes
+	laneMask := uint8(x86CallerVectorByteMask(int64(laneBytes)))
+	dst[0].laneReadMask = laneMask
+	dst[0].broadcast = form.broadcast
+	dst[1].laneReadMask = laneMask
+	if form.mask >= 0 && !form.zeroing {
+		effect.mergeDestination = true
+	}
+	return effect, n
 }
 
 // The destination is the last dependency of a packed vector-producing form.

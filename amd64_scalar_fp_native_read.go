@@ -514,9 +514,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, true); known {
 			return accepted // One complete original opcode owns its m128 access and sequential native exceptions.
 		}
-		if accepted, known := x86ResultFMA3Step(ins, state, owned, arch, true); known {
-			return accepted // The original FMA retains all three inputs, its exact tuple and native MXCSR effects.
-		}
 		if accepted, known := x86ResultScalarPrecisionStep(ins, state, owned, arch, true); known {
 			return accepted // The paired original scalar conversion retains m32/m64 and MXCSR effects.
 		}
@@ -531,12 +528,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		if accepted, known := x86ResultPackedAbsSignStep(ins, state, owned, arch, true); known {
 			return accepted // Exact native reads and K inputs remain required for dead packed integer results.
-		}
-		if accepted, known := x86ResultIntegerMinMaxStep(ins, state, owned, arch, true); known {
-			return accepted // The paired E4 reader retains active exact-width volatile faults.
-		}
-		if accepted, known := x86ResultTernaryLogicContinuationStep(ins, state, owned, arch, true); known {
-			return accepted // Exact E4 reads survive constant selectors and dead Boolean results.
 		}
 		if accepted, known := x86LoweredRawPackedReductionStep(ins, state, owned, arch); known {
 			return accepted
@@ -623,9 +614,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86LoweredExplicitIMULNativeRead(ins, state, owned, resultOffset, arch); known {
 			return accepted // The same exact native reader retains two/three-operand input roles.
 		}
-		if accepted, known := x86LoweredDwordProductResultStep(ins, state, owned, arch); known {
-			return accepted
-		}
 		if accepted, known := x86LoweredPackedConversionResultStep(ins, state, owned, arch); known {
 			return accepted // The complete original conversion is still emitted, including dead native effects.
 		}
@@ -646,6 +634,9 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		if accepted, known := nativeMMX.transfer(ordinal, ins, state, owned, resultOffset, arch); known {
 			return accepted
+		}
+		if accepted, known := x86ResultTypedVectorEffectStep(ins, state, owned, arch, true, true); known {
+			return accepted // Shared typed vector effects retain exact native reads, masks and lane/upper contracts.
 		}
 		if accepted, known := x86LoweredNativeMXCSRStep(ins, state, arch); known {
 			return accepted
@@ -818,14 +809,8 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := c.loweredNativeConditionalSet(ins, state, arch); known {
 			return accepted // The same typed SETcc emitter preserves its exact volatile byte write.
 		}
-		if accepted, known := x86LoweredIFMAStep(ins, state, owned, arch); known {
-			return accepted // The typed emitter retains exact guarded qword reads and EVEX upper-zeroing.
-		}
 		if accepted, known := x86ResultQwordLookupStep(ins, state, owned, arch, true); known {
 			return accepted // E4 controls and E4NF qword data retain their separate native access shapes.
-		}
-		if accepted, known := x86LoweredFixedVectorNativeRead(ins, state, owned, arch); known {
-			return accepted // The typed emitter retains full E4NF or guarded E4 native accesses.
 		}
 		if accepted, known := x86ResultSADStep(ins, state, owned, arch, true); known {
 			return accepted // The same SAD emitter retains the full tuple and legacy m128 opcode.
@@ -856,9 +841,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		if accepted, known := x86ResultDuplicateMoveStep(ins, state, owned, arch, true); known {
 			return accepted // Duplicate selectors retain exact E4NF/E5NF tuples and legacy alignment faults.
-		}
-		if accepted, known := x86ResultVectorArithmeticStepWithRead(ins, state, owned, arch, true); known {
-			return accepted // The same add/sub emitter retains exact E4 reads and inactive-lane suppression.
 		}
 		if accepted, known := x86LoweredPackedIntegerCompareStep(ins, state, owned, arch); known {
 			return accepted // The exact original form shares only the existing vector/K-result and E4 effects.

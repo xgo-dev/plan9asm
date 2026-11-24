@@ -191,7 +191,7 @@ func TestX86PackedRotateNativeReadKeepsOwnership(t *testing.T) {
 				if x86ResultTransfer(changed, &state, nil, 0, "amd64") || !reflect.DeepEqual(before, state) {
 					t.Fatal("standalone transfer invented a native memory contract")
 				}
-				accepted, _ := x86LoweredFixedVectorNativeRead(changed, &state, nil, "amd64")
+				accepted, _ := x86ResultTypedVectorEffectStep(changed, &state, nil, "amd64", true, true)
 				want := before.clone()
 				if missing == "none" {
 					want.writeVector(2, 16, 0xffff, false)

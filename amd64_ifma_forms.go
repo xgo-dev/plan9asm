@@ -54,5 +54,20 @@ func x86TypedIFMAByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, 
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
-	return x86TypedFixedVectorInputs(ins, form.x86PackedBinaryForm, true), true, nil
+	var buf [5]x86TypedByteOperand
+	effect, n := x86TypedIFMAEffectForFormInto(&buf, ins, form)
+	effect.operands = append([]x86TypedByteOperand(nil), buf[:n]...)
+	return effect, true, nil
+}
+
+// Each qword lane reads bits 51:0 (low seven bytes) of both multiplicands and
+// all eight bytes of the old accumulator, even under zero masking.
+func x86TypedIFMAEffectForFormInto(dst *[5]x86TypedByteOperand, ins Instr, form x86IFMAForm) (x86TypedByteEffect, int) {
+	effect, n := x86TypedFixedVectorInputsInto(dst, ins, form.x86PackedBinaryForm, true)
+	effect.vectorLaneBytes = 8
+	dst[0].laneReadMask = 0x7f
+	dst[0].broadcast = form.broadcast
+	dst[1].laneReadMask = 0xff
+	dst[2].laneReadMask = 0x7f
+	return effect, n
 }

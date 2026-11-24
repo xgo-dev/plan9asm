@@ -91,7 +91,7 @@ func TestX86TernaryRawIdentityMemoryAndIndependentState(t *testing.T) {
 				if x86ResultTransfer(ins, &state, nil, 0, arch) || !reflect.DeepEqual(state, initial) {
 					t.Fatal("standalone query borrowed a paired raw/native permission")
 				}
-				if accepted, known := x86ResultTernaryLogicContinuationStep(ins, &state, nil, arch, true); !accepted || !known {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !accepted || !known {
 					t.Fatal("complete initialized exact raw inputs failed their paired E4 transfer")
 				}
 				want := initial.clone()
@@ -113,7 +113,7 @@ func TestX86TernaryRawIdentityMemoryAndIndependentState(t *testing.T) {
 						before := initial.clone()
 						before.writeVector(register, 64, before.vectorBytes(register)&^(uint64(1)<<uint(missing)), true)
 						state := before.clone()
-						if accepted, known := x86ResultTernaryLogicContinuationStep(ins, &state, nil, arch, true); !accepted || !known {
+						if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !accepted || !known {
 							t.Fatal("nontrapping unknown Boolean input must propagate, never become an invented initialized value")
 						}
 						output := x86CallerVectorByteMask(int64(row.width))
@@ -150,7 +150,7 @@ func TestX86TernaryRawIdentityMemoryAndIndependentState(t *testing.T) {
 					if x86RawTernaryLogicSource(changed, arch) {
 						t.Fatal("edited selector/shape/mode borrowed original raw identity")
 					}
-					if accepted, _ := x86ResultTernaryLogicContinuationStep(changed, &state, nil, arch, true); accepted || !reflect.DeepEqual(state, initial) {
+					if accepted, _ := x86ResultTypedVectorEffectStep(changed, &state, nil, arch, true, true); accepted || !reflect.DeepEqual(state, initial) {
 						t.Fatal("rejected raw identity mutated numerical or native state")
 					}
 				}
@@ -169,7 +169,7 @@ func TestX86TernaryRawIdentityMemoryAndIndependentState(t *testing.T) {
 					state := initial.clone()
 					state.masks[7] = false
 					before := state.clone()
-					if accepted, _ := x86ResultTernaryLogicContinuationStep(ins, &state, nil, arch, true); accepted || !reflect.DeepEqual(state, before) {
+					if accepted, _ := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); accepted || !reflect.DeepEqual(state, before) {
 						t.Fatal("unknown K input borrowed constant-selector or dead-result permission")
 					}
 				}
@@ -179,14 +179,14 @@ func TestX86TernaryRawIdentityMemoryAndIndependentState(t *testing.T) {
 					before := state.clone()
 					expected := before.clone()
 					expected.writeVector(2, row.width, x86CallerVectorByteMask(int64(row.width)), false)
-					if accepted, known := x86ResultTernaryLogicContinuationStep(ins, &state, nil, arch, true); !known || !accepted || !reflect.DeepEqual(state, expected) {
+					if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted || !reflect.DeepEqual(state, expected) {
 						t.Fatal("numerical native read changed independent state or acquired a pointer role")
 					}
 					for _, available := range []uint8{0, 1} {
 						partial := before.clone()
 						partial.gp[0] = available
 						unchanged := partial.clone()
-						if accepted, _ := x86ResultTernaryLogicContinuationStep(ins, &partial, nil, arch, true); accepted || !reflect.DeepEqual(partial, unchanged) {
+						if accepted, _ := x86ResultTypedVectorEffectStep(ins, &partial, nil, arch, true, true); accepted || !reflect.DeepEqual(partial, unchanged) {
 							t.Fatal("unknown or partial numerical address acquired native input bytes", available)
 						}
 					}

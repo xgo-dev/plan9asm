@@ -113,7 +113,7 @@ func TestX86IntegerMinMaxLiteralExactTupleAndMaskRemainRequired(t *testing.T) {
 				state.loweredStaticReads[address]--
 			}
 			before := state.clone()
-			accepted, recognized := x86ResultIntegerMinMaxStep(changed, &state, nil, "amd64", false)
+			accepted, recognized := x86ResultTypedVectorEffectStep(changed, &state, nil, "amd64", false, false)
 			state.loweredStaticReads = nil
 			if !recognized || accepted != (mutation == "none") || !accepted && !reflect.DeepEqual(state, before) {
 				t.Fatal("literal supplied a missing mask, stale identity or incomplete tuple", mutation, ins.Raw)

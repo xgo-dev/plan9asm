@@ -55,14 +55,14 @@ func TestX86IFMAStandaloneAndNativeMemoryAuthoritiesRemainSeparate(t *testing.T)
 				state.writeVector(1, 64, ^uint64(0), false)
 				state.writeVector(2, 64, ^uint64(0), false)
 				before := state.clone()
-				if accepted, known := x86ResultIFMAStep(ins, &state, nil, arch); !known || accepted ||
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, false); !known || accepted ||
 					!reflect.DeepEqual(state, before) {
 					t.Fatal("standalone IFMA query obtained native memory or changed a failed state", arch, name, bank)
 				}
 				want := before.clone()
 				width := amd64VectorByteWidth(ins.Args[2].Reg)
 				want.writeVector(2, width, x86CallerVectorByteMask(int64(width)), false)
-				if accepted, known := x86LoweredIFMAStep(ins, &state, nil, arch); !known || !accepted ||
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted ||
 					!reflect.DeepEqual(state, want) {
 					t.Fatal("paired IFMA lost its exact read or changed independent flags/pointer roles", arch, name, bank)
 				}

@@ -20,6 +20,8 @@ type x86TypedByteOperand struct {
 	addressOnly    bool   // A memory read checks the address without consuming its stored bytes.
 	partialWrite   bool   // A conditional memory write may leave any byte in its span unchanged.
 	stackValue     bool   // A full numerical result may temporarily replace SP under a frame proof.
+	laneReadMask   uint8  // Optional per-lane vector-register read mask when vectorLaneBytes > 0.
+	broadcast      bool   // Source repeats lane 0 across every output lane.
 	requiredBytes  uint64 // Optional vector-register read mask; zero requires the full width.
 	preservedBytes uint64 // Vector bytes within the destination view that retain their previous state.
 }
@@ -32,13 +34,17 @@ func (operand x86TypedByteOperand) memoryAlignment(fallback int64) int64 {
 }
 
 type x86TypedByteEffect struct {
-	operands            []x86TypedByteOperand
-	vector              x86TypedVectorEffect
-	flagsRead           uint8
-	flagsDefined        uint8
-	flagsKilled         uint8
-	dynamicMemory       bool // Accessed bytes depend on a register or a mask.
-	requiresResultProof bool // Mandatory NUM/result obligation, independent of cost-only storage routing.
+	operands                  []x86TypedByteOperand
+	vector                    x86TypedVectorEffect
+	flagsRead                 uint8
+	flagsDefined              uint8
+	flagsKilled               uint8
+	dynamicMemory             bool  // Accessed bytes depend on a register or a mask.
+	requiresResultProof       bool  // Mandatory NUM/result obligation, independent of cost-only storage routing.
+	vectorLaneBytes           uint8 // 0 = whole-vector strict; >0 = per-lane byte definedness propagation.
+	mergeDestination          bool  // Masked merge intersects destination bytes per-byte.
+	requireLegacyNativeMemory bool  // Legacy m128 memory requires native backing, not logical FP/AUTO.
+	requireLegacyOldDest      bool  // Paired native legacy m128 RMW requires full old destination bytes.
 }
 
 // Zero is deliberately unknown: an existing operand dependency alone does

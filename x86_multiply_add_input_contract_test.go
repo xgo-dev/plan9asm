@@ -118,7 +118,7 @@ func TestX86MultiplyAddNumericalStateAndMemoryAuthority(t *testing.T) {
 				memory := strings.Contains(row, "(BX)")
 				apply := func(state *x86ResultState) bool {
 					if memory {
-						accepted, known := x86LoweredFixedVectorNativeRead(ins, state, nil, arch)
+						accepted, known := x86ResultTypedVectorEffectStep(ins, state, nil, arch, true, true)
 						return known && accepted
 					}
 					return x86ResultTransfer(ins, state, nil, 0, arch)

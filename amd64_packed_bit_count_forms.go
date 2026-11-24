@@ -65,11 +65,3 @@ func x86TypedPackedBitCountByteEffect(op Op, ins Instr, arch string) (x86TypedBy
 	}
 	return x86TypedFixedVectorInputs(ins, form.x86PackedBinaryForm, false), true, nil
 }
-
-func x86ResultPackedBitCountStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	form, known, err := x86PackedBitCountProperties(ins.Op, ins, arch)
-	if !known || err != nil {
-		return false, known
-	}
-	return x86ResultFixedVectorInputs(ins, form.x86PackedBinaryForm, false, state, owned, arch), true
-}

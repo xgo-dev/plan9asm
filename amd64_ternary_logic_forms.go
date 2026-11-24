@@ -147,31 +147,45 @@ func x86TypedTernaryLogicByteEffect(op Op, ins Instr, arch string) (x86TypedByte
 	if !known || err != nil {
 		return x86TypedByteEffect{}, known, err
 	}
+	var buf [5]x86TypedByteOperand
+	effect, n := x86TypedTernaryLogicEffectForFormInto(&buf, ins, form)
+	effect.operands = append([]x86TypedByteOperand(nil), buf[:n]...)
+	return effect, true, nil
+}
+
+func x86TypedTernaryLogicEffectForFormInto(dst *[5]x86TypedByteOperand, ins Instr, form x86TernaryLogicForm) (x86TypedByteEffect, int) {
 	dependencies := form.dependencies()
 	if form.mask >= 0 && !form.zeroing {
 		dependencies |= 1 // An inactive merging lane retains the old A value.
 	}
 	effect := x86TypedByteEffect{
 		requiresResultProof: true,
-		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		vector:              x86TypedVectorEffect{upperWrite: x86TypedVectorUpperZero, memoryAlignment: 1},
+		vectorLaneBytes:     1,
 	}
+	n := 0
 	for role, index := range form.inputs {
 		width := form.byteWidth
 		read := dependencies>>uint(role)&1 != 0
+		laneMask := uint8(0)
 		if index == form.memory {
 			// Physical E4 access remains observable even when the selected
 			// Boolean function does not depend on its loaded numerical value.
 			width, read = form.memoryBytes, true
+		} else if read {
+			laneMask = 1
 		}
-		effect.operands = append(effect.operands, x86TypedByteOperand{
+		dst[n] = x86TypedByteOperand{
 			index: index, operand: ins.Args[index], width: int64(width),
-			read: read, write: index == form.destination,
-		})
+			read: read, write: index == form.destination, laneReadMask: laneMask,
+		}
+		n++
 	}
 	if form.mask >= 0 {
-		effect.operands = append(effect.operands, x86TypedByteOperand{
+		dst[n] = x86TypedByteOperand{
 			index: form.mask, operand: ins.Args[form.mask], width: 8, read: true,
-		})
+		}
+		n++
 	}
-	return effect, true, nil
+	return effect, n
 }

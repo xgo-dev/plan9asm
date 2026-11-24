@@ -156,26 +156,31 @@ func x86TypedConflictFunnelByteEffect(op Op, ins Instr, arch string) (x86TypedBy
 }
 
 func x86TypedFixedVectorInputs(ins Instr, form x86PackedBinaryForm, old bool) x86TypedByteEffect {
+	var buf [5]x86TypedByteOperand
+	effect, n := x86TypedFixedVectorInputsInto(&buf, ins, form, old)
+	effect.operands = append([]x86TypedByteOperand(nil), buf[:n]...)
+	return effect
+}
+
+func x86TypedFixedVectorInputsInto(dst *[5]x86TypedByteOperand, ins Instr, form x86PackedBinaryForm, old bool) (x86TypedByteEffect, int) {
 	width, firstWidth := int64(form.byteWidth), int64(form.byteWidth)
 	if form.memory >= 0 {
 		firstWidth = int64(form.memoryBytes)
 	}
-	effect := x86TypedByteEffect{
-		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
-		requiresResultProof: true,
-		operands: []x86TypedByteOperand{
-			{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true},
-			{index: form.destination, operand: ins.Args[form.destination], width: width,
-				read: old || form.mask >= 0 && !form.zeroing, write: true},
-		},
-	}
+	dst[0] = x86TypedByteOperand{index: form.first, operand: ins.Args[form.first], width: firstWidth, read: true}
+	dst[1] = x86TypedByteOperand{index: form.destination, operand: ins.Args[form.destination], width: width,
+		read: old || form.mask >= 0 && !form.zeroing, write: true}
+	n := 2
 	if form.second >= 0 {
-		effect.operands = append(effect.operands,
-			x86TypedByteOperand{index: form.second, operand: ins.Args[form.second], width: width, read: true})
+		dst[n] = x86TypedByteOperand{index: form.second, operand: ins.Args[form.second], width: width, read: true}
+		n++
 	}
 	if form.mask >= 0 {
-		effect.operands = append(effect.operands,
-			x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true})
+		dst[n] = x86TypedByteOperand{index: form.mask, operand: ins.Args[form.mask], width: 8, read: true}
+		n++
 	}
-	return effect
+	return x86TypedByteEffect{
+		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
+		requiresResultProof: true,
+	}, n
 }

@@ -136,7 +136,7 @@ func TestX86DeadExternalSourceBudgetIsSharedAcrossComponents(t *testing.T) {
 				if ins.Op == OpJMP {
 					return true
 				}
-				accepted, known := x86ResultTernaryLogicContinuationStep(ins, state, nil, arch, true)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, state, nil, arch, true, true)
 				return accepted && known
 			}
 			visits, work := row.visits, row.work

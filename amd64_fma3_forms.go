@@ -64,12 +64,19 @@ func x86TypedFMA3ByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, 
 	if err != nil {
 		return x86TypedByteEffect{}, true, err
 	}
+	var buf [5]x86TypedByteOperand
+	effect, n := x86TypedFMA3EffectForFormInto(&buf, ins, form)
+	effect.operands = append([]x86TypedByteOperand(nil), buf[:n]...)
+	return effect, true, nil
+}
+
+func x86TypedFMA3EffectForFormInto(dst *[5]x86TypedByteOperand, ins Instr, form amd64FMA3Form) (x86TypedByteEffect, int) {
 	effect := x86TypedByteEffect{
 		requiresResultProof: true,
-		vector:              x86TypedVectorEffect{x86TypedVectorUpperZero, 1},
-		operands:            make([]x86TypedByteOperand, 0, len(ins.Args)+1),
+		vector:              x86TypedVectorEffect{upperWrite: x86TypedVectorUpperZero, memoryAlignment: 1},
 	}
 	active := form.inputByteWidth()
+	n := 0
 	for index, operand := range ins.Args {
 		width := active
 		if index == form.memory {
@@ -77,15 +84,17 @@ func x86TypedFMA3ByteEffect(op Op, ins Instr, arch string) (x86TypedByteEffect, 
 		} else if index == form.mask {
 			width = 8
 		}
-		effect.operands = append(effect.operands, x86TypedByteOperand{
+		dst[n] = x86TypedByteOperand{
 			index: index, operand: operand, width: width, read: true,
-		})
+		}
+		n++
 	}
-	effect.operands = append(effect.operands, x86TypedByteOperand{
+	dst[n] = x86TypedByteOperand{
 		index: form.destination, operand: ins.Args[form.destination], width: int64(form.byteWidth), write: true,
 		preservedBytes: form.preservedDestinationBytes(),
-	})
-	return effect, true, nil
+	}
+	n++
+	return effect, n
 }
 
 // The complete _yvaddpd/_yvaddsd axes are independent of numerical input,

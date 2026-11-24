@@ -76,7 +76,7 @@ func TestX86IFMAEveryNumericalSourceAndAccumulatorByte(t *testing.T) {
 							defined &^= uint64(0xff) << uint(missing/8*8)
 						}
 						want.writeVector(2, width, defined, false)
-						accepted, known := x86ResultIFMAStep(ins, &state, nil, arch)
+						accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, false)
 						if !known || !accepted || !reflect.DeepEqual(state, want) {
 							t.Fatal("IFMA invented numerical bytes, lost meaningful subwords or changed independent state",
 								arch, name, bank, input, missing)
@@ -96,7 +96,7 @@ func TestX86IFMAZeroingStillReadsTheActualAccumulator(t *testing.T) {
 			state.writeVector(0, 64, ^uint64(0), false)
 			state.writeVector(1, 64, ^uint64(0), false)
 			state.masks[1] = true
-			accepted, known := x86ResultIFMAStep(ins, &state, nil, "amd64")
+			accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, false)
 			width := amd64VectorByteWidth(ins.Args[3].Reg)
 			if !known || !accepted || state.vectorBytes(2)&x86CallerVectorByteMask(int64(width)) != 0 ||
 				state.flags != x86ByteFlagsAll {

@@ -185,7 +185,7 @@ func TestX86DwordProductRawSourceCannotBeRebound(t *testing.T) {
 						change(&changed)
 						state := x86ResultState{flags: x86ByteFlagsAll}
 						before := state.clone()
-						accepted, known := x86LoweredDwordProductResultStep(changed, &state, nil, arch)
+						accepted, known := x86ResultTypedVectorEffectStep(changed, &state, nil, arch, true, true)
 						if accepted || !known || x86RawDwordProductResultSource(changed, arch) || !reflect.DeepEqual(before, state) {
 							t.Fatal("changed raw source borrowed a paired numerical continuation", accepted, known)
 						}

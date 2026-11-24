@@ -36,14 +36,3 @@ func x86TypedIndexedPermuteByteEffect(op Op, ins Instr, arch string) (x86TypedBy
 	}
 	return x86TypedFixedVectorInputs(ins, form, spec.readsOldDestination()), true, nil
 }
-
-func x86ResultIndexedPermuteStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	form, spec, known, err := x86IndexedPermuteProperties(ins.Op, ins, arch)
-	if !known {
-		return false, false
-	}
-	if err != nil {
-		return false, true
-	}
-	return x86ResultFixedVectorInputs(ins, form, spec.readsOldDestination(), state, owned, arch), true
-}
