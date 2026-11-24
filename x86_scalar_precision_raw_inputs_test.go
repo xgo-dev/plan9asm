@@ -53,10 +53,10 @@ func TestX86ScalarPrecisionRawPairedInputsAndIndependentState(t *testing.T) {
 						expected.writeVector(destination, 16, output|state.vectorBytes(upper)&(0xffff&^output), !row.row.vector)
 					}
 					standalone := state.clone()
-					if accepted, known := x86ResultScalarPrecisionStep(instruction, &standalone, nil, arch, false); accepted || !known || !reflect.DeepEqual(standalone, before) {
+					if accepted, known := x86ResultTypedVectorEffectStep(instruction, &standalone, nil, arch, false, true); accepted || !known || !reflect.DeepEqual(standalone, before) {
 						t.Fatal("raw source identity granted standalone numerical authority", missing)
 					}
-					accepted, known := x86ResultScalarPrecisionStep(instruction, &state, nil, arch, true)
+					accepted, known := x86ResultTypedVectorEffectStep(instruction, &state, nil, arch, true, true)
 					if !known || accepted != valid || !reflect.DeepEqual(state, expected) {
 						t.Fatal("paired raw conversion lost active/merge/K/native inputs or fabricated copied upper bytes", missing, accepted, valid)
 					}

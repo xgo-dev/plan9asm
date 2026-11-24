@@ -95,7 +95,7 @@ func TestX86QwordLookupEveryInputByteAndIndependentState(t *testing.T) {
 								want.writeVector(2, width, x86CallerVectorByteMask(int64(width)), false)
 							}
 						}
-						accepted, known := x86ResultQwordLookupStep(ins, &state, nil, arch, false)
+						accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, true)
 						if !known || accepted != (missing < 0) || !reflect.DeepEqual(state, want) {
 							t.Fatal("qword lookup invented missing input bytes or changed independent state", arch, name, bank, input, missing)
 						}
@@ -113,7 +113,7 @@ func TestX86QwordLookupMaskResultsAreWriteOnlyAndZeroingNeedsNoMerge(t *testing.
 		state.writeVector(0, 64, ^uint64(0), false)
 		state.writeVector(1, 64, ^uint64(0), false)
 		state.masks[1] = true
-		if accepted, known := x86ResultQwordLookupStep(ins, &state, nil, "amd64", false); !known || !accepted {
+		if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, true); !known || !accepted {
 			t.Fatal("write-only K destination or zeroing result demanded old bytes", row)
 		}
 	}
@@ -122,7 +122,7 @@ func TestX86QwordLookupMaskResultsAreWriteOnlyAndZeroingNeedsNoMerge(t *testing.
 	state.writeVector(0, 64, ^uint64(0), false)
 	state.writeVector(1, 64, ^uint64(0), false)
 	state.masks[1] = true
-	if accepted, known := x86ResultQwordLookupStep(ins, &state, nil, "amd64", false); !known || accepted {
+	if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, true); !known || accepted {
 		t.Fatal("merging byte result invented its old destination")
 	}
 }

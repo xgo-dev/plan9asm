@@ -46,7 +46,7 @@ func TestX86PackedReciprocalBytesAndNativePermissionBoundary(t *testing.T) {
 					defined = 0
 				}
 				want.writeVector(2, row.width, defined, row.legacy)
-				if accepted, known := x86ResultPackedReciprocalStep(ins, &state, nil, "amd64", false); !accepted || !known || !reflect.DeepEqual(state, want) {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, true); !accepted || !known || !reflect.DeepEqual(state, want) {
 					t.Fatal("packed estimate invented input bytes or changed unrelated state", missing, state, want)
 				}
 			}
@@ -55,7 +55,7 @@ func TestX86PackedReciprocalBytesAndNativePermissionBoundary(t *testing.T) {
 			initial.pointerGP[0] = true
 			for _, native := range []bool{false, true} {
 				state := initial.clone()
-				accepted, known := x86ResultPackedReciprocalStep(ins, &state, nil, "amd64", native)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", native, true)
 				if !known || accepted != native {
 					t.Fatal("strict proof acquired native storage or paired native read lost its address", native, accepted, known)
 				}
@@ -76,7 +76,7 @@ func TestX86PackedReciprocalBytesAndNativePermissionBoundary(t *testing.T) {
 				changed, state := ins, initial.clone()
 				mutate(&changed, &state)
 				before := state.clone()
-				if accepted, _ := x86ResultPackedReciprocalStep(changed, &state, nil, "amd64", true); accepted || !reflect.DeepEqual(state, before) {
+				if accepted, _ := x86ResultTypedVectorEffectStep(changed, &state, nil, "amd64", true, true); accepted || !reflect.DeepEqual(state, before) {
 					t.Fatal("native estimate granted a missing pointer, raw entry or address binding")
 				}
 			}

@@ -150,7 +150,7 @@ func TestX86FixupImmediateZeroingStillReadsOldActiveDestination(t *testing.T) {
 			ins := x86ScalarLaneInstruction(t, row.instruction)
 			state := x86FloatingHelperInitializedState()
 			before := state.clone()
-			if accepted, known := x86ResultFloatingHelperStep(ins, &state, nil, "amd64", true); !accepted || !known {
+			if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", true, true); !accepted || !known {
 				t.Fatal("complete old destination lost its initialized transfer")
 			}
 			if !reflect.DeepEqual(state, before) {
@@ -160,7 +160,7 @@ func TestX86FixupImmediateZeroingStillReadsOldActiveDestination(t *testing.T) {
 				state = before.clone()
 				state.writeVector(2, 64, state.vectorBytes(2)&^(uint64(1)<<uint(missing)), false)
 				initial := state.clone()
-				if accepted, known := x86ResultFloatingHelperStep(ins, &state, nil, "amd64", true); accepted || !known ||
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", true, true); accepted || !known ||
 					!reflect.DeepEqual(state, initial) {
 					t.Fatal("missing active DEST byte was invented or failure partly changed state", missing)
 				}

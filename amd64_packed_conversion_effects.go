@@ -36,22 +36,18 @@ func x86TypedPackedConversionByteEffect(op Op, ins Instr, arch string) (x86Typed
 	return effect, true, nil // Integer FLAGS do not change; MXCSR remains native.
 }
 
-func x86ResultPackedConversionStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
-	return x86ResultPackedConversionStepWithRead(ins, state, owned, arch, false)
-}
-
-// The native conversion emitter retains the complete opcode's access and
-// MXCSR effects. This continuation grants no caller or pointee facts.
-func x86ResultPackedConversionStepWithRead(ins Instr, state *x86ResultState, owned []bool,
-	arch string, nativeRead bool) (bool, bool) {
-	f, known, err := x86PackedConversionProperties(ins, arch)
-	if !known {
+// Only an exact original physical conversion may project into its existing
+// numerical byte effect. Named forms remain outside this raw-only adapter.
+func x86LoweredPackedConversionResultStep(ins Instr, state *x86ResultState, owned []bool, arch string) (bool, bool) {
+	_, signed, _ := x86SignedPackedFloatProperties(ins, arch)
+	_, numeric, _ := x86PackedConversionProperties(ins, arch)
+	if !signed && !numeric || x86ResultNamedPredicateInstruction(ins) {
 		return false, false
 	}
-	if err != nil || f.mmx || !x86ResultNamedPredicateInstruction(ins) {
+	if !x86RawPackedConversionSource(ins, arch) {
 		return false, true
 	}
-	return x86ResultPackedConversionInputs(ins, f, state, owned, arch, nativeRead), true
+	return x86ResultTypedVectorEffectStep(ins, state, owned, arch, true, true)
 }
 
 // The caller selects and authenticates its own family before sharing these

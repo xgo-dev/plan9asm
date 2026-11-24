@@ -35,7 +35,7 @@ func TestX86FourSourceRejectsMalformedSuffixesBeforeEffects(t *testing.T) {
 					state.pointerGP[pointer] = true
 					state.masks[1] = true
 					old := state.clone()
-					if accepted, known := x86ResultFourSourceStep(ins, &state, nil, arch, true); accepted || !known || !reflect.DeepEqual(old, state) {
+					if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); accepted || !known || !reflect.DeepEqual(old, state) {
 						t.Fatal("malformed suffix mutated fully initialized native state", accepted, known)
 					}
 					if before != fmt.Sprintf("%#v", ins) {

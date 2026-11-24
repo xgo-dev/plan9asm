@@ -45,6 +45,8 @@ type x86TypedByteEffect struct {
 	mergeDestination          bool  // Masked merge intersects destination bytes per-byte.
 	requireLegacyNativeMemory bool  // Legacy m128 memory requires native backing, not logical FP/AUTO.
 	requireLegacyOldDest      bool  // Paired native legacy m128 RMW requires full old destination bytes.
+	softRegisterInputs        bool  // Unknown register sources yield active=0 instead of rejecting (memory/K remain strict).
+	preservedFromOperand      int8  // 0 = destination supplies preservedBytes; >0 = 1-based index into operands.
 }
 
 // Zero is deliberately unknown: an existing operand dependency alone does

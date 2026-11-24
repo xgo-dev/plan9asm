@@ -22,7 +22,7 @@ func TestX86ScalarReciprocalMode32FrontendAddressHasNoPhysicalPermission(t *test
 				for index := range state.gp {
 					state.gp[index], state.pointerGP[index] = 0xff, true
 				}
-				if accepted, known := x86ResultScalarReciprocalStep(ins, &state, nil, "386", true); !known || accepted {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "386", true, true); !known || accepted {
 					t.Fatal("frontend extended address acquired numerical or native permission", accepted, known)
 				}
 			})

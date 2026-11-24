@@ -18,10 +18,10 @@ func TestX86ScalarReciprocalNativeAccessAndExactSourceIdentity(t *testing.T) {
 				initial.xmm[1], initial.xmm[2] = 0xffff, 0xffff
 				initial.pointerGP[0] = true
 				state := initial.clone()
-				if accepted, known := x86ResultScalarReciprocalStep(ins, &state, nil, arch, false); !known || accepted || !reflect.DeepEqual(state, initial) {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, true); !known || accepted || !reflect.DeepEqual(state, initial) {
 					t.Fatal("native m32 was invented by the numerical domain", accepted, known, state)
 				}
-				if accepted, known := x86ResultScalarReciprocalStep(ins, &state, nil, arch, true); !known || !accepted {
+				if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted {
 					t.Fatal("exact m32 native continuation was not available", accepted, known)
 				}
 				expected := initial.clone()
@@ -32,7 +32,7 @@ func TestX86ScalarReciprocalNativeAccessAndExactSourceIdentity(t *testing.T) {
 				missing := initial.clone()
 				missing.pointerGP[0] = false
 				before := missing.clone()
-				if accepted, _ := x86ResultScalarReciprocalStep(ins, &missing, nil, arch, true); accepted || !reflect.DeepEqual(missing, before) {
+				if accepted, _ := x86ResultTypedVectorEffectStep(ins, &missing, nil, arch, true, true); accepted || !reflect.DeepEqual(missing, before) {
 					t.Fatal("dead native input became optional", missing)
 				}
 
@@ -56,7 +56,7 @@ func TestX86ScalarReciprocalNativeAccessAndExactSourceIdentity(t *testing.T) {
 					t.Fatal("exact sealed source was not recognized")
 				}
 				state = initial.clone()
-				if accepted, known := x86ResultScalarReciprocalStep(raw, &state, nil, arch, true); !known || !accepted {
+				if accepted, known := x86ResultTypedVectorEffectStep(raw, &state, nil, arch, true, true); !known || !accepted {
 					t.Fatal("sealed original m32 could not retain its native continuation")
 				}
 				for _, mutate := range []func(*Instr){
@@ -75,7 +75,7 @@ func TestX86ScalarReciprocalNativeAccessAndExactSourceIdentity(t *testing.T) {
 					if x86RawScalarReciprocalSource(changed, arch) {
 						t.Fatal("changed complete raw identity was authorized", changed)
 					}
-					if accepted, _ := x86ResultScalarReciprocalStep(changed, &state, nil, arch, true); accepted || !reflect.DeepEqual(state, initial) {
+					if accepted, _ := x86ResultTypedVectorEffectStep(changed, &state, nil, arch, true, true); accepted || !reflect.DeepEqual(state, initial) {
 						t.Fatal("changed source mutated state or borrowed native inputs", changed, state)
 					}
 				}

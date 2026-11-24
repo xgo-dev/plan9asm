@@ -543,3 +543,95 @@ func x86CallerPackedVectorMoveStep(ins *Instr, form amd64PackedVectorMoveForm, s
 	state.vectors[destination] = ^widthMask | known
 	return true
 }
+
+func x86CallerPackedFloatShuffleStep(ins *Instr, f x86PackedFloatShuffleForm, state *x86SourceStackState, proof *x86GoCallerRegionProof) bool {
+	if !x86ResultNamedPredicateInstruction(*ins) || f.mask >= 0 && !state.masks[ins.Args[f.mask].Reg] {
+		return false
+	}
+	var first uint64
+	if f.memory >= 0 {
+		if f.legacy || !x86CallerOrdinaryMemoryStep(ins, f.memory, state, proof, int64(f.memoryBytes), false) {
+			return false
+		}
+		first = x86CallerVectorByteMask(int64(f.memoryBytes))
+	} else {
+		first = state.vectors[x86CallerVectorRoot(ins.Args[f.first].Reg)]
+	}
+	destination := x86CallerVectorRoot(ins.Args[f.destination].Reg)
+	old := state.vectors[destination]
+	defined := f.definedBytes(first, state.vectors[x86CallerVectorRoot(ins.Args[f.second].Reg)], old)
+	upper := ^x86CallerVectorByteMask(int64(f.byteWidth))
+	if f.legacy {
+		upper &= old
+	}
+	state.vectors[destination] = upper | defined
+	return true
+}
+
+func x86CallerPackedDotStep(ins *Instr, form x86PackedDotForm, state *x86SourceStackState, proof *x86GoCallerRegionProof) bool {
+	if !x86ResultNamedPredicateInstruction(*ins) {
+		return false
+	}
+	if form.mask >= 0 && !state.masks[ins.Args[form.mask].Reg] {
+		return false
+	}
+	first := ^uint64(0)
+	if form.memory >= 0 {
+		if !x86CallerOrdinaryMemoryStep(ins, form.memory, state, proof, int64(form.memoryBytes), false) {
+			return false
+		}
+	} else {
+		first = state.vectors[x86CallerVectorRoot(ins.Args[form.first].Reg)]
+	}
+	second := state.vectors[x86CallerVectorRoot(ins.Args[form.second].Reg)]
+	destination := x86CallerVectorRoot(ins.Args[form.destination].Reg)
+	if !form.inputsDefined(first, second, state.vectors[destination]) {
+		return false
+	}
+	state.vectors[destination] = ^uint64(0)
+	return true
+}
+
+func x86CallerPackedAlignStep(ins *Instr, form x86PackedAlignForm, state *x86SourceStackState, proof *x86GoCallerRegionProof) bool {
+	if form.mask >= 0 && !state.masks[ins.Args[form.mask].Reg] {
+		return false
+	}
+	var first uint64
+	if form.memory >= 0 {
+		if form.legacy || !x86CallerOrdinaryMemoryStep(ins, form.memory, state, proof, int64(form.memoryBytes), false) {
+			return false
+		}
+		first = x86CallerVectorByteMask(int64(form.byteWidth))
+	} else {
+		first = state.vectors[x86CallerVectorRoot(ins.Args[form.first].Reg)]
+	}
+	destination := x86CallerVectorRoot(ins.Args[form.destination].Reg)
+	old := state.vectors[destination]
+	known := form.definedBytes(first, state.vectors[x86CallerVectorRoot(ins.Args[form.second].Reg)], old)
+	upper := ^x86CallerVectorByteMask(int64(form.byteWidth))
+	if form.legacy {
+		upper &= old
+	}
+	state.vectors[destination] = upper | known
+	return true
+}
+
+func x86CallerPermute128Step(ins *Instr, form x86Permute128Form, state *x86SourceStackState, proof *x86GoCallerRegionProof) bool {
+	if !x86ResultNamedPredicateInstruction(*ins) || ins.x86Permute128VEX {
+		return false
+	}
+	first := uint64(0xffffffff)
+	if form.memory >= 0 {
+		if !x86CallerOrdinaryMemoryStep(ins, form.memory, state, proof, 32, false) {
+			return false
+		}
+	} else {
+		first = state.vectors[x86CallerVectorRoot(ins.Args[form.first].Reg)]
+	}
+	second := state.vectors[x86CallerVectorRoot(ins.Args[form.second].Reg)]
+	if !form.inputsDefined(first, second) {
+		return false
+	}
+	state.vectors[x86CallerVectorRoot(ins.Args[form.destination].Reg)] = ^uint64(0)
+	return true
+}

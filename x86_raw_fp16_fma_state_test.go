@@ -46,7 +46,7 @@ func TestX86RawFP16FMAExactInputsAndState(t *testing.T) {
 								value = 0xa55b // Preserve unknown upper X bytes, not the second source.
 							}
 							want.writeVector(0, width, value, false)
-							accepted, known := x86LoweredFP16FMAStep(ins, &state, nil, arch)
+							accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 							if !accepted || !known || !reflect.DeepEqual(state, want) {
 								t.Fatal("FMA changed unrelated state or lost exact input/passthrough bytes", accepted, known)
 							}
@@ -90,7 +90,7 @@ func TestX86RawFP16FMAExactInputsAndState(t *testing.T) {
 									changed.Args[0] = Operand{Kind: OpReg, Reg: "X7"}
 								}
 								original := rejected.clone()
-								accepted, known := x86LoweredFP16FMAStep(changed, &rejected, nil, arch)
+								accepted, known := x86ResultTypedVectorEffectStep(changed, &rejected, nil, arch, true, true)
 								if accepted || !known || !reflect.DeepEqual(original, rejected) {
 									t.Fatal("FMA invented input or original-source facts", mutation)
 								}

@@ -154,14 +154,14 @@ func TestX86RawAbsLiteralExactTupleMasksAndPreservedState(t *testing.T) {
 				initialized = original.vectorBytes(2) | ^x86CallerVectorByteMask(int64(form.byteWidth))
 			}
 			want.writeVector(2, 64, initialized, false)
-			if accepted, recognized := x86ResultPackedAbsSignStep(ins, &state, nil, "amd64", false); !accepted || !recognized || !reflect.DeepEqual(state, want) {
+			if accepted, recognized := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, true); !accepted || !recognized || !reflect.DeepEqual(state, want) {
 				t.Fatal("literal invented merge bytes or changed unrelated aliases/FLAGS/DF")
 			}
 			for size := 0; size < form.memoryBytes; size++ {
 				state = original
 				state.loweredStaticReads = map[x86StaticSBAddress]int64{address: int64(size)}
 				before := state
-				if accepted, recognized := x86ResultPackedAbsSignStep(ins, &state, nil, "amd64", false); accepted || !recognized || !reflect.DeepEqual(state, before) {
+				if accepted, recognized := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, true); accepted || !recognized || !reflect.DeepEqual(state, before) {
 					t.Fatal("ABS literal borrowed a missing full/broadcast tuple byte", size)
 				}
 			}
@@ -169,7 +169,7 @@ func TestX86RawAbsLiteralExactTupleMasksAndPreservedState(t *testing.T) {
 				state = original
 				state.masks[row.mask] = false
 				before := state
-				if accepted, _ := x86ResultPackedAbsSignStep(ins, &state, nil, "amd64", false); accepted || !reflect.DeepEqual(state, before) {
+				if accepted, _ := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", false, true); accepted || !reflect.DeepEqual(state, before) {
 					t.Fatal("ABS literal borrowed a missing numerical mask")
 				}
 			}

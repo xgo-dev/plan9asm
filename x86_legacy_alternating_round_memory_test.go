@@ -231,7 +231,7 @@ func TestX86LegacyRoundNativeMemoryOnlyNeedsCopiedOldUpper(t *testing.T) {
 			before.writeVector(1, 64, ^low, false) // Old active bytes are deliberately unknown.
 			for _, native := range []bool{false, true} {
 				state := before.clone()
-				accepted, known := x86ResultRoundStep(ins, &state, nil, arch, native)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, native, true)
 				if !known || accepted != native {
 					t.Fatal("paired legacy scalar read required overwritten old low bytes", arch, op, native, accepted)
 				}

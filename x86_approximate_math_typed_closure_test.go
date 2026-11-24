@@ -129,7 +129,7 @@ func TestX86ApproximateMathSparseNumericalInputsAndPreservedState(t *testing.T) 
 						before.writeVector(17, 64, ^(uint64(1) << uint(active)), false)
 					}
 					state := before.clone()
-					accepted, known := x86ResultFloatingHelperStep(ins, &state, nil, "amd64", true)
+					accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", true, true)
 					fail := mutation == "source" || mutation == "mask" || mutation == "old-destination" && mode == "merge"
 					if fail {
 						if accepted || !known || !reflect.DeepEqual(state, before) {

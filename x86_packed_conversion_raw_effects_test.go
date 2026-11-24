@@ -206,9 +206,9 @@ func TestX86PackedConversionRawIdentityAndNativeBoundaries(t *testing.T) {
 					before := state.clone()
 					var accepted, known bool
 					if mutation == "standalone" {
-						accepted, known = x86ResultSignedPackedFloatStep(ins, &state, nil, arch, false)
+						accepted, known = x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, true)
 						if !known {
-							accepted, known = x86ResultPackedConversionStep(ins, &state, nil, arch)
+							accepted, known = x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, true)
 						}
 					} else {
 						accepted, known = x86LoweredPackedConversionResultStep(ins, &state, nil, arch)
@@ -235,9 +235,9 @@ func TestX86PackedConversionRawIdentityAndNativeBoundaries(t *testing.T) {
 						t.Fatal("conversion borrowed physical identity, native backing or standalone authority", rows[ordinal], mutation, accepted, known)
 					}
 					if becameNamed {
-						accepted, known = x86ResultSignedPackedFloatStep(ins, &state, nil, arch, false)
+						accepted, known = x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, true)
 						if !known {
-							accepted, known = x86ResultPackedConversionStep(ins, &state, nil, arch)
+							accepted, known = x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, true)
 						}
 						// Only an initialized register input is a standalone
 						// positive; native memory still has no paired reader.

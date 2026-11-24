@@ -49,7 +49,7 @@ func TestX86RoundNormalizedRawMode32GrammarDoesNotGrantNUM(t *testing.T) {
 						state.writeVector(register, 64, ^uint64(0), false)
 					}
 					before := state.clone()
-					if accepted, known := x86ResultRoundStep(changed, &state, nil, "386", native); !known || accepted || !reflect.DeepEqual(before, state) {
+					if accepted, known := x86ResultTypedVectorEffectStep(changed, &state, nil, "386", native, true); !known || accepted || !reflect.DeepEqual(before, state) {
 						t.Fatal("raw or mutated raw ROUND borrowed native NUM/source permission", change, native)
 					}
 				}

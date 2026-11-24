@@ -83,10 +83,10 @@ func TestX86PackedAlignNativeCarrierAndSourceBoundaries(t *testing.T) {
 		state := x86ResultState{flags: x86ByteFlagsAll, direction: x86ResultDirectionBackward}
 		state.pointerGP[0] = true
 		before := state.clone()
-		if accepted, known := x86ResultPackedAlignStep(ins, &state, nil, arch, false); !known || accepted || !reflect.DeepEqual(state, before) {
+		if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, true); !known || accepted || !reflect.DeepEqual(state, before) {
 			t.Fatal("standalone observer acquired a native read")
 		}
-		if accepted, known := x86ResultPackedAlignStep(ins, &state, nil, arch, true); !known || !accepted || state.vectorBytes(2)&0xffff != 0xffff {
+		if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted || state.vectorBytes(2)&0xffff != 0xffff {
 			t.Fatal("continuing past the native opcode lost the large-count known-zero result")
 		}
 		for _, mutation := range []string{"pointer", "encoded", "raw", "segment", "address", "raw-return"} {
@@ -106,7 +106,7 @@ func TestX86PackedAlignNativeCarrierAndSourceBoundaries(t *testing.T) {
 				changed.x86RawNearReturn = new(x86RawNearReturnForm)
 			}
 			original := input.clone()
-			if accepted, _ := x86ResultPackedAlignStep(changed, &input, nil, arch, true); accepted || !reflect.DeepEqual(input, original) {
+			if accepted, _ := x86ResultTypedVectorEffectStep(changed, &input, nil, arch, true, true); accepted || !reflect.DeepEqual(input, original) {
 				t.Fatal("native continuation invented an address or physical origin", arch, mutation)
 			}
 		}

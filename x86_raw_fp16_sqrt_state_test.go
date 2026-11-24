@@ -41,7 +41,7 @@ func TestX86RawFP16SqrtExactSourceAndState(t *testing.T) {
 								value = 3 | 0xa55a&^3
 							}
 							want.writeVector(0, width, value, false)
-							accepted, known := x86ResultSqrtStep(ins, &state, nil, arch, true)
+							accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 							if !accepted || !known || !reflect.DeepEqual(state, want) {
 								t.Fatal("raw sqrt lost exact input, passthrough or unrelated state", accepted, known)
 							}
@@ -80,7 +80,7 @@ func TestX86RawFP16SqrtExactSourceAndState(t *testing.T) {
 									native = false
 								}
 								original := rejected.clone()
-								accepted, known := x86ResultSqrtStep(changed, &rejected, nil, arch, native)
+								accepted, known := x86ResultTypedVectorEffectStep(changed, &rejected, nil, arch, native, true)
 								if accepted || !known || !reflect.DeepEqual(original, rejected) {
 									t.Fatal("raw sqrt borrowed missing input or unbound source", mutation)
 								}

@@ -491,12 +491,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 			state.literalMemoryOperand, state.literalMemoryBytes = &operand, width
 			defer func() { state.literalMemoryOperand, state.literalMemoryBytes = nil, 0 }()
 		}
-		if accepted, known := x86ResultImmediateBlendStep(ins, state, owned, arch, true); known {
-			return accepted // Legacy Type4 opcode or exact volatile VEX tuple retains dead reads and faults.
-		}
-		if accepted, known := x86ResultBlendMinposStep(ins, state, owned, arch, true); known {
-			return accepted // Legacy original opcodes and VEX whole volatile reads retain exact native faults.
-		}
 		if c.dataBPSource {
 			if accepted, known := x86ResultDataBPStep(ins, state, owned, resultOffset); known {
 				return accepted // Source-defined opaque BP, never physical frame or numerical pointer bits.
@@ -505,53 +499,11 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultXLATStep(ins, state, owned, arch, true); known {
 			return accepted // Only the paired exact volatile m8 consumes the unsigned AL index and native BX input.
 		}
-		if accepted, known := x86ResultAlternatingFloatStep(ins, state, owned, arch, true); known {
-			return accepted // The VEX tuple remains observable even when its numerical result is dead.
-		}
-		if accepted, known := x86ResultRoundStep(ins, state, owned, arch, true); known {
-			return accepted // Scalar active bytes and copied upper bytes remain distinct.
-		}
 		if accepted, known := x86ResultVSIBStep(ins, state, arch, true, c.dataBPSource); known {
 			return accepted // Exact indexed continuation; never an ordinary contiguous native tuple.
 		}
-		if accepted, known := x86ResultFourSourceStep(ins, state, owned, arch, true); known {
-			return accepted // One complete original opcode owns its m128 access and sequential native exceptions.
-		}
-		if accepted, known := x86ResultScalarPrecisionStep(ins, state, owned, arch, true); known {
-			return accepted // The paired original scalar conversion retains m32/m64 and MXCSR effects.
-		}
 		if accepted, known := x86ResultScalarFloatIntegerStepWithRead(ins, state, owned, resultOffset, arch, true); known {
 			return accepted // The whole native conversion retains exact scalar reads and MXCSR even for Void.
-		}
-		if accepted, known := x86ResultNamedHalfStep(ins, state, owned, arch, true); known {
-			return accepted // The exact original conversion/store retains MXCSR and active native accesses.
-		}
-		if accepted, known := x86ResultPackedPrecisionStep(ins, state, owned, arch, true); known {
-			return accepted // The paired original packed conversion retains exact E2 reads and MXCSR effects.
-		}
-		if accepted, known := x86ResultPackedAbsSignStep(ins, state, owned, arch, true); known {
-			return accepted // Exact native reads and K inputs remain required for dead packed integer results.
-		}
-		if accepted, known := x86LoweredRawPackedReductionStep(ins, state, owned, arch); known {
-			return accepted
-		}
-		if accepted, known := x86ResultPackedReductionStep(ins, state, owned, arch, true); known {
-			return accepted // Paired whole native reduction retains exact reads and MXCSR/exception behavior.
-		}
-		if accepted, known := x86ResultMaskBlendStep(ins, state, owned, arch, true); known {
-			return accepted // The shared E4 reader retains exact volatile active-lane accesses.
-		}
-		if accepted, known := x86ResultPackedDotStep(ins, state, owned, arch, true); known {
-			return accepted // Paired E4 dwords retain active volatile reads, even for dead results.
-		}
-		if accepted, known := x86ResultPermute128Step(ins, state, owned, arch, true); known {
-			return accepted // Type6 retains the whole m256 access even for two zero halves.
-		}
-		if accepted, known := x86ResultElementPermuteStep(ins, state, owned, arch, true); known {
-			return accepted // E4NF retains the whole tuple/broadcast even at K=0 or for Void.
-		}
-		if accepted, known := x86ResultPackedFloatShuffleStep(ins, state, owned, arch, true); known {
-			return accepted // Same full E4NF access, with both selected numerical sources.
 		}
 		if accepted, known := x86ResultNativeLEAAddressBitsStep(ins, state, owned, arch, addressBitStores); known {
 			keepAddressBits = accepted
@@ -565,12 +517,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		if accepted, known := x86LoweredScalarVectorMoveMemoryStep(ins, state, owned, resultOffset, arch); known {
 			return accepted // Exact active volatile m32/m64, without a reusable pointee fact.
-		}
-		if accepted, known := x86ResultScalarReciprocalStep(ins, state, owned, arch, true); known {
-			return accepted // Actual scalar estimate keeps the independent exact m32 access and MXCSR contract.
-		}
-		if accepted, known := x86ResultPackedReciprocalStep(ins, state, owned, arch, true); known {
-			return accepted // Only the paired original packed opcode owns its native access and alignment fault.
 		}
 		if accepted, known := x86ResultLegacyScalarMoveStep(ins, state, owned, resultOffset, arch, true); known {
 			return accepted // Only the paired exact volatile legacy m32/m64 read supplies its conditional scalar bytes.
@@ -617,19 +563,7 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86LoweredExplicitIMULNativeRead(ins, state, owned, resultOffset, arch); known {
 			return accepted // The same exact native reader retains two/three-operand input roles.
 		}
-		if accepted, known := x86LoweredPackedConversionResultStep(ins, state, owned, arch); known {
-			return accepted // The complete original conversion is still emitted, including dead native effects.
-		}
 		if accepted, known := x86LoweredRawVMOVWResultStep(ins, state, owned, resultOffset, arch); known {
-			return accepted
-		}
-		if accepted, known := x86LoweredFP16ConversionStep(ins, state, owned, arch); known {
-			return accepted
-		}
-		if accepted, known := x86LoweredFP16FMAStep(ins, state, owned, arch); known {
-			return accepted
-		}
-		if accepted, known := x86LoweredFP16BinaryStep(ins, state, owned, arch); known {
 			return accepted
 		}
 		if accepted, known := x86LoweredEnqueueResultStep(ins, state, arch); known {
@@ -728,12 +662,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultImplicitMaskMoveStep(ins, state, arch, true); known {
 			return accepted // Preserve the original implicit address and non-temporal access, including zero masks.
 		}
-		if accepted, known := x86ResultFloatingHelperStep(ins, state, owned, arch, true); known {
-			return accepted // The complete native opcode retains MXCSR, exceptions and masked accesses.
-		}
-		if accepted, known := x86ResultSqrtStep(ins, state, owned, arch, true); known {
-			return accepted // The paired native opcode retains scalar/packed MXCSR effects.
-		}
 		if accepted, known := x86LoweredRawCOMIStep(ins, state, owned, arch); known {
 			return accepted // Only the bound original opcode owns this local numerical read.
 		}
@@ -746,20 +674,11 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86ResultUnsignedIntegerFloatStep(ins, state, owned, arch, true); known {
 			return accepted // The original EVEX opcode owns exact reads, MXCSR and precision exceptions.
 		}
-		if accepted, known := x86ResultSignedPackedFloatStep(ins, state, owned, arch, true); known {
-			return accepted // The original native opcode retains rounding, exception and memory effects.
-		}
-		if accepted, known := x86ResultPackedConversionStepWithRead(ins, state, owned, arch, true); known {
-			return accepted // The paired conversion retains its exact access and MXCSR effects.
-		}
 		if form, known, err := x86FloatAddSubProperties(ins, arch); known {
 			return err == nil && x86ScalarFPFloatBinaryTransferWithRead(ins, form.x86FloatBinaryForm, state, owned, arch, true)
 		}
 		if form, known, err := x86FloatMulDivProperties(ins, arch); known {
 			return err == nil && x86ScalarFPFloatBinaryTransferWithRead(ins, form.x86FloatBinaryForm, state, owned, arch, true)
-		}
-		if accepted, known := x86ResultFloatMinMaxStep(ins, state, owned, arch, true); known {
-			return accepted
 		}
 		if accepted, known := x86ResultPackedStringStepWithRead(ins, state, owned, arch, true); known {
 			return accepted // Paired emitter retains the full volatile m128 read.
@@ -775,9 +694,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		if accepted, known := x86ResultImmediateShuffleStepWithRead(ins, state, owned, arch, true); known {
 			return accepted // The paired full tuple or m32 read survives zero masks and dead results.
-		}
-		if accepted, known := x86ResultPackedAlignStep(ins, state, owned, arch, true); known {
-			return accepted // Full E4NF tuples and the original legacy alignment/fault opcode.
 		}
 		if accepted, known := x86ResultLegacyIntegerNativeReadStep(ins, state, owned, resultOffset, arch); known {
 			return accepted
@@ -812,12 +728,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := c.loweredNativeConditionalSet(ins, state, arch); known {
 			return accepted // The same typed SETcc emitter preserves its exact volatile byte write.
 		}
-		if accepted, known := x86ResultQwordLookupStep(ins, state, owned, arch, true); known {
-			return accepted // E4 controls and E4NF qword data retain their separate native access shapes.
-		}
-		if accepted, known := x86ResultSADStep(ins, state, owned, arch, true); known {
-			return accepted // The same SAD emitter retains the full tuple and legacy m128 opcode.
-		}
 		if accepted, known := x86ResultSHAStep(ins, state, owned, arch, true); known {
 			return accepted // Native m128 keeps the original opcode, including dead-result faults.
 		}
@@ -827,9 +737,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		if accepted, known := x86LoweredVectorTestResultStep(ins, state, owned, arch); known {
 			return accepted // One original memory opcode retains the entire read and captures its FLAGS.
 		}
-		if accepted, known := x86ResultPackedNarrowStep(ins, state, owned, arch, true); known {
-			return accepted // The same emitter retains the complete E4NF tuple or original legacy opcode.
-		}
 		if accepted, known := x86ResultSingleSourceNarrowStep(ins, state, owned, resultOffset, arch, true); known {
 			return accepted
 		}
@@ -838,9 +745,6 @@ func (c *amd64Ctx) checkLoweredScalarFPResultInitialization() error {
 		}
 		if accepted, known := x86ResultPackedShiftStepWithRead(ins, state, owned, arch, true); known {
 			return accepted // Uniform m128, E4NF tuples and guarded E4 reads retain their independent shapes.
-		}
-		if accepted, known := x86ResultPackedUnpackStepWithRead(ins, state, owned, arch, true); known {
-			return accepted // Unpack retains the full E4NF tuple even with zero masks or dead results.
 		}
 		if accepted, known := x86ResultDuplicateMoveStep(ins, state, owned, arch, true); known {
 			return accepted // Duplicate selectors retain exact E4NF/E5NF tuples and legacy alignment faults.

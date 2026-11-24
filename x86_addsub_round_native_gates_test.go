@@ -45,9 +45,9 @@ func TestX86AlternatingRoundNativeContinuationBoundaries(t *testing.T) {
 				state.writeVector(2, 64, 0xffffffffffff, false)
 				apply := func(i Instr, s *x86ResultState, native bool) (bool, bool) {
 					if round {
-						return x86ResultRoundStep(i, s, nil, arch, native)
+						return x86ResultTypedVectorEffectStep(i, s, nil, arch, native, true)
 					}
-					return x86ResultAlternatingFloatStep(i, s, nil, arch, native)
+					return x86ResultTypedVectorEffectStep(i, s, nil, arch, native, true)
 				}
 				for _, change := range []string{"paired", "unpaired", "numeric-base", "missing-index", "raw", "address-size", "segment", "missing-upper"} {
 					current, changed := state.clone(), ins
@@ -126,7 +126,7 @@ func TestX86AlternatingRoundGrammarIsNotModeOrNativeAuthority(t *testing.T) {
 	state.pointerGP[0] = true
 	state.writeVector(14, 64, ^uint64(0), false)
 	before := state.clone()
-	if accepted, known := x86ResultAlternatingFloatStep(ins, &state, nil, "386", true); !known || accepted || !reflect.DeepEqual(before, state) {
+	if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "386", true, true); !known || accepted || !reflect.DeepEqual(before, state) {
 		t.Fatal("grammar authorized a mode32 high physical register")
 	}
 	for _, text := range []string{"VROUNDSS $7,(R8),X1,X2", "VADDSUBPS (R8),Y1,Y2"} {
@@ -137,9 +137,9 @@ func TestX86AlternatingRoundGrammarIsNotModeOrNativeAuthority(t *testing.T) {
 		before := state.clone()
 		var accepted, known bool
 		if strings.Contains(text, "ROUND") {
-			accepted, known = x86ResultRoundStep(ins, &state, nil, "386", true)
+			accepted, known = x86ResultTypedVectorEffectStep(ins, &state, nil, "386", true, true)
 		} else {
-			accepted, known = x86ResultAlternatingFloatStep(ins, &state, nil, "386", true)
+			accepted, known = x86ResultTypedVectorEffectStep(ins, &state, nil, "386", true, true)
 		}
 		if !known || accepted || !reflect.DeepEqual(before, state) {
 			t.Fatal("memory syntax granted a mode32 R8 pointer", text)
@@ -179,9 +179,9 @@ func TestX86AlternatingRoundGrammarIsNotModeOrNativeAuthority(t *testing.T) {
 			before := state.clone()
 			var accepted, known bool
 			if strings.Contains(text, "ROUND") {
-				accepted, known = x86ResultRoundStep(ins, &state, nil, "386", native)
+				accepted, known = x86ResultTypedVectorEffectStep(ins, &state, nil, "386", native, true)
 			} else {
-				accepted, known = x86ResultAlternatingFloatStep(ins, &state, nil, "386", native)
+				accepted, known = x86ResultTypedVectorEffectStep(ins, &state, nil, "386", native, true)
 			}
 			if !known || !accepted || !reflect.DeepEqual(before, state) {
 				t.Fatal("fully defined legacy registers depended on native read permission or lost aliases", text, native)

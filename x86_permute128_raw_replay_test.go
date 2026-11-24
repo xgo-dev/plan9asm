@@ -61,7 +61,7 @@ func TestX86Permute128PhysicalModeAndWholeProducerReplay(t *testing.T) {
 					ins := original.Instrs[ordinal]
 					expected := before.clone()
 					expected.writeVector(2, 32, 0xffffffff, false)
-					accepted, owned := x86ResultPermute128Step(ins, &state, nil, arch, true)
+					accepted, owned := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 					if !accepted || !owned || !reflect.DeepEqual(state, expected) ||
 						x86ResultDirectionAfterSource(ins, before.direction, arch) != before.direction ||
 						!x86ResultPreservesPrivateStorage(ins, arch) ||

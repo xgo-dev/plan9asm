@@ -59,7 +59,7 @@ func TestX86FloatingHelperEveryNumericalInputMaskAndMergeByte(t *testing.T) {
 					}
 					state := x86FloatingHelperInitializedState()
 					before := state.clone()
-					if accepted, known := x86ResultFloatingHelperStep(ins, &state, nil, arch, true); !known || !accepted {
+					if accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true); !known || !accepted {
 						t.Fatal("complete initialized helper lost its typed numerical inputs", arch, member.name, bank, mode)
 					}
 					want := before.clone()
@@ -89,7 +89,7 @@ func TestX86FloatingHelperEveryNumericalInputMaskAndMergeByte(t *testing.T) {
 								current.writeVector(source, 64, current.vectorBytes(source)&^(uint64(1)<<uint(missing)), false)
 							}
 							initial := current.clone()
-							if accepted, _ := x86ResultFloatingHelperStep(ins, &current, nil, arch, true); accepted || !reflect.DeepEqual(current, initial) {
+							if accepted, _ := x86ResultTypedVectorEffectStep(ins, &current, nil, arch, true, true); accepted || !reflect.DeepEqual(current, initial) {
 								t.Fatal("helper invented a missing source/mask/merge byte or partially changed state", arch, member.name, bank, mode, source, missing)
 							}
 						}
@@ -114,7 +114,7 @@ func TestX86FloatingHelperScalarPassthroughRemainsSparse(t *testing.T) {
 			state := x86FloatingHelperInitializedState()
 			state.writeVector(1, 64, state.vectorBytes(1)&^(uint64(1)<<uint(missing)), false)
 			before := state.clone()
-			accepted, known := x86ResultFloatingHelperStep(ins, &state, nil, "amd64", true)
+			accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, "amd64", true, true)
 			if member.second && missing < active {
 				if accepted || !known || !reflect.DeepEqual(state, before) {
 					t.Fatal("scalar arithmetic supplied a missing low second source", member.name, missing)
@@ -173,7 +173,7 @@ func TestX86FloatingHelperNativeContinuationRetainsItsSourceBoundary(t *testing.
 					ins.Args[0].ImmIsFloat = true
 				}
 				before := state.clone()
-				accepted, known := x86ResultFloatingHelperStep(ins, &state, nil, arch, native)
+				accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, native, true)
 				if mutation == "valid" || mutation == "numerical address" {
 					expected := before.clone()
 					if member.maskResult {

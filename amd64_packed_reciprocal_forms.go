@@ -78,33 +78,3 @@ func x86TypedPackedReciprocalByteEffect(op Op, ins Instr, arch string) (x86Typed
 		{index: 1, operand: ins.Args[1], width: width, write: true},
 	}}, true, nil
 }
-
-func x86ResultPackedReciprocalStep(ins Instr, state *x86ResultState, owned []bool, arch string, native bool) (bool, bool) {
-	form, known, err := x86PackedReciprocalProperties(ins.Op, ins, arch)
-	if !known || err != nil || !x86ResultNamedPredicateInstruction(ins) {
-		return false, known
-	}
-	source, mask := ins.Args[0], x86CallerVectorByteMask(int64(form.byteWidth))
-	defined := mask
-	if source.Kind == OpReg {
-		index, _ := amd64VectorRegisterIndex(source.Reg, form.byteWidth)
-		if state.vectorBytes(index)&mask != mask {
-			defined = 0 // Pure dead estimates may retain an unknown numerical value.
-		}
-	} else {
-		// Virtual FP bytes are not an aligned native m128 operand. The
-		// paired original opcode, rather than storage permission, owns #GP.
-		if form.legacy {
-			if _, static := x86StaticSBReadAddress(source, arch); !static &&
-				(!native || !x86OrdinaryNativeMemoryOperand(source, arch)) {
-				return false, true
-			}
-		}
-		if !x86ResultReadWithNativeContinuation(ins, source, int64(form.byteWidth), state, owned, arch, native) {
-			return false, true
-		}
-	}
-	destination, _ := amd64VectorRegisterIndex(ins.Args[1].Reg, form.byteWidth)
-	state.writeVector(destination, form.byteWidth, defined, form.legacy)
-	return true, true // No FLAGS, DF, MXCSR or storage facts change.
-}

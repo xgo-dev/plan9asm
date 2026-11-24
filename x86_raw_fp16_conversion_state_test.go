@@ -36,7 +36,7 @@ func TestX86RawFP16ConversionExactSourceAndState(t *testing.T) {
 								value, width = low|0xa55a&^low, 16
 							}
 							want.writeVector(0, width, value, false)
-							accepted, known := x86LoweredFP16ConversionStep(ins, &state, nil, arch)
+							accepted, known := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, true, true)
 							if !accepted || !known || !reflect.DeepEqual(state, want) {
 								t.Fatal("conversion invented passthrough bytes or changed unrelated state", accepted, known)
 							}
@@ -73,7 +73,7 @@ func TestX86RawFP16ConversionExactSourceAndState(t *testing.T) {
 									changed.Args[0] = Operand{Kind: OpReg, Reg: "X7"}
 								}
 								original := rejected.clone()
-								accepted, known := x86LoweredFP16ConversionStep(changed, &rejected, nil, arch)
+								accepted, known := x86ResultTypedVectorEffectStep(changed, &rejected, nil, arch, true, true)
 								if accepted || !known || !reflect.DeepEqual(original, rejected) {
 									t.Fatal("conversion borrowed a missing input or stale source identity", mutation)
 								}

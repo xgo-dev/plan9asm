@@ -43,7 +43,7 @@ func TestX86PackedConversionIndependentEveryByteEffects(t *testing.T) {
 							}
 							want := missing < 0 || !missingDestination && missing >= shape.lanes*spec.input/8 ||
 								missingDestination && (masking != "merge" || missing >= shape.lanes*spec.output/8)
-							accepted, recognized := x86ResultPackedConversionStep(ins, &state, nil, arch)
+							accepted, recognized := x86ResultTypedVectorEffectStep(ins, &state, nil, arch, false, true)
 							if !recognized || accepted != want {
 								t.Fatal("required byte mismatch", ins.Raw, arch, missing, missingDestination, accepted, want)
 							}
