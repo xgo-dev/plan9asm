@@ -13,12 +13,13 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins Instr, emitBr armEmitB
 	case "JMP":
 		op = "B"
 	case "BX":
-		if cond != "" || len(ins.Args) != 1 || ins.Args[0].Kind != OpMem ||
-			!isARMGeneralReg(ins.Args[0].Mem.Base) || ins.Args[0].Mem.Base == PC || ins.Args[0].Mem.Off != 0 ||
-			ins.Args[0].Mem.OffRaw != "" || ins.Args[0].Mem.Index != "" || ins.Args[0].Mem.Sym != "" {
-			return true, false, fmt.Errorf("arm BX expects exactly (general-register): %q", ins.Raw)
+		register, err := armBranchExchangeTarget(ins)
+		if err != nil {
+			return true, false, err
 		}
-		op = "B"
+		return true, false, c.emitConditionalEffect(cond, func() error {
+			return c.emitBranchExchange(register)
+		})
 	}
 	switch op {
 	case "BL", "CALL":
@@ -132,6 +133,72 @@ func armIndirectCallRegister(ins Instr) (Reg, bool, error) {
 	return mem.Base, true, nil
 }
 
+func armBranchExchangeTarget(ins Instr) (Reg, error) {
+	if err := armRequireConditionOnlySuffix(ins); err != nil {
+		return "", err
+	}
+	bad := func() (Reg, error) {
+		return "", fmt.Errorf("arm BX expects a zero-displacement register target: %q", ins.Raw)
+	}
+	if len(ins.Args) != 1 || ins.Args[0].Kind != OpMem {
+		return bad()
+	}
+	mem := ins.Args[0].Mem
+	if !isARMGeneralReg(mem.Base) || mem.Off != 0 || mem.OffRaw != "" || mem.Sym != "" || mem.Segment != "" ||
+		mem.Index != "" && !isARMGeneralReg(mem.Index) {
+		return bad()
+	}
+	switch mem.Base {
+	case "R13", SP, "R15", PC:
+		return "", fmt.Errorf("%w: ARM BX target %s requires original stack or code layout: %q", ErrProbeNeedsContext, mem.Base, ins.Raw)
+	}
+	// Go's optab 75 uses To.Reg. An index annotation does not contribute
+	// to the selected code address.
+	return mem.Base, nil
+}
+
+const armIndirectCallVFPClobbers = "~{d0},~{d1},~{d2},~{d3},~{d4},~{d5},~{d6},~{d7}," +
+	"~{d16},~{d17},~{d18},~{d19},~{d20},~{d21},~{d22},~{d23}," +
+	"~{d24},~{d25},~{d26},~{d27},~{d28},~{d29},~{d30},~{d31},~{cc},~{memory}"
+
+var armBranchExchangeRegisters = [...]Reg{"R0", "R1", "R2", "R3", "R12", "R11"}
+
+func (c *armCtx) emitBranchExchange(register Reg) error {
+	address, err := c.loadReg(register)
+	if err != nil {
+		return err
+	}
+	var operands [6]string
+	for i, reg := range armBranchExchangeRegisters[:5] {
+		value, err := c.loadReg(reg)
+		if err != nil {
+			return err
+		}
+		operands[i] = "i32 " + value
+	}
+	// Go copies the target to R11 before writing LR. R11 can be LLVM's
+	// reserved frame pointer, so preserve it inside the assembly region.
+	// The two saved words keep AAPCS alignment at the nested call.
+	operands[5] = "i32 " + address
+	const carrier = "{i32,i32,i32,i32,i32,i32,i32}"
+	const constraints = "={r0},={r1},={r2},={r3},={r12},=&r,=&r,0,1,2,3,4,r,~{lr}," + armIndirectCallVFPClobbers
+	const code = "push {r11, lr}; mov r11, $12; blx r11; mov $5, r11; pop {r11, lr}; mrs $6, apsr"
+	result := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s asm sideeffect %q, %q(%s)\n",
+		result, carrier, code, constraints, strings.Join(operands[:], ", "))
+	for i, reg := range armBranchExchangeRegisters {
+		value := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, %d\n", value, carrier, result, i)
+		if err := c.storeReg(reg, "%"+value); err != nil {
+			return err
+		}
+	}
+	status := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 6\n", status, carrier, result)
+	c.storeFlagsFromStatus("%" + status)
+	return nil
+}
+
 func (c *armCtx) emitIndirectCall(register Reg) error {
 	address, err := c.loadReg(register)
 	if err != nil {
@@ -139,10 +206,7 @@ func (c *armCtx) emitIndirectCall(register Reg) error {
 	}
 	// Physical AAPCS volatile registers may be live in LLVM across this
 	// inline-assembly call. Read APSR before any generated code can change it.
-	const clobbers = "~{r0},~{r1},~{r2},~{r3},~{r12},~{lr}," +
-		"~{d0},~{d1},~{d2},~{d3},~{d4},~{d5},~{d6},~{d7}," +
-		"~{d16},~{d17},~{d18},~{d19},~{d20},~{d21},~{d22},~{d23}," +
-		"~{d24},~{d25},~{d26},~{d27},~{d28},~{d29},~{d30},~{d31},~{cc},~{memory}"
+	const clobbers = "~{r0},~{r1},~{r2},~{r3},~{r12},~{lr}," + armIndirectCallVFPClobbers
 	status := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q(i32 %s)\n",
 		status, "blx $1; mrs $0, apsr", "=r,r,"+clobbers, address)

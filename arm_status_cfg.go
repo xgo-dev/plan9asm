@@ -62,6 +62,15 @@ func proveARMStatusReads(fn Func, sig FuncSig, local *armLocalControl) error {
 			entry.values |= armKernelRegBit(reg)
 		}
 	}
+	transfer := func(block, ordinal int, state armStatusState, ins Instr, check bool) (armStatusState, error) {
+		next, err := armStatusTransfer(fn.Sym, sig, state, ins, check)
+		if local != nil && ordinal == len(blocks[block].instrs)-1 && local.transfers[block].exchange {
+			// The proof bound the taken edge to the caller's return.
+			// Any successor is the skip path and retains the input flags.
+			return state, err
+		}
+		return next, err
+	}
 	in, out := make([]armStatusState, len(blocks)), make([]armStatusState, len(blocks))
 	for i := range blocks {
 		if reachable[i] {
@@ -85,8 +94,8 @@ func proveARMStatusReads(fn Func, sig FuncSig, local *armLocalControl) error {
 				state.vfpWitness = state.vfpWitness && out[pred].vfpWitness
 			}
 			in[i] = state
-			for _, ins := range block.instrs {
-				state, _ = armStatusTransfer(fn.Sym, sig, state, ins, false)
+			for ordinal, ins := range block.instrs {
+				state, _ = transfer(i, ordinal, state, ins, false)
 			}
 			if out[i] != state {
 				out[i], changed = state, true
@@ -98,9 +107,9 @@ func proveARMStatusReads(fn Func, sig FuncSig, local *armLocalControl) error {
 			continue
 		}
 		state := in[i]
-		for _, ins := range block.instrs {
+		for ordinal, ins := range block.instrs {
 			var err error
-			state, err = armStatusTransfer(fn.Sym, sig, state, ins, true)
+			state, err = transfer(i, ordinal, state, ins, true)
 			if err != nil {
 				return err
 			}
@@ -277,7 +286,15 @@ func armStatusTransfer(name string, sig FuncSig, state armStatusState, ins Instr
 			state.initialized = 0
 		}
 		state.vfpWitness = false
-	case "BX", "DIV", "DIVU", "MOD", "MODU", "DUFFZERO", "DUFFCOPY":
+	case "BX":
+		register, err := armBranchExchangeTarget(ins)
+		if err == nil && state.values.has(armKernelRegBit(register)) {
+			write = armKernelFlags // The taken call captures APSR before leaving its carrier.
+		} else {
+			state.initialized = 0
+		}
+		state.vfpWitness = false
+	case "DIV", "DIVU", "MOD", "MODU", "DUFFZERO", "DUFFCOPY":
 		state.initialized = 0
 		state.vfpWitness = false
 	case "WORD", "BYTE", "LONG":

@@ -129,6 +129,11 @@ func (c *armCtx) scanUsedRegs() {
 	for _, blk := range c.blocks {
 		for _, ins := range blk.instrs {
 			op, _, _, _ := armDecodeOp(string(ins.Op))
+			if op == "BX" {
+				for _, reg := range armBranchExchangeRegisters {
+					markReg(reg)
+				}
+			}
 			if form, handled, err := parseARMWordFloatConversion(op, ins); handled && err == nil && form.usesScratch() {
 				markReg("F15")
 			}

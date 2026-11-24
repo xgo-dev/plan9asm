@@ -246,15 +246,22 @@ func (c *armCtx) prepareARMLocalControl(fn Func) error {
 			transfer.kind = armLocalFrameReturn
 		case op == "RET" && len(last.Args) == 0:
 			transfer.kind, transfer.link = armLocalReturn, armLinkRegister
+		case op == "BX" && armRegisterReturnCandidate(last):
+			reg, err := armBranchExchangeTarget(last)
+			if err != nil {
+				return err
+			}
+			if _, ok := armLocalLinkIndex(reg); !ok {
+				return armLocalLinkError(fn, last, "has no modeled exchange register")
+			}
+			transfer.kind, transfer.link, transfer.exchange = armLocalReturn, reg, true
 		default:
-			// B/JMP register forms have no condition except AL in Go's
-			// optab. BX admits predication, but changes the link when taken.
-			registerForm := op == "BX" || (op == "B" || op == "JMP") && condition == ""
+			// B/JMP register forms have no condition except AL in Go's optab.
+			registerForm := (op == "B" || op == "JMP") && condition == ""
 			if len(last.Args) == 1 && (registerForm || op == "RET" && noFrame) {
 				arg := last.Args[0]
 				if _, ok := armLocalLinkIndex(arg.Mem.Base); ok && armPlainBranchMemory(arg) && arg.Mem.Off == 0 {
 					transfer.kind, transfer.link = armLocalReturn, arg.Mem.Base
-					transfer.exchange = op == "BX"
 					break
 				}
 			}
