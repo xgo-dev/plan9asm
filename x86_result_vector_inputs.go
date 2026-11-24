@@ -151,12 +151,13 @@ func x86ResultTypedVectorEffectStep(ins Instr, state *x86ResultState, owned []bo
 		if err != nil {
 			return false, true
 		}
-		literal := x86RawFMA3LiteralForm(ins, arch)
-		if !literal && (!x86ResultNamedPredicateInstruction(ins) || ins.x86FMA3Encoding != x86RawFMA3Absent) {
-			if !nativeRead || !x86RawFMA3Source(ins, arch) {
-				return false, true
+		if !x86ResultNamedPredicateInstruction(ins) || ins.x86FMA3Encoding != x86RawFMA3Absent {
+			if !x86RawFMA3LiteralForm(ins, arch) {
+				if !nativeRead || !x86RawFMA3Source(ins, arch) {
+					return false, true
+				}
+				ins.x86Encoded, ins.x86SourceRaw = false, nil
 			}
-			ins.x86Encoded, ins.x86SourceRaw = false, nil
 		}
 		effect, n := x86TypedFMA3EffectForFormInto(&operandBuf, ins, form)
 		effect.operands = operandBuf[:n]
@@ -232,17 +233,20 @@ func x86ResultTypedVectorEffectStep(ins Instr, state *x86ResultState, owned []bo
 		if err != nil || parsed.mmx {
 			return false, true
 		}
+		if !strictWordMultiply && parsed.spec.family == x86PackedWordProduct && parsed.spec.mode == amd64PackedWordMultiplyLow {
+			// W/D/Q low products keep per-lane numerical dependencies in
+			// standalone ABI0 queries (including decoded VPMULLW); lowering
+			// retains strict whole-vector and named-source checks below.
+			effect, n := x86PackedBinaryLaneEffectInto(&operandBuf, ins, parsed.x86PackedBinaryForm, 2)
+			effect.operands = operandBuf[:n]
+			return x86ResultApplyTypedVectorEffect(ins, effect, state, owned, arch, nativeRead), true
+		}
 		if !x86ResultNamedPredicateInstruction(ins) {
 			if !nativeRead || parsed.spec.family != x86PackedDwordProduct || parsed.legacy ||
 				!x86RawOrdinaryVectorSource(ins, arch) {
 				return false, true
 			}
 			ins.x86Encoded, ins.x86SourceRaw = false, nil
-		}
-		if !strictWordMultiply && parsed.spec.family == x86PackedWordProduct && parsed.spec.mode == amd64PackedWordMultiplyLow {
-			effect, n := x86PackedBinaryLaneEffectInto(&operandBuf, ins, parsed.x86PackedBinaryForm, 2)
-			effect.operands = operandBuf[:n]
-			return x86ResultApplyTypedVectorEffect(ins, effect, state, owned, arch, nativeRead), true
 		}
 		effect, n := x86PackedBinaryDependencyEffectInto(&operandBuf, ins, parsed.x86PackedBinaryForm, ins.Args[parsed.first])
 		effect.operands = operandBuf[:n]

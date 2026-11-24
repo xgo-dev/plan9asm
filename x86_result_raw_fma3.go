@@ -29,8 +29,11 @@ func x86FMA3RawIdentity(ins Instr, arch string) x86RawFMA3Identity {
 
 func x86RawFMA3EncodingSource(ins Instr, arch string) bool {
 	origin := ins.x86SourceRaw
+	if origin == nil {
+		return false
+	}
 	identity := x86FMA3RawIdentity(ins, arch)
-	return origin != nil && identity.encoding != x86RawFMA3Absent && identity.arch == arch && origin.fma3 == identity &&
+	return identity.encoding != x86RawFMA3Absent && identity.arch == arch && origin.fma3 == identity &&
 		origin.op == ins.Op && origin.vectorBytes == ins.x86VectorBytes &&
 		origin.addressBits == ins.x86AddressBits &&
 		(reflect.DeepEqual(origin.args, ins.Args) || x86RawLiteralSourceIdentity(ins, arch))
