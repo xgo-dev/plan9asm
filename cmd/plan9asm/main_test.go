@@ -297,6 +297,39 @@ func TestFallbackARMKernelHelperIsNotGuessedIntegerReturn(t *testing.T) {
 	}
 }
 
+func TestTranslateAsmForPackageARMPrivateExchangeRetainsRegisterInput(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "exchange_arm.s")
+	const source = `TEXT ·Value(SB),516,$0-4
+MOVW R14,R8
+MOVW $helper<>(SB),R7
+MOVW $2,R0
+BX (R7)
+ADD $2,R0
+MOVW R0,ret+0(FP)
+MOVW R8,R14
+RET
+
+TEXT helper<>(SB),516,$0-0
+ADD $3,R0
+RET
+`
+	if err := os.WriteFile(filename, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	typed := types.NewPackage("example.com/probe", "probe")
+	result := types.NewVar(token.NoPos, typed, "ret", types.Typ[types.Uint32])
+	typed.Scope().Insert(types.NewFunc(token.NoPos, typed, "Value", types.NewSignature(nil, nil, types.NewTuple(result), false)))
+	pkg := &packages.Package{PkgPath: typed.Path(), Types: typed, TypesSizes: types.SizesFor("gc", "arm")}
+	translation, ok, err := translateAsmForPackage(pkg, filename, "linux", "arm", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || len(translation.Functions) != 1 || strings.Contains(translation.LLVMIR, "helper$local") {
+		t.Fatalf("private helper acquired a separate guessed ABI:\n%s", translation.LLVMIR)
+	}
+}
+
 func TestPackageQualifiedAsmSymbolUsesLocalDeclaration(t *testing.T) {
 	file, err := plan9asm.Parse(plan9asm.ArchARM, `TEXT runtime·pipe2(SB),NOSPLIT,$0-16
 	MOVW $r+4(FP), R0

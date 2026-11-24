@@ -270,6 +270,13 @@ func translateGoModuleInContext(ctx llvm.Context, pkg GoPackage, src []byte, opt
 	if err != nil {
 		return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
 	}
+	file, err = PrepareARMPrivateExchanges(file, func(symbol string) bool {
+		_, explicit := goLookupManualSig(opt.ManualSig, resolve(goTextSymbolForResolution(symbol)))
+		return explicit
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: private source %s: %w", pkgPath, asmName, err)
+	}
 	if opt.x86PanicCalls != nil {
 		if err := opt.x86PanicCalls.bindMember(file, asmName); err != nil {
 			return nil, err

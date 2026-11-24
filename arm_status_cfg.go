@@ -64,10 +64,13 @@ func proveARMStatusReads(fn Func, sig FuncSig, local *armLocalControl) error {
 	}
 	transfer := func(block, ordinal int, state armStatusState, ins Instr, check bool) (armStatusState, error) {
 		next, err := armStatusTransfer(fn.Sym, sig, state, ins, check)
-		if local != nil && ordinal == len(blocks[block].instrs)-1 && local.transfers[block].exchange {
-			// The proof bound the taken edge to the caller's return.
-			// Any successor is the skip path and retains the input flags.
-			return state, err
+		if local != nil && ordinal == len(blocks[block].instrs)-1 {
+			call := local.transfers[block]
+			if call.kind == armLocalCall || call.exchange {
+				// A local jump only changes the link, and a caller-return
+				// exchange's sole successor is its unchanged skip path.
+				return state, err
+			}
 		}
 		return next, err
 	}

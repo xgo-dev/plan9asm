@@ -811,6 +811,10 @@ func compileOneAttempt(pkg *packages.Package, arch plan9asm.Arch, goos, goarch, 
 	if numericalSource != nil {
 		resolve = numericalSource.resolve
 	}
+	file, err = plan9asm.PrepareARMPrivateExchanges(file, nil)
+	if err != nil {
+		return fmt.Errorf("prove ARM private source exchanges: %w", err)
+	}
 	file, tailSource, tailSigs, err := prepareARM64ABI0TailSource(pkg, file, t.AsmFile, src,
 		goos+"/"+goarch, defines, ccfg, resolve)
 	if err != nil {

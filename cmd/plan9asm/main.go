@@ -386,6 +386,10 @@ func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string,
 		tr, err := translateLoadedGoModule(pkg, src, asmPath, goos, goarch, annotate)
 		return tr, err == nil, err
 	}
+	file, err = plan9asm.PrepareARMPrivateExchanges(file, nil)
+	if err != nil {
+		return translation{}, false, err
+	}
 	sigs, err := sigsForAsmFile(pkg, file, resolve, goarch)
 	if err != nil {
 		return translation{}, false, err
