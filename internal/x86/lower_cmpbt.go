@@ -127,6 +127,15 @@ func (c *amd64Ctx) lowerCmpBt(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 				fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
 				return nil
 			}
+		case asm.OpFP:
+			dv, err := c.evalFPToI64(ins.Args[1].FPOffset)
+			if err != nil {
+				return true, false, err
+			}
+			dst = dv
+			storeDst = func(v string) error {
+				return c.storeFPResult(ins.Args[1].FPOffset, asm.I64, v)
+			}
 		default:
 			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
 		}

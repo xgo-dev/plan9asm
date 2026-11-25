@@ -303,6 +303,15 @@ func (c *amd64Ctx) callSym(symOp asm.Operand) error {
 	if !strings.HasSuffix(s, "(SB)") {
 		return fmt.Errorf("amd64 call expects (SB) symbol, got %q", s)
 	}
+	if base, off, ok := asm.ParseSBRef(s); ok && base != "" && off != 0 {
+		p, err := c.ptrFromSB(s)
+		if err != nil {
+			return err
+		}
+		addr := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", addr, p)
+		return c.callIndirectAddr("%" + addr)
+	}
 	s = strings.TrimSuffix(s, "(SB)")
 	callee := c.resolve(s)
 	// Syscall stubs invoke runtime entersyscall/exitsyscall around SYSCALL.
@@ -506,6 +515,15 @@ func (c *amd64Ctx) tailCallAndRet(symOp asm.Operand) error {
 	s := strings.TrimSpace(symOp.Sym)
 	if !strings.HasSuffix(s, "(SB)") {
 		return fmt.Errorf("amd64 tailcall expects (SB) symbol, got %q", s)
+	}
+	if base, off, ok := asm.ParseSBRef(s); ok && base != "" && off != 0 {
+		p, err := c.ptrFromSB(s)
+		if err != nil {
+			return err
+		}
+		addr := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", addr, p)
+		return c.tailCallIndirectAddrAndRet("%" + addr)
 	}
 	s = strings.TrimSuffix(s, "(SB)")
 	callee := c.resolve(s)

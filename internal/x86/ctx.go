@@ -66,6 +66,7 @@ type amd64Ctx struct {
 	allowSPWrite   bool   // current instruction has an explicitly modeled 386 SP destination
 	directionSlot  string // x86 DF, used by MOVS/STOS/SCAS instructions
 	repeatPrefix   string // pending REP/REPN prefix for the following instruction
+	lockPrefix     bool   // pending LOCK prefix for the following RMW instruction
 	vstackSlot     string // [64 x i64] virtual stack for PUSHQ/POPQ
 	vspSlot        string // i64 virtual stack pointer (next free slot)
 	localStackSlot string // byte-addressable backing storage for x86 SP references
@@ -234,6 +235,10 @@ func (c *amd64Ctx) scanUsedRegs() {
 			c.usedX87 = true
 			return
 		}
+		if base, _, ok := amd64ByteAlias(r); ok {
+			c.usedRegs[base] = true
+			return
+		}
 		c.usedRegs[r] = true
 	}
 	markOp := func(op asm.Operand) {
@@ -299,6 +304,23 @@ func (c *amd64Ctx) scanUsedRegs() {
 	for i := 0; i < n && i < len(goABI); i++ {
 		markReg(goABI[i])
 	}
+}
+
+func (c *amd64Ctx) usesStringOrDir() bool {
+	for _, blk := range c.blocks {
+		for _, ins := range blk.instrs {
+			switch strings.ToUpper(string(ins.Op)) {
+			case "CLD", "STD", "REP", "REPN",
+				"MOVSB", "MOVSW", "MOVSL", "MOVSQ",
+				"STOSB", "STOSW", "STOSL", "STOSQ",
+				"SCASB", "SCASW", "SCASL", "SCASQ",
+				"CMPSB", "CMPSW", "CMPSL", "CMPSQ",
+				"LODSB", "LODSW", "LODSL", "LODSQ":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *amd64Ctx) emitEntryAllocas() error {
@@ -422,6 +444,8 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 	if c.goarch == "386" {
 		c.directionSlot = "%direction_backward"
 		c.flagsIDSlot = "%flags_id"
+	} else if c.usesStringOrDir() {
+		c.directionSlot = "%direction_backward"
 	}
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsZSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)

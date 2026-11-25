@@ -256,6 +256,10 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 	c.allowSPWrite = models386SPWrite(ins)
 	defer func() { c.allowSPWrite = false }()
 	op := strings.ToUpper(string(ins.Op))
+	locked := c.lockPrefix
+	if op != "LOCK" {
+		c.lockPrefix = false
+	}
 	c.zeroUpperVector = strings.HasPrefix(op, "V")
 	if c.repeatPrefix != "" && op != "MOVSB" && op != "MOVSW" && op != "MOVSL" && op != "MOVSQ" &&
 		op != "STOSB" && op != "STOSW" && op != "STOSL" && op != "STOSQ" &&
@@ -309,22 +313,20 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 		fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %d\n", next, sp, int64(ins.Args[0].Imm))
 		return false, c.storeRegUnchecked(asm.SP, "%"+next)
 	case "CLD":
-		if c.goarch != "386" {
-			return false, nil
-		}
-		if len(ins.Args) != 0 {
+		if c.goarch == "386" && len(ins.Args) != 0 {
 			return false, fmt.Errorf("386 CLD takes no operands: %q", ins.Raw)
 		}
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.directionSlot)
+		if c.directionSlot != "" {
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.directionSlot)
+		}
 		return false, nil
 	case "STD":
-		if c.goarch != "386" {
-			return false, nil
-		}
-		if len(ins.Args) != 0 {
+		if c.goarch == "386" && len(ins.Args) != 0 {
 			return false, fmt.Errorf("386 STD takes no operands: %q", ins.Raw)
 		}
-		fmt.Fprintf(c.b, "  store i1 true, ptr %s\n", c.directionSlot)
+		if c.directionSlot != "" {
+			fmt.Fprintf(c.b, "  store i1 true, ptr %s\n", c.directionSlot)
+		}
 		return false, nil
 	case "REP", "REPN":
 		if len(ins.Args) != 0 {
@@ -335,6 +337,11 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 		}
 		c.repeatPrefix = op
 		return false, nil
+	}
+	if locked {
+		if ok, term, err := c.lowerLockedRMW(asm.Op(op), ins); ok {
+			return term, err
+		}
 	}
 	if ok, term, err := c.lowerBranch(bi, ii, asm.Op(op), ins, emitBr, emitCondBr); ok {
 		return term, err

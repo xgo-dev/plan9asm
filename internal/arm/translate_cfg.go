@@ -77,6 +77,13 @@ func (c *armCtx) lowerBlocks() error {
 func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr armEmitCondBr) (bool, error) {
 	rawOp := strings.ToUpper(string(ins.Op))
 	baseOp, cond, postInc, setFlags := armDecodeOp(rawOp)
+	preInc, subOff := armDecodeAddrModes(rawOp)
+	c.curPreInc = preInc
+	c.curSubOff = subOff
+	defer func() {
+		c.curPreInc = false
+		c.curSubOff = false
+	}()
 	switch baseOp {
 	case string(asm.OpTEXT), string(asm.OpBYTE):
 		return false, nil

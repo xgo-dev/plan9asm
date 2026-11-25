@@ -388,7 +388,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		return true, false, nil
 	case "MOVSB":
-		if c.repeatPrefix != "" {
+		if c.repeatPrefix != "" || c.directionSlot != "" {
 			return false, false, nil
 		}
 		si, err := c.loadReg(asm.SI)
@@ -416,7 +416,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		return true, false, nil
 	case "MOVSQ":
-		if c.repeatPrefix != "" {
+		if c.repeatPrefix != "" || c.directionSlot != "" {
 			return false, false, nil
 		}
 		si, err := c.loadReg(asm.SI)
@@ -444,7 +444,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		return true, false, nil
 	case "STOSQ":
-		if c.repeatPrefix != "" {
+		if c.repeatPrefix != "" || c.directionSlot != "" {
 			return false, false, nil
 		}
 		di, err := c.loadReg(asm.DI)

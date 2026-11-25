@@ -1334,6 +1334,10 @@ func (c *amd64Ctx) lowerX86M3String(spec asm.OpSpec, ins asm.Instr) error {
 	return nil
 }
 
+func (c *amd64Ctx) advanceStringReg(reg asm.Reg, cur string, step int64) error {
+	return c.storeStringIndex(reg, cur, fmt.Sprintf("%d", step), c.loadDirectionFlag())
+}
+
 func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 	ty := x86LLVMIntType(spec.Width)
 	step := int64(spec.Width / 8)
@@ -1343,11 +1347,10 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 		if err != nil {
 			return err
 		}
-		ptr, ld, nsi := c.newTmp(), c.newTmp(), c.newTmp()
+		ptr, ld := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, si)
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", ld, ty, ptr)
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", nsi, si, step)
-		if err := c.storeReg(asm.SI, "%"+nsi); err != nil {
+		if err := c.advanceStringReg(asm.SI, si, step); err != nil {
 			return err
 		}
 		return c.storeRegSized(asm.AX, ty, "%"+ld)
@@ -1366,11 +1369,10 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, ax, ty)
 			v = "%" + tr
 		}
-		ptr, ndi := c.newTmp(), c.newTmp()
+		ptr := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, di)
 		fmt.Fprintf(c.b, "  store %s %s, ptr %%%s, align 1\n", ty, v, ptr)
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ndi, di, step)
-		return c.storeReg(asm.DI, "%"+ndi)
+		return c.advanceStringReg(asm.DI, di, step)
 	case "movs":
 		si, err := c.loadReg(asm.SI)
 		if err != nil {
@@ -1380,17 +1382,15 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 		if err != nil {
 			return err
 		}
-		ps, pd, ld, nsi, ndi := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		ps, pd, ld := c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ps, si)
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pd, di)
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", ld, ty, ps)
 		fmt.Fprintf(c.b, "  store %s %%%s, ptr %%%s, align 1\n", ty, ld, pd)
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", nsi, si, step)
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ndi, di, step)
-		if err := c.storeReg(asm.SI, "%"+nsi); err != nil {
+		if err := c.advanceStringReg(asm.SI, si, step); err != nil {
 			return err
 		}
-		return c.storeReg(asm.DI, "%"+ndi)
+		return c.advanceStringReg(asm.DI, di, step)
 	case "scas":
 		di, err := c.loadReg(asm.DI)
 		if err != nil {
@@ -1406,15 +1406,14 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, ax, ty)
 			v = "%" + tr
 		}
-		pd, ld, eq, ult, ndi := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		pd, ld, eq, ult := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pd, di)
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", ld, ty, pd)
 		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %%%s\n", eq, ty, v, ld)
 		fmt.Fprintf(c.b, "  %%%s = icmp ult %s %s, %%%s\n", ult, ty, v, ld)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", ult, c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ndi, di, step)
-		return c.storeReg(asm.DI, "%"+ndi)
+		return c.advanceStringReg(asm.DI, di, step)
 	default: // cmps
 		si, err := c.loadReg(asm.SI)
 		if err != nil {
@@ -1424,7 +1423,7 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 		if err != nil {
 			return err
 		}
-		ps, pd, ls, ld, eq, ult, nsi, ndi := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		ps, pd, ls, ld, eq, ult := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ps, si)
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pd, di)
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", ls, ty, ps)
@@ -1433,12 +1432,10 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 		fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %%%s\n", ult, ty, ls, ld)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", ult, c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", nsi, si, step)
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ndi, di, step)
-		if err := c.storeReg(asm.SI, "%"+nsi); err != nil {
+		if err := c.advanceStringReg(asm.SI, si, step); err != nil {
 			return err
 		}
-		return c.storeReg(asm.DI, "%"+ndi)
+		return c.advanceStringReg(asm.DI, di, step)
 	}
 }
 

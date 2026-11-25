@@ -2058,6 +2058,12 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 					ld := c.newTmp()
 					fmt.Fprintf(c.b, "  %%%s = load <64 x i8>, ptr %s, align 1\n", ld, p)
 					return true, false, c.storeZ(ins.Args[1].Reg, "%"+ld)
+				case asm.OpFP:
+					v, err := c.loadFPVec(ins.Args[0].FPOffset, 64)
+					if err != nil {
+						return true, false, err
+					}
+					return true, false, c.storeZ(ins.Args[1].Reg, v)
 				default:
 					return true, false, fmt.Errorf("amd64 VMOVDQU64 unsupported src: %q", ins.Raw)
 				}
@@ -2085,6 +2091,8 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 					}
 					fmt.Fprintf(c.b, "  store <64 x i8> %s, ptr %s, align 1\n", src, p)
 					return true, false, nil
+				case asm.OpFP:
+					return true, false, c.storeFPVec(ins.Args[1].FPOffset, 64, src)
 				case asm.OpReg:
 					if _, ok := amd64ParseZReg(ins.Args[1].Reg); ok {
 						return true, false, c.storeZ(ins.Args[1].Reg, src)
@@ -2106,6 +2114,13 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 						return false, false, nil
 					}
 					v, err := c.loadY(ins.Args[0].Reg)
+					if err != nil {
+						return true, false, err
+					}
+					return true, false, c.storeY(ins.Args[1].Reg, v)
+				}
+				if ins.Args[0].Kind == asm.OpFP {
+					v, err := c.loadFPVec(ins.Args[0].FPOffset, 32)
 					if err != nil {
 						return true, false, err
 					}
@@ -2161,6 +2176,12 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 					ld := c.newTmp()
 					fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
 					return true, false, c.storeX(ins.Args[1].Reg, "%"+ld)
+				case asm.OpFP:
+					v, err := c.loadFPVec(ins.Args[0].FPOffset, 16)
+					if err != nil {
+						return true, false, err
+					}
+					return true, false, c.storeX(ins.Args[1].Reg, v)
 				default:
 					return true, false, fmt.Errorf("amd64 VMOVDQU unsupported src: %q", ins.Raw)
 				}
@@ -2191,6 +2212,8 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 				}
 				fmt.Fprintf(c.b, "  store <32 x i8> %s, ptr %s, align 1\n", src, p)
 				return true, false, nil
+			case asm.OpFP:
+				return true, false, c.storeFPVec(ins.Args[1].FPOffset, 32, src)
 			default:
 				return true, false, fmt.Errorf("amd64 VMOVDQU unsupported dst: %q", ins.Raw)
 			}
@@ -2216,6 +2239,8 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 				}
 				fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", src, p)
 				return true, false, nil
+			case asm.OpFP:
+				return true, false, c.storeFPVec(ins.Args[1].FPOffset, 16, src)
 			default:
 				return true, false, fmt.Errorf("amd64 VMOVDQU unsupported dst: %q", ins.Raw)
 			}
@@ -3156,6 +3181,45 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 
 	// Other MOVQ/MOVL cases are handled elsewhere.
 	return false, false, nil
+}
+
+func (c *amd64Ctx) loadFPVec(off int64, bytes int) (string, error) {
+	n := bytes / 8
+	vecTy := fmt.Sprintf("<%d x i64>", n)
+	cur := "undef"
+	for i := 0; i < n; i++ {
+		w, err := c.evalFPToI64(off + int64(i*8))
+		if err != nil {
+			return "", err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = insertelement %s %s, i64 %s, i32 %d\n", t, vecTy, cur, w, i)
+		cur = "%" + t
+	}
+	bc := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to <%d x i8>\n", bc, vecTy, cur, bytes)
+	return "%" + bc, nil
+}
+
+func (c *amd64Ctx) storeFPVec(off int64, bytes int, vec string) error {
+	n := bytes / 8
+	vecTy := fmt.Sprintf("<%d x i64>", n)
+	bc := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i8> %s to %s\n", bc, bytes, vec, vecTy)
+	for i := 0; i < n; i++ {
+		slotOff := off + int64(i*8)
+		if i > 0 {
+			if _, _, ok := c.fpResultAlloca(slotOff); !ok {
+				continue
+			}
+		}
+		ex := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractelement %s %%%s, i32 %d\n", ex, vecTy, bc, i)
+		if err := c.storeFPResult(slotOff, asm.I64, "%"+ex); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func llvmShiftRightBytesMask(n int64) string {

@@ -90,6 +90,45 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 				}
 			}
 			return true, false, nil
+		case src.Kind == asm.OpFP && dst.Kind == asm.OpReg:
+			if _, ok := arm64ParseFReg(dst.Reg); !ok {
+				return true, false, fmt.Errorf("arm64 FMOVQ expects an F register destination: %q", ins.Raw)
+			}
+			lo, err := c.eval64(src, false)
+			if err != nil {
+				return true, false, err
+			}
+			hi := "0"
+			if _, ok := c.fpParams[src.FPOffset+8]; ok {
+				hi, err = c.eval64(asm.Operand{Kind: asm.OpFP, FPOffset: src.FPOffset + 8}, false)
+				if err != nil {
+					return true, false, err
+				}
+			}
+			v0, v1, bc := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %s, i32 0\n", v0, lo)
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %s, i32 1\n", v1, v0, hi)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, v1)
+			return true, false, c.storeVReg(dst.Reg, "%"+bc)
+		case src.Kind == asm.OpReg && dst.Kind == asm.OpFP:
+			if _, ok := arm64ParseFReg(src.Reg); !ok {
+				return true, false, fmt.Errorf("arm64 FMOVQ expects an F register source: %q", ins.Raw)
+			}
+			value, err := c.loadVReg(src.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			bc, lo, hi := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, value)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", lo, bc)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", hi, bc)
+			if err := c.storeFPResult64(dst.FPOffset, "%"+lo); err != nil {
+				return true, false, err
+			}
+			if _, ok := c.fpResAllocaOff[dst.FPOffset+8]; ok {
+				return true, false, c.storeFPResult64(dst.FPOffset+8, "%"+hi)
+			}
+			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("arm64 FMOVQ expects memory and F register operands: %q", ins.Raw)
 		}

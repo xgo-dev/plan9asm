@@ -153,6 +153,19 @@ func (c *armCtx) resolveBranchTarget(bi int, op asm.Operand) (string, bool) {
 	return "", false
 }
 
+func armDecodeAddrModes(raw string) (preInc bool, subOff bool) {
+	parts := strings.Split(strings.ToUpper(strings.TrimSpace(raw)), ".")
+	for _, p := range parts[1:] {
+		switch p {
+		case "W":
+			preInc = true
+		case "U":
+			subOff = true
+		}
+	}
+	return preInc, subOff
+}
+
 func armDecodeOp(raw string) (base string, cond string, postInc bool, setFlags bool) {
 	base = strings.ToUpper(strings.TrimSpace(raw))
 	if base == "" {

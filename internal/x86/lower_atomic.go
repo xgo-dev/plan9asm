@@ -8,8 +8,9 @@ import (
 func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bool, err error) {
 	switch op {
 	case "LOCK":
-		// LOCK is a prefix in Plan 9 syntax. Our lowering emits atomic IR for
-		// the following memory RMW instruction, so the prefix itself is a no-op.
+		// LOCK is a prefix in Plan 9 syntax; record it so the following memory
+		// RMW instruction emits atomic LLVM IR (atomicrmw / cmpxchg).
+		c.lockPrefix = true
 		return true, false, nil
 
 	case "CMPXCHG8B":
@@ -127,7 +128,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return true, false, nil
 
 	case "CMPXCHGB", "CMPXCHGW", "CMPXCHGL", "CMPXCHGQ":
-		if len(ins.Args) != 2 || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpReg) {
+		if len(ins.Args) != 2 || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpReg && ins.Args[1].Kind != asm.OpFP) {
 			return true, false, fmt.Errorf("amd64 %s expects src, mem/reg: %q", op, ins.Raw)
 		}
 		ty := asm.I32
@@ -183,7 +184,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return true, false, nil
 
 	case "XADDB", "XADDW", "XADDL", "XADDQ":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpReg) {
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpReg && ins.Args[1].Kind != asm.OpFP) {
 			return true, false, fmt.Errorf("amd64 %s expects srcReg, mem/reg: %q", op, ins.Raw)
 		}
 		srcReg := ins.Args[0]
@@ -225,7 +226,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			return true, false, fmt.Errorf("amd64 %s expects srcReg, dst: %q", op, ins.Raw)
 		}
 		srcReg, dstArg := ins.Args[0], ins.Args[1]
-		if (srcReg.Kind == asm.OpMem || srcReg.Kind == asm.OpSym) && dstArg.Kind == asm.OpReg {
+		if (srcReg.Kind == asm.OpMem || srcReg.Kind == asm.OpSym || srcReg.Kind == asm.OpFP) && dstArg.Kind == asm.OpReg {
 			srcReg, dstArg = dstArg, srcReg
 		}
 		if srcReg.Kind != asm.OpReg {
@@ -259,24 +260,16 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			}
 			return true, false, c.storeRegSized(dstReg, ty, srcT)
 		}
-		if dstArg.Kind != asm.OpMem && dstArg.Kind != asm.OpSym {
+		if dstArg.Kind != asm.OpMem && dstArg.Kind != asm.OpSym && dstArg.Kind != asm.OpFP {
 			return true, false, fmt.Errorf("amd64 %s expects srcReg, mem/reg: %q", op, ins.Raw)
 		}
 		src, err := c.amd64AtomicTruncFromI64(src64, ty)
 		if err != nil {
 			return true, false, err
 		}
-		ptr := ""
-		if dstArg.Kind == asm.OpMem {
-			ptr, err = c.amd64AtomicPtrFromMem(dstArg.Mem)
-			if err != nil {
-				return true, false, err
-			}
-		} else {
-			ptr, err = c.ptrFromSB(dstArg.Sym)
-			if err != nil {
-				return true, false, err
-			}
+		ptr, err := c.amd64AtomicPtrFromOp(dstArg)
+		if err != nil {
+			return true, false, err
 		}
 		old := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = atomicrmw xchg ptr %s, %s %s seq_cst\n", old, ptr, ty, src)
@@ -286,12 +279,14 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		}
 		return true, false, c.storeReg(srcReg.Reg, old64)
 
-	case "ORB", "ANDB", "ORL", "ANDL", "ORQ", "ANDQ":
-		if len(ins.Args) != 2 || !isX86MemOp(ins.Args[1]) {
+	case "ORB", "ANDB", "ORW", "ANDW", "ORL", "ANDL", "ORQ", "ANDQ":
+		if len(ins.Args) != 2 || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpFP) {
 			return false, false, nil
 		}
 		ty := asm.I8
 		switch op {
+		case "ORW", "ANDW":
+			ty = asm.I16
 		case "ORL", "ANDL":
 			ty = asm.I32
 		case "ORQ", "ANDQ":
@@ -310,7 +305,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			return true, false, err
 		}
 		rmw := "or"
-		if op == "ANDB" || op == "ANDL" || op == "ANDQ" {
+		if op == "ANDB" || op == "ANDW" || op == "ANDL" || op == "ANDQ" {
 			rmw = "and"
 		}
 		tmp := c.newTmp()
@@ -333,6 +328,14 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 }
 
 func (c *amd64Ctx) amd64AtomicPtrFromOp(op asm.Operand) (string, error) {
+	if op.Kind == asm.OpFP {
+		alloca, _, ok := c.fpResultAlloca(op.FPOffset)
+		if !ok {
+			return "", fmt.Errorf("amd64 atomic operation unsupported FP slot +%d(FP)", op.FPOffset)
+		}
+		c.markFPResultWritten(op.FPOffset)
+		return alloca, nil
+	}
 	ptr, ptrType, err := c.resolveMemPtr(op)
 	if err != nil {
 		return "", err
@@ -341,6 +344,229 @@ func (c *amd64Ctx) amd64AtomicPtrFromOp(op asm.Operand) (string, error) {
 		return "", fmt.Errorf("amd64 atomic operation does not support segment-relative memory")
 	}
 	return ptr, nil
+}
+
+// lowerLockedRMW emits genuine atomic LLVM IR (atomicrmw / cmpxchg seq_cst)
+// for lockable x86 memory RMW instructions preceded by LOCK.
+func (c *amd64Ctx) lowerLockedRMW(op asm.Op, ins asm.Instr) (ok bool, terminated bool, err error) {
+	s := string(op)
+	if len(s) < 4 {
+		return false, false, nil
+	}
+	ty := asm.I64
+	align := 8
+	bits := 64
+	switch s[len(s)-1] {
+	case 'B':
+		ty, align, bits = asm.I8, 1, 8
+	case 'W':
+		ty, align, bits = asm.I16, 2, 16
+	case 'L':
+		ty, align, bits = asm.I32, 4, 32
+	case 'Q':
+		ty, align, bits = asm.I64, 8, 64
+	default:
+		return false, false, nil
+	}
+	stem := s[:len(s)-1]
+
+	setZS := func(val string) {
+		zf, sf := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zf, ty, val)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", sf, ty, val)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+	}
+
+	switch stem {
+	case "ADD", "SUB", "XOR":
+		if len(ins.Args) != 2 || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpFP) {
+			return false, false, nil
+		}
+		rhs, err := c.evalIntSized(ins.Args[0], ty)
+		if err != nil {
+			return true, false, err
+		}
+		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		rmw := "add"
+		if stem == "SUB" {
+			rmw = "sub"
+		} else if stem == "XOR" {
+			rmw = "xor"
+		}
+		old, out := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = atomicrmw %s ptr %s, %s %s seq_cst\n", old, rmw, ptr, ty, rhs)
+		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s, %s\n", out, rmw, ty, old, rhs)
+		setZS("%" + out)
+		switch stem {
+		case "ADD":
+			cf := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %%%s\n", cf, ty, out, old)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		case "SUB":
+			cf := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %s\n", cf, ty, old, rhs)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		default:
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		}
+		return true, false, nil
+
+	case "INC", "DEC":
+		if len(ins.Args) != 1 || (!isX86MemOp(ins.Args[0]) && ins.Args[0].Kind != asm.OpFP) {
+			return false, false, nil
+		}
+		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		rmw := "add"
+		if stem == "DEC" {
+			rmw = "sub"
+		}
+		old, out := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = atomicrmw %s ptr %s, %s 1 seq_cst\n", old, rmw, ptr, ty)
+		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s, 1\n", out, rmw, ty, old)
+		setZS("%" + out)
+		return true, false, nil
+
+	case "BTS", "BTR", "BTC":
+		if bits == 8 || len(ins.Args) != 2 || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpFP) {
+			return false, false, nil
+		}
+		idx, err := c.evalIntSized(ins.Args[0], ty)
+		if err != nil {
+			return true, false, err
+		}
+		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		// A register bit index on a memory operand addresses an unbounded
+		// bit string: adjust ptr by floor(idx/bits) * (bits/8) bytes.
+		if ins.Args[0].Kind == asm.OpReg && isX86MemOp(ins.Args[1]) {
+			shiftWord, shiftBytes := 6, 3
+			if bits == 32 {
+				shiftWord, shiftBytes = 5, 2
+			} else if bits == 16 {
+				shiftWord, shiftBytes = 4, 1
+			}
+			word, byteOff := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = ashr %s %s, %d\n", word, ty, idx, shiftWord)
+			fmt.Fprintf(c.b, "  %%%s = shl %s %%%s, %d\n", byteOff, ty, word, shiftBytes)
+			off64 := "%" + byteOff
+			if ty != asm.I64 {
+				se := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = sext %s %%%s to i64\n", se, ty, byteOff)
+				off64 = "%" + se
+			}
+			adj := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %s\n", adj, ptr, off64)
+			ptr = "%" + adj
+		}
+		amt, bit := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and %s %s, %d\n", amt, ty, idx, bits-1)
+		fmt.Fprintf(c.b, "  %%%s = shl %s 1, %%%s\n", bit, ty, amt)
+		arg := "%" + bit
+		rmw := "or"
+		if stem == "BTR" {
+			rmw = "and"
+			inv := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor %s %%%s, -1\n", inv, ty, bit)
+			arg = "%" + inv
+		} else if stem == "BTC" {
+			rmw = "xor"
+		}
+		old, masked, cf := c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = atomicrmw %s ptr %s, %s %s seq_cst\n", old, rmw, ptr, ty, arg)
+		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %%%s\n", masked, ty, old, bit)
+		fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, 0\n", cf, ty, masked)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		return true, false, nil
+
+	case "NEG", "NOT", "ADC", "SBB":
+		isUnary := stem == "NEG" || stem == "NOT"
+		dstIdx := 1
+		if isUnary {
+			dstIdx = 0
+		}
+		if len(ins.Args) != dstIdx+1 || (!isX86MemOp(ins.Args[dstIdx]) && ins.Args[dstIdx].Kind != asm.OpFP) {
+			return false, false, nil
+		}
+		var rhs string
+		if !isUnary {
+			rhs, err = c.evalIntSized(ins.Args[0], ty)
+			if err != nil {
+				return true, false, err
+			}
+		}
+		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[dstIdx])
+		if err != nil {
+			return true, false, err
+		}
+		var carryVal string
+		if stem == "ADC" || stem == "SBB" {
+			cf := c.loadFlag(c.flagsCFSlot)
+			cz := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i1 %s to %s\n", cz, cf, ty)
+			carryVal = "%" + cz
+		}
+		loopLbl := "lock_cas_" + c.newTmp()
+		doneLbl := "lock_done_" + c.newTmp()
+		fmt.Fprintf(c.b, "  br label %%%s\n%s:\n", loopLbl, loopLbl)
+		cur := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load atomic %s, ptr %s seq_cst, align %d\n", cur, ty, ptr, align)
+		next := c.newTmp()
+		var midTmp string
+		switch stem {
+		case "NEG":
+			fmt.Fprintf(c.b, "  %%%s = sub %s 0, %%%s\n", next, ty, cur)
+		case "NOT":
+			fmt.Fprintf(c.b, "  %%%s = xor %s %%%s, -1\n", next, ty, cur)
+		case "ADC":
+			s1 := c.newTmp()
+			midTmp = s1
+			fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %s\n", s1, ty, cur, rhs)
+			fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %s\n", next, ty, s1, carryVal)
+		case "SBB":
+			s1 := c.newTmp()
+			midTmp = s1
+			fmt.Fprintf(c.b, "  %%%s = sub %s %%%s, %s\n", s1, ty, cur, rhs)
+			fmt.Fprintf(c.b, "  %%%s = sub %s %%%s, %s\n", next, ty, s1, carryVal)
+		}
+		cx, okv := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = cmpxchg ptr %s, %s %%%s, %s %%%s seq_cst seq_cst, align %d\n", cx, ptr, ty, cur, ty, next, align)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue { %s, i1 } %%%s, 1\n", okv, ty, cx)
+		// loopLbl is the sole predecessor of doneLbl, so %cur/%next/%midTmp dominate doneLbl directly.
+		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n%s:\n", okv, doneLbl, loopLbl, doneLbl)
+		if stem != "NOT" {
+			setZS("%" + next)
+			switch stem {
+			case "NEG":
+				cf := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, 0\n", cf, ty, cur)
+				fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			case "ADC":
+				c1, c2, cf := c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %%%s\n", c1, ty, midTmp, cur)
+				fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %%%s\n", c2, ty, next, midTmp)
+				fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", cf, c1, c2)
+				fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			case "SBB":
+				b1, b2, cf := c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %s\n", b1, ty, cur, rhs)
+				fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %s\n", b2, ty, midTmp, carryVal)
+				fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", cf, b1, b2)
+				fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			}
+		}
+		return true, false, nil
+	}
+	return false, false, nil
 }
 
 func (c *amd64Ctx) amd64AtomicPtrFromMem(mem asm.MemRef) (string, error) {

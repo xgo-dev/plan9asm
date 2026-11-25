@@ -50,6 +50,11 @@ func (c *arm64Ctx) addrI64(mem asm.MemRef, postInc bool) (addr string, base asm.
 		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", t, sum, c.imm64(off))
 		sum = "%" + t
 	}
+	if c.curPreInc && !postInc && base != "" && off != 0 {
+		if err := c.storeReg(base, sum); err != nil {
+			return "", "", 0, err
+		}
+	}
 	return sum, base, inc, nil
 }
 

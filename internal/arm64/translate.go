@@ -107,6 +107,8 @@ func (c *arm64Ctx) lowerBlocks() error {
 func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCondBr arm64EmitCondBr) (terminated bool, err error) {
 	rawOp := strings.ToUpper(string(ins.Op))
 	postInc := strings.Contains(rawOp, ".P")
+	c.curPreInc = strings.Contains(rawOp, ".W")
+	defer func() { c.curPreInc = false }()
 	baseOp := rawOp
 	if dot := strings.IndexByte(baseOp, '.'); dot >= 0 {
 		baseOp = baseOp[:dot]

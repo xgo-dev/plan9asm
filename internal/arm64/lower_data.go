@@ -52,7 +52,7 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 		case asm.OpReg:
 			return true, false, c.storeReg(dst.Reg, v)
 		case asm.OpMem:
-			return true, false, c.storeMem(dst.Mem, 64, false, v)
+			return true, false, c.storeMem(dst.Mem, 64, postInc, v)
 		case asm.OpFP:
 			return true, false, c.storeFPResult64(dst.FPOffset, v)
 		case asm.OpSym:
@@ -115,10 +115,17 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 			if err != nil {
 				return true, false, err
 			}
+			hi := "0"
+			if _, ok := c.fpParams[ins.Args[0].FPOffset+8]; ok {
+				hi, err = c.eval64(asm.Operand{Kind: asm.OpFP, FPOffset: ins.Args[0].FPOffset + 8}, false)
+				if err != nil {
+					return true, false, err
+				}
+			}
 			if err := c.storeReg(ins.Args[1].RegList[0], val); err != nil {
 				return true, false, err
 			}
-			if err := c.storeReg(ins.Args[1].RegList[1], "0"); err != nil {
+			if err := c.storeReg(ins.Args[1].RegList[1], hi); err != nil {
 				return true, false, err
 			}
 			return true, false, nil
@@ -163,6 +170,34 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 				return true, false, err
 			}
 			return true, false, c.storeReg(ins.Args[1].RegList[1], "%"+z1t)
+		}
+		if ins.Args[0].Kind == asm.OpFP {
+			v0, err := c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			lo, loz := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", lo, v0)
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", loz, lo)
+			var hiVal string
+			if _, ok := c.fpParams[ins.Args[0].FPOffset+4]; ok {
+				v1, err := c.eval64(asm.Operand{Kind: asm.OpFP, FPOffset: ins.Args[0].FPOffset + 4}, false)
+				if err != nil {
+					return true, false, err
+				}
+				h32, hz := c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", h32, v1)
+				fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", hz, h32)
+				hiVal = "%" + hz
+			} else {
+				sh := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 32\n", sh, v0)
+				hiVal = "%" + sh
+			}
+			if err := c.storeReg(ins.Args[1].RegList[0], "%"+loz); err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeReg(ins.Args[1].RegList[1], hiVal)
 		}
 		if ins.Args[0].Kind != asm.OpMem {
 			return true, false, fmt.Errorf("arm64 LDPW expects mem/sym, (reg,reg): %q", ins.Raw)
@@ -222,15 +257,40 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %%%s\n", t1, p1)
 			return true, false, nil
 		}
+		if ins.Args[1].Kind == asm.OpFP {
+			v0, err := c.loadReg(ins.Args[0].RegList[0])
+			if err != nil {
+				return true, false, err
+			}
+			v1, err := c.loadReg(ins.Args[0].RegList[1])
+			if err != nil {
+				return true, false, err
+			}
+			if _, hasHi := c.fpResAllocaOff[ins.Args[1].FPOffset+4]; hasHi {
+				if err := c.storeFPResult64(ins.Args[1].FPOffset, v0); err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeFPResult64(ins.Args[1].FPOffset+4, v1)
+			}
+			lo, hi, pack := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 4294967295\n", lo, v0)
+			fmt.Fprintf(c.b, "  %%%s = shl i64 %s, 32\n", hi, v1)
+			fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", pack, lo, hi)
+			return true, false, c.storeFPResult64(ins.Args[1].FPOffset, "%"+pack)
+		}
 		if ins.Args[1].Kind != asm.OpMem {
 			return true, false, fmt.Errorf("arm64 STPW expects (reg,reg), mem/sym: %q", ins.Raw)
 		}
 		mem := ins.Args[1].Mem
-		addr, base, inc, err := c.addrI64(mem, postInc)
+		v0, err := c.loadReg(ins.Args[0].RegList[0])
 		if err != nil {
 			return true, false, err
 		}
-		v0, err := c.loadReg(ins.Args[0].RegList[0])
+		v1, err := c.loadReg(ins.Args[0].RegList[1])
+		if err != nil {
+			return true, false, err
+		}
+		addr, base, inc, err := c.addrI64(mem, postInc)
 		if err != nil {
 			return true, false, err
 		}
@@ -242,10 +302,6 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 
 		addr2t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = add i64 %s, 4\n", addr2t, addr)
-		v1, err := c.loadReg(ins.Args[0].RegList[1])
-		if err != nil {
-			return true, false, err
-		}
 		t1 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t1, v1)
 		p1t := c.newTmp()
@@ -302,11 +358,15 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 			return true, false, fmt.Errorf("arm64 STP expects (reg,reg), mem/sym: %q", ins.Raw)
 		}
 		mem := ins.Args[1].Mem
-		addr, base, inc, err := c.addrI64(mem, postInc)
+		v0, err := c.loadReg(ins.Args[0].RegList[0])
 		if err != nil {
 			return true, false, err
 		}
-		v0, err := c.loadReg(ins.Args[0].RegList[0])
+		v1, err := c.loadReg(ins.Args[0].RegList[1])
+		if err != nil {
+			return true, false, err
+		}
+		addr, base, inc, err := c.addrI64(mem, postInc)
 		if err != nil {
 			return true, false, err
 		}
@@ -316,10 +376,6 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 
 		addr2t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = add i64 %s, 8\n", addr2t, addr)
-		v1, err := c.loadReg(ins.Args[0].RegList[1])
-		if err != nil {
-			return true, false, err
-		}
 		p1t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %%%s to ptr\n", p1t, addr2t)
 		fmt.Fprintf(c.b, "  store i64 %s, ptr %%%s\n", v1, p1t)

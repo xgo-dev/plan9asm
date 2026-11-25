@@ -39,6 +39,8 @@ type arm64Ctx struct {
 	flagsVSlot   string
 	flagsWritten bool
 
+	curPreInc bool
+
 	exclusiveValidSlot string
 	exclusivePtrSlot   string
 	exclusiveSizeSlot  string

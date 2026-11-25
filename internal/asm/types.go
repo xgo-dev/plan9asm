@@ -351,6 +351,12 @@ func ParseImm(s string) (int64, bool) {
 	if v == "" {
 		return 0, false
 	}
+	// Plan 9 character literal immediates such as $'a', $'\n', $'\x7f', $','.
+	if len(v) >= 3 && v[0] == '\'' && v[len(v)-1] == '\'' {
+		if r, _, tail, err := strconv.UnquoteChar(v[1:len(v)-1], '\''); err == nil && tail == "" {
+			return int64(r), true
+		}
+	}
 	// Plan9 constants are typically decimal or hex. Accept 0x too.
 	n, err := strconv.ParseInt(v, 0, 64)
 	if err == nil {
@@ -491,6 +497,11 @@ func evalImmExpr(e ast.Expr) (uint64, bool) {
 	case *ast.ParenExpr:
 		return evalImmExpr(x.X)
 	case *ast.BasicLit:
+		if x.Kind == token.CHAR && len(x.Value) >= 3 && x.Value[0] == '\'' && x.Value[len(x.Value)-1] == '\'' {
+			if r, _, tail, err := strconv.UnquoteChar(x.Value[1:len(x.Value)-1], '\''); err == nil && tail == "" {
+				return uint64(r), true
+			}
+		}
 		if x.Kind != token.INT {
 			return 0, false
 		}
@@ -1186,8 +1197,21 @@ func SplitTopLevelCSV(s string) []string {
 	start := 0
 	par := 0
 	brk := 0
+	inSingle := false
 	for i := 0; i < len(s); i++ {
+		if inSingle {
+			if s[i] == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if s[i] == '\'' {
+				inSingle = false
+			}
+			continue
+		}
 		switch s[i] {
+		case '\'':
+			inSingle = true
 		case '(':
 			par++
 		case ')':
