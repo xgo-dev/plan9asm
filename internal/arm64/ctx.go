@@ -157,6 +157,13 @@ func (c *arm64Ctx) scanUsedRegs() {
 			for _, op := range ins.Args {
 				markOp(op)
 			}
+			if ins.Op == asm.OpWORD && len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].ImmRaw == "" {
+				if decoded, ok := DecodeRawWord(uint32(ins.Args[0].Imm)); ok {
+					for _, op := range decoded.Args {
+						markOp(op)
+					}
+				}
+			}
 		}
 	}
 	// Ensure arg regs exist.

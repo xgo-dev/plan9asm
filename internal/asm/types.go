@@ -834,6 +834,8 @@ const (
 	OpXGETBV Op = "XGETBV"
 	OpBYTE   Op = "BYTE"
 	OpWORD   Op = "WORD"
+	OpLONG   Op = "LONG"
+	OpQUAD   Op = "QUAD"
 	OpCALL   Op = "CALL"
 	OpJMP    Op = "JMP"
 	OpRET    Op = "RET"
@@ -841,9 +843,10 @@ const (
 )
 
 type Instr struct {
-	Op   Op
-	Args []Operand
-	Raw  string
+	Op             Op
+	Args           []Operand
+	Raw            string
+	DecodedFromRaw bool // true when decoded from BYTE/WORD/LONG/QUAD directives
 }
 
 // DataStmt models a minimal Plan 9 DATA directive:

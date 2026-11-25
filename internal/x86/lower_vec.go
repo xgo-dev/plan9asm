@@ -29,7 +29,7 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		"AESENC", "AESENCLAST", "AESDEC", "AESDECLAST", "AESIMC", "AESKEYGENASSIST", "PCMPESTRI":
 		// ok
 	default:
-		return false, false, nil
+		return c.lowerDeclarativeVecBinOp(op, ins)
 	}
 
 	// MOVL src, Xn (seed vector low 32 bits).

@@ -31,6 +31,9 @@ func (c *amd64Ctx) lowerSyscall(op asm.Op, ins asm.Instr) (ok bool, terminated b
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("amd64 SYSCALL expects no operands: %q", ins.Raw)
 		}
+		if c.goarch == "amd64" && strings.Contains(strings.ToLower(c.targetTriple), "linux") {
+			return true, false, c.lowerLinuxAMD64Syscall()
+		}
 		num, err := c.loadReg(asm.AX)
 		if err != nil {
 			return true, false, err
@@ -83,6 +86,35 @@ func (c *amd64Ctx) lowerSyscall(op asm.Op, ins asm.Instr) (ok bool, terminated b
 		return true, false, nil
 	}
 	return false, false, nil
+}
+
+func (c *amd64Ctx) lowerLinuxAMD64Syscall() error {
+	regs := []asm.Reg{asm.AX, asm.DI, asm.SI, asm.DX, asm.Reg("R10"), asm.Reg("R8"), asm.Reg("R9")}
+	args := make([]string, len(regs))
+	for i, reg := range regs {
+		value, err := c.loadReg(reg)
+		if err != nil {
+			return err
+		}
+		args[i] = value
+	}
+	call := c.newTmp()
+	// Linux x86-64 SYSCALL ABI: inputs in RAX(num), RDI, RSI, RDX, R10, R8, R9;
+	// returns r1 in RAX and r2 in RDX; clobbers RCX and R11.
+	fmt.Fprintf(c.b, "  %%%s = call { i64, i64 } asm sideeffect %q, %q(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+		call,
+		"syscall",
+		"={ax},={dx},0,{di},{si},1,{r10},{r8},{r9},~{rcx},~{r11},~{dirflag},~{fpsr},~{flags},~{memory}",
+		args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+	)
+	for i, reg := range []asm.Reg{asm.AX, asm.DX} {
+		value := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue { i64, i64 } %%%s, %d\n", value, call, i)
+		if err := c.storeReg(reg, "%"+value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *amd64Ctx) lowerLinux386Syscall() error {

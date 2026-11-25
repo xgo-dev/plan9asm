@@ -2,10 +2,11 @@ package arm64
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/xgo-dev/plan9asm/internal/asm"
-	// lowerRawWord models the small set of flag-writing instructions emitted as
-	// raw encodings by generated Go assembly. Unknown WORD values remain ignored,
-	// matching the translator's existing permissive behavior for embedded opcodes.
+	// lowerRawWord models flag-writing and decoded AArch64 instructions emitted as
+	// raw WORD encodings by generated Go assembly.
 )
 
 func (c *arm64Ctx) lowerRawWord(ins asm.Instr) error {
@@ -50,6 +51,21 @@ func (c *arm64Ctx) lowerRawWord(ins asm.Instr) error {
 		}
 		c.setFlagsSub(src, fmt.Sprintf("%d", imm), res)
 		return nil
+	}
+
+	// Fallback: decode arbitrary AArch64 WORD encodings via arm64asm and lower
+	// supported arithmetic/SIMD/crypto instructions through the normal pipeline.
+	if decoded, ok := DecodeRawWord(word); ok {
+		op := asm.Op(strings.ToUpper(string(decoded.Op)))
+		if op == "NOP" || op == "HINT" || op == "YIELD" || op == "DMB" || op == "DSB" || op == "ISB" {
+			return nil
+		}
+		if handled, _, err := c.lowerArith(op, decoded); handled {
+			return err
+		}
+		if handled, _, err := c.lowerVec(op, false, decoded); handled {
+			return err
+		}
 	}
 
 	return nil
