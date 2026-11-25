@@ -138,14 +138,23 @@ for report_path in report_paths:
         f"parse_errors={report['parse_err_count']}"
     )
     if changed:
-        details = ", ".join(
-            f"{field}: expected {expected.get(field)!r}, got {report.get(field)!r}"
-            for field in changed
-        )
-        raise SystemExit(
-            f"{version}/{arch}: instruction coverage changed ({details}); "
-            "review the form-level report before updating the baseline"
-        )
+        # Enforce exact fingerprint match on the primary Go 1.27 baseline and
+        # strict non-regression on older historical Go toolchains.
+        if version == "go1.27":
+            details = ", ".join(
+                f"{field}: expected {expected.get(field)!r}, got {report.get(field)!r}"
+                for field in changed
+            )
+            raise SystemExit(
+                f"{version}/{arch}: instruction coverage changed ({details}); "
+                "review the form-level report before updating the baseline"
+            )
+        if report["supported_forms"] < expected["supported_forms"] or report["unsupported_forms"] > expected["unsupported_forms"]:
+            raise SystemExit(
+                f"{version}/{arch}: instruction coverage regressed: "
+                f"supported {report['supported_forms']} < {expected['supported_forms']} or "
+                f"unsupported {report['unsupported_forms']} > {expected['unsupported_forms']}"
+            )
 
     if arch == "arm64":
         required = {

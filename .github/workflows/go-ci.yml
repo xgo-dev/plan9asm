@@ -64,6 +64,11 @@ jobs:
       - name: Go build
         run: go build ./...
 
+      - name: Go vet (native & 32-bit host)
+        run: |
+          go vet ./...
+          GOOS=linux GOARCH=386 go vet ./gotoolprofile ./internal/preprocess ./internal/asm ./internal/x86 ./internal/arm64 ./internal/arm ./internal/wasm
+
       - name: Go build (cmd/plan9asm)
         run: go build ./...
         working-directory: cmd/plan9asm

@@ -4,4 +4,4 @@ go 1.20
 
 require github.com/xgo-dev/llvm v0.9.9
 
-require golang.org/x/arch v0.14.0 // indirect
+require golang.org/x/arch v0.14.0

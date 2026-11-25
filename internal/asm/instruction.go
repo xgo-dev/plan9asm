@@ -332,7 +332,7 @@ func registerClass(arch Arch, goarch string, reg Reg) string {
 	if strings.HasPrefix(r, "F") {
 		return "floating-register"
 	}
-	if r == "SP" {
+	if r == "SP" || r == "RSP" {
 		return "stack-pointer"
 	}
 	if strings.HasPrefix(r, "R") {
