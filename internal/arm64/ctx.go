@@ -28,6 +28,11 @@ type arm64Ctx struct {
 	usedVRegs map[int]bool
 	vRegSlot  map[int]string // vreg index -> alloca name (<16 x i8>)
 
+	usedPRegs map[int]bool
+	pRegSlot  map[int]string // SVE predicate P0..P15/PN0..PN15 -> alloca i16
+	ffrSlot   string         // SVE First-Fault Register -> alloca i16
+	usesSVE   bool
+
 	flagsNSlot   string
 	flagsZSlot   string
 	flagsCSlot   string
@@ -60,6 +65,8 @@ func newARM64Ctx(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(
 		regSlot:        map[asm.Reg]string{},
 		usedVRegs:      map[int]bool{},
 		vRegSlot:       map[int]string{},
+		usedPRegs:      map[int]bool{},
+		pRegSlot:       map[int]string{},
 		fpParams:       map[int64]asm.FrameSlot{},
 		fpResAllocaOff: map[int64]string{},
 		fpResAllocaIdx: map[int]string{},
@@ -141,12 +148,30 @@ func (c *arm64Ctx) scanUsedRegs() {
 			c.usedVRegs[idx] = true
 			return
 		}
+		if idx, _, _, ok := arm64ParseZReg(string(r)); ok {
+			c.usedVRegs[idx] = true
+			c.usesSVE = true
+			return
+		}
+		if idx, _, _, ok := arm64ParsePReg(string(r)); ok {
+			c.usedPRegs[idx] = true
+			c.usesSVE = true
+			return
+		}
 		c.usedRegs[r] = true
 	}
 	markOp := func(op asm.Operand) {
 		switch op.Kind {
 		case asm.OpReg:
 			markReg(op.Reg)
+		case asm.OpSym:
+			if idx, _, _, ok := arm64ParseZReg(op.Sym); ok {
+				c.usedVRegs[idx] = true
+				c.usesSVE = true
+			} else if idx, _, _, ok := arm64ParsePReg(op.Sym); ok {
+				c.usedPRegs[idx] = true
+				c.usesSVE = true
+			}
 		case asm.OpMem:
 			markReg(op.Mem.Base)
 			if op.Mem.Index != "" {
@@ -293,6 +318,24 @@ func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 		c.vRegSlot[i] = name
 		fmt.Fprintf(c.b, "  %s = alloca <16 x i8>\n", name)
 		fmt.Fprintf(c.b, "  store <16 x i8> zeroinitializer, ptr %s\n", name)
+	}
+	if len(c.usedPRegs) > 0 {
+		pIdx := make([]int, 0, len(c.usedPRegs))
+		for i := range c.usedPRegs {
+			pIdx = append(pIdx, i)
+		}
+		sort.Ints(pIdx)
+		for _, i := range pIdx {
+			name := fmt.Sprintf("%%p%d", i)
+			c.pRegSlot[i] = name
+			fmt.Fprintf(c.b, "  %s = alloca i16\n", name)
+			fmt.Fprintf(c.b, "  store i16 0, ptr %s\n", name)
+		}
+	}
+	if c.usesSVE {
+		c.ffrSlot = "%sve_ffr"
+		fmt.Fprintf(c.b, "  %s = alloca i16\n", c.ffrSlot)
+		fmt.Fprintf(c.b, "  store i16 -1, ptr %s\n", c.ffrSlot)
 	}
 
 	// Flags state: model "last CMP/SUBS/ANDS result" as two i64 slots.

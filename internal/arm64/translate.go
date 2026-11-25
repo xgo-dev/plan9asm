@@ -182,6 +182,9 @@ func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCon
 	if ok, term, err := c.lowerBranch(bi, op, ins, emitBr, emitCondBr); ok {
 		return term, err
 	}
+	if ok, term, err := c.lowerSVEOrSys(op, ins); ok {
+		return term, err
+	}
 	return false, fmt.Errorf("arm64: unsupported instruction %s", ins.Op)
 }
 
