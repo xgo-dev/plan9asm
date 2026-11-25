@@ -645,15 +645,19 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 		return true, false, c.storeVReg(ins.Args[2].Reg, "%"+t)
 
 	case "VADDP":
-		// Pairwise add:
-		// - .B16: outputs 16 bytes: 8 from src0 pairs, 8 from src1 pairs.
-		// - .D2: outputs 2x i64: sum of each source's two lanes.
+		// Pairwise add across all NEON arrangements (.B8/.B16/.H4/.H8/.S2/.S4/.D2).
 		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm64 VADDP expects reg, reg, reg: %q", ins.Raw)
 		}
-		s0 := strings.ToUpper(string(ins.Args[0].Reg))
-		s1 := strings.ToUpper(string(ins.Args[1].Reg))
-		if strings.Contains(s0, ".D2") || strings.Contains(s1, ".D2") {
+		sh := parseNEONShape(ins.Args[2].Reg, false)
+		if !strings.Contains(string(ins.Args[2].Reg), ".") {
+			if strings.Contains(string(ins.Args[0].Reg), ".") {
+				sh = parseNEONShape(ins.Args[0].Reg, false)
+			} else if strings.Contains(string(ins.Args[1].Reg), ".") {
+				sh = parseNEONShape(ins.Args[1].Reg, false)
+			}
+		}
+		if sh.elemBits == 64 {
 			a, err := c.loadVReg(ins.Args[0].Reg)
 			if err != nil {
 				return true, false, err
@@ -662,82 +666,71 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 			if err != nil {
 				return true, false, err
 			}
-			ab := c.newTmp()
+			ab, bb := c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", ab, a)
-			bb := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bb, b)
-			a0 := c.newTmp()
-			a1 := c.newTmp()
-			b0 := c.newTmp()
-			b1 := c.newTmp()
+			a0, a1, b0, b1 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", a0, ab)
 			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", a1, ab)
 			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", b0, bb)
 			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", b1, bb)
-			as := c.newTmp()
-			bs := c.newTmp()
+			as, bs := c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", as, a0, a1)
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", bs, b0, b1)
-			v0 := c.newTmp()
+			v0, v1, out := c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %%%s, i32 0\n", v0, as)
-			v1 := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %%%s, i32 1\n", v1, v0, bs)
-			out := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", out, v1)
 			return true, false, c.storeVReg(ins.Args[2].Reg, "%"+out)
 		}
-
-		// Default B16.
-		a, err := c.loadVReg(ins.Args[0].Reg)
+		a, err := c.loadVShape(ins.Args[0].Reg, sh)
 		if err != nil {
 			return true, false, err
 		}
-		b, err := c.loadVReg(ins.Args[1].Reg)
+		b, err := c.loadVShape(ins.Args[1].Reg, sh)
 		if err != nil {
 			return true, false, err
 		}
+		vecTy := sh.vecTy()
+		elemTy := sh.elemTy()
+		half := sh.lanes / 2
 		cur := "undef"
-		for i := 0; i < 16; i++ {
-			var src string
-			var off int
-			if i < 8 {
-				// Go/Plan9 asm operand order for VADDP matches sources, but stdlib
-				// code expects the low 64 bits to correspond to the first loaded
-				// 16-byte lane. Empirically this matches taking the second operand
-				// for the low half.
-				src = b
-				off = i * 2
-			} else {
-				src = a
-				off = (i - 8) * 2
+		for i := 0; i < sh.lanes; i++ {
+			src, off := a, (i-half)*2
+			if i < half {
+				// Go/Plan9 operand order: second operand feeds the low half.
+				src, off = b, i*2
 			}
-			e0 := c.newTmp()
-			e1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", e0, src, off)
-			fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", e1, src, off+1)
-			sum := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i8 %%%s, %%%s\n", sum, e0, e1)
-			insv := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = insertelement <16 x i8> %s, i8 %%%s, i32 %d\n", insv, cur, sum, i)
+			e0, e1, sum, insv := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", e0, vecTy, src, off)
+			fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", e1, vecTy, src, off+1)
+			fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", sum, elemTy, e0, e1)
+			fmt.Fprintf(c.b, "  %%%s = insertelement %s %s, %s %%%s, i32 %d\n", insv, vecTy, cur, elemTy, sum, i)
 			cur = "%" + insv
 		}
-		return true, false, c.storeVReg(ins.Args[2].Reg, cur)
+		return true, false, c.storeVShape(ins.Args[2].Reg, cur, sh)
 
 	case "VUADDLV":
-		// VUADDLV Vn.B16, Vd
+		// VUADDLV Vn.{B8,B16,H4,H8,S4}, Vd
 		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm64 VUADDLV expects reg, reg: %q", ins.Raw)
 		}
-		v, err := c.loadVReg(ins.Args[0].Reg)
+		sh := parseNEONShape(ins.Args[0].Reg, false)
+		v, err := c.loadVShape(ins.Args[0].Reg, sh)
 		if err != nil {
 			return true, false, err
 		}
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext <16 x i8> %s to <16 x i64>\n", z, v)
+		zTy := fmt.Sprintf("<%d x i64>", sh.lanes)
+		z := v
+		if sh.elemBits < 64 {
+			zt := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", zt, sh.vecTy(), v, zTy)
+			z = "%" + zt
+		}
 		sum := "0"
-		for i := 0; i < 16; i++ {
+		for i := 0; i < sh.lanes; i++ {
 			e := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i64> %%%s, i32 %d\n", e, z, i)
+			fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", e, zTy, z, i)
 			a := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %%%s\n", a, sum, e)
 			sum = "%" + a
@@ -751,29 +744,45 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 		return true, false, c.storeVReg(ins.Args[1].Reg, "%"+bc)
 
 	case "VADD":
-		// VADD Vs, Vd (2-operand accumulate in D[0]) or VADD Va, Vb, Vd (S4 vector add).
+		// VADD Va.arr, Vb.arr, Vd.arr (all NEON arrangements) or 2-op VADD Vs[.arr], Vd[.arr].
 		if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpReg && ins.Args[2].Kind == asm.OpReg {
-			a, err := c.loadVReg(ins.Args[0].Reg)
+			sh := parseNEONShape(ins.Args[2].Reg, false)
+			if !strings.Contains(string(ins.Args[2].Reg), ".") && !strings.Contains(string(ins.Args[0].Reg), ".") {
+				// Preserve legacy bare-register default (S4).
+				sh = neonShape{lanes: 4, elemBits: 32}
+			}
+			a, err := c.loadVShape(ins.Args[0].Reg, sh)
 			if err != nil {
 				return true, false, err
 			}
-			b, err := c.loadVReg(ins.Args[1].Reg)
+			b, err := c.loadVShape(ins.Args[1].Reg, sh)
 			if err != nil {
 				return true, false, err
 			}
-			ab := c.newTmp()
-			bb := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", ab, a)
-			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", bb, b)
 			sum := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, %%%s\n", sum, ab, bb)
-			out := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, sum)
-			return true, false, c.storeVReg(ins.Args[2].Reg, "%"+out)
+			fmt.Fprintf(c.b, "  %%%s = add %s %s, %s\n", sum, sh.vecTy(), a, b)
+			return true, false, c.storeVShape(ins.Args[2].Reg, "%"+sum, sh)
 		}
 
 		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm64 VADD expects reg, reg or reg, reg, reg: %q", ins.Raw)
+		}
+		if strings.Contains(string(ins.Args[0].Reg), ".") || strings.Contains(string(ins.Args[1].Reg), ".") {
+			sh := parseNEONShape(ins.Args[1].Reg, false)
+			if !strings.Contains(string(ins.Args[1].Reg), ".") {
+				sh = parseNEONShape(ins.Args[0].Reg, false)
+			}
+			a, err := c.loadVShape(ins.Args[0].Reg, sh)
+			if err != nil {
+				return true, false, err
+			}
+			b, err := c.loadVShape(ins.Args[1].Reg, sh)
+			if err != nil {
+				return true, false, err
+			}
+			sum := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add %s %s, %s\n", sum, sh.vecTy(), b, a)
+			return true, false, c.storeVShape(ins.Args[1].Reg, "%"+sum, sh)
 		}
 		sv, err := c.loadVReg(ins.Args[0].Reg)
 		if err != nil {

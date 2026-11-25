@@ -102,8 +102,8 @@ func (c *amd64Ctx) lowerCmpBt(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			}
 			dst = dv
 			storeDst = func(v string) error { return c.storeReg(ins.Args[1].Reg, v) }
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[1].Mem)
+		case asm.OpMem, asm.OpSym:
+			addr, err := c.resolveMemAddrI64(ins.Args[1])
 			if err != nil {
 				return true, false, err
 			}

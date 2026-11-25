@@ -1110,7 +1110,7 @@ func (c *armCtx) lowerARMMOVFOrD(op, cond string, postInc bool, ins asm.Instr) e
 		bits = 32
 	}
 	src, dst := ins.Args[0], ins.Args[1]
-	if cond != "" && (dst.Kind == asm.OpMem || dst.Kind == asm.OpSym) {
+	if cond != "" && (dst.Kind == asm.OpMem || dst.Kind == asm.OpSym || dst.Kind == asm.OpFP) {
 		return c.emitConditionalEffect(cond, func() error {
 			return c.lowerARMMOVFOrD(op, "", postInc, ins)
 		})
@@ -1133,6 +1133,11 @@ func (c *armCtx) lowerARMMOVFOrD(op, cond string, postInc bool, ins asm.Instr) e
 			return raw, nil
 		case o.Kind == asm.OpMem:
 			return c.loadMem(o.Mem, bits, postInc, false)
+		case o.Kind == asm.OpFP:
+			if bits == 32 {
+				return c.evalFPValue32(o)
+			}
+			return c.evalFPValue64(o)
 		case o.Kind == asm.OpSym:
 			if fv, ok := parseARMFloatDollar(o.Sym); ok {
 				if bits == 32 {
@@ -1184,6 +1189,11 @@ func (c *armCtx) lowerARMMOVFOrD(op, cond string, postInc bool, ins asm.Instr) e
 		return c.storeFReg(dst.Reg, "%"+sel)
 	case dst.Kind == asm.OpMem:
 		return c.storeMem(dst.Mem, bits, postInc, val)
+	case dst.Kind == asm.OpFP:
+		if bits == 32 {
+			return c.storeFP32(dst.FPOffset, val)
+		}
+		return c.storeFP64(dst.FPOffset, val)
 	case dst.Kind == asm.OpSym:
 		p, err := c.ptrFromSB(dst.Sym)
 		if err != nil {

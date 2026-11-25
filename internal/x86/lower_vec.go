@@ -124,8 +124,8 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			if ins.Args[1].Kind == asm.OpReg && !isAMD64XReg(ins.Args[1].Reg) {
 				return true, false, c.storeRegSized(ins.Args[1].Reg, asm.I32, "%"+low)
 			}
-			if ins.Args[1].Kind == asm.OpMem {
-				p, ptrType, err := c.ptrFromMem(ins.Args[1].Mem)
+			if isX86MemOp(ins.Args[1]) {
+				p, ptrType, err := c.resolveMemPtr(ins.Args[1])
 				if err != nil {
 					return true, false, err
 				}
@@ -275,13 +275,12 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			switch ins.Args[1].Kind {
 			case asm.OpReg:
 				return true, false, c.storeReg(ins.Args[1].Reg, "%"+lo)
-			case asm.OpMem:
-				addr, err := c.addrFromMem(ins.Args[1].Mem)
+			case asm.OpMem, asm.OpSym:
+				p, pty, err := c.resolveMemPtr(ins.Args[1])
 				if err != nil {
 					return true, false, err
 				}
-				p := c.ptrFromAddrI64(addr)
-				fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s, align 1\n", lo, p)
+				fmt.Fprintf(c.b, "  store i64 %%%s, %s %s, align 1\n", lo, pty, p)
 				return true, false, nil
 			default:
 				return true, false, fmt.Errorf("amd64 MOVQ from X reg unsupported dst: %q", ins.Raw)
@@ -350,14 +349,13 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 					return "", err
 				}
 				return maskValue(v), nil
-			case asm.OpMem:
-				addr, err := c.addrFromMem(opnd.Mem)
+			case asm.OpMem, asm.OpSym:
+				p, pty, err := c.resolveMemPtr(opnd)
 				if err != nil {
 					return "", err
 				}
-				p := c.ptrFromAddrI64(addr)
 				ld := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", ld, loadTy, p)
+				fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", ld, loadTy, pty, p)
 				if bits == 64 {
 					return "%" + ld, nil
 				}
@@ -378,19 +376,18 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 					return c.storeReg(opnd.Reg, v)
 				}
 				return c.storeReg(opnd.Reg, maskValue(v))
-			case asm.OpMem:
-				addr, err := c.addrFromMem(opnd.Mem)
+			case asm.OpMem, asm.OpSym:
+				p, pty, err := c.resolveMemPtr(opnd)
 				if err != nil {
 					return err
 				}
-				p := c.ptrFromAddrI64(addr)
 				if bits == 64 {
-					fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
+					fmt.Fprintf(c.b, "  store i64 %s, %s %s, align 1\n", v, pty, p)
 					return nil
 				}
 				tr := c.newTmp()
 				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, v, loadTy)
-				fmt.Fprintf(c.b, "  store %s %%%s, ptr %s, align 1\n", loadTy, tr, p)
+				fmt.Fprintf(c.b, "  store %s %%%s, %s %s, align 1\n", loadTy, tr, pty, p)
 				return nil
 			default:
 				return fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
@@ -2352,6 +2349,20 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 				ld := c.newTmp()
 				fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
 				return true, false, c.storeX(dst, "%"+ld)
+			case asm.OpFP:
+				lo, err := c.evalFPToI64(ins.Args[0].FPOffset)
+				if err != nil {
+					return true, false, err
+				}
+				hi, err := c.evalFPToI64(ins.Args[0].FPOffset + 8)
+				if err != nil {
+					return true, false, err
+				}
+				v0, v1, bc := c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %s, i32 0\n", v0, lo)
+				fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %s, i32 1\n", v1, v0, hi)
+				fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, v1)
+				return true, false, c.storeX(dst, "%"+bc)
 			default:
 				return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
 			}
@@ -2382,6 +2393,20 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 				return true, false, err
 			}
 			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", srcv, p)
+			return true, false, nil
+		case asm.OpFP:
+			bc, lo, hi := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, srcv)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", lo, bc)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", hi, bc)
+			if err := c.storeFPResult(ins.Args[1].FPOffset, asm.I64, "%"+lo); err != nil {
+				return true, false, err
+			}
+			if _, _, ok := c.fpResultAlloca(ins.Args[1].FPOffset + 8); ok {
+				if err := c.storeFPResult(ins.Args[1].FPOffset+8, asm.I64, "%"+hi); err != nil {
+					return true, false, err
+				}
+			}
 			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
@@ -2467,7 +2492,7 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			if isAMD64MReg(ins.Args[1].Reg) {
 				return false, false, nil
 			}
-			if isAMD64XReg(ins.Args[1].Reg) && ((ins.Args[0].Kind == asm.OpReg && isAMD64XReg(ins.Args[0].Reg)) || ins.Args[0].Kind == asm.OpMem) {
+			if isAMD64XReg(ins.Args[1].Reg) && ((ins.Args[0].Kind == asm.OpReg && isAMD64XReg(ins.Args[0].Reg)) || isX86MemOp(ins.Args[0])) {
 				return false, false, nil
 			}
 		}
@@ -2983,13 +3008,12 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		switch ins.Args[2].Kind {
 		case asm.OpReg:
 			return true, false, c.storeReg(ins.Args[2].Reg, "%"+ex)
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[2].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, pty, err := c.resolveMemPtr(ins.Args[2])
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
-			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s, align 1\n", ex, p)
+			fmt.Fprintf(c.b, "  store i64 %%%s, %s %s, align 1\n", ex, pty, p)
 			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("amd64 PEXTRQ expects reg or mem destination: %q", ins.Raw)
@@ -3073,7 +3097,7 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			if isAMD64MReg(ins.Args[1].Reg) {
 				return false, false, nil
 			}
-			if isAMD64XReg(ins.Args[1].Reg) && ((ins.Args[0].Kind == asm.OpReg && isAMD64XReg(ins.Args[0].Reg)) || ins.Args[0].Kind == asm.OpMem) {
+			if isAMD64XReg(ins.Args[1].Reg) && ((ins.Args[0].Kind == asm.OpReg && isAMD64XReg(ins.Args[0].Reg)) || isX86MemOp(ins.Args[0])) {
 				return false, false, nil
 			}
 		}
@@ -3118,13 +3142,12 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			z := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, ex)
 			return true, false, c.storeReg(ins.Args[2].Reg, "%"+z)
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[2].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, pty, err := c.resolveMemPtr(ins.Args[2])
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
-			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s, align 1\n", ex, p)
+			fmt.Fprintf(c.b, "  store i32 %%%s, %s %s, align 1\n", ex, pty, p)
 			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("amd64 PEXTRD expects reg or mem destination: %q", ins.Raw)

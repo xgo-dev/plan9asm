@@ -337,14 +337,18 @@ func parseWidth(arch Arch, s string) (int64, error) {
 }
 
 func parseGLOBLStmt(rest string) (GloblStmt, error) {
-	// GLOBL sym(SB), flags, $size
+	// GLOBL sym(SB), flags, $size  OR  GLOBL sym(SB), $size
 	parts := strings.Split(rest, ",")
-	if len(parts) != 3 {
+	if len(parts) != 2 && len(parts) != 3 {
 		return GloblStmt{}, fmt.Errorf("invalid GLOBL: %q", "GLOBL "+rest)
 	}
 	symPart := strings.TrimSpace(parts[0])
-	flags := strings.TrimSpace(parts[1])
-	sizePart := strings.TrimSpace(parts[2])
+	flags := ""
+	sizePart := strings.TrimSpace(parts[1])
+	if len(parts) == 3 {
+		flags = strings.TrimSpace(parts[1])
+		sizePart = strings.TrimSpace(parts[2])
+	}
 	if !strings.HasSuffix(symPart, "(SB)") {
 		return GloblStmt{}, fmt.Errorf("GLOBL symbol must end with (SB): %q", "GLOBL "+rest)
 	}

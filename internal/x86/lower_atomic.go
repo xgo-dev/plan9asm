@@ -13,7 +13,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return true, false, nil
 
 	case "CMPXCHG8B":
-		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpMem {
+		if len(ins.Args) != 1 || !isX86MemOp(ins.Args[0]) {
 			return true, false, fmt.Errorf("amd64 CMPXCHG8B expects mem: %q", ins.Raw)
 		}
 		word := func(r asm.Reg) (string, error) {
@@ -48,7 +48,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		}
 		expected := pair(ax, dx)
 		desired := pair(bx, cx)
-		ptr, ptrType, err := c.ptrFromMem(ins.Args[0].Mem)
+		ptr, ptrType, err := c.resolveMemPtr(ins.Args[0])
 		if err != nil {
 			return true, false, err
 		}
@@ -77,7 +77,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return true, false, nil
 
 	case "CMPXCHG16B":
-		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpMem {
+		if len(ins.Args) != 1 || !isX86MemOp(ins.Args[0]) {
 			return true, false, fmt.Errorf("amd64 CMPXCHG16B expects mem: %q", ins.Raw)
 		}
 		ax, err := c.loadReg(asm.AX)
@@ -106,7 +106,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		}
 		expected := pack128(ax, dx)
 		desired := pack128(bx, cx)
-		ptr, err := c.amd64AtomicPtrFromMem(ins.Args[0].Mem)
+		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[0])
 		if err != nil {
 			return true, false, err
 		}
@@ -127,7 +127,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return true, false, nil
 
 	case "CMPXCHGB", "CMPXCHGW", "CMPXCHGL", "CMPXCHGQ":
-		if len(ins.Args) != 2 || (ins.Args[1].Kind != asm.OpMem && ins.Args[1].Kind != asm.OpReg) {
+		if len(ins.Args) != 2 || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpReg) {
 			return true, false, fmt.Errorf("amd64 %s expects src, mem/reg: %q", op, ins.Raw)
 		}
 		ty := asm.I32
@@ -166,7 +166,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
 			return true, false, nil
 		}
-		ptr, err := c.amd64AtomicPtrFromMem(ins.Args[1].Mem)
+		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[1])
 		if err != nil {
 			return true, false, err
 		}
@@ -183,7 +183,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return true, false, nil
 
 	case "XADDB", "XADDW", "XADDL", "XADDQ":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || (ins.Args[1].Kind != asm.OpMem && ins.Args[1].Kind != asm.OpReg) {
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpReg) {
 			return true, false, fmt.Errorf("amd64 %s expects srcReg, mem/reg: %q", op, ins.Raw)
 		}
 		srcReg := ins.Args[0]
@@ -212,7 +212,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			}
 			return true, false, c.storeRegSized(ins.Args[1].Reg, ty, "%"+sum)
 		}
-		ptr, err := c.amd64AtomicPtrFromMem(ins.Args[1].Mem)
+		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[1])
 		if err != nil {
 			return true, false, err
 		}
@@ -287,7 +287,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return true, false, c.storeReg(srcReg.Reg, old64)
 
 	case "ORB", "ANDB", "ORL", "ANDL", "ORQ", "ANDQ":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpMem {
+		if len(ins.Args) != 2 || !isX86MemOp(ins.Args[1]) {
 			return false, false, nil
 		}
 		ty := asm.I8
@@ -305,7 +305,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		if err != nil {
 			return true, false, err
 		}
-		ptr, err := c.amd64AtomicPtrFromMem(ins.Args[1].Mem)
+		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[1])
 		if err != nil {
 			return true, false, err
 		}
@@ -330,6 +330,17 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return true, false, nil
 	}
 	return false, false, nil
+}
+
+func (c *amd64Ctx) amd64AtomicPtrFromOp(op asm.Operand) (string, error) {
+	ptr, ptrType, err := c.resolveMemPtr(op)
+	if err != nil {
+		return "", err
+	}
+	if ptrType != "ptr" {
+		return "", fmt.Errorf("amd64 atomic operation does not support segment-relative memory")
+	}
+	return ptr, nil
 }
 
 func (c *amd64Ctx) amd64AtomicPtrFromMem(mem asm.MemRef) (string, error) {

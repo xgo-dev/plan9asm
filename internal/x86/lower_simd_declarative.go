@@ -684,8 +684,8 @@ func (c *amd64Ctx) lowerX86KMask(spec asm.OpSpec, ins asm.Instr) error {
 			}
 			return c.storeRegSized(ins.Args[1].Reg, ty, tr)
 		}
-		if ins.Args[1].Kind == asm.OpMem {
-			p, ptrType, err := c.ptrFromMem(ins.Args[1].Mem)
+		if isX86MemOp(ins.Args[1]) {
+			p, ptrType, err := c.resolveMemPtr(ins.Args[1])
 			if err != nil {
 				return err
 			}
@@ -1105,8 +1105,8 @@ func (c *amd64Ctx) lowerX86VecUnaryDeclarative(spec asm.OpSpec, zeroMask bool, i
 			fmt.Fprintf(c.b, "  %%%s = shufflevector <%d x i8> %s, <%d x i8> poison, <%d x i32> <%s>\n", sub, regBytes, sv, regBytes, srcBytes, strings.Join(mask, ", "))
 			fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i8> %%%s to %s\n", bc, srcBytes, sub, srcVecTy)
 			srcVal = "%" + bc
-		} else if args[0].Kind == asm.OpMem {
-			p, ptrType, err := c.ptrFromMem(args[0].Mem)
+		} else if isX86MemOp(args[0]) {
+			p, ptrType, err := c.resolveMemPtr(args[0])
 			if err != nil {
 				return err
 			}
@@ -1453,7 +1453,7 @@ func (c *amd64Ctx) lowerX86VecShiftDeclarative(spec asm.OpSpec, zeroMask bool, i
 		} else {
 			cntI64, err = c.loadXLowI64(cntOp.Reg)
 		}
-	case asm.OpMem:
+	case asm.OpMem, asm.OpSym:
 		cntI64, err = c.evalIntSized(cntOp, asm.I64)
 	default:
 		return fmt.Errorf("amd64 %s unsupported shift count: %q", spec.Op, ins.Raw)
@@ -2537,8 +2537,8 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 			}
 			return dstInfo.storeVec(args[2].Reg, res)
 		}
-		if args[2].Kind == asm.OpMem {
-			p, ptrType, err := c.ptrFromMem(args[2].Mem)
+		if isX86MemOp(args[2]) {
+			p, ptrType, err := c.resolveMemPtr(args[2])
 			if err != nil {
 				return err
 			}
@@ -2642,8 +2642,8 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 				return c.storeRegSized(args[2].Reg, asm.I32, "%"+z)
 			}
 			return c.storeRegSized(args[2].Reg, ty, "%"+ex)
-		case asm.OpMem:
-			p, ptrType, err := c.ptrFromMem(args[2].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, ptrType, err := c.resolveMemPtr(args[2])
 			if err != nil {
 				return err
 			}

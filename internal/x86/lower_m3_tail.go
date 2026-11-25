@@ -159,11 +159,14 @@ var x86M3TailSpecs = []asm.OpSpec{
 	{Op: "SCASW", Family: asm.FamilyString, Width: 16, Effect: asm.EffectImplicit, Flags: asm.FlagsWrite, LLVMOp: "scas"},
 	{Op: "SCASL", Family: asm.FamilyString, Width: 32, Effect: asm.EffectImplicit, Flags: asm.FlagsWrite, LLVMOp: "scas"},
 	{Op: "SCASQ", Family: asm.FamilyString, Width: 64, Effect: asm.EffectImplicit, Flags: asm.FlagsWrite, LLVMOp: "scas"},
+	{Op: "MOVSB", Family: asm.FamilyString, Width: 8, Effect: asm.EffectImplicit, LLVMOp: "movs"},
 	{Op: "MOVSW", Family: asm.FamilyString, Width: 16, Effect: asm.EffectImplicit, LLVMOp: "movs"},
 	{Op: "MOVSL", Family: asm.FamilyString, Width: 32, Effect: asm.EffectImplicit, LLVMOp: "movs"},
+	{Op: "MOVSQ", Family: asm.FamilyString, Width: 64, Effect: asm.EffectImplicit, LLVMOp: "movs"},
 	{Op: "STOSB", Family: asm.FamilyString, Width: 8, Effect: asm.EffectImplicit, LLVMOp: "stos"},
 	{Op: "STOSW", Family: asm.FamilyString, Width: 16, Effect: asm.EffectImplicit, LLVMOp: "stos"},
 	{Op: "STOSL", Family: asm.FamilyString, Width: 32, Effect: asm.EffectImplicit, LLVMOp: "stos"},
+	{Op: "STOSQ", Family: asm.FamilyString, Width: 64, Effect: asm.EffectImplicit, LLVMOp: "stos"},
 	{Op: "LGDT", Family: asm.FamilySystem, SubOp: 0, Effect: asm.EffectReadOnly, LLVMOp: "sys_mem"},
 	{Op: "LIDT", Family: asm.FamilySystem, SubOp: 0, Effect: asm.EffectReadOnly, LLVMOp: "sys_mem"},
 	{Op: "SGDT", Family: asm.FamilySystem, SubOp: 1, Effect: asm.EffectWriteOnly, LLVMOp: "sys_mem"},
@@ -1255,8 +1258,8 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 		if ins.Args[0].Kind == asm.OpIdent && isX86SystemOrSegIdent(ins.Args[0].Ident) {
 			return nil
 		}
-		if ins.Args[0].Kind == asm.OpMem {
-			p, pty, err := c.ptrFromMem(ins.Args[0].Mem)
+		if isX86MemOp(ins.Args[0]) {
+			p, pty, err := c.resolveMemPtr(ins.Args[0])
 			if err != nil {
 				return err
 			}
@@ -1284,9 +1287,54 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 }
 
 func (c *amd64Ctx) lowerX86M3String(spec asm.OpSpec, ins asm.Instr) error {
+	prefix := c.repeatPrefix
+	c.repeatPrefix = ""
 	if len(ins.Args) != 0 {
 		return fmt.Errorf("amd64 %s takes no operands: %q", spec.Op, ins.Raw)
 	}
+	if prefix == "REPN" && spec.LLVMOp != "scas" && spec.LLVMOp != "cmps" {
+		return fmt.Errorf("386 REPN is unsupported for %s", spec.Op)
+	}
+	if prefix == "" {
+		return c.lowerX86M3StringStep(spec)
+	}
+	hdr := "rep_hdr_" + c.newTmp()
+	body := "rep_body_" + c.newTmp()
+	done := "rep_done_" + c.newTmp()
+	fmt.Fprintf(c.b, "  br label %%%s\n%s:\n", hdr, hdr)
+	cntTy := asm.I64
+	if c.goarch == "386" {
+		cntTy = asm.I32
+	}
+	cx, err := c.evalIntSized(asm.Operand{Kind: asm.OpReg, Reg: asm.CX}, cntTy)
+	if err != nil {
+		return err
+	}
+	nonzero := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %s, 0\n", nonzero, cntTy, cx)
+	fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n%s:\n", nonzero, body, done, body)
+	if err := c.lowerX86M3StringStep(spec); err != nil {
+		return err
+	}
+	dec := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = sub %s %s, 1\n", dec, cntTy, cx)
+	if err := c.storeRegSized(asm.CX, cntTy, "%"+dec); err != nil {
+		return err
+	}
+	if spec.LLVMOp == "scas" || spec.LLVMOp == "cmps" {
+		zf := c.loadFlag(c.flagsZSlot)
+		if prefix == "REPN" {
+			fmt.Fprintf(c.b, "  br i1 %s, label %%%s, label %%%s\n%s:\n", zf, done, hdr, done)
+		} else {
+			fmt.Fprintf(c.b, "  br i1 %s, label %%%s, label %%%s\n%s:\n", zf, hdr, done, done)
+		}
+	} else {
+		fmt.Fprintf(c.b, "  br label %%%s\n%s:\n", hdr, done)
+	}
+	return nil
+}
+
+func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 	ty := x86LLVMIntType(spec.Width)
 	step := int64(spec.Width / 8)
 	switch spec.LLVMOp {

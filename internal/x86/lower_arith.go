@@ -36,6 +36,14 @@ func (c *amd64Ctx) loadIntDestination(dst asm.Operand, ty asm.LLVMType) (string,
 			fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", ty, out, p)
 			return nil
 		}, nil
+	case asm.OpFP:
+		v, err := c.evalIntSized(dst, ty)
+		if err != nil {
+			return "", nil, err
+		}
+		return v, func(out string) error {
+			return c.storeFPResult(dst.FPOffset, ty, out)
+		}, nil
 	default:
 		return "", nil, fmt.Errorf("expected register or memory destination, got %s", dst.String())
 	}
@@ -129,8 +137,8 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		switch ins.Args[0].Kind {
 		case asm.OpReg:
 			return true, false, c.storeRegSized(ins.Args[0].Reg, asm.I32, v32)
-		case asm.OpMem:
-			p, ptrType, err := c.ptrFromMem(ins.Args[0].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, ptrType, err := c.resolveMemPtr(ins.Args[0])
 			if err != nil {
 				return true, false, err
 			}
@@ -380,6 +388,9 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		return true, false, nil
 	case "MOVSB":
+		if c.repeatPrefix != "" {
+			return false, false, nil
+		}
 		si, err := c.loadReg(asm.SI)
 		if err != nil {
 			return true, false, err
@@ -405,6 +416,9 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		return true, false, nil
 	case "MOVSQ":
+		if c.repeatPrefix != "" {
+			return false, false, nil
+		}
 		si, err := c.loadReg(asm.SI)
 		if err != nil {
 			return true, false, err
@@ -430,6 +444,9 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		return true, false, nil
 	case "STOSQ":
+		if c.repeatPrefix != "" {
+			return false, false, nil
+		}
 		di, err := c.loadReg(asm.DI)
 		if err != nil {
 			return true, false, err
@@ -471,20 +488,19 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			}
 			c.setZSFlagsFromI32("%" + neg)
 			return true, false, nil
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, pty, err := c.resolveMemPtr(ins.Args[0])
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
 			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
+			fmt.Fprintf(c.b, "  %%%s = load i32, %s %s, align 1\n", ld, pty, p)
 			neg := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = sub i32 0, %%%s\n", neg, ld)
 			cf := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = icmp ne i32 %%%s, 0\n", cf, ld)
 			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s, align 1\n", neg, p)
+			fmt.Fprintf(c.b, "  store i32 %%%s, %s %s, align 1\n", neg, pty, p)
 			c.setZSFlagsFromI32("%" + neg)
 			return true, false, nil
 		default:
@@ -537,17 +553,24 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 					return "", nil, err
 				}
 				return dv, func(v string) error { return c.storeReg(dst, v) }, nil
-			case asm.OpMem:
-				addr, err := c.addrFromMem(ins.Args[1].Mem)
+			case asm.OpMem, asm.OpSym:
+				p, pty, err := c.resolveMemPtr(ins.Args[1])
 				if err != nil {
 					return "", nil, err
 				}
-				p := c.ptrFromAddrI64(addr)
 				ld := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
+				fmt.Fprintf(c.b, "  %%%s = load i64, %s %s, align 1\n", ld, pty, p)
 				return "%" + ld, func(v string) error {
-					fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
+					fmt.Fprintf(c.b, "  store i64 %s, %s %s, align 1\n", v, pty, p)
 					return nil
+				}, nil
+			case asm.OpFP:
+				dv, err := c.evalIntSized(ins.Args[1], asm.I64)
+				if err != nil {
+					return "", nil, err
+				}
+				return dv, func(v string) error {
+					return c.storeFPResult(ins.Args[1].FPOffset, asm.I64, v)
 				}, nil
 			default:
 				return "", nil, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
@@ -721,17 +744,16 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			storeDst = func(v8 string) error {
 				return c.storeRegSized(dst, asm.I8, v8)
 			}
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[1].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, pty, err := c.resolveMemPtr(ins.Args[1])
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
 			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s, align 1\n", ld, p)
+			fmt.Fprintf(c.b, "  %%%s = load i8, %s %s, align 1\n", ld, pty, p)
 			d8 = "%" + ld
 			storeDst = func(v8 string) error {
-				fmt.Fprintf(c.b, "  store i8 %s, ptr %s, align 1\n", v8, p)
+				fmt.Fprintf(c.b, "  store i8 %s, %s %s, align 1\n", v8, pty, p)
 				return nil
 			}
 		default:
@@ -1013,18 +1035,26 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			}
 			v = dv
 			storeDst = func(out string) error { return c.storeReg(r, out) }
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, pty, err := c.resolveMemPtr(ins.Args[0])
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
 			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
+			fmt.Fprintf(c.b, "  %%%s = load i64, %s %s, align 1\n", ld, pty, p)
 			v = "%" + ld
 			storeDst = func(out string) error {
-				fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", out, p)
+				fmt.Fprintf(c.b, "  store i64 %s, %s %s, align 1\n", out, pty, p)
 				return nil
+			}
+		case asm.OpFP:
+			dv, err := c.evalIntSized(ins.Args[0], asm.I64)
+			if err != nil {
+				return true, false, err
+			}
+			v = dv
+			storeDst = func(out string) error {
+				return c.storeFPResult(ins.Args[0].FPOffset, asm.I64, out)
 			}
 		default:
 			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
@@ -1061,24 +1091,23 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 				fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", z, out32)
 				return c.storeReg(r, "%"+z)
 			}
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, pty, err := c.resolveMemPtr(ins.Args[0])
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
 			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
+			fmt.Fprintf(c.b, "  %%%s = load i32, %s %s, align 1\n", ld, pty, p)
 			v64 = "%" + ld
 			storeDst = func(out32 string) error {
-				fmt.Fprintf(c.b, "  store i32 %s, ptr %s, align 1\n", out32, p)
+				fmt.Fprintf(c.b, "  store i32 %s, %s %s, align 1\n", out32, pty, p)
 				return nil
 			}
 		default:
 			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
 		}
 		tr := c.newTmp()
-		if ins.Args[0].Kind == asm.OpMem {
+		if isX86MemOp(ins.Args[0]) {
 			fmt.Fprintf(c.b, "  %%%s = add i32 0, %s\n", tr, v64)
 		} else {
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v64)
@@ -1992,17 +2021,16 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			not := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i8 %%%s, -1\n", not, v8)
 			return true, false, c.storeRegSized(r, asm.I8, "%"+not)
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, pty, err := c.resolveMemPtr(ins.Args[0])
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
 			load := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s, align 1\n", load, p)
+			fmt.Fprintf(c.b, "  %%%s = load i8, %s %s, align 1\n", load, pty, p)
 			not := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i8 %%%s, -1\n", not, load)
-			fmt.Fprintf(c.b, "  store i8 %%%s, ptr %s, align 1\n", not, p)
+			fmt.Fprintf(c.b, "  store i8 %%%s, %s %s, align 1\n", not, pty, p)
 			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("amd64 NOTB expects reg or mem: %q", ins.Raw)
@@ -2035,18 +2063,25 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i64 %s, -1\n", t, v)
 			return true, false, c.storeReg(r, "%"+t)
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
+		case asm.OpMem, asm.OpSym:
+			p, pty, err := c.resolveMemPtr(ins.Args[0])
 			if err != nil {
 				return true, false, err
 			}
-			p := c.ptrFromAddrI64(addr)
 			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
+			fmt.Fprintf(c.b, "  %%%s = load i64, %s %s, align 1\n", ld, pty, p)
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i64 %%%s, -1\n", t, ld)
-			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s, align 1\n", t, p)
+			fmt.Fprintf(c.b, "  store i64 %%%s, %s %s, align 1\n", t, pty, p)
 			return true, false, nil
+		case asm.OpFP:
+			dv, err := c.evalIntSized(ins.Args[0], asm.I64)
+			if err != nil {
+				return true, false, err
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i64 %s, -1\n", t, dv)
+			return true, false, c.storeFPResult(ins.Args[0].FPOffset, asm.I64, "%"+t)
 		default:
 			return true, false, fmt.Errorf("amd64 NOTQ expects reg or mem: %q", ins.Raw)
 		}

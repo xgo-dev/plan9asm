@@ -212,8 +212,9 @@ func (c *arm64Ctx) eval64(op asm.Operand, postInc bool) (string, error) {
 		return c.loadMem(op.Mem, 64, postInc)
 	case asm.OpSym:
 		sym := strings.TrimSpace(op.Sym)
-		if strings.HasPrefix(sym, "$") {
-			sym = strings.TrimPrefix(sym, "$")
+		addrOnly := strings.HasPrefix(sym, "$")
+		if addrOnly {
+			sym = strings.TrimSpace(strings.TrimPrefix(sym, "$"))
 		}
 		if mem, ok := asm.ParseMem(sym); ok {
 			addr, _, _, err := c.addrI64(mem, false)
@@ -230,7 +231,11 @@ func (c *arm64Ctx) eval64(op asm.Operand, postInc bool) (string, error) {
 			return "", err
 		}
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)
+		if addrOnly {
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)
+			return "%" + t, nil
+		}
+		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", t, p)
 		return "%" + t, nil
 	case asm.OpIdent:
 		// Keep parser/lowering permissive for pseudo operands like NZCV.

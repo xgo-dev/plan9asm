@@ -100,6 +100,57 @@ func (c *amd64Ctx) isVolatileSB(sym string) bool {
 	return c.volatileGlobals[res]
 }
 
+func isX86MemOp(op asm.Operand) bool {
+	if op.Kind == asm.OpMem {
+		return true
+	}
+	if op.Kind == asm.OpSym {
+		s := strings.TrimSpace(op.Sym)
+		return s != "" && !strings.HasPrefix(s, "$")
+	}
+	return false
+}
+
+func (c *amd64Ctx) resolveMemPtr(op asm.Operand) (ptr string, ptrType string, err error) {
+	switch op.Kind {
+	case asm.OpMem:
+		return c.ptrFromMem(op.Mem)
+	case asm.OpSym:
+		s := strings.TrimSpace(op.Sym)
+		if strings.HasPrefix(s, "$") {
+			return "", "", fmt.Errorf("amd64: address literal %s is not a memory operand", op.Sym)
+		}
+		p, err := c.ptrFromSB(s)
+		if err != nil {
+			return "", "", err
+		}
+		return p, "ptr", nil
+	default:
+		return "", "", fmt.Errorf("amd64: expected memory operand, got %s", op.String())
+	}
+}
+
+func (c *amd64Ctx) resolveMemAddrI64(op asm.Operand) (string, error) {
+	switch op.Kind {
+	case asm.OpMem:
+		return c.addrFromMem(op.Mem)
+	case asm.OpSym:
+		s := strings.TrimSpace(op.Sym)
+		if strings.HasPrefix(s, "$") {
+			return "", fmt.Errorf("amd64: address literal %s is not a memory operand", op.Sym)
+		}
+		p, err := c.ptrFromSB(s)
+		if err != nil {
+			return "", err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)
+		return "%" + t, nil
+	default:
+		return "", fmt.Errorf("amd64: expected memory operand, got %s", op.String())
+	}
+}
+
 func (c *amd64Ctx) hasSPMem() bool {
 	for _, blk := range c.blocks {
 		for _, ins := range blk.instrs {

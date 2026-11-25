@@ -88,6 +88,10 @@ func (c *armCtx) storeFPScalar32(typ asm.LLVMType, slot, v32 string) error {
 	switch typ {
 	case asm.I32:
 		fmt.Fprintf(c.b, "  store i32 %s, ptr %s\n", v32, slot)
+	case asm.LLVMType("float"):
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast i32 %s to float\n", t, v32)
+		fmt.Fprintf(c.b, "  store float %%%s, ptr %s\n", t, slot)
 	case asm.I16, asm.I8, asm.I1:
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = trunc i32 %s to %s\n", t, v32, typ)
@@ -103,6 +107,35 @@ func (c *armCtx) storeFPScalar32(typ asm.LLVMType, slot, v32 string) error {
 	default:
 		return fmt.Errorf("unsupported type %q", typ)
 	}
+	return nil
+}
+
+func (c *armCtx) storeFP64(off int64, v64 string) error {
+	storeOne := func(typ asm.LLVMType, slot string) error {
+		switch typ {
+		case asm.I64:
+			fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v64, slot)
+		case asm.LLVMType("double"):
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast i64 %s to double\n", t, v64)
+			fmt.Fprintf(c.b, "  store double %%%s, ptr %s\n", t, slot)
+		default:
+			return fmt.Errorf("unsupported 64-bit FP slot type %q", typ)
+		}
+		return nil
+	}
+	if meta, ok := c.fpParams[off]; ok {
+		return storeOne(meta.Type, c.fpParamAlloca[off])
+	}
+	slot, ok := c.fpResAllocaOff[off]
+	if !ok {
+		return fmt.Errorf("arm: unsupported FP result slot +%d(FP)", off)
+	}
+	meta, _ := c.fpResultSlotByOffset(off)
+	if err := storeOne(meta.Type, slot); err != nil {
+		return err
+	}
+	c.markFPResultWritten(off)
 	return nil
 }
 

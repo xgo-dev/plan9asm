@@ -238,7 +238,9 @@ func (c *amd64Ctx) lowerBlocks() error {
 		if c.repeatPrefix != "" && bi+1 == len(c.blocks) {
 			prefix := c.repeatPrefix
 			c.repeatPrefix = ""
-			return fmt.Errorf("386 %s prefix has no following string instruction", prefix)
+			if c.goarch == "386" {
+				return fmt.Errorf("386 %s prefix has no following string instruction", prefix)
+			}
 		}
 		// Fallthrough.
 		if bi+1 < len(c.blocks) {
@@ -255,10 +257,16 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 	defer func() { c.allowSPWrite = false }()
 	op := strings.ToUpper(string(ins.Op))
 	c.zeroUpperVector = strings.HasPrefix(op, "V")
-	if c.repeatPrefix != "" && op != "MOVSB" && op != "MOVSL" && op != "STOSL" && op != "SCASB" {
+	if c.repeatPrefix != "" && op != "MOVSB" && op != "MOVSW" && op != "MOVSL" && op != "MOVSQ" &&
+		op != "STOSB" && op != "STOSW" && op != "STOSL" && op != "STOSQ" &&
+		op != "SCASB" && op != "SCASW" && op != "SCASL" && op != "SCASQ" &&
+		op != "CMPSB" && op != "CMPSW" && op != "CMPSL" && op != "CMPSQ" &&
+		op != "LODSB" && op != "LODSW" && op != "LODSL" && op != "LODSQ" {
 		prefix := c.repeatPrefix
 		c.repeatPrefix = ""
-		return false, fmt.Errorf("386 %s prefix is unsupported for %s", prefix, op)
+		if c.goarch == "386" {
+			return false, fmt.Errorf("386 %s prefix is unsupported for %s", prefix, op)
+		}
 	}
 	if strings.HasPrefix(op, "GET_TLS(") {
 		// Macro-expanded helper from go_tls.h. Keep current simplified model.
@@ -319,11 +327,11 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 		fmt.Fprintf(c.b, "  store i1 true, ptr %s\n", c.directionSlot)
 		return false, nil
 	case "REP", "REPN":
-		if c.goarch != "386" {
-			return false, nil
-		}
 		if len(ins.Args) != 0 {
-			return false, fmt.Errorf("386 %s takes no operands: %q", op, ins.Raw)
+			if c.goarch == "386" {
+				return false, fmt.Errorf("386 %s takes no operands: %q", op, ins.Raw)
+			}
+			return false, nil
 		}
 		c.repeatPrefix = op
 		return false, nil

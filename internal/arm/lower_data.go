@@ -25,11 +25,38 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins asm.Instr) (ok boo
 		v := ""
 		if src.Kind == asm.OpMem {
 			v, err = c.loadMem(src.Mem, 32, postInc, false)
+		} else if src.Kind == asm.OpReg && strings.HasPrefix(string(src.Reg), "F") {
+			raw, ferr := c.loadFReg(src.Reg)
+			if ferr != nil {
+				return true, false, ferr
+			}
+			tr := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, raw)
+			v = "%" + tr
 		} else {
 			v, err = c.eval32(src, false)
 		}
 		if err != nil {
 			return true, false, err
+		}
+		if dst.Kind == asm.OpReg && strings.HasPrefix(string(dst.Reg), "F") {
+			ext := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", ext, v)
+			v64 := "%" + ext
+			if cond == "" || strings.EqualFold(cond, "AL") {
+				return true, false, c.storeFReg(dst.Reg, v64)
+			}
+			cv, cerr := c.condValue(cond)
+			if cerr != nil {
+				return true, false, cerr
+			}
+			oldV, ferr := c.loadFReg(dst.Reg)
+			if ferr != nil {
+				return true, false, ferr
+			}
+			sel := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i64 %s, i64 %s\n", sel, cv, v64, oldV)
+			return true, false, c.storeFReg(dst.Reg, "%"+sel)
 		}
 		return true, false, c.storeARMValue(dst, v, 32, cond, postInc, ins.Raw)
 	case "MOVB", "MOVBS", "MOVBU", "MOVH", "MOVHS", "MOVHU":

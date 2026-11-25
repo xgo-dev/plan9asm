@@ -56,6 +56,11 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 		case asm.OpFP:
 			return true, false, c.storeFPResult64(dst.FPOffset, v)
 		case asm.OpSym:
+			p, err := c.ptrFromSB(dst.Sym)
+			if err != nil {
+				return true, false, err
+			}
+			fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
 			return true, false, nil
 		default:
 			return true, false, nil
@@ -272,6 +277,25 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 			fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v0, p)
 			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 8\n", p1, p)
 			fmt.Fprintf(c.b, "  store i64 %s, ptr %%%s\n", v1, p1)
+			return true, false, nil
+		}
+		if ins.Args[1].Kind == asm.OpFP {
+			v0, err := c.loadReg(ins.Args[0].RegList[0])
+			if err != nil {
+				return true, false, err
+			}
+			v1, err := c.loadReg(ins.Args[0].RegList[1])
+			if err != nil {
+				return true, false, err
+			}
+			if err := c.storeFPResult64(ins.Args[1].FPOffset, v0); err != nil {
+				return true, false, err
+			}
+			if _, ok := c.fpResAllocaOff[ins.Args[1].FPOffset+8]; ok {
+				if err := c.storeFPResult64(ins.Args[1].FPOffset+8, v1); err != nil {
+					return true, false, err
+				}
+			}
 			return true, false, nil
 		}
 		if ins.Args[1].Kind != asm.OpMem {

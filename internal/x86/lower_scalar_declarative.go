@@ -1176,14 +1176,14 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  store i16 %%%s, %s %s, align 1\n", out, pty, p)
 		return nil
 	case "bound":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpMem {
+		if len(ins.Args) != 2 || !isX86MemOp(ins.Args[1]) {
 			return fmt.Errorf("amd64 %s expects reg, mem: %q", spec.Op, ins.Raw)
 		}
 		ty := x86LLVMIntType(spec.Width)
 		if _, err := c.evalIntSized(ins.Args[0], ty); err != nil {
 			return err
 		}
-		p, pty, err := c.ptrFromMem(ins.Args[1].Mem)
+		p, pty, err := c.resolveMemPtr(ins.Args[1])
 		if err != nil {
 			return err
 		}
@@ -1262,10 +1262,10 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  store i1 true, ptr %s\n", c.flagsZSlot)
 		return nil
 	case "stmxcsr":
-		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpMem {
+		if len(ins.Args) != 1 || !isX86MemOp(ins.Args[0]) {
 			return fmt.Errorf("amd64 %s expects mem: %q", spec.Op, ins.Raw)
 		}
-		p, ptrType, err := c.ptrFromMem(ins.Args[0].Mem)
+		p, ptrType, err := c.resolveMemPtr(ins.Args[0])
 		if err != nil {
 			return err
 		}

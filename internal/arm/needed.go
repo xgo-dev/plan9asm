@@ -31,7 +31,9 @@ func FuncNeedsCFG(fn asm.Func) bool {
 				return true
 			}
 			for _, arg := range ins.Args {
-				if arg.Kind == asm.OpIdent {
+				if arg.Kind == asm.OpIdent ||
+					(arg.Kind == asm.OpSym && strings.HasSuffix(arg.Sym, "(SB)")) ||
+					(arg.Kind == asm.OpReg && strings.HasPrefix(string(arg.Reg), "F")) {
 					return true
 				}
 			}

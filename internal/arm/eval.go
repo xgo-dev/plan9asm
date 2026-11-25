@@ -152,8 +152,9 @@ func (c *armCtx) eval32(op asm.Operand, postInc bool) (string, error) {
 		return c.loadMem(op.Mem, 32, postInc, false)
 	case asm.OpSym:
 		sym := strings.TrimSpace(op.Sym)
-		if strings.HasPrefix(sym, "$") {
-			sym = strings.TrimPrefix(sym, "$")
+		addrOnly := strings.HasPrefix(sym, "$")
+		if addrOnly {
+			sym = strings.TrimSpace(strings.TrimPrefix(sym, "$"))
 		}
 		if mem, ok := asm.ParseMem(sym); ok {
 			addr, _, _, err := c.addrI32(mem, false)
@@ -167,7 +168,11 @@ func (c *armCtx) eval32(op asm.Operand, postInc bool) (string, error) {
 			return "", err
 		}
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i32\n", t, p)
+		if addrOnly {
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i32\n", t, p)
+			return "%" + t, nil
+		}
+		fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", t, p)
 		return "%" + t, nil
 	case asm.OpIdent:
 		t := c.newTmp()
@@ -269,12 +274,39 @@ func (c *armCtx) evalFPValue32(op asm.Operand) (string, error) {
 		return "%" + t, nil
 	case asm.I32:
 		return arg, nil
+	case asm.LLVMType("float"):
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast float %s to i32\n", t, arg)
+		return "%" + t, nil
 	case asm.I64:
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, arg)
 		return "%" + t, nil
 	default:
 		return "", fmt.Errorf("arm: unsupported FP slot type %q", slot.Type)
+	}
+}
+
+func (c *armCtx) evalFPValue64(op asm.Operand) (string, error) {
+	slot, ok := c.fpParams[op.FPOffset]
+	if !ok {
+		return "", fmt.Errorf("arm: unsupported 64-bit FP slot: %s", op.String())
+	}
+	p := c.fpParamAlloca[op.FPOffset]
+	if p == "" {
+		return "", fmt.Errorf("arm: missing FP param alloca for +%d(FP)", op.FPOffset)
+	}
+	ld := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s\n", ld, slot.Type, p)
+	switch slot.Type {
+	case asm.I64:
+		return "%" + ld, nil
+	case asm.LLVMType("double"):
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast double %%%s to i64\n", t, ld)
+		return "%" + t, nil
+	default:
+		return "", fmt.Errorf("arm: unsupported 64-bit FP slot type %q", slot.Type)
 	}
 }
 

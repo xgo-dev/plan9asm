@@ -846,7 +846,22 @@ func amd64ByteAlias(rr asm.Reg) (base asm.Reg, shift uint, ok bool) {
 		return asm.DX, 0, true
 	case asm.DH:
 		return asm.DX, 8, true
+	case asm.Reg("SPB"):
+		return asm.SP, 0, true
+	case asm.Reg("BPB"):
+		return asm.BP, 0, true
+	case asm.Reg("SIB"):
+		return asm.SI, 0, true
+	case asm.Reg("DIB"):
+		return asm.DI, 0, true
 	default:
+		s := string(rr)
+		if len(s) >= 3 && s[0] == 'R' && s[len(s)-1] == 'B' {
+			base := asm.Reg(s[:len(s)-1])
+			if _, ok := amd64FullRegBase(base); ok {
+				return base, 0, true
+			}
+		}
 		return "", 0, false
 	}
 }

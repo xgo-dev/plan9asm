@@ -50,22 +50,30 @@ const (
 func ParseReg(s string) (Reg, bool) {
 	ss := strings.ToUpper(strings.TrimSpace(s))
 	switch ss {
-	case "RAX":
+	case "RAX", "EAX":
 		return AX, true
-	case "RBX":
+	case "RBX", "EBX":
 		return BX, true
-	case "RCX":
+	case "RCX", "ECX":
 		return CX, true
-	case "RDX":
+	case "RDX", "EDX":
 		return DX, true
-	case "RSI":
+	case "RSI", "ESI":
 		return SI, true
-	case "RDI":
+	case "RDI", "EDI":
 		return DI, true
 	case "RSP", "ESP":
 		return SP, true
 	case "RBP", "EBP":
 		return BP, true
+	case "SPB", "SPL":
+		return Reg("SPB"), true
+	case "BPB", "BPL":
+		return Reg("BPB"), true
+	case "SIB", "SIL":
+		return Reg("SIB"), true
+	case "DIB", "DIL":
+		return Reg("DIB"), true
 	case "AX":
 		return AX, true
 	case "BX":
@@ -118,6 +126,16 @@ func ParseReg(s string) (Reg, bool) {
 		// AArch64 general purpose registers: R0..R31, and x86-64 integer registers R8..R15.
 		if n, err := strconv.Atoi(ss[1:]); err == nil && 0 <= n && n <= 31 {
 			return Reg(ss), true
+		}
+		// x86-64 extended sub-registers: R8B..R15B (byte), R8W..R15W (word), R8L/D..R15L/D (dword).
+		last := ss[len(ss)-1]
+		if (last == 'B' || last == 'W' || last == 'L' || last == 'D') && len(ss) >= 3 {
+			if n, err := strconv.Atoi(ss[1 : len(ss)-1]); err == nil && 8 <= n && n <= 15 {
+				if last == 'B' {
+					return Reg(ss), true
+				}
+				return Reg(fmt.Sprintf("R%d", n)), true
+			}
 		}
 	}
 	if strings.HasPrefix(ss, "W") && len(ss) >= 2 {

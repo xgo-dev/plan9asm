@@ -34,12 +34,19 @@ func FuncNeedsCFG(fn asm.Func) bool {
 			if (op == "MOVQ" || op == "MOVL") && len(ins.Args) == 2 {
 				for _, a := range ins.Args {
 					switch a.Kind {
-					case asm.OpImm, asm.OpReg, asm.OpFP:
+					case asm.OpImm, asm.OpFP:
 						// ok
+					case asm.OpReg:
+						if isAMD64XReg(a.Reg) || isAMD64YReg(a.Reg) || isAMD64ZReg(a.Reg) || isAMD64MReg(a.Reg) || isAMD64KReg(a.Reg) {
+							return true
+						}
 					default:
 						return true
 					}
 				}
+			}
+			if (op == "ADDQ" || op == "SUBQ" || op == "XORQ") && (len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg || (ins.Args[0].Kind != asm.OpImm && ins.Args[0].Kind != asm.OpReg && ins.Args[0].Kind != asm.OpFP)) {
+				return true
 			}
 		case asm.OpRET:
 			if len(ins.Args) != 0 {
