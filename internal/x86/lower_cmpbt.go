@@ -259,7 +259,11 @@ func (c *amd64Ctx) evalIntSized(op asm.Operand, ty asm.LLVMType) (string, error)
 				return "", err
 			}
 			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", t, ty, p)
+			loadKW := "load"
+			if c.isVolatileSB(s) {
+				loadKW = "load volatile"
+			}
+			fmt.Fprintf(c.b, "  %%%s = %s %s, ptr %s, align 1\n", t, loadKW, ty, p)
 			return "%" + t, nil
 		}
 		return "", fmt.Errorf("amd64: unsupported sym int operand: %s", op.String())

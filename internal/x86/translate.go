@@ -167,6 +167,17 @@ func translateFuncAMD64(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolv
 }
 
 func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, goarch, targetTriple string, x87Mode asm.X87Mode, annotateSource bool) error {
+	return TranslateFuncWithOptions(b, fn, sig, asm.Options{
+		ResolveSym:     resolve,
+		Sigs:           sigs,
+		Goarch:         goarch,
+		TargetTriple:   targetTriple,
+		X87Mode:        x87Mode,
+		AnnotateSource: annotateSource,
+	})
+}
+
+func TranslateFuncWithOptions(b *strings.Builder, fn asm.Func, sig asm.FuncSig, opt asm.Options) error {
 	fmt.Fprintf(b, "define %s %s(", sig.Ret, asm.LLVMGlobal(sig.Name))
 	for i, t := range sig.Args {
 		if i > 0 {
@@ -180,8 +191,9 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 	}
 	b.WriteString(" {\n")
 
-	c := newX86Ctx(b, fn, sig, resolve, sigs, goarch, targetTriple, annotateSource)
-	c.x87Mode = x87Mode
+	c := newX86Ctx(b, fn, sig, opt.ResolveSym, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.AnnotateSource)
+	c.x87Mode = opt.X87Mode
+	c.volatileGlobals = opt.VolatileGlobals
 	if err := c.emitEntryAllocas(); err != nil {
 		return err
 	}

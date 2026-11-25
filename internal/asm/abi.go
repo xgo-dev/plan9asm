@@ -46,6 +46,10 @@ type FuncSig struct {
 	// Frame provides a minimal stack-frame model for resolving name+off(FP)
 	// references in Go/Plan9 assembly into LLVM function args/returns.
 	Frame FrameLayout
+
+	// FrameLease optionally carries a live-owner validation hook attached by
+	// GoAMD64FrameSource.BindFixedLocal so revoked/stale leases are rejected.
+	FrameLease func() error
 }
 
 // WASMABI selects the physical ABI used for WebAssembly Plan 9 assembly.
@@ -107,4 +111,8 @@ type Options struct {
 	// AnnotateSource emits source asm lines as IR comments before lowering each
 	// instruction, for translation debugging.
 	AnnotateSource bool
+
+	// VolatileGlobals records resolved global symbol names that represent mutable
+	// Go package variables and must be loaded with LLVM volatile semantics.
+	VolatileGlobals map[string]bool
 }

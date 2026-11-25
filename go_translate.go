@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/format"
+	"go/token"
 	"go/types"
 	"reflect"
 	"regexp"
@@ -13,27 +15,28 @@ import (
 
 	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/asm"
-
-	// GoPackage provides the Go declarations and syntax needed to bind a Plan 9
-	// asm file to real Go symbols.
 	"github.com/xgo-dev/plan9asm/internal/wasm"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 )
 
 type GoPackage struct {
-	Path    string
-	Types   *types.Package
-	Imports map[string]*types.Package
-	Syntax  []*ast.File
+	Path            string
+	Types           *types.Package
+	Imports         map[string]*types.Package
+	Syntax          []*ast.File
+	ImportSyntax    map[string][]*ast.File
+	SourceSelection *GoSourceSelection
 }
 
 // GoModuleOptions configures TranslateGoModule.
 //
-// GOARCH is required and currently accepts only "amd64", "386", and "arm64".
+// GOARCH is required and accepts "amd64", "386", "arm", "arm64", and "wasm".
 // If ResolveSym is nil, the default resolver only strips ABI suffixes.
 type GoModuleOptions struct {
-	FileName string
-	GOOS     string
-	GOARCH   string
+	SourcePreprocessed bool
+	FileName           string
+	GOOS               string
+	GOARCH             string
 	// Sizes is the type layout used to type-check the package. When nil,
 	// TranslateGoModule uses the standard gc layout for GOARCH. Callers with a
 	// custom data model, such as Emscripten wasm32 versus Memory64, must pass
@@ -130,14 +133,30 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 	if err != nil {
 		return nil, fmt.Errorf("%s: sigs %s: %w", pkgPath, asmName, err)
 	}
+	if opt.GOARCH == "arm64" && GoARM64ABI0TailDeclarationBindingNeeded(file) {
+		sigs, err = BindGoARM64ABI0TailDeclarations(pkg, file, resolve, sigs)
+		if err != nil {
+			return nil, fmt.Errorf("%s: arm64 tail %s: %w", pkgPath, asmName, err)
+		}
+	}
+	volatileGlobals, err := collectValidatedImportedGlobals(pkg, file, resolve)
+	if err != nil {
+		return nil, fmt.Errorf("%s: globals %s: %w", pkgPath, asmName, err)
+	}
+	if opt.GOARCH == "amd64" {
+		if err := validateAMD64PhysicalFrameLeases(file, resolve, sigs); err != nil {
+			return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
+		}
+	}
 	mod, err := TranslateModule(file, Options{
-		TargetTriple:   opt.TargetTriple,
-		ResolveSym:     resolve,
-		Sigs:           sigs,
-		Goarch:         opt.GOARCH,
-		WASMABI:        opt.WASMABI,
-		X87Mode:        opt.X87Mode,
-		AnnotateSource: opt.AnnotateSource,
+		TargetTriple:    opt.TargetTriple,
+		ResolveSym:      resolve,
+		Sigs:            sigs,
+		Goarch:          opt.GOARCH,
+		WASMABI:         opt.WASMABI,
+		X87Mode:         opt.X87Mode,
+		AnnotateSource:  opt.AnnotateSource,
+		VolatileGlobals: volatileGlobals,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: translate %s: %w", pkgPath, asmName, err)
@@ -238,9 +257,13 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 	// A file-local symbol does not imply a zero-argument C or Go signature.
 	// Keep signatures obtained from declarations, supported tail-call inference,
 	// or ManualSig; raw register entry points require the native backend.
-	for resolved := range b.localSigs {
-		if _, ok := b.sigs[resolved]; !ok {
-			return nil, fmt.Errorf("missing signature for file-local assembly %q; supply ManualSig or use the native backend", resolved)
+	// For ARM64 ABI0 private tail helpers, allow BindGoARM64ABI0TailDeclarations
+	// to supply the helper signature right after goSigsForAsmFile returns.
+	if b.goarch != "arm64" || !GoARM64ABI0TailDeclarationBindingNeeded(file) {
+		for resolved := range b.localSigs {
+			if _, ok := b.sigs[resolved]; !ok {
+				return nil, fmt.Errorf("missing signature for file-local assembly %q; supply ManualSig or use the native backend", resolved)
+			}
 		}
 	}
 	return b.sigs, nil
@@ -513,6 +536,184 @@ func goDeclNameForSymbol(sym string, linknames map[string]string) (string, error
 		return "", fmt.Errorf("unsupported asm symbol name %q (no go:linkname mapping found)", sym)
 	}
 	return declName, nil
+}
+
+// DeriveGoFuncABI0Signature derives the complete ordinary signature and classic
+// FP layout from an actual typed Go declaration.
+func DeriveGoFuncABI0Signature(name string, fn *types.Func, goarch string, sz types.Sizes) (FuncSig, error) {
+	if name == "" || fn == nil {
+		return FuncSig{}, fmt.Errorf("missing actual Go declaration for ABI0 layout")
+	}
+	if signature, ok := fn.Type().(*types.Signature); !ok || signature == nil {
+		return FuncSig{}, fmt.Errorf("missing actual typed Go signature for ABI0 layout")
+	}
+	return goFuncSigForDeclaredFunc(name, fn, goarch, sz, sz, true)
+}
+
+func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, sigs map[string]FuncSig) error {
+	for _, fn := range file.Funcs {
+		if !funcUsesPhysicalAMD64SP(fn) {
+			continue
+		}
+		name := resolve(goTextSymbolForResolution(fn.Sym))
+		sig, ok := sigs[name]
+		if !ok {
+			return fmt.Errorf("%w: missing signature for physical AMD64 frame %q", ErrProbeNeedsContext, name)
+		}
+		// If a live lease was attached by GoAMD64FrameSource.BindFixedLocal, verify it is still live.
+		if sig.FrameLease != nil {
+			if err := sig.FrameLease(); err != nil {
+				return err
+			}
+			continue
+		}
+		// Without a captured physical-frame owner, check whether any outgoing
+		// CALL lacks a declared signature in sigs (e.g. runtime.memmove) or
+		// whether the function violates ABI0 register init / SP confinement.
+		for _, ins := range fn.Instrs {
+			if strings.ToUpper(string(ins.Op)) == "CALL" && len(ins.Args) == 1 && ins.Args[0].Kind == OpSym {
+				raw := strings.TrimSuffix(strings.TrimSpace(ins.Args[0].Sym), "(SB)")
+				callee := resolve(goStripABISuffix(raw))
+				if callee == "runtime.entersyscall" || callee == "runtime.exitsyscall" {
+					continue
+				}
+				if _, hasCallee := sigs[callee]; !hasCallee {
+					return fmt.Errorf("%w: AMD64 physical frame call %q requires captured source owner", ErrProbeNeedsContext, callee)
+				}
+			}
+		}
+		if _, err := x86.CheckABI0ResultInit(fn, sig, "amd64"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectValidatedImportedGlobals identifies cross-package mutable Go variables
+// referenced by assembly (SB) operands and validates that their owning package
+// syntax matches the type-checked dependency graph when ImportSyntax is present.
+func collectValidatedImportedGlobals(pkg GoPackage, file *File, resolve func(string) string) (map[string]bool, error) {
+	if pkg.Types == nil {
+		return nil, nil
+	}
+	importedByPath := map[string]*types.Package{}
+	for _, imp := range pkg.Types.Imports() {
+		if imp != nil {
+			importedByPath[imp.Path()] = imp
+		}
+	}
+	definedData := map[string]bool{}
+	for _, g := range file.Globl {
+		definedData[resolve(goStripABISuffix(g.Sym))] = true
+	}
+	for _, d := range file.Data {
+		definedData[resolve(goStripABISuffix(d.Sym))] = true
+	}
+	definedFuncs := map[string]bool{}
+	for _, fn := range file.Funcs {
+		definedFuncs[resolve(goTextSymbolForResolution(fn.Sym))] = true
+	}
+
+	volatile := map[string]bool{}
+	for _, fn := range file.Funcs {
+		for _, ins := range fn.Instrs {
+			op := strings.ToUpper(string(ins.Op))
+			if op == "CALL" || op == "JMP" || op == "B" || op == "BL" {
+				continue
+			}
+			for _, arg := range ins.Args {
+				if arg.Kind != OpSym {
+					continue
+				}
+				s := strings.TrimSpace(arg.Sym)
+				if strings.HasPrefix(s, "$") || !strings.HasSuffix(s, "(SB)") {
+					continue
+				}
+				base, _, ok := asm.ParseSBRef(s)
+				if !ok || strings.HasPrefix(base, "·") || (!strings.Contains(base, "·") && !strings.Contains(base, "/")) {
+					continue
+				}
+				res := resolve(base)
+				if definedData[res] || definedFuncs[res] {
+					continue
+				}
+				dot := strings.LastIndexByte(res, '.')
+				if dot <= 0 || dot == len(res)-1 {
+					continue
+				}
+				impPath, varName := res[:dot], res[dot+1:]
+				if impPath == pkg.Path || impPath == pkg.Types.Path() {
+					continue
+				}
+				// Check if pkg actually imports impPath.
+				typeCheckedImp := importedByPath[impPath]
+				if typeCheckedImp == nil {
+					continue
+				}
+				// Validate pkg.Imports[impPath] matches typeCheckedImp.
+				suppliedImp, inImports := pkg.Imports[impPath]
+				if !inImports || suppliedImp == nil || suppliedImp != typeCheckedImp {
+					return nil, fmt.Errorf("%w: imported global %s lacks matching dependency package %q", ErrProbeNeedsContext, res, impPath)
+				}
+				v, ok := suppliedImp.Scope().Lookup(varName).(*types.Var)
+				if !ok || v == nil {
+					continue
+				}
+				// When ImportSyntax map is provided by the caller (e.g. llgo), require
+				// matching variable syntax with compatible declared type.
+				if pkg.ImportSyntax != nil {
+					files := pkg.ImportSyntax[impPath]
+					if len(files) == 0 {
+						return nil, fmt.Errorf("%w: imported global %s lacks dependency syntax for %q", ErrProbeNeedsContext, res, impPath)
+					}
+					if err := verifyImportedVarSyntax(files, varName, v.Type()); err != nil {
+						return nil, fmt.Errorf("%w: imported global %s: %v", ErrProbeNeedsContext, res, err)
+					}
+				}
+				volatile[res] = true
+			}
+		}
+	}
+	if len(volatile) == 0 {
+		return nil, nil
+	}
+	return volatile, nil
+}
+
+func verifyImportedVarSyntax(files []*ast.File, varName string, wantType types.Type) error {
+	wantStr := types.TypeString(wantType, func(p *types.Package) string { return p.Name() })
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, id := range vs.Names {
+					if id.Name != varName {
+						continue
+					}
+					if vs.Type != nil {
+						var buf bytes.Buffer
+						if err := format.Node(&buf, token.NewFileSet(), vs.Type); err == nil {
+							if strings.TrimSpace(buf.String()) != wantStr {
+								return fmt.Errorf("syntax type %q differs from checked type %q", buf.String(), wantStr)
+							}
+						}
+					}
+					return nil
+				}
+			}
+		}
+	}
+	return fmt.Errorf("variable %q not declared in dependency syntax", varName)
 }
 
 func goFuncSigForDeclaredFunc(name string, fn *types.Func, goarch string, sz, frameSz types.Sizes, withFrame bool) (FuncSig, error) {

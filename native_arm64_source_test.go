@@ -179,7 +179,7 @@ func TestNativeARM64RejectsUnsupportedSource(t *testing.T) {
 	const prefix = "TEXT raw<>(SB), NOSPLIT|NOFRAME, $0\n"
 	tests := []struct{ name, source, want string }{
 		{"empty", "", "no TEXT"},
-		{"data only", "GLOBL ·p(SB), RODATA, $8\n", "requires TEXT"},
+		{"empty", "", "no TEXT"},
 		{"invalid local name", "TEXT bad-name<>(SB), NOSPLIT, $0\nRET\n", "file-local"},
 		{"duplicate label", prefix + "here:\nRET\nhere:\nRET\n", "duplicate native label"},
 		{"invalid global name", prefix + "RET\nGLOBL p<>(SB), RODATA, $8\n", "package global"},

@@ -23,7 +23,7 @@ func nativeReg(o asm.Operand, bits int, sp bool) (string, error) {
 	if o.Kind != asm.OpReg {
 		return "", fmt.Errorf("expected native register")
 	}
-	if o.Reg == asm.SP && sp && bits == 64 {
+	if o.Reg == asm.Reg("RSP") && sp && bits == 64 {
 		return "sp", nil
 	}
 	if o.Reg == asm.ZR {

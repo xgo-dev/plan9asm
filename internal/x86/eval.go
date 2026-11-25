@@ -47,9 +47,59 @@ func (c *amd64Ctx) evalI64(op asm.Operand) (string, error) {
 			return "%" + t, nil
 		}
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", t, p)
+		loadKW := "load"
+		if c.isVolatileSB(s) {
+			loadKW = "load volatile"
+		}
+		fmt.Fprintf(c.b, "  %%%s = %s i64, ptr %s, align 1\n", t, loadKW, p)
 		return "%" + t, nil
 	default:
 		return "", fmt.Errorf("amd64: unsupported i64 operand: %s", op.String())
 	}
+}
+
+func (c *amd64Ctx) isVolatileSB(sym string) bool {
+	if len(c.volatileGlobals) == 0 {
+		return false
+	}
+	base, _, ok := asm.ParseSBRef(sym)
+	if !ok {
+		return false
+	}
+	base = strings.TrimPrefix(base, "$")
+	res := base
+	if c.resolve != nil {
+		if strings.Contains(base, "·") || strings.Contains(base, "/") || strings.Contains(base, ".") {
+			res = c.resolve(base)
+		} else {
+			res = c.resolve("·" + base)
+		}
+	}
+	return c.volatileGlobals[res]
+}
+
+func (c *amd64Ctx) hasSPMem() bool {
+	for _, blk := range c.blocks {
+		for _, ins := range blk.instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind == asm.OpMem && arg.Mem.Base == asm.SP {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (c *amd64Ctx) hasOutgoingSPArgs() bool {
+	for _, blk := range c.blocks {
+		for _, ins := range blk.instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind == asm.OpMem && arg.Mem.Base == asm.SP && arg.Mem.Off >= 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

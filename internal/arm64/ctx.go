@@ -123,6 +123,9 @@ func (c *arm64Ctx) scanUsedRegs() {
 		if r == "" {
 			return
 		}
+		if r == "RSP" {
+			r = asm.SP
+		}
 		if idx, ok := arm64ParseVReg(r); ok {
 			c.usedVRegs[idx] = true
 			return
@@ -396,6 +399,9 @@ func (c *arm64Ctx) loadReg(r asm.Reg) (string, error) {
 		fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i64 0\n", low, lanes)
 		return "%" + low, nil
 	}
+	if r == "RSP" {
+		r = asm.SP
+	}
 	slot, ok := c.regSlot[r]
 	if !ok {
 		return "", fmt.Errorf("arm64: unknown reg %s", r)
@@ -436,6 +442,9 @@ func (c *arm64Ctx) storeReg(r asm.Reg, v string) error {
 		bytes := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bytes, lanes)
 		return c.storeVReg(r, "%"+bytes)
+	}
+	if r == "RSP" {
+		r = asm.SP
 	}
 	slot, ok := c.regSlot[r]
 	if !ok {

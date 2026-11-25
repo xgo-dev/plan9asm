@@ -312,42 +312,106 @@ func (c *amd64Ctx) callSym(symOp asm.Operand) error {
 	callee = asm.FuncSigSymbol(callee, csig)
 
 	args := make([]string, 0, len(csig.Args))
-	goABI := []asm.Reg{asm.AX, asm.BX, asm.CX, asm.DI, asm.SI, asm.Reg("R8"), asm.Reg("R9"), asm.Reg("R10"), asm.Reg("R11")}
-	regCursor := 0
-	for i, argTy := range csig.Args {
-		if len(csig.ArgRegs) == 0 {
-			if fields, ok := asm.ParseLiteralStructFields(argTy); ok && asm.LiteralFieldsAllScalar(fields) {
-				agg, err := c.structArgFromSequentialRegs(argTy, goABI, &regCursor)
-				if err != nil {
-					return fmt.Errorf("amd64 call %q: %w", callee, err)
-				}
-				args = append(args, fmt.Sprintf("%s %s", argTy, agg))
-				continue
-			}
-		}
-
-		var r asm.Reg
-		if len(csig.ArgRegs) > 0 {
-			if i >= len(csig.ArgRegs) {
-				return fmt.Errorf("amd64 call: missing arg reg for %q arg %d", callee, i)
-			}
-			r = csig.ArgRegs[i]
-		} else {
-			if regCursor >= len(goABI) {
-				return fmt.Errorf("amd64 call: missing arg reg for %q arg %d", callee, i)
-			}
-			r = goABI[regCursor]
-			regCursor++
-		}
-		v, err := c.loadReg(r)
+	useStackABI0 := c.goarch == "amd64" && c.localStackSlot != "" && len(csig.ArgRegs) == 0 && len(csig.Frame.Params) > 0 && c.hasOutgoingSPArgs()
+	if useStackABI0 {
+		spVal, err := c.loadReg(asm.SP)
 		if err != nil {
 			return err
 		}
-		value, err := c.castI64RegToArg(v, argTy)
-		if err != nil {
-			return fmt.Errorf("amd64 call unsupported arg type %q", argTy)
+		loadFromSP := func(off int64, ty asm.LLVMType) (string, error) {
+			addr := spVal
+			if off != 0 {
+				a := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", a, spVal, off)
+				addr = "%" + a
+			}
+			p := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p, addr)
+			v := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", v, ty, p)
+			return "%" + v, nil
 		}
-		args = append(args, fmt.Sprintf("%s %s", argTy, value))
+		for i, argTy := range csig.Args {
+			if fields, ok := asm.ParseLiteralStructFields(argTy); ok && asm.LiteralFieldsAllScalar(fields) {
+				cur := "undef"
+				for fi, fTy := range fields {
+					var slotOff int64
+					found := false
+					for _, slot := range csig.Frame.Params {
+						if slot.Index == i && slot.Field == fi {
+							slotOff, found = slot.Offset, true
+							break
+						}
+					}
+					if !found {
+						return fmt.Errorf("amd64 ABI0 call %q: missing frame slot for arg %d field %d", callee, i, fi)
+					}
+					fv, err := loadFromSP(slotOff, fTy)
+					if err != nil {
+						return err
+					}
+					next := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = insertvalue %s %s, %s %s, %d\n", next, argTy, cur, fTy, fv, fi)
+					cur = "%" + next
+				}
+				args = append(args, fmt.Sprintf("%s %s", argTy, cur))
+				continue
+			}
+			var slotOff int64
+			found := false
+			for _, slot := range csig.Frame.Params {
+				if slot.Index == i && slot.Field < 0 {
+					slotOff, found = slot.Offset, true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("amd64 ABI0 call %q: missing frame slot for arg %d", callee, i)
+			}
+			v, err := loadFromSP(slotOff, argTy)
+			if err != nil {
+				return err
+			}
+			args = append(args, fmt.Sprintf("%s %s", argTy, v))
+		}
+	} else {
+		goABI := []asm.Reg{asm.AX, asm.BX, asm.CX, asm.DI, asm.SI, asm.Reg("R8"), asm.Reg("R9"), asm.Reg("R10"), asm.Reg("R11")}
+		regCursor := 0
+		for i, argTy := range csig.Args {
+			if len(csig.ArgRegs) == 0 {
+				if fields, ok := asm.ParseLiteralStructFields(argTy); ok && asm.LiteralFieldsAllScalar(fields) {
+					agg, err := c.structArgFromSequentialRegs(argTy, goABI, &regCursor)
+					if err != nil {
+						return fmt.Errorf("amd64 call %q: %w", callee, err)
+					}
+					args = append(args, fmt.Sprintf("%s %s", argTy, agg))
+					continue
+				}
+			}
+
+			var r asm.Reg
+			if len(csig.ArgRegs) > 0 {
+				if i >= len(csig.ArgRegs) {
+					return fmt.Errorf("amd64 call: missing arg reg for %q arg %d", callee, i)
+				}
+				r = csig.ArgRegs[i]
+			} else {
+				if regCursor >= len(goABI) {
+					return fmt.Errorf("amd64 call: missing arg reg for %q arg %d", callee, i)
+				}
+				r = goABI[regCursor]
+				regCursor++
+			}
+			v, err := c.loadReg(r)
+			if err != nil {
+				return err
+			}
+			value, err := c.castI64RegToArg(v, argTy)
+			if err != nil {
+				return fmt.Errorf("amd64 call unsupported arg type %q", argTy)
+			}
+			args = append(args, fmt.Sprintf("%s %s", argTy, value))
+		}
 	}
 
 	if csig.Ret == asm.Void {
@@ -357,6 +421,38 @@ func (c *amd64Ctx) callSym(symOp asm.Operand) error {
 
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = call %s %s(%s)\n", t, csig.Ret, asm.LLVMGlobal(callee), strings.Join(args, ", "))
+	if useStackABI0 && len(csig.Frame.Results) > 0 {
+		spVal, err := c.loadReg(asm.SP)
+		if err != nil {
+			return err
+		}
+		storeToSP := func(off int64, ty asm.LLVMType, val string) {
+			addr := spVal
+			if off != 0 {
+				a := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", a, spVal, off)
+				addr = "%" + a
+			}
+			p := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p, addr)
+			fmt.Fprintf(c.b, "  store %s %s, ptr %%%s, align 1\n", ty, val, p)
+		}
+		if len(csig.Frame.Results) == 1 && csig.Frame.Results[0].Field < 0 {
+			storeToSP(csig.Frame.Results[0].Offset, csig.Frame.Results[0].Type, "%"+t)
+		} else {
+			for _, rs := range csig.Frame.Results {
+				ex := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, %d\n", ex, csig.Ret, t, rs.Index)
+				val := "%" + ex
+				if rs.Field >= 0 {
+					ex2 := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", ex2, rs.Type, val, rs.Field)
+					val = "%" + ex2
+				}
+				storeToSP(rs.Offset, rs.Type, val)
+			}
+		}
+	}
 	switch csig.Ret {
 	case asm.I64:
 		return c.storeReg(asm.AX, "%"+t)

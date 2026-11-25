@@ -115,8 +115,15 @@ func translateIRText(file *File, opt Options) (string, error) {
 			b.WriteString("\n")
 			continue
 		}
+		if sig.FrameLease != nil {
+			if err := sig.FrameLease(); err != nil {
+				return "", fmt.Errorf("%s: %w", name, err)
+			}
+		}
 		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && x86.FuncNeedsCFG(*fn))) {
-			if err := x86.TranslateFunc(&b, *fn, sig, resolve, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.X87Mode, opt.AnnotateSource); err != nil {
+			callOpt := opt
+			callOpt.ResolveSym = resolve
+			if err := x86.TranslateFuncWithOptions(&b, *fn, sig, callOpt); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")

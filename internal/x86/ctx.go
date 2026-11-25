@@ -17,9 +17,10 @@ type amd64Ctx struct {
 	goarch       string
 	targetTriple string
 
-	resolve  func(string) string
-	sigs     map[string]asm.FuncSig
-	annotate bool
+	resolve         func(string) string
+	sigs            map[string]asm.FuncSig
+	volatileGlobals map[string]bool
+	annotate        bool
 
 	tmp int
 
@@ -313,7 +314,7 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		fmt.Fprintf(c.b, "  %s = alloca i64\n", name)
 		fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", name)
 	}
-	if spSlot, ok := c.regSlot[asm.SP]; ok && c.goarch == "386" {
+	if spSlot, ok := c.regSlot[asm.SP]; ok && (c.goarch == "386" || c.hasSPMem()) {
 		minOff, maxOff := c.stackOffsetRange()
 		movement, err := c.stackMovementBudget()
 		if err != nil {

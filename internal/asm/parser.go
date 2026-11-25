@@ -12,6 +12,8 @@ import (
 type File struct {
 	Arch  Arch
 	Funcs []Func
+	// UnlinkedPrelude records instructions before the first TEXT.
+	UnlinkedPrelude []string
 
 	// Data and Globl capture a minimal subset of the Plan 9 DATA/GLOBL directives
 	// used by some stdlib asm (e.g. hash/crc32/crc32_amd64.s).
@@ -435,7 +437,30 @@ func parseOperandForArch(arch Arch, s string) (Operand, error) {
 			}
 		}
 	}
-	return ParseOperand(s)
+	op, err := ParseOperand(s)
+	if err == nil && arch == ArchARM64 {
+		preserveARM64PhysicalStackPointer(s, &op)
+	}
+	return op, err
+}
+
+func preserveARM64PhysicalStackPointer(source string, op *Operand) {
+	source = strings.TrimSpace(source)
+	switch op.Kind {
+	case OpReg:
+		if strings.EqualFold(source, "RSP") {
+			op.Reg = Reg("RSP")
+		}
+	case OpMem:
+		if strings.Contains(strings.ToUpper(source), "(RSP)") {
+			if op.Mem.Base == SP {
+				op.Mem.Base = Reg("RSP")
+			}
+			if op.Mem.Index == SP {
+				op.Mem.Index = Reg("RSP")
+			}
+		}
+	}
 }
 
 func ParseWASMMem(s string) (mem MemRef, matched bool, err error) {

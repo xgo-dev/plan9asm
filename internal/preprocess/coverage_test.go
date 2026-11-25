@@ -81,20 +81,11 @@ TEXT foo(SB),NOSPLIT,$0-0 // trailing comment
 	}); !changed || !strings.Contains(got, "MOVQ AX, BX") {
 		t.Fatalf("ExpandInlineMacroCalls() = (%q, %v)", got, changed)
 	}
-	if got, changed := ExpandIdentMacros("MOVQ VALUE, AX", map[string]Macro{"VALUE": {body: "9"}}, []string{"VALUE"}); !changed || got != "MOVQ 9, AX" {
+	if got, changed := ExpandIdentMacros("MOVQ VALUE, AX", map[string]Macro{"VALUE": {body: "9"}}); !changed || got != "MOVQ 9, AX" {
 		t.Fatalf("ExpandIdentMacros() = (%q, %v)", got, changed)
-	}
-	if got := ExpandImmExprMacros("MOVQ $(VALUE+1), AX", map[string]Macro{"VALUE": {body: "9"}}); got != "MOVQ $(9+1), AX" {
-		t.Fatalf("ExpandImmExprMacros() = %q", got)
 	}
 	if got := ReplaceMacroParams("ADDQ a, b", []string{"a", "b"}, []string{"CX", "DX"}); got != "ADDQ CX, DX" {
 		t.Fatalf("ReplaceMacroParams() = %q", got)
-	}
-	if got := ReplaceMacroIdents("VALUE+KEEP", map[string]Macro{
-		"VALUE": {body: "5"},
-		"KEEP":  {body: "AX"},
-	}); got != "5+AX" {
-		t.Fatalf("ReplaceMacroIdents() = %q", got)
 	}
 	if out := ExpandPPLine("WRAP(AX, BX)", map[string]Macro{
 		"WRAP": {body: "PAIR(a, b)", params: []string{"a", "b"}},

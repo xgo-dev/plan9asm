@@ -8,12 +8,7 @@ import (
 )
 
 // TranslateNativeModule represents each raw native entry as an address-only
-// naked LLVM function. The void() carrier is NOT a Go/C signature: all inputs,
-// results, calls and returns live in physical registers inside inline assembly.
-// Call sites retain their own ABI. No typed IR call is generated for a carrier.
-// DATA contains real LLVM references, as do inline-asm symbol operands, so module
-// linking, renaming and dead-code elimination can track their dependencies.
-// The caller owns the returned module; errors never return a partial module.
+// naked LLVM function.
 func TranslateNativeModule(ctx llvm.Context, src []byte, opts Options) (mod llvm.Module, err error) {
 	f, e, _, err := prepareNativeSource(src, opts)
 	if err != nil {
@@ -35,23 +30,22 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts Options) (mod llvm
 		triple = arch + "-apple-darwin"
 	}
 	mod.SetTarget(triple)
-	// LLVM 22 InstCombineCalls explicitly preserves mismatched prototypes for
-	// naked functions: their asm can consume arguments absent from the carrier.
-	// Keep this separate from typed lowering, which must never invent void calls.
 	carrierTy := llvm.FunctionType(ctx.VoidType(), nil, false)
 	funcs := map[string]llvm.Value{}
 	globals := map[string]llvm.Value{}
 	imports := map[string]llvm.Value{}
 	for i, fn := range f.Funcs {
-		v := llvm.AddFunction(mod, fmt.Sprintf("__plan9_native_%d", i), carrierTy)
-		v.SetLinkage(llvm.InternalLinkage)
+		name, linkage := fmt.Sprintf("__plan9_native_%d", i), llvm.InternalLinkage
+		if object, bound := opts.CodeEntries[fn.Sym]; bound {
+			name, linkage = object, llvm.ExternalLinkage
+		}
+		v := llvm.AddFunction(mod, name, carrierTy)
+		v.SetLinkage(linkage)
 		for _, attr := range []string{"naked", "noinline"} {
 			v.AddFunctionAttr(ctx.CreateEnumAttribute(llvm.AttributeKindID(attr), 0))
 		}
 		funcs[fn.Sym] = v
 	}
-	// Reserve all globals first, allowing forward DATA references. A packed
-	// structure gives byte-exact layout while retaining pointer-typed relocations.
 	for _, g := range f.Globl {
 		values, _ := e.dataValues(f, g)
 		var fields []llvm.Type
@@ -90,10 +84,12 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts Options) (mod llvm
 			}
 		}
 		if alias, ok := opts.Imports[name]; ok {
+			if strings.HasPrefix(name, "·") && !data {
+				return llvm.Value{}, fmt.Errorf("native data binding is not a callable entry: %s", s)
+			}
 			if v, ok := imports[alias]; ok {
 				return v, nil
 			}
-			// An untyped external address, not a guessed foreign function prototype.
 			v := llvm.AddGlobal(mod, ctx.Int8Type(), alias)
 			imports[alias] = v
 			return v, nil
@@ -153,11 +149,9 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts Options) (mod llvm
 		if err = e.functionBody(&body, fn); err != nil {
 			return mod, err
 		}
-		last := string(fn.Instrs[len(fn.Instrs)-1].Op)
-		if last != "RET" && last != "JMP" && last != "B" {
+		if _, complete := nativeFunctionEnd(fn.Instrs[len(fn.Instrs)-1].Op, opts.GOARCH); !complete {
 			return mod, fmt.Errorf("native naked TEXT must end with RET or an unconditional branch: %s", fn.Sym)
 		}
-		// Escape literal x86 '$' immediates before adding LLVM template operands.
 		assembly := strings.ReplaceAll(body.String(), "$", "$$")
 		assembly = strings.ReplaceAll(assembly, "__native_uid__", "${:uid}")
 		var types []llvm.Type
@@ -177,7 +171,6 @@ func TranslateNativeModule(ctx llvm.Context, src []byte, opts Options) (mod llvm
 		block := ctx.AddBasicBlock(funcs[fn.Sym], "entry")
 		builder.SetInsertPointAtEnd(block)
 		builder.CreateCall(ty, inline, refs, "")
-		// Machine RET/tail JMP exits the carrier. This is not a noreturn function.
 		builder.CreateUnreachable()
 	}
 	if err = llvm.VerifyModule(mod, llvm.ReturnStatusAction); err != nil {

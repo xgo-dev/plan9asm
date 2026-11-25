@@ -4,6 +4,7 @@ import (
 	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/asm"
 	"github.com/xgo-dev/plan9asm/internal/native"
+	"github.com/xgo-dev/plan9asm/internal/preprocess"
 	"github.com/xgo-dev/plan9asm/internal/wasm"
 )
 
@@ -36,6 +37,14 @@ type (
 
 	NativeOptions = native.Options
 	NativeData    = native.Data
+
+	AssemblyPreprocessOptions   = preprocess.AssemblyPreprocessOptions
+	AssemblyCPPObservation      = preprocess.AssemblyCPPObservation
+	AssemblyCPPObservedSource   = preprocess.AssemblyCPPObservedSource
+	AssemblyCPPObservedPosition = preprocess.AssemblyCPPObservedPosition
+	AssemblyCPPObservedToken    = preprocess.AssemblyCPPObservedToken
+	AssemblyCPPOutputToken      = preprocess.AssemblyCPPOutputToken
+	AssemblyCPPEvent            = preprocess.AssemblyCPPEvent
 )
 
 var ErrProbeNeedsContext = asm.ErrProbeNeedsContext
@@ -178,4 +187,34 @@ func TranslateNativeARM64Source(src []byte, imports map[string]string, pkgPath s
 // TranslateNativeModule translates checked Plan 9 source into an owned LLVM module.
 func TranslateNativeModule(ctx llvm.Context, src []byte, opts NativeOptions) (llvm.Module, error) {
 	return native.TranslateNativeModule(ctx, src, opts)
+}
+
+// PreprocessAssemblySource runs the strict Go Plan 9 assembly preprocessor.
+func PreprocessAssemblySource(src string, opt AssemblyPreprocessOptions) (string, error) {
+	return preprocess.PreprocessAssemblySource(src, opt)
+}
+
+// ObserveAssemblyCPP executes the strict preprocessor and records an observation.
+func ObserveAssemblyCPP(src string, opt AssemblyPreprocessOptions) (AssemblyCPPObservation, error) {
+	return preprocess.ObserveAssemblyCPP(src, opt)
+}
+
+// ObserveAssemblyCPPOutput executes the strict preprocessor and retains output tokens.
+func ObserveAssemblyCPPOutput(src string, opt AssemblyPreprocessOptions) (AssemblyCPPObservation, []AssemblyCPPOutputToken, error) {
+	return preprocess.ObserveAssemblyCPPOutput(src, opt)
+}
+
+// GoAssemblerDefines returns the predefined macros cmd/go passes to cmd/asm.
+func GoAssemblerDefines(goos, goarch string) []string {
+	return preprocess.GoAssemblerDefines(goos, goarch)
+}
+
+// GoAssemblerDefinesWithEnv returns predefined cmd/asm macros using explicit env.
+func GoAssemblerDefinesWithEnv(goos, goarch string, env map[string]string) []string {
+	return preprocess.GoAssemblerDefinesWithEnv(goos, goarch, env)
+}
+
+// GoAssemblerDefinesForEnvironment returns predefined cmd/asm macros for an observed environment.
+func GoAssemblerDefinesForEnvironment(goos, goarch string, environment map[string]string) ([]string, error) {
+	return preprocess.GoAssemblerDefinesForEnvironment(goos, goarch, environment)
 }

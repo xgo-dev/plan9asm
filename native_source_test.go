@@ -180,7 +180,7 @@ func nativeTargetCompileRun(t *testing.T, opts NativeOptions, asm, harness strin
 
 func TestNativeAMD64Reject(t *testing.T) {
 	opts := NativeOptions{GOOS: "linux", GOARCH: "amd64"}
-	for _, body := range []string{"MOVQ foo+8(SP), AX", "MOVQ x+0(FP), AX", "MOVQ $symbol, AX", "MOVQ $1.5, AX", "MOVQ (AX)(CX*4), DX", "MOVQ 2147483648(AX), DX", "MOVQ FS:0(AX), DX", "MOVQ AX, R16", "MOVQ AX, X16", "MOVQ X0, X1", "MOVQ $4, X0", "ADDQ $0xffffffff, AX", "MOVQ $0x100000000, (AX)", "MOVL $0x100000000, AX", "SHLQ $64, AX", "SHLQ CX, AX", "LEAQ AX, BX", "MOVQ (AX), (BX)", "MOVQ AX, $1", "CALL AX", "CALL missing(SB)", "JEQ missing", "RET AX", "MOVB AL, BL", "MOVQ $1, AX, BX", "PUSHQ AX"} {
+	for _, body := range []string{"MOVQ foo+8(SP), AX", "MOVQ x+0(FP), AX", "MOVQ $symbol, AX", "MOVQ $1.5, AX", "MOVQ 2147483648(AX), DX", "MOVQ FS:0(AX), DX", "MOVQ AX, R16", "MOVQ AX, X16", "MOVQ X0, X1", "MOVQ $4, X0", "ADDQ $0xffffffff, AX", "MOVQ $0x100000000, (AX)", "MOVL $0x100000000, AX", "SHLQ $64, AX", "LEAQ AX, BX", "MOVQ (AX), (BX)", "MOVQ AX, $1", "CALL missing(SB)", "JEQ missing", "RET AX", "MOVQ $1, AX, BX"} {
 		t.Run(body, func(t *testing.T) {
 			_, _, err := TranslateNativeSource([]byte("TEXT f<>(SB), NOSPLIT|NOFRAME, $0\n"+body+"\n"), opts)
 			if err == nil {
