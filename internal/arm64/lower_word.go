@@ -54,22 +54,32 @@ func (c *arm64Ctx) lowerRawWord(ins asm.Instr) error {
 	}
 
 	// Fallback: decode arbitrary AArch64 WORD encodings via arm64asm and lower
-	// supported arithmetic/SIMD/crypto instructions through the normal pipeline.
+	// supported arithmetic/SIMD/crypto/barrier instructions through the normal
+	// pipeline. Buffer emission into a scratch builder so any decoded form whose
+	// operands are not yet modeled falls back cleanly without emitting partial IR.
 	if decoded, ok := DecodeRawWord(word); ok {
 		op := asm.Op(strings.ToUpper(string(decoded.Op)))
 		if op == "SB" {
 			fmt.Fprintln(c.b, `  call void asm sideeffect ".inst 0xd50330ff", "~{memory}"()`)
 			return nil
 		}
-		if op == "NOP" || op == "HINT" || op == "YIELD" || op == "DMB" || op == "DSB" || op == "ISB" {
+		if op == "NOP" || op == "HINT" || op == "YIELD" || op == "DMB" || op == "DSB" || op == "ISB" || op == "DC" || op == "PRFM" {
 			return nil
 		}
-		if handled, _, err := c.lowerArith(op, decoded); handled {
-			return err
+		savedB := c.b
+		savedTmp := c.tmp
+		var scratch strings.Builder
+		c.b = &scratch
+		handled, _, err := c.lowerArith(op, decoded)
+		if !handled {
+			handled, _, err = c.lowerVec(op, false, decoded)
 		}
-		if handled, _, err := c.lowerVec(op, false, decoded); handled {
-			return err
+		c.b = savedB
+		if handled && err == nil {
+			c.b.WriteString(scratch.String())
+			return nil
 		}
+		c.tmp = savedTmp
 	}
 
 	return nil
