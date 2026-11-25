@@ -66,7 +66,7 @@ func (c *amd64Ctx) evalI64(op asm.Operand) (string, error) {
 func isX86SystemOrSegIdent(ident string) bool {
 	s := strings.ToUpper(strings.TrimSpace(ident))
 	switch s {
-	case "CS", "DS", "ES", "FS", "GS", "SS", "GDTR", "IDTR", "LDTR", "TR", "MSW":
+	case "CS", "DS", "ES", "FS", "GS", "SS", "GDTR", "IDTR", "LDTR", "TR", "TASK", "MSW":
 		return true
 	}
 	if len(s) >= 3 && (strings.HasPrefix(s, "CR") || strings.HasPrefix(s, "DR") || strings.HasPrefix(s, "TR")) {

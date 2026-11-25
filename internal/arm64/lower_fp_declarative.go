@@ -85,6 +85,16 @@ var arm64FPTable = asm.NewOpTable(arm64DeclarativeFPSpecs)
 func (c *arm64Ctx) evalF32(op asm.Operand) (string, error) {
 	switch op.Kind {
 	case asm.OpReg:
+		if strings.Contains(string(op.Reg), "[") {
+			bits, err := c.arm64ExtractVecLaneI64(op.Reg, 32)
+			if err != nil {
+				return "", err
+			}
+			tr, bc := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, bits)
+			fmt.Fprintf(c.b, "  %%%s = bitcast i32 %%%s to float\n", bc, tr)
+			return "%" + bc, nil
+		}
 		v64, err := c.loadReg(op.Reg)
 		if err != nil {
 			return "", err

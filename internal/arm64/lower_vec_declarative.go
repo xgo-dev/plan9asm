@@ -586,6 +586,9 @@ func (c *arm64Ctx) lowerNEONUnary(spec asm.OpSpec, ins asm.Instr) error {
 }
 
 func (c *arm64Ctx) lowerNEONBinOp(spec asm.OpSpec, ins asm.Instr) error {
+	if spec.LLVMOp == "bic" && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg {
+		return c.lowerARM64NEONImmBitwise("bic", ins.Args[0].Imm, ins.Args[1].Reg)
+	}
 	if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[0].Kind != asm.OpReg || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
 		return fmt.Errorf("arm64 %s expects Vsrc1, [Vsrc2,] Vdst: %q", spec.Op, ins.Raw)
 	}

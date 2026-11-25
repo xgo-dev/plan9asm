@@ -63,9 +63,11 @@ var x86M3TailSpecs = []asm.OpSpec{
 	{Op: "VFIXUPIMMPD", Family: asm.FamilyVecFMA, SubOp: 0, LaneBits: 64, Float: true, ThreeOp: true, Effect: asm.EffectReadWrite, LLVMOp: "vfixupimm"},
 	{Op: "VFIXUPIMMSS", Family: asm.FamilyFP, SubOp: 1, LaneBits: 32, Float: true, ThreeOp: true, Effect: asm.EffectReadWrite, LLVMOp: "vfixupimm"},
 	{Op: "VFIXUPIMMSD", Family: asm.FamilyFP, SubOp: 1, LaneBits: 64, Float: true, ThreeOp: true, Effect: asm.EffectReadWrite, LLVMOp: "vfixupimm"},
+	{Op: "VFPCLASSPS", Family: asm.FamilyCompare, Width: 0, LaneBits: 32, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "vfpclass"},
 	{Op: "VFPCLASSPSX", Family: asm.FamilyCompare, Width: 128, LaneBits: 32, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "vfpclass"},
 	{Op: "VFPCLASSPSY", Family: asm.FamilyCompare, Width: 256, LaneBits: 32, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "vfpclass"},
 	{Op: "VFPCLASSPSZ", Family: asm.FamilyCompare, Width: 512, LaneBits: 32, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "vfpclass"},
+	{Op: "VFPCLASSPD", Family: asm.FamilyCompare, Width: 0, LaneBits: 64, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "vfpclass"},
 	{Op: "VFPCLASSPDX", Family: asm.FamilyCompare, Width: 128, LaneBits: 64, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "vfpclass"},
 	{Op: "VFPCLASSPDY", Family: asm.FamilyCompare, Width: 256, LaneBits: 64, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "vfpclass"},
 	{Op: "VFPCLASSPDZ", Family: asm.FamilyCompare, Width: 512, LaneBits: 64, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "vfpclass"},
@@ -628,7 +630,16 @@ func (c *amd64Ctx) lowerX86VFPClass(spec asm.OpSpec, bcst bool, ins asm.Instr) e
 		return c.storeK(args[2].Reg, kv)
 	}
 
-	lanes := int(spec.Width) / laneBits
+	totalBits := int(spec.Width)
+	if totalBits == 0 {
+		totalBits = 128
+		if args[1].Kind == asm.OpReg {
+			if vi, ok := c.x86VecInfoForReg(args[1].Reg); ok {
+				totalBits = vi.totalBits
+			}
+		}
+	}
+	lanes := totalBits / laneBits
 	elemTy, mangle := "double", fmt.Sprintf("v%df64", lanes)
 	if laneBits == 32 {
 		elemTy, mangle = "float", fmt.Sprintf("v%df32", lanes)

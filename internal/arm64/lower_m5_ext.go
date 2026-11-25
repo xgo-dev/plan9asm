@@ -471,9 +471,16 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 		}
 
 	case "fmov_vec":
-		// FMOV $imm, Vd.S4 / Vd.D2 / Vd.S2 / Vd.H8
+		// FMOV $imm, Vd.S4/D2/S2/H8 OR FMOV Vn.D[idx], Rd
 		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 FMOV expects $imm, Vdst: %q", ins.Raw)
+			return true, false, fmt.Errorf("arm64 FMOV expects src, dst: %q", ins.Raw)
+		}
+		if ins.Args[0].Kind == asm.OpReg && strings.Contains(string(ins.Args[0].Reg), "[") {
+			bits, err := c.arm64ExtractVecLaneI64(ins.Args[0].Reg, 64)
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeReg(ins.Args[1].Reg, bits)
 		}
 		sh := parseNEONShape(ins.Args[1].Reg, false)
 		fv := 0.0
@@ -494,18 +501,23 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 		return true, false, c.storeVShape(ins.Args[1].Reg, splat, sh)
 
 	case "ldnp", "stnp":
-		// Non-temporal pair load/store (identical semantics to LDP/LDPW/STP/STPW).
+		// Non-temporal pair load/store (accepts 2-arg (r1, r2) and 3-arg mem, r1, r2 forms).
 		elemBytes := int64(spec.Width / 8)
 		elemTy := fmt.Sprintf("i%d", spec.Width)
 		if spec.LLVMOp == "ldnp" {
-			if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpRegList || len(ins.Args[1].RegList) != 2 {
+			var regs []asm.Reg
+			if len(ins.Args) == 2 && ins.Args[1].Kind == asm.OpRegList && len(ins.Args[1].RegList) == 2 {
+				regs = ins.Args[1].RegList
+			} else if len(ins.Args) == 3 && ins.Args[1].Kind == asm.OpReg && ins.Args[2].Kind == asm.OpReg {
+				regs = []asm.Reg{ins.Args[1].Reg, ins.Args[2].Reg}
+			} else {
 				return true, false, fmt.Errorf("arm64 %s expects mem, (r1, r2): %q", op, ins.Raw)
 			}
 			ptr, _, _, _, err := c.arm64PairPtr(ins.Args[0], false, false)
 			if err != nil {
 				return true, false, err
 			}
-			for i, r := range ins.Args[1].RegList {
+			for i, r := range regs {
 				p := ptr
 				if i != 0 {
 					gp := c.newTmp()
@@ -526,14 +538,22 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 			}
 			return true, false, nil
 		}
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || len(ins.Args[0].RegList) != 2 {
+		var memOp asm.Operand
+		var regs []asm.Reg
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpRegList && len(ins.Args[0].RegList) == 2 {
+			regs, memOp = ins.Args[0].RegList, ins.Args[1]
+		} else if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpMem && ins.Args[1].Kind == asm.OpReg && ins.Args[2].Kind == asm.OpReg {
+			memOp, regs = ins.Args[0], []asm.Reg{ins.Args[1].Reg, ins.Args[2].Reg}
+		} else if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpReg && ins.Args[2].Kind == asm.OpMem {
+			regs, memOp = []asm.Reg{ins.Args[0].Reg, ins.Args[1].Reg}, ins.Args[2]
+		} else {
 			return true, false, fmt.Errorf("arm64 %s expects (r1, r2), mem: %q", op, ins.Raw)
 		}
-		ptr, _, _, _, err := c.arm64PairPtr(ins.Args[1], false, false)
+		ptr, _, _, _, err := c.arm64PairPtr(memOp, false, false)
 		if err != nil {
 			return true, false, err
 		}
-		for i, r := range ins.Args[0].RegList {
+		for i, r := range regs {
 			p := ptr
 			if i != 0 {
 				gp := c.newTmp()
@@ -555,7 +575,7 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 		return true, false, nil
 
 	case "fcvti_round", "fcvti_floor", "fcvti_even", "fcvti_ceil", "fcvti_trunc":
-		// FCVT{A,M,N,P,Z}{S,U} [$fbits,] Fsrc, Rd
+		// FCVT{A,M,N,P,Z}{S,U} [$fbits,] Fsrc/Vsrc, Rd/Vd
 		var fbits int64
 		var srcOp, dstOp asm.Operand
 		if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpImm {
@@ -568,6 +588,9 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 		}
 		if dstOp.Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm64 %s dst must be reg: %q", op, ins.Raw)
+		}
+		if _, ok := arm64ParseVReg(dstOp.Reg); ok {
+			return true, false, c.lowerARM64VecFCVTInt(spec.LLVMOp, spec.Signed, fbits, srcOp, dstOp.Reg)
 		}
 		v, err := c.evalF64(srcOp)
 		if err != nil {
@@ -606,7 +629,7 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 		return true, false, c.storeReg(dstOp.Reg, "%"+iv)
 
 	case "icvtf":
-		// SCVTF / UCVTF [$fbits,] Rsrc, Fdst
+		// SCVTF / UCVTF [$fbits,] Rsrc/Vsrc, Fdst/Vdst
 		var fbits int64
 		var srcOp, dstOp asm.Operand
 		if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpImm {
@@ -616,6 +639,11 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 			srcOp, dstOp = ins.Args[0], ins.Args[1]
 		} else {
 			return true, false, fmt.Errorf("arm64 %s expects [$fbits,] Rsrc, Fdst: %q", op, ins.Raw)
+		}
+		if dstOp.Kind == asm.OpReg {
+			if _, ok := arm64ParseVReg(dstOp.Reg); ok {
+				return true, false, c.lowerARM64VecIntCVTF(spec.Signed, fbits, srcOp, dstOp.Reg)
+			}
 		}
 		iv, err := c.eval64(srcOp, false)
 		if err != nil {

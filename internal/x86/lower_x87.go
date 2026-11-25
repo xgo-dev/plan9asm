@@ -23,9 +23,8 @@ func isX87Op(op asm.Op) bool {
 		"FABS", "FCHS", "FUCOMI", "FTST", "FSTSW", "FLD1", "FLDZ",
 		"FSQRT", "FINIT", "FCLEX", "FNOP":
 		return true
-	default:
-		return false
 	}
+	return isX87ExtOp(op)
 }
 
 func (c *amd64Ctx) requireX87SoftwareControlInit(op asm.Op) error {
@@ -384,7 +383,7 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		}
 		return true, false, c.pushX87Value(x87ZeroValue)
 	}
-	return false, false, nil
+	return c.lowerX87Ext(op, ins)
 }
 
 func x87OperandReg(op asm.Operand) (int, bool) {

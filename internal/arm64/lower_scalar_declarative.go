@@ -192,7 +192,12 @@ func (c *arm64Ctx) lowerARM64ExtraMove(spec asm.OpSpec, postInc bool, ins asm.In
 		return c.storeReg(ins.Args[1].Reg, "%"+merged)
 
 	case "ldpsw":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpRegList || len(ins.Args[1].RegList) != 2 {
+		var regs []asm.Reg
+		if len(ins.Args) == 2 && ins.Args[1].Kind == asm.OpRegList && len(ins.Args[1].RegList) == 2 {
+			regs = ins.Args[1].RegList
+		} else if len(ins.Args) == 3 && ins.Args[1].Kind == asm.OpReg && ins.Args[2].Kind == asm.OpReg {
+			regs = []asm.Reg{ins.Args[1].Reg, ins.Args[2].Reg}
+		} else {
 			return fmt.Errorf("arm64 LDPSW expects mem/sym, (r1, r2): %q", ins.Raw)
 		}
 		preInc := strings.Contains(strings.ToUpper(string(ins.Op)), ".W")
@@ -200,7 +205,7 @@ func (c *arm64Ctx) lowerARM64ExtraMove(spec asm.OpSpec, postInc bool, ins asm.In
 		if err != nil {
 			return err
 		}
-		for i, r := range ins.Args[1].RegList {
+		for i, r := range regs {
 			p := ptr
 			if i != 0 {
 				gp := c.newTmp()

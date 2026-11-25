@@ -97,7 +97,7 @@ func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr 
 			return term, err
 		}
 		return false, fmt.Errorf("arm: unsupported instruction %s", ins.Op)
-	case "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", string(asm.OpWORD), "NOP", "DMB", "#IFDEF", "#ELSE", "#ENDIF":
+	case "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", string(asm.OpWORD), "DWORD", "NOP", "DMB", "#IFDEF", "#ELSE", "#ENDIF":
 		return false, nil
 	}
 	if ok, term, err := c.lowerData(baseOp, cond, postInc, ins); ok {

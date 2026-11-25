@@ -94,7 +94,7 @@ func TestARM64FPVectorPairValidation(t *testing.T) {
 	for _, ins := range []asm.Instr{
 		{Raw: "VMOVI"},
 		{Raw: "VMOVI $256, V0.B16", Args: []asm.Operand{arm64ImmOp(256), arm64RegOp("V0.B16")}},
-		{Raw: "VMOVI $1, V0.D2", Args: []asm.Operand{arm64ImmOp(1), arm64RegOp("V0.D2")}},
+		{Raw: "VMOVI $1, V0.Q1", Args: []asm.Operand{arm64ImmOp(1), arm64RegOp("V0.Q1")}},
 		{Raw: "VMOVI $1, V0.B8", Args: []asm.Operand{arm64ImmOp(1), arm64RegOp("V0.B8")}},
 	} {
 		if ok, _, err := c.lowerVec("VMOVI", false, ins); !ok || err == nil {

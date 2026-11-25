@@ -163,30 +163,42 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 
 	case "VMOVI":
 		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 VMOVI expects $imm, Vreg.B8/B16: %q", ins.Raw)
+			return true, false, fmt.Errorf("arm64 VMOVI expects $imm, Vreg.B8/B16/H4/H8/S2/S4/D1/D2: %q", ins.Raw)
 		}
 		imm := ins.Args[0].Imm
-		if imm < 0 || imm > 255 {
-			return true, false, fmt.Errorf("arm64 VMOVI byte immediate out of range: %q", ins.Raw)
-		}
 		dst := strings.ToUpper(string(ins.Args[1].Reg))
-		activeLanes := 16
 		switch {
-		case strings.Contains(dst, ".B8"):
-			activeLanes = 8
-		case strings.Contains(dst, ".B16"):
+		case strings.Contains(dst, ".B8"), strings.Contains(dst, ".B16"):
+			if imm < 0 || imm > 255 {
+				return true, false, fmt.Errorf("arm64 VMOVI byte immediate out of range: %q", ins.Raw)
+			}
+			activeLanes := 16
+			if strings.Contains(dst, ".B8") {
+				activeLanes = 8
+			}
+			elems := make([]string, 16)
+			for i := range elems {
+				value := int64(0)
+				if i < activeLanes {
+					value = imm
+				}
+				elems[i] = fmt.Sprintf("i8 %d", value)
+			}
+			return true, false, c.storeVReg(ins.Args[1].Reg, "<"+strings.Join(elems, ", ")+">")
+		case strings.Contains(dst, ".H4"), strings.Contains(dst, ".H8"),
+			strings.Contains(dst, ".S2"), strings.Contains(dst, ".S4"),
+			strings.Contains(dst, ".D1"), strings.Contains(dst, ".D2"):
+			sh := parseNEONShape(ins.Args[1].Reg, false)
+			return true, false, c.storeVShape(ins.Args[1].Reg, arm64IntSplat(sh.lanes, sh.elemBits, imm), sh)
+		case !strings.Contains(dst, "."):
+			if _, ok := arm64ParseVReg(ins.Args[1].Reg); ok {
+				sh := neonShape{lanes: 1, elemBits: 64, half64: true}
+				return true, false, c.storeVShape(ins.Args[1].Reg, arm64IntSplat(1, 64, imm), sh)
+			}
+			return true, false, fmt.Errorf("arm64 VMOVI unsupported vector arrangement: %q", ins.Raw)
 		default:
 			return true, false, fmt.Errorf("arm64 VMOVI unsupported vector arrangement: %q", ins.Raw)
 		}
-		elems := make([]string, 16)
-		for i := range elems {
-			value := int64(0)
-			if i < activeLanes {
-				value = imm
-			}
-			elems[i] = fmt.Sprintf("i8 %d", value)
-		}
-		return true, false, c.storeVReg(ins.Args[1].Reg, "<"+strings.Join(elems, ", ")+">")
 
 	case "AESE", "AESD", "AESMC", "AESIMC",
 		"SHA1C", "SHA1H", "SHA1M", "SHA1P", "SHA1SU0", "SHA1SU1",
@@ -363,6 +375,9 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 		return true, false, c.storeVReg(ins.Args[2].Reg, "%"+t)
 
 	case "VORR":
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg {
+			return true, false, c.lowerARM64NEONImmBitwise("or", ins.Args[0].Imm, ins.Args[1].Reg)
+		}
 		// VORR Va, Vb, Vd
 		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm64 VORR expects reg, reg, reg: %q", ins.Raw)

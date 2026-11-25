@@ -128,6 +128,19 @@ var x86ExtraScalarSpecs = []asm.OpSpec{
 	{Op: "XACQUIRE", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "XRELEASE", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "XBEGIN", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
+	{Op: "WAIT", Family: asm.FamilyNOP, Effect: asm.EffectNone},
+	{Op: "INTO", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
+	{Op: "AAA", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsReadWrite, LLVMOp: "bcd_adj"},
+	{Op: "AAS", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsReadWrite, LLVMOp: "bcd_adj"},
+	{Op: "AAM", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsWrite, LLVMOp: "bcd_adj"},
+	{Op: "AAD", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsWrite, LLVMOp: "bcd_adj"},
+	{Op: "DAA", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsReadWrite, LLVMOp: "bcd_adj"},
+	{Op: "DAS", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsReadWrite, LLVMOp: "bcd_adj"},
+	{Op: "ARPL", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "arpl"},
+	{Op: "BOUNDW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectReadOnly, LLVMOp: "bound"},
+	{Op: "BOUNDL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectReadOnly, LLVMOp: "bound"},
+	{Op: "PUSHAW", Family: asm.FamilySystem, Width: 16, Implicit: asm.ImplicitSP, LLVMOp: "pushaw"},
+	{Op: "POPAW", Family: asm.FamilySystem, Width: 16, Implicit: asm.ImplicitSP, LLVMOp: "popaw"},
 	{Op: "DUFFZERO", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "DUFFCOPY", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "NOPL", Family: asm.FamilyNOP, Effect: asm.EffectNone},
@@ -1048,10 +1061,163 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
-		if err := c.storeReg(asm.SP, bp); err != nil {
+		if err := c.storeRegUnchecked(asm.SP, bp); err != nil {
 			return err
 		}
 		return c.storeReg(asm.BP, c.popI64())
+	case "bcd_adj":
+		ax, err := c.loadReg(asm.AX)
+		if err != nil {
+			return err
+		}
+		al := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", al, ax)
+		ahSh, ah := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 8\n", ahSh, ax)
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i8\n", ah, ahSh)
+		switch spec.Op {
+		case "AAA", "AAS":
+			low, gt9 := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, 15\n", low, al)
+			fmt.Fprintf(c.b, "  %%%s = icmp ugt i8 %%%s, 9\n", gt9, low)
+			opAL, opAH := "add", "add"
+			if spec.Op == "AAS" {
+				opAL, opAH = "sub", "sub"
+			}
+			adjAL, adjAH, nAL, nAH := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = %s i8 %%%s, 6\n", adjAL, opAL, al)
+			fmt.Fprintf(c.b, "  %%%s = %s i8 %%%s, 1\n", adjAH, opAH, ah)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", nAL, gt9, adjAL, al)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", nAH, gt9, adjAH, ah)
+			lo4, zAL, zAH, shAH, ax16 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, 15\n", lo4, nAL)
+			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", zAL, lo4)
+			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", zAH, nAH)
+			fmt.Fprintf(c.b, "  %%%s = shl i16 %%%s, 8\n", shAH, zAH)
+			fmt.Fprintf(c.b, "  %%%s = or i16 %%%s, %%%s\n", ax16, shAH, zAL)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", gt9, c.flagsCFSlot)
+			return c.storeRegSized(asm.AX, asm.I16, "%"+ax16)
+		case "AAM":
+			base := int64(10)
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].Imm != 0 {
+				base = ins.Args[0].Imm & 0xff
+			}
+			q, r, zQ, zR, shQ, ax16, zf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = udiv i8 %%%s, %d\n", q, al, base)
+			fmt.Fprintf(c.b, "  %%%s = urem i8 %%%s, %d\n", r, al, base)
+			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", zQ, q)
+			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", zR, r)
+			fmt.Fprintf(c.b, "  %%%s = shl i16 %%%s, 8\n", shQ, zQ)
+			fmt.Fprintf(c.b, "  %%%s = or i16 %%%s, %%%s\n", ax16, shQ, zR)
+			fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, r)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			return c.storeRegSized(asm.AX, asm.I16, "%"+ax16)
+		case "AAD":
+			base := int64(10)
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm {
+				base = ins.Args[0].Imm & 0xff
+			}
+			mul, sum, ax16, zf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = mul i8 %%%s, %d\n", mul, ah, base)
+			fmt.Fprintf(c.b, "  %%%s = add i8 %%%s, %%%s\n", sum, mul, al)
+			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", ax16, sum)
+			fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, sum)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			return c.storeRegSized(asm.AX, asm.I16, "%"+ax16)
+		default: // DAA, DAS
+			opStr := "add"
+			if spec.Op == "DAS" {
+				opStr = "sub"
+			}
+			cf := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCFSlot)
+			lo4, gt9, adj1, al1 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, 15\n", lo4, al)
+			fmt.Fprintf(c.b, "  %%%s = icmp ugt i8 %%%s, 9\n", gt9, lo4)
+			fmt.Fprintf(c.b, "  %%%s = %s i8 %%%s, 6\n", adj1, opStr, al)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", al1, gt9, adj1, al)
+			gt99, needHi, adj2, al2, zf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp ugt i8 %%%s, 153\n", gt99, al)
+			fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", needHi, gt99, cf)
+			fmt.Fprintf(c.b, "  %%%s = %s i8 %%%s, 96\n", adj2, opStr, al1)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", al2, needHi, adj2, al1)
+			fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, al2)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", needHi, c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			return c.storeRegSized(asm.AL, asm.I8, "%"+al2)
+		}
+	case "arpl":
+		if len(ins.Args) != 2 {
+			return fmt.Errorf("amd64 ARPL expects src, dst: %q", ins.Raw)
+		}
+		src, err := c.evalIntSized(ins.Args[0], asm.I16)
+		if err != nil {
+			return err
+		}
+		dst, err := c.evalIntSized(ins.Args[1], asm.I16)
+		if err != nil {
+			return err
+		}
+		sRpl, dRpl, lt, hi, repl, out := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i16 %s, 3\n", sRpl, src)
+		fmt.Fprintf(c.b, "  %%%s = and i16 %s, 3\n", dRpl, dst)
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i16 %%%s, %%%s\n", lt, dRpl, sRpl)
+		fmt.Fprintf(c.b, "  %%%s = and i16 %s, -4\n", hi, dst)
+		fmt.Fprintf(c.b, "  %%%s = or i16 %%%s, %%%s\n", repl, hi, sRpl)
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i16 %%%s, i16 %s\n", out, lt, repl, dst)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", lt, c.flagsZSlot)
+		if ins.Args[1].Kind == asm.OpReg {
+			return c.storeRegSized(ins.Args[1].Reg, asm.I16, "%"+out)
+		}
+		p, pty, err := c.ptrFromMem(ins.Args[1].Mem)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(c.b, "  store i16 %%%s, %s %s, align 1\n", out, pty, p)
+		return nil
+	case "bound":
+		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpMem {
+			return fmt.Errorf("amd64 %s expects reg, mem: %q", spec.Op, ins.Raw)
+		}
+		ty := x86LLVMIntType(spec.Width)
+		if _, err := c.evalIntSized(ins.Args[0], ty); err != nil {
+			return err
+		}
+		p, pty, err := c.ptrFromMem(ins.Args[1].Mem)
+		if err != nil {
+			return err
+		}
+		lo := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", lo, ty, pty, p)
+		return nil
+	case "pushaw":
+		if len(ins.Args) != 0 {
+			return fmt.Errorf("amd64 PUSHAW takes no operands: %q", ins.Raw)
+		}
+		for _, r := range []asm.Reg{asm.AX, asm.CX, asm.DX, asm.BX, asm.SP, asm.BP, asm.SI, asm.DI} {
+			v, err := c.loadReg(r)
+			if err != nil {
+				return err
+			}
+			c.pushI64(v)
+		}
+		return nil
+	case "popaw":
+		if len(ins.Args) != 0 {
+			return fmt.Errorf("amd64 POPAW takes no operands: %q", ins.Raw)
+		}
+		for _, r := range []asm.Reg{asm.DI, asm.SI, asm.BP, asm.SP, asm.BX, asm.DX, asm.CX, asm.AX} {
+			v := c.popI64()
+			if r == asm.SP {
+				continue
+			}
+			tr := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", tr, v)
+			if err := c.storeRegSized(r, asm.I16, "%"+tr); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "rdpid":
 		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpReg {
 			return fmt.Errorf("amd64 RDPID expects dstReg: %q", ins.Raw)

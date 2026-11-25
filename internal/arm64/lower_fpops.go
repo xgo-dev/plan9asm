@@ -287,6 +287,15 @@ func (c *arm64Ctx) evalFMOVDBits(op asm.Operand) (string, error) {
 func (c *arm64Ctx) evalF64(op asm.Operand) (string, error) {
 	switch op.Kind {
 	case asm.OpReg:
+		if strings.Contains(string(op.Reg), "[") {
+			bits, err := c.arm64ExtractVecLaneI64(op.Reg, 64)
+			if err != nil {
+				return "", err
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast i64 %s to double\n", t, bits)
+			return "%" + t, nil
+		}
 		v64, err := c.loadReg(op.Reg)
 		if err != nil {
 			return "", err
