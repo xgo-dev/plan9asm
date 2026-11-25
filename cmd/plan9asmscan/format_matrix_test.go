@@ -10,6 +10,12 @@ import (
 
 func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 	goroot := runtime.GOROOT()
+	arm64MaxUnsup := 2
+	if ver := runtime.Version(); strings.HasPrefix(ver, "go1.20") || strings.HasPrefix(ver, "go1.21") {
+		// Go 1.20-1.21 cmd/internal/obj/arm64 optab omits the status regTo2 slot
+		// on 16 STXR*/STLXR*/CASP*/DUFF* rows.
+		arm64MaxUnsup = 20
+	}
 	cases := []struct {
 		goarch      string
 		arch        plan9asm.Arch
@@ -20,7 +26,7 @@ func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 		{goarch: "386", arch: plan9asm.ArchAMD64, maxUnsup: 10, minForms: 10000},
 		{goarch: "amd64", arch: plan9asm.ArchAMD64, maxUnsup: 275, minForms: 10000},
 		{goarch: "arm", arch: plan9asm.ArchARM, maxUnsup: 0, minForms: 400},
-		{goarch: "arm64", arch: plan9asm.ArchARM64, maxUnsup: 2, minForms: 900},
+		{goarch: "arm64", arch: plan9asm.ArchARM64, maxUnsup: arm64MaxUnsup, minForms: 900},
 		{goarch: "wasm", arch: plan9asm.ArchWASM, maxUnsup: 0, minForms: 200},
 	}
 
