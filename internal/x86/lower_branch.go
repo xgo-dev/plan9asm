@@ -123,6 +123,14 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op asm.Op, ins asm.Instr, emitBr 
 			return true, true, nil
 		}
 		fallthrough
+	case asm.OpImm:
+		if op == "JMP" {
+			if err := c.tailCallIndirectAddrAndRet(fmt.Sprintf("%d", ins.Args[0].Imm)); err != nil {
+				return true, false, err
+			}
+			return true, true, nil
+		}
+		return true, false, fmt.Errorf("amd64 %s invalid target: %q", op, ins.Raw)
 	default:
 		return true, false, fmt.Errorf("amd64 %s invalid target: %q", op, ins.Raw)
 	}

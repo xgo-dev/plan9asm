@@ -1582,7 +1582,10 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 	if ok, term, err := sysc.lowerSyscall("BAD", asm.Instr{}); ok || term || err != nil {
 		t.Fatalf("lowerSyscall(BAD) = (%v, %v, %v)", ok, term, err)
 	}
-	if _, _, err := sysc.lowerCrc32("CRC32B", asm.Instr{Raw: "CRC32B AX, BX", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.BX}}}); err == nil {
+	if ok, term, err := sysc.lowerCrc32("CRC32B", asm.Instr{Raw: "CRC32B AX, BX", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.BX}}}); !ok || term || err != nil {
+		t.Fatalf("CRC32B reg, reg = (%v, %v, %v)", ok, term, err)
+	}
+	if _, _, err := sysc.lowerCrc32("CRC32B", asm.Instr{Raw: "CRC32B $1, BX", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpReg, Reg: asm.BX}}}); err == nil {
 		t.Fatalf("bad CRC32B unexpectedly succeeded")
 	}
 	if ok, term, err := sysc.lowerCrc32("BAD", asm.Instr{}); ok || term || err != nil {
@@ -1672,8 +1675,11 @@ func TestAMD64BranchCoverageDeep(t *testing.T) {
 	if _, _, err := c.lowerBranch(0, 0, "CALL", asm.Instr{Raw: "CALL $1", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}}}, emitBr, emitCondBr); err == nil {
 		t.Fatalf("CALL imm unexpectedly succeeded")
 	}
-	if _, _, err := c.lowerBranch(0, 0, "JMP", asm.Instr{Raw: "JMP $1", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}}}, emitBr, emitCondBr); err == nil {
-		t.Fatalf("JMP imm unexpectedly succeeded")
+	if ok, term, err := c.lowerBranch(0, 0, "JMP", asm.Instr{Raw: "JMP $1", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}}}, emitBr, emitCondBr); !ok || !term || err != nil {
+		t.Fatalf("JMP imm = (%v, %v, %v)", ok, term, err)
+	}
+	if _, _, err := c.lowerBranch(0, 0, "JMP", asm.Instr{Raw: "JMP", Args: nil}, emitBr, emitCondBr); err == nil {
+		t.Fatalf("JMP without target unexpectedly succeeded")
 	}
 	if _, _, err := c.lowerBranch(0, 0, "JEQ", asm.Instr{Raw: "JEQ", Args: nil}, emitBr, emitCondBr); err == nil {
 		t.Fatalf("JEQ without target unexpectedly succeeded")
@@ -1978,7 +1984,7 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		wantHandled bool
 	}{
 		{"VPOPCNTB", asm.Instr{Raw: "VPOPCNTB Z0, Y0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.Reg("Y0")}}}, "wrong dst", false},
-		{"VPCMPUQ", asm.Instr{Raw: "VPCMPUQ $3, Z0, Z1, K1", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 3}, {Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.Reg("Z1")}, {Kind: asm.OpReg, Reg: asm.Reg("K1")}}}, "bad imm", true},
+		{"VPCMPUQ", asm.Instr{Raw: "VPCMPUQ $3, Z0, Z1, K1", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 3}, {Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.Reg("Z1")}, {Kind: asm.OpReg, Reg: asm.Reg("K1")}}}, "delegate imm 3", false},
 		{"VPCMPUQ", asm.Instr{Raw: "VPCMPUQ $1, Z0, Z1, AX", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.Reg("Z1")}, {Kind: asm.OpReg, Reg: asm.AX}}}, "wrong dst reg", false},
 		{"VPCOMPRESSQ", asm.Instr{Raw: "VPCOMPRESSQ Z0, AX, Z1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.Reg("Z1")}}}, "wrong mask", false},
 		{"VPCOMPRESSQ", asm.Instr{Raw: "VPCOMPRESSQ Z0, K1, Y0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.Reg("K1")}, {Kind: asm.OpReg, Reg: asm.Reg("Y0")}}}, "wrong dst", false},
@@ -2006,7 +2012,7 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		{"PSLLL", asm.Instr{Raw: "PSLLL AX, X0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "non-imm shift", true},
 		{"PCMPEQL", asm.Instr{Raw: "PCMPEQL Y0, X0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("Y0")}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "wrong src class", false},
 		{"VPCLMULQDQ", asm.Instr{Raw: "VPCLMULQDQ $1, Z0, Z1, X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.Reg("Z1")}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "wrong dst class", false},
-		{"VPTERNLOGD", asm.Instr{Raw: "VPTERNLOGD $0x95, Z0, Z1, Z2", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0x95}, {Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.Reg("Z1")}, {Kind: asm.OpReg, Reg: asm.Reg("Z2")}}}, "unsupported imm", true},
+		{"VPTERNLOGD", asm.Instr{Raw: "VPTERNLOGD $0x95, Z0, Z1, Z2", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0x95}, {Kind: asm.OpReg, Reg: asm.Reg("Z0")}, {Kind: asm.OpReg, Reg: asm.Reg("Z1")}, {Kind: asm.OpReg, Reg: asm.Reg("Z2")}}}, "delegate non-0x96 imm", false},
 		{"VEXTRACTF32X4", asm.Instr{Raw: "VEXTRACTF32X4 $1, X0, X1", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}, {Kind: asm.OpReg, Reg: asm.Reg("X1")}}}, "wrong src class", false},
 		{"PCLMULQDQ", asm.Instr{Raw: "PCLMULQDQ AX, X0, X1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}, {Kind: asm.OpReg, Reg: asm.Reg("X1")}}}, "missing imm", true},
 		{"PCMPEQB", asm.Instr{Raw: "PCMPEQB Y0, X0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("Y0")}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "wrong src class", false},
@@ -2303,7 +2309,7 @@ func TestAMD64VectorLoweringBranchCoverage(t *testing.T) {
 
 	check("ternlog-y-source1-class", "VPTERNLOGD", asm.Instr{Args: []asm.Operand{imm(0x96), reg("X0"), reg("Y1"), reg("Y2")}}, false, false)
 	check("ternlog-y-source2-class", "VPTERNLOGD", asm.Instr{Args: []asm.Operand{imm(0x96), reg("Y0"), reg("X1"), reg("Y2")}}, false, false)
-	check("ternlog-y-imm", "VPTERNLOGD", asm.Instr{Args: []asm.Operand{imm(0x95), reg("Y0"), reg("Y1"), reg("Y2")}}, true, true)
+	check("ternlog-y-imm", "VPTERNLOGD", asm.Instr{Args: []asm.Operand{imm(0x95), reg("Y0"), reg("Y1"), reg("Y2")}}, false, false)
 	check("ternlog-y-source1", "VPTERNLOGD", asm.Instr{Args: []asm.Operand{imm(0x96), ident("bad"), reg("Y1"), reg("Y2")}}, true, true)
 	check("ternlog-y-source2", "VPTERNLOGD", asm.Instr{Args: []asm.Operand{imm(0x96), reg("Y0"), ident("bad"), reg("Y2")}}, true, true)
 

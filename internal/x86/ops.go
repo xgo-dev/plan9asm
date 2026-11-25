@@ -160,8 +160,10 @@ var x86VecBinOpSpecs = []asm.OpSpec{
 	{Op: "PMULLW", Family: asm.FamilyVecBinOp, LaneBits: 16, Effect: asm.EffectReadWrite, LLVMOp: "mul"},
 	{Op: "PMULLD", Family: asm.FamilyVecBinOp, LaneBits: 32, Effect: asm.EffectReadWrite, LLVMOp: "mul", ArchFeature: "+sse4.1"},
 	{Op: "PAND", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "and"},
+	{Op: "PANDN", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "andn"},
 	{Op: "POR", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "or"},
 	{Op: "PXOR", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "xor"},
+	{Op: "PMULULQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Effect: asm.EffectReadWrite, LLVMOp: "pmuludq", ArchFeature: "+sse2"},
 	{Op: "PMINUB", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "umin"},
 	{Op: "PMAXUB", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "umax"},
 	{Op: "PMINSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "smin", ArchFeature: "+sse4.1"},
@@ -286,16 +288,21 @@ var x86VecBinOpSpecs = []asm.OpSpec{
 	{Op: "VPSIGNB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "psign", ArchFeature: "+avx2"},
 	{Op: "VPSIGNW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "psign", ArchFeature: "+avx2"},
 	{Op: "VPSIGND", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "psign", ArchFeature: "+avx2"},
+	{Op: "PCMPEQB", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "cmpeq"},
 	{Op: "PCMPEQW", Family: asm.FamilyVecBinOp, LaneBits: 16, Effect: asm.EffectReadWrite, LLVMOp: "cmpeq"},
+	{Op: "PCMPEQL", Family: asm.FamilyVecBinOp, LaneBits: 32, Effect: asm.EffectReadWrite, LLVMOp: "cmpeq"},
 	{Op: "PCMPEQD", Family: asm.FamilyVecBinOp, LaneBits: 32, Effect: asm.EffectReadWrite, LLVMOp: "cmpeq"},
 	{Op: "PCMPEQQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Effect: asm.EffectReadWrite, LLVMOp: "cmpeq"},
+	{Op: "PCMPGTB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
 	{Op: "PCMPGTW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
 	{Op: "PCMPGTL", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
 	{Op: "PCMPGTD", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
 	{Op: "PCMPGTQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
+	{Op: "VPCMPEQB", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpeq", ArchFeature: "+avx2"},
 	{Op: "VPCMPEQW", Family: asm.FamilyVecBinOp, LaneBits: 16, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpeq", ArchFeature: "+avx2"},
 	{Op: "VPCMPEQD", Family: asm.FamilyVecBinOp, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpeq", ArchFeature: "+avx2"},
 	{Op: "VPCMPEQQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpeq", ArchFeature: "+avx2"},
+	{Op: "VPCMPGTB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpgt", ArchFeature: "+avx2"},
 	{Op: "VPCMPGTW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpgt", ArchFeature: "+avx2"},
 	{Op: "VPCMPGTD", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpgt", ArchFeature: "+avx2"},
 	{Op: "VPCMPGTQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpgt", ArchFeature: "+avx2"},
@@ -367,7 +374,18 @@ func (c *amd64Ctx) lowerDeclarativeVecBinOp(op asm.Op, ins asm.Instr) (ok bool, 
 		return true, false, fmt.Errorf("x86 %s requires vector register destination: %q", op, ins.Raw)
 	}
 
-	vi, ok := c.x86VecInfoForReg(dstOp.Reg)
+	kDst := isAMD64KReg(dstOp.Reg) && (spec.LLVMOp == "cmpeq" || spec.LLVMOp == "cmpgt")
+	var vi x86VecInfo
+	if kDst {
+		if len(args) >= 2 && args[1].Kind == asm.OpReg {
+			vi, ok = c.x86VecInfoForReg(args[1].Reg)
+		}
+		if !ok && args[0].Kind == asm.OpReg {
+			vi, ok = c.x86VecInfoForReg(args[0].Reg)
+		}
+	} else {
+		vi, ok = c.x86VecInfoForReg(dstOp.Reg)
+	}
 	if !ok {
 		return true, false, fmt.Errorf("x86 %s unsupported destination register %s: %q", op, dstOp.Reg, ins.Raw)
 	}
@@ -470,8 +488,29 @@ func (c *amd64Ctx) lowerDeclarativeVecBinOp(op asm.Op, ins asm.Instr) (ok bool, 
 		if spec.LLVMOp == "cmpgt" {
 			pred = "sgt"
 		}
-		cmp, sx := c.newTmp(), c.newTmp()
+		cmp := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp %s %s %s, %s\n", cmp, pred, opVecTy, lhsVal, rhsVal)
+		if kDst {
+			bits := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i1> %%%s to i%d\n", bits, lanes, cmp, lanes)
+			kv := "%" + bits
+			if lanes < 64 {
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i%d %%%s to i64\n", z, lanes, bits)
+				kv = "%" + z
+			}
+			if hasMask {
+				km, err := c.loadK(kreg)
+				if err != nil {
+					return true, false, err
+				}
+				andK := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", andK, kv, km)
+				kv = "%" + andK
+			}
+			return true, false, c.storeK(dstOp.Reg, kv)
+		}
+		sx := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = sext <%d x i1> %%%s to %s\n", sx, lanes, cmp, opVecTy)
 		resVal = "%" + sx
 	case "pmuludq", "pmuldq":

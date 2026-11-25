@@ -8,10 +8,15 @@ import (
 )
 
 func (c *amd64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, err error) {
+	if raw := string(op); strings.Contains(raw, ".") {
+		if i := strings.IndexByte(raw, '.'); i >= 0 {
+			op = asm.Op(raw[:i])
+		}
+	}
 	switch op {
 	case "MOVSD", "MOVAPD", "ANDPD", "ANDNPD", "ORPD", "XORPS",
 		"ADDSD", "SUBSD", "MULSD", "DIVSD", "MAXSD", "MINSD", "SQRTSD",
-		"COMISD", "CMPSD", "VADDSD", "VFMADD213SD", "VFNMADD231SD",
+		"COMISD", "CMPSD", "CMPSS", "CMPPS", "CMPPD", "VADDSD", "VFMADD213SD", "VFNMADD231SD",
 		"CVTSD2SL", "CVTSL2SD", "CVTSQ2SD", "CVTTSD2SQ":
 		// handled below
 	default:
@@ -184,57 +189,83 @@ func (c *amd64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", lt, c.flagsSltSlot)
 		return true, false, nil
 
-	case "CMPSD":
-		if len(ins.Args) != 3 || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 CMPSD expects src, Xdst, $imm: %q", ins.Raw)
+	case "CMPSD", "CMPSS", "CMPPS", "CMPPD":
+		if len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("amd64 %s expects 3 operands: %q", op, ins.Raw)
 		}
-		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
+		var srcOp, dstOp, immOp asm.Operand
+		if ins.Args[1].Kind == asm.OpReg && isAMD64XReg(ins.Args[1].Reg) {
+			srcOp, dstOp, immOp = ins.Args[0], ins.Args[1], ins.Args[2]
+		} else if ins.Args[2].Kind == asm.OpReg && isAMD64XReg(ins.Args[2].Reg) {
+			immOp, srcOp, dstOp = ins.Args[0], ins.Args[1], ins.Args[2]
+		} else if ins.Args[1].Kind == asm.OpReg {
 			return false, false, nil
-		}
-		src, err := c.evalF64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		dst, err := c.loadXLowF64(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
+		} else {
+			return true, false, fmt.Errorf("amd64 %s expects src, Xdst, $imm: %q", op, ins.Raw)
 		}
 		pred := int64(0)
-		switch ins.Args[2].Kind {
+		switch immOp.Kind {
 		case asm.OpImm:
-			pred = ins.Args[2].Imm
+			pred = immOp.Imm
 		case asm.OpSym:
-			n, err := strconv.ParseInt(strings.TrimSpace(ins.Args[2].Sym), 0, 64)
+			n, err := strconv.ParseInt(strings.TrimSpace(immOp.Sym), 0, 64)
 			if err != nil {
-				return true, false, fmt.Errorf("amd64 CMPSD invalid imm %q: %q", ins.Args[2].Sym, ins.Raw)
+				return true, false, fmt.Errorf("amd64 %s invalid imm %q: %q", op, immOp.Sym, ins.Raw)
 			}
 			pred = n
 		default:
-			return true, false, fmt.Errorf("amd64 CMPSD expects immediate predicate: %q", ins.Raw)
+			return true, false, fmt.Errorf("amd64 %s expects immediate predicate: %q", op, ins.Raw)
 		}
-		pred &= 7
-		cmp := c.newTmp()
-		switch pred {
-		case 0:
-			fmt.Fprintf(c.b, "  %%%s = fcmp oeq double %s, %s\n", cmp, dst, src)
-		case 1:
-			fmt.Fprintf(c.b, "  %%%s = fcmp olt double %s, %s\n", cmp, dst, src)
-		case 2:
-			fmt.Fprintf(c.b, "  %%%s = fcmp ole double %s, %s\n", cmp, dst, src)
-		case 3:
-			fmt.Fprintf(c.b, "  %%%s = fcmp uno double %s, %s\n", cmp, dst, src)
-		case 4:
-			fmt.Fprintf(c.b, "  %%%s = fcmp une double %s, %s\n", cmp, dst, src)
-		case 5:
-			fmt.Fprintf(c.b, "  %%%s = fcmp uge double %s, %s\n", cmp, dst, src)
-		case 6:
-			fmt.Fprintf(c.b, "  %%%s = fcmp ugt double %s, %s\n", cmp, dst, src)
-		case 7:
-			fmt.Fprintf(c.b, "  %%%s = fcmp ord double %s, %s\n", cmp, dst, src)
+		fcmpPred := [8]string{"oeq", "olt", "ole", "uno", "une", "uge", "ugt", "ord"}[pred&7]
+		switch op {
+		case "CMPSD":
+			src, err := c.evalF64(srcOp)
+			if err != nil {
+				return true, false, err
+			}
+			dst, err := c.loadXLowF64(dstOp.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			cmp, mask := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = fcmp %s double %s, %s\n", cmp, fcmpPred, dst, src)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 -1, i64 0\n", mask, cmp)
+			return true, false, c.storeXLowI64(dstOp.Reg, "%"+mask)
+		case "CMPSS":
+			src, err := c.evalF32(srcOp)
+			if err != nil {
+				return true, false, err
+			}
+			dst, err := c.loadXLowF32(dstOp.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			cmp, mask, fmask := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = fcmp %s float %s, %s\n", cmp, fcmpPred, dst, src)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 -1, i32 0\n", mask, cmp)
+			fmt.Fprintf(c.b, "  %%%s = bitcast i32 %%%s to float\n", fmask, mask)
+			return true, false, c.storeXLowF32(dstOp.Reg, "%"+fmask)
+		case "CMPPS", "CMPPD":
+			srcRaw, err := c.loadXVecOperand(srcOp)
+			if err != nil {
+				return true, false, err
+			}
+			dstRaw, err := c.loadX(dstOp.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			lanes, fpTy, intTy := 4, "<4 x float>", "<4 x i32>"
+			if op == "CMPPD" {
+				lanes, fpTy, intTy = 2, "<2 x double>", "<2 x i64>"
+			}
+			sb, db, cmp, sx, out := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to %s\n", sb, srcRaw, fpTy)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to %s\n", db, dstRaw, fpTy)
+			fmt.Fprintf(c.b, "  %%%s = fcmp %s %s %%%s, %%%s\n", cmp, fcmpPred, fpTy, db, sb)
+			fmt.Fprintf(c.b, "  %%%s = sext <%d x i1> %%%s to %s\n", sx, lanes, cmp, intTy)
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", out, intTy, sx)
+			return true, false, c.storeX(dstOp.Reg, "%"+out)
 		}
-		mask := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 -1, i64 0\n", mask, cmp)
-		return true, false, c.storeXLowI64(ins.Args[1].Reg, "%"+mask)
 
 	case "CVTTSD2SQ":
 		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
@@ -318,57 +349,54 @@ func (c *amd64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		fmt.Fprintf(c.b, "  %%%s = fadd double %s, %s\n", t, s2, s1)
 		return true, false, c.storeXLowF64(ins.Args[2].Reg, "%"+t)
 
-	case "VFMADD213SD":
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 VFMADD213SD expects src1, src2, Xdst: %q", ins.Raw)
+	case "VFMADD213SD", "VFNMADD231SD":
+		args, kreg, hasMask := x86StripEVEXMask(ins.Args)
+		zeroMask := strings.Contains(strings.ToUpper(string(ins.Op)), ".Z")
+		if len(args) != 3 || args[2].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("amd64 %s expects src1, src2, Xdst: %q", op, ins.Raw)
 		}
-		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
+		if _, ok := amd64ParseXReg(args[2].Reg); !ok {
 			return false, false, nil
 		}
-		s1, err := c.evalF64(ins.Args[0])
+		s1, err := c.evalF64(args[0])
 		if err != nil {
 			return true, false, err
 		}
-		s2, err := c.evalF64(ins.Args[1])
+		s2, err := c.evalF64(args[1])
 		if err != nil {
 			return true, false, err
 		}
-		dst, err := c.loadXLowF64(ins.Args[2].Reg)
+		dst, err := c.loadXLowF64(args[2].Reg)
 		if err != nil {
 			return true, false, err
 		}
-		mul := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", mul, dst, s2)
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fadd double %%%s, %s\n", t, mul, s1)
-		return true, false, c.storeXLowF64(ins.Args[2].Reg, "%"+t)
-
-	case "VFNMADD231SD":
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 VFNMADD231SD expects src1, src2, Xdst: %q", ins.Raw)
+		if op == "VFMADD213SD" {
+			mul := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", mul, dst, s2)
+			fmt.Fprintf(c.b, "  %%%s = fadd double %%%s, %s\n", t, mul, s1)
+		} else {
+			mul, neg := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", mul, s1, s2)
+			fmt.Fprintf(c.b, "  %%%s = fneg double %%%s\n", neg, mul)
+			fmt.Fprintf(c.b, "  %%%s = fadd double %%%s, %s\n", t, neg, dst)
 		}
-		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
+		out := "%" + t
+		if hasMask {
+			kv, err := c.loadK(kreg)
+			if err != nil {
+				return true, false, err
+			}
+			bit, sel := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", bit, kv)
+			fb := dst
+			if zeroMask {
+				fb = "0.0"
+			}
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, double %s, double %s\n", sel, bit, out, fb)
+			out = "%" + sel
 		}
-		s1, err := c.evalF64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		s2, err := c.evalF64(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		dst, err := c.loadXLowF64(ins.Args[2].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		mul := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", mul, s1, s2)
-		neg := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fneg double %%%s\n", neg, mul)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fadd double %%%s, %s\n", t, neg, dst)
-		return true, false, c.storeXLowF64(ins.Args[2].Reg, "%"+t)
+		return true, false, c.storeXLowF64(args[2].Reg, out)
 	}
 	return false, false, nil
 }

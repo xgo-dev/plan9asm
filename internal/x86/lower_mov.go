@@ -102,12 +102,12 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 
 	switch op {
 	case "CMOVQLT":
-		// CMOVQLT srcReg, dstReg
-		if src.Kind != asm.OpReg || dst.Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 CMOVQLT expects reg, reg: %q", ins.Raw)
+		// CMOVQLT src, dstReg
+		if dst.Kind != asm.OpReg {
+			return true, false, fmt.Errorf("amd64 CMOVQLT expects src, reg: %q", ins.Raw)
 		}
 		cond := c.loadFlag(c.flagsSltSlot)
-		sv, err := c.loadReg(src.Reg)
+		sv, err := c.evalI64(src)
 		if err != nil {
 			return true, false, err
 		}
@@ -161,6 +161,12 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			ld := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", ld, widthTy, p)
 			small = "%" + ld
+		case asm.OpIdent:
+			if op == "MOVW" && isX86SystemOrSegIdent(src.Ident) {
+				small = "0"
+			} else {
+				return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
+			}
 		default:
 			return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
 		}
@@ -191,6 +197,11 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			}
 			fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", widthTy, small, p)
 			return true, false, nil
+		case asm.OpIdent:
+			if op == "MOVW" && isX86SystemOrSegIdent(dst.Ident) {
+				return true, false, nil
+			}
+			return true, false, fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
 		default:
 			return true, false, fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
 		}
@@ -269,6 +280,14 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			}
 			fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
 			return true, false, nil
+		case asm.OpIdent:
+			if isX86SystemOrSegIdent(dst.Ident) {
+				if _, err := c.evalI64(src); err != nil {
+					return true, false, err
+				}
+				return true, false, nil
+			}
+			return true, false, fmt.Errorf("amd64 MOVQ unsupported dst: %q", ins.Raw)
 		default:
 			return true, false, fmt.Errorf("amd64 MOVQ unsupported dst: %q", ins.Raw)
 		}
@@ -329,6 +348,11 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			}
 			fmt.Fprintf(c.b, "  store i32 %s, ptr %s, align 1\n", i32v, p)
 			return true, false, nil
+		case asm.OpIdent:
+			if isX86SystemOrSegIdent(dst.Ident) {
+				return true, false, nil
+			}
+			return true, false, fmt.Errorf("amd64 MOVL unsupported dst: %q", ins.Raw)
 		default:
 			return true, false, fmt.Errorf("amd64 MOVL unsupported dst: %q", ins.Raw)
 		}

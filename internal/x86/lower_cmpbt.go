@@ -255,6 +255,11 @@ func (c *amd64Ctx) evalIntSized(op asm.Operand, ty asm.LLVMType) (string, error)
 			return "%" + t, nil
 		}
 		return "", fmt.Errorf("amd64: unsupported sym int operand: %s", op.String())
+	case asm.OpIdent:
+		if isX86SystemOrSegIdent(op.Ident) {
+			return "0", nil
+		}
+		return "", fmt.Errorf("amd64: unsupported int operand: %s", op.String())
 	default:
 		return "", fmt.Errorf("amd64: unsupported int operand: %s", op.String())
 	}

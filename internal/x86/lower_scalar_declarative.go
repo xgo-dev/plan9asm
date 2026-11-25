@@ -336,6 +336,13 @@ func (c *amd64Ctx) lowerScalarDeclarative(op asm.Op, ins asm.Instr) (ok bool, te
 				return true, false, nil
 			case asm.OpFP:
 				return true, false, c.storeFPResult(ins.Args[0].FPOffset, asm.I8, "%"+z)
+			case asm.OpSym:
+				p, err := c.ptrFromSB(ins.Args[0].Sym)
+				if err != nil {
+					return true, false, err
+				}
+				fmt.Fprintf(c.b, "  store i8 %%%s, ptr %s, align 1\n", z, p)
+				return true, false, nil
 			default:
 				return true, false, fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
 			}

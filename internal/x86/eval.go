@@ -53,9 +53,31 @@ func (c *amd64Ctx) evalI64(op asm.Operand) (string, error) {
 		}
 		fmt.Fprintf(c.b, "  %%%s = %s i64, ptr %s, align 1\n", t, loadKW, p)
 		return "%" + t, nil
+	case asm.OpIdent:
+		if isX86SystemOrSegIdent(op.Ident) {
+			return "0", nil
+		}
+		return "", fmt.Errorf("amd64: unsupported i64 operand: %s", op.String())
 	default:
 		return "", fmt.Errorf("amd64: unsupported i64 operand: %s", op.String())
 	}
+}
+
+func isX86SystemOrSegIdent(ident string) bool {
+	s := strings.ToUpper(strings.TrimSpace(ident))
+	switch s {
+	case "CS", "DS", "ES", "FS", "GS", "SS":
+		return true
+	}
+	if len(s) >= 3 && (strings.HasPrefix(s, "CR") || strings.HasPrefix(s, "DR") || strings.HasPrefix(s, "TR")) {
+		for i := 2; i < len(s); i++ {
+			if s[i] < '0' || s[i] > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func (c *amd64Ctx) isVolatileSB(sym string) bool {

@@ -110,6 +110,10 @@ var x86ExtraSIMDSpecs = []asm.OpSpec{
 	{Op: "VPABSW", Family: asm.FamilyVecUnary, LaneBits: 16, Signed: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "abs"},
 	{Op: "VPABSD", Family: asm.FamilyVecUnary, LaneBits: 32, Signed: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "abs"},
 	{Op: "VPABSQ", Family: asm.FamilyVecUnary, LaneBits: 64, Signed: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "abs"},
+	{Op: "VPOPCNTB", Family: asm.FamilyVecUnary, LaneBits: 8, Effect: asm.EffectWriteZeroUpper, LLVMOp: "ctpop"},
+	{Op: "VPOPCNTW", Family: asm.FamilyVecUnary, LaneBits: 16, Effect: asm.EffectWriteZeroUpper, LLVMOp: "ctpop"},
+	{Op: "VPOPCNTD", Family: asm.FamilyVecUnary, LaneBits: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "ctpop"},
+	{Op: "VPOPCNTQ", Family: asm.FamilyVecUnary, LaneBits: 64, Effect: asm.EffectWriteZeroUpper, LLVMOp: "ctpop"},
 	{Op: "SQRTPS", Family: asm.FamilyVecUnary, LaneBits: 32, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "sqrt"},
 	{Op: "SQRTPD", Family: asm.FamilyVecUnary, LaneBits: 64, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "sqrt"},
 	{Op: "VSQRTPS", Family: asm.FamilyVecUnary, LaneBits: 32, Float: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "sqrt"},
@@ -161,6 +165,7 @@ var x86ExtraSIMDSpecs = []asm.OpSpec{
 	{Op: "MOVMSKPD", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectWriteZeroUpper, LLVMOp: "movmsk"},
 	{Op: "VMOVMSKPS", Family: asm.FamilyVecShuffle, LaneBits: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "movmsk"},
 	{Op: "VMOVMSKPD", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectWriteZeroUpper, LLVMOp: "movmsk"},
+	{Op: "PMOVMSKB", Family: asm.FamilyVecShuffle, LaneBits: 8, Effect: asm.EffectWriteZeroUpper, LLVMOp: "movmsk"},
 	{Op: "VPMOVMSKB", Family: asm.FamilyVecShuffle, LaneBits: 8, Effect: asm.EffectWriteZeroUpper, LLVMOp: "movmsk"},
 
 	// Shuffles, blends, unpacks, packs, aligns, permutes, inserts, extracts
@@ -180,13 +185,19 @@ var x86ExtraSIMDSpecs = []asm.OpSpec{
 	{Op: "UNPCKHPS", Family: asm.FamilyVecShuffle, LaneBits: 32, Effect: asm.EffectReadWrite, LLVMOp: "unpckh"},
 	{Op: "UNPCKLPD", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectReadWrite, LLVMOp: "unpckl"},
 	{Op: "UNPCKHPD", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectReadWrite, LLVMOp: "unpckh"},
+	{Op: "PUNPCKLBW", Family: asm.FamilyVecShuffle, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "unpckl"},
+	{Op: "PUNPCKHBW", Family: asm.FamilyVecShuffle, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "unpckh"},
 	{Op: "PUNPCKLWL", Family: asm.FamilyVecShuffle, LaneBits: 16, Effect: asm.EffectReadWrite, LLVMOp: "unpckl"},
 	{Op: "PUNPCKHWL", Family: asm.FamilyVecShuffle, LaneBits: 16, Effect: asm.EffectReadWrite, LLVMOp: "unpckh"},
+	{Op: "PUNPCKLLQ", Family: asm.FamilyVecShuffle, LaneBits: 32, Effect: asm.EffectReadWrite, LLVMOp: "unpckl"},
+	{Op: "PUNPCKHLQ", Family: asm.FamilyVecShuffle, LaneBits: 32, Effect: asm.EffectReadWrite, LLVMOp: "unpckh"},
 	{Op: "PUNPCKHQDQ", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectReadWrite, LLVMOp: "unpckh"},
 	{Op: "VUNPCKLPS", Family: asm.FamilyVecShuffle, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckl"},
 	{Op: "VUNPCKHPS", Family: asm.FamilyVecShuffle, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckh"},
 	{Op: "VUNPCKLPD", Family: asm.FamilyVecShuffle, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckl"},
 	{Op: "VUNPCKHPD", Family: asm.FamilyVecShuffle, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckh"},
+	{Op: "VPUNPCKLBW", Family: asm.FamilyVecShuffle, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckl"},
+	{Op: "VPUNPCKHBW", Family: asm.FamilyVecShuffle, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckh"},
 	{Op: "VPUNPCKLWD", Family: asm.FamilyVecShuffle, LaneBits: 16, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckl"},
 	{Op: "VPUNPCKHWD", Family: asm.FamilyVecShuffle, LaneBits: 16, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckh"},
 	{Op: "VPUNPCKLDQ", Family: asm.FamilyVecShuffle, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unpckl"},
@@ -211,6 +222,28 @@ var x86ExtraSIMDSpecs = []asm.OpSpec{
 	{Op: "VPBROADCASTQ", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vbroadcast"},
 	{Op: "VBROADCASTSS", Family: asm.FamilyVecShuffle, LaneBits: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vbroadcast"},
 	{Op: "VBROADCASTSD", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vbroadcast"},
+	{Op: "VBROADCASTF32X2", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vbroadcast"},
+	{Op: "VPTERNLOGD", Family: asm.FamilyVecShuffle, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpternlog"},
+	{Op: "VPTERNLOGQ", Family: asm.FamilyVecShuffle, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpternlog"},
+	{Op: "VPCMPB", Family: asm.FamilyVecShuffle, LaneBits: 8, Signed: true, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "vpcmp"},
+	{Op: "VPCMPUB", Family: asm.FamilyVecShuffle, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "vpcmp"},
+	{Op: "VPCMPW", Family: asm.FamilyVecShuffle, LaneBits: 16, Signed: true, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "vpcmp"},
+	{Op: "VPCMPUW", Family: asm.FamilyVecShuffle, LaneBits: 16, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "vpcmp"},
+	{Op: "VPCMPD", Family: asm.FamilyVecShuffle, LaneBits: 32, Signed: true, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "vpcmp"},
+	{Op: "VPCMPUD", Family: asm.FamilyVecShuffle, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "vpcmp"},
+	{Op: "VPCMPQ", Family: asm.FamilyVecShuffle, LaneBits: 64, Signed: true, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "vpcmp"},
+	{Op: "VPCMPUQ", Family: asm.FamilyVecShuffle, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "vpcmp"},
+	{Op: "VPCOMPRESSB", Family: asm.FamilyVecShuffle, LaneBits: 8, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpcompress"},
+	{Op: "VPCOMPRESSW", Family: asm.FamilyVecShuffle, LaneBits: 16, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpcompress"},
+	{Op: "VPCOMPRESSD", Family: asm.FamilyVecShuffle, LaneBits: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpcompress"},
+	{Op: "VPCOMPRESSQ", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpcompress"},
+	{Op: "VCOMPRESSPS", Family: asm.FamilyVecShuffle, LaneBits: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpcompress"},
+	{Op: "VCOMPRESSPD", Family: asm.FamilyVecShuffle, LaneBits: 64, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpcompress"},
+	{Op: "VPERMB", Family: asm.FamilyVecShuffle, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpermb"},
+	{Op: "VPERMI2B", Family: asm.FamilyVecShuffle, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vpermi2b"},
+	{Op: "VGF2P8AFFINEQB", Family: asm.FamilyCrypto, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "gf2affine"},
+	{Op: "VGF2P8AFFINEINVQB", Family: asm.FamilyCrypto, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "gf2affineinv"},
+	{Op: "VGF2P8MULB", Family: asm.FamilyCrypto, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "gf2mul"},
 	{Op: "VSHUFI32X4", Family: asm.FamilyVecShuffle, Width: 128, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vshuf_sub"},
 	{Op: "VSHUFF32X4", Family: asm.FamilyVecShuffle, Width: 128, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vshuf_sub"},
 	{Op: "VSHUFI64X2", Family: asm.FamilyVecShuffle, Width: 128, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "vshuf_sub"},
@@ -362,8 +395,67 @@ type x86VecInfo struct {
 	storeVec  func(asm.Reg, string) error
 }
 
+func amd64ParseMReg(r asm.Reg) (int, bool) {
+	s := strings.ToUpper(strings.TrimSpace(string(r)))
+	if len(s) == 2 && s[0] == 'M' && s[1] >= '0' && s[1] <= '7' {
+		return int(s[1] - '0'), true
+	}
+	return 0, false
+}
+
+func isAMD64MReg(r asm.Reg) bool { _, ok := amd64ParseMReg(r); return ok }
+
+func (c *amd64Ctx) loadM(r asm.Reg) (string, error) {
+	if _, ok := amd64ParseMReg(r); !ok {
+		return "", fmt.Errorf("not an M reg: %s", r)
+	}
+	v64, err := c.loadReg(r)
+	if err != nil {
+		return "", err
+	}
+	bc := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast i64 %s to <8 x i8>\n", bc, v64)
+	return "%" + bc, nil
+}
+
+func (c *amd64Ctx) storeM(r asm.Reg, v string) error {
+	if _, ok := amd64ParseMReg(r); !ok {
+		return fmt.Errorf("not an M reg: %s", r)
+	}
+	bc := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i8> %s to i64\n", bc, v)
+	return c.storeReg(r, "%"+bc)
+}
+
+func (c *amd64Ctx) loadMVecOperand(op asm.Operand) (string, error) {
+	switch op.Kind {
+	case asm.OpReg:
+		return c.loadM(op.Reg)
+	case asm.OpMem:
+		p, ptrType, err := c.ptrFromMem(op.Mem)
+		if err != nil {
+			return "", err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load <8 x i8>, %s %s, align 1\n", t, ptrType, p)
+		return "%" + t, nil
+	case asm.OpSym:
+		p, err := c.ptrFromSB(op.Sym)
+		if err != nil {
+			return "", err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load <8 x i8>, ptr %s, align 1\n", t, p)
+		return "%" + t, nil
+	default:
+		return "", fmt.Errorf("amd64: unsupported M-vector operand %s", op.String())
+	}
+}
+
 func (c *amd64Ctx) x86VecInfoForReg(r asm.Reg) (x86VecInfo, bool) {
 	switch {
+	case isAMD64MReg(r):
+		return x86VecInfo{64, "<8 x i8>", c.loadMVecOperand, c.loadM, c.storeM}, true
 	case isAMD64XReg(r):
 		return x86VecInfo{128, "<16 x i8>", c.loadXVecOperand, c.loadX, c.storeX}, true
 	case isAMD64YReg(r):
@@ -500,7 +592,7 @@ func (c *amd64Ctx) lowerSIMDDeclarative(op asm.Op, ins asm.Instr) (ok bool, term
 	case asm.FamilyVecShuffle:
 		return true, false, c.lowerX86VecShuffleDeclarative(spec, zeroMask, ins)
 	case asm.FamilyCrypto:
-		return true, false, c.lowerX86VAESDeclarative(spec, ins)
+		return true, false, c.lowerX86VAESDeclarative(spec, zeroMask, ins)
 	case asm.FamilySystem:
 		if spec.LLVMOp == "prefetch_gs" {
 			return true, false, nil
@@ -1027,6 +1119,10 @@ func (c *amd64Ctx) lowerX86VecUnaryDeclarative(spec asm.OpSpec, zeroMask bool, i
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.abs.v%di%d(%s %s, i1 false)\n", t, vecTy, lanes, laneBits, vecTy, srcV)
 		res = "%" + t
+	case "ctpop":
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.ctpop.v%di%d(%s %s)\n", t, vecTy, lanes, laneBits, vecTy, srcV)
+		res = "%" + t
 	case "sqrt":
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.sqrt.v%df%d(%s %s)\n", t, vecTy, lanes, laneBits, vecTy, srcV)
@@ -1308,7 +1404,11 @@ func (c *amd64Ctx) lowerX86VecShiftDeclarative(spec asm.OpSpec, zeroMask bool, i
 	case asm.OpImm:
 		cntI64 = fmt.Sprintf("%d", uint8(cntOp.Imm))
 	case asm.OpReg:
-		cntI64, err = c.loadXLowI64(cntOp.Reg)
+		if isAMD64MReg(cntOp.Reg) {
+			cntI64, err = c.loadReg(cntOp.Reg)
+		} else {
+			cntI64, err = c.loadXLowI64(cntOp.Reg)
+		}
 	case asm.OpMem:
 		cntI64, err = c.evalIntSized(cntOp, asm.I64)
 	default:
@@ -1794,7 +1894,11 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		laneBits := int(spec.LaneBits)
 		lanes := vi.totalBits / laneBits
 		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-		per128 := 128 / laneBits
+		chunkBits := vi.totalBits
+		if chunkBits > 128 {
+			chunkBits = 128
+		}
+		per128 := chunkBits / laneBits
 		half := per128 / 2
 		off := 0
 		if spec.LLVMOp == "unpckh" {
@@ -2171,10 +2275,14 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		}
 		lClamped := clamp(lhsRaw)
 		rClamped := clamp(rhsRaw)
-		// Interleave 128-bit lanes: each 128-bit chunk gets srcPer128 from lhs then srcPer128 from rhs.
-		srcPer128 := 128 / srcBits
+		// Interleave lanes per 128-bit chunk (or single 64-bit chunk for MMX).
+		chunkBits := vi.totalBits
+		if chunkBits > 128 {
+			chunkBits = 128
+		}
+		srcPer128 := chunkBits / srcBits
 		mask := make([]string, dstLanes)
-		chunks := vi.totalBits / 128
+		chunks := vi.totalBits / chunkBits
 		for ch := 0; ch < chunks; ch++ {
 			for i := 0; i < srcPer128; i++ {
 				mask[ch*2*srcPer128+i] = fmt.Sprintf("i32 %d", ch*srcPer128+i)
@@ -2752,12 +2860,412 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse42.pcmpistri128(<16 x i8> %s, <16 x i8> %s, i8 %d)\n", t, src1, src2, imm)
 		return c.storeRegSized(asm.CX, asm.I32, "%"+t)
+
+	case "vpternlog":
+		if len(args) != 4 || args[0].Kind != asm.OpImm || args[3].Kind != asm.OpReg {
+			return fmt.Errorf("amd64 %s expects $imm, src1, src2, dst: %q", spec.Op, ins.Raw)
+		}
+		vi, ok := c.x86VecInfoForReg(args[3].Reg)
+		if !ok {
+			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
+		}
+		bcst := strings.Contains(strings.ToUpper(string(ins.Op)), ".BCST")
+		laneBits := int(spec.LaneBits)
+		lanes := vi.totalBits / laneBits
+		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
+		aRaw, err := c.x86LoadVecOrBcst(vi, args[1], bcst, laneBits)
+		if err != nil {
+			return err
+		}
+		bRaw, err := vi.loadVec(args[2])
+		if err != nil {
+			return err
+		}
+		cRaw, err := vi.loadReg(args[3].Reg)
+		if err != nil {
+			return err
+		}
+		// Plan 9 AT&T order: $imm, src3(r/m), src2, dst(src1).
+		// Intel truth-table bit index = (dst<<2)|(src2<<1)|src3.
+		imm := uint8(args[0].Imm)
+		var resBytes string
+		switch imm {
+		case 0x00:
+			resBytes = "zeroinitializer"
+		case 0xff:
+			resBytes = x86IntSplat(vi.totalBits/8, 8, -1)
+		case 0x96:
+			x1, x2 := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", x1, vi.byteVecTy, cRaw, bRaw)
+			fmt.Fprintf(c.b, "  %%%s = xor %s %%%s, %s\n", x2, vi.byteVecTy, x1, aRaw)
+			resBytes = "%" + x2
+		default:
+			ones := x86IntSplat(vi.totalBits/8, 8, -1)
+			nc, nb, na := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", nc, vi.byteVecTy, cRaw, ones)
+			fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", nb, vi.byteVecTy, bRaw, ones)
+			fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", na, vi.byteVecTy, aRaw, ones)
+			acc := ""
+			for bit := uint(0); bit < 8; bit++ {
+				if (imm>>bit)&1 == 0 {
+					continue
+				}
+				tc, tb, ta := "%"+nc, "%"+nb, "%"+na
+				if bit&4 != 0 {
+					tc = cRaw
+				}
+				if bit&2 != 0 {
+					tb = bRaw
+				}
+				if bit&1 != 0 {
+					ta = aRaw
+				}
+				m1, m2 := c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", m1, vi.byteVecTy, tc, tb)
+				fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", m2, vi.byteVecTy, m1, ta)
+				if acc == "" {
+					acc = "%" + m2
+				} else {
+					o := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = or %s %s, %%%s\n", o, vi.byteVecTy, acc, m2)
+					acc = "%" + o
+				}
+			}
+			resBytes = acc
+		}
+		if hasMask {
+			rb, ob := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", rb, vi.byteVecTy, resBytes, vecTy)
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", ob, vi.byteVecTy, cRaw, vecTy)
+			blended, err := c.x86ApplyMask(kreg, zeroMask, lanes, vecTy, "%"+rb, "%"+ob)
+			if err != nil {
+				return err
+			}
+			out := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", out, vecTy, blended, vi.byteVecTy)
+			resBytes = "%" + out
+		}
+		return vi.storeVec(args[3].Reg, resBytes)
+
+	case "vpcmp":
+		if len(args) != 4 || args[0].Kind != asm.OpImm || args[3].Kind != asm.OpReg || !isAMD64KReg(args[3].Reg) {
+			return fmt.Errorf("amd64 %s expects $imm, src1, src2, [Kmask,] Kdst: %q", spec.Op, ins.Raw)
+		}
+		var vi x86VecInfo
+		var ok bool
+		if args[2].Kind == asm.OpReg {
+			vi, ok = c.x86VecInfoForReg(args[2].Reg)
+		}
+		if !ok && args[1].Kind == asm.OpReg {
+			vi, ok = c.x86VecInfoForReg(args[1].Reg)
+		}
+		if !ok {
+			return fmt.Errorf("amd64 %s requires vector source register: %q", spec.Op, ins.Raw)
+		}
+		bcst := strings.Contains(strings.ToUpper(string(ins.Op)), ".BCST")
+		laneBits := int(spec.LaneBits)
+		lanes := vi.totalBits / laneBits
+		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
+		rhsRaw, err := c.x86LoadVecOrBcst(vi, args[1], bcst, laneBits)
+		if err != nil {
+			return err
+		}
+		lhsRaw, err := vi.loadVec(args[2])
+		if err != nil {
+			return err
+		}
+		lhs, rhs := lhsRaw, rhsRaw
+		if vecTy != vi.byteVecTy {
+			lb, rb := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", lb, vi.byteVecTy, lhsRaw, vecTy)
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", rb, vi.byteVecTy, rhsRaw, vecTy)
+			lhs, rhs = "%"+lb, "%"+rb
+		}
+		predIdx := args[0].Imm & 7
+		var kv string
+		if predIdx == 3 {
+			kv = "0"
+		} else if predIdx == 7 {
+			if lanes == 64 {
+				kv = "-1"
+			} else {
+				kv = fmt.Sprintf("%d", (uint64(1)<<uint(lanes))-1)
+			}
+		} else {
+			var pred string
+			if spec.Signed {
+				pred = [8]string{"eq", "slt", "sle", "", "ne", "sge", "sgt", ""}[predIdx]
+			} else {
+				pred = [8]string{"eq", "ult", "ule", "", "ne", "uge", "ugt", ""}[predIdx]
+			}
+			cmp, bits := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp %s %s %s, %s\n", cmp, pred, vecTy, lhs, rhs)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i1> %%%s to i%d\n", bits, lanes, cmp, lanes)
+			kv = "%" + bits
+			if lanes < 64 {
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i%d %%%s to i64\n", z, lanes, bits)
+				kv = "%" + z
+			}
+		}
+		if hasMask {
+			km, err := c.loadK(kreg)
+			if err != nil {
+				return err
+			}
+			andK := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, %s\n", andK, kv, km)
+			kv = "%" + andK
+		}
+		return c.storeK(args[3].Reg, kv)
+
+	case "vpcompress":
+		if len(args) != 2 || args[0].Kind != asm.OpReg {
+			return fmt.Errorf("amd64 %s expects Vsrc, [Kmask,] dst: %q", spec.Op, ins.Raw)
+		}
+		vi, ok := c.x86VecInfoForReg(args[0].Reg)
+		if !ok {
+			return fmt.Errorf("amd64 %s src must be vector reg: %q", spec.Op, ins.Raw)
+		}
+		srcRaw, err := vi.loadReg(args[0].Reg)
+		if err != nil {
+			return err
+		}
+		laneBits := int(spec.LaneBits)
+		lanes := vi.totalBits / laneBits
+		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
+		sv := srcRaw
+		if vecTy != vi.byteVecTy {
+			bc := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bc, vi.byteVecTy, srcRaw, vecTy)
+			sv = "%" + bc
+		}
+		if args[1].Kind == asm.OpReg {
+			dstVi, ok := c.x86VecInfoForReg(args[1].Reg)
+			if !ok || dstVi.totalBits != vi.totalBits {
+				return fmt.Errorf("amd64 %s dst register width mismatch: %q", spec.Op, ins.Raw)
+			}
+			if !hasMask {
+				return dstVi.storeVec(args[1].Reg, srcRaw)
+			}
+			maskv, err := c.loadK(kreg)
+			if err != nil {
+				return err
+			}
+			outVec := "zeroinitializer"
+			if !zeroMask {
+				oldRaw, err := dstVi.loadReg(args[1].Reg)
+				if err != nil {
+					return err
+				}
+				if vecTy != vi.byteVecTy {
+					obc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", obc, vi.byteVecTy, oldRaw, vecTy)
+					outVec = "%" + obc
+				} else {
+					outVec = oldRaw
+				}
+			}
+			writePos := "0"
+			for i := 0; i < lanes; i++ {
+				bit := amd64MaskBitI1(c, maskv, i)
+				lane, insE, sel, step, nextPos := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", lane, vecTy, sv, i)
+				fmt.Fprintf(c.b, "  %%%s = insertelement %s %s, i%d %%%s, i32 %s\n", insE, vecTy, outVec, laneBits, lane, writePos)
+				fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %%%s, %s %s\n", sel, bit, vecTy, insE, vecTy, outVec)
+				fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i32\n", step, bit)
+				fmt.Fprintf(c.b, "  %%%s = add i32 %s, %%%s\n", nextPos, writePos, step)
+				outVec = "%" + sel
+				writePos = "%" + nextPos
+			}
+			resBytes := outVec
+			if vecTy != vi.byteVecTy {
+				out := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", out, vecTy, outVec, vi.byteVecTy)
+				resBytes = "%" + out
+			}
+			return dstVi.storeVec(args[1].Reg, resBytes)
+		}
+		if args[1].Kind == asm.OpMem || args[1].Kind == asm.OpSym {
+			var basePtr, ptrType string
+			if args[1].Kind == asm.OpMem {
+				basePtr, ptrType, err = c.ptrFromMem(args[1].Mem)
+			} else {
+				basePtr, err = c.ptrFromSB(args[1].Sym)
+				ptrType = "ptr"
+			}
+			if err != nil {
+				return err
+			}
+			if !hasMask {
+				fmt.Fprintf(c.b, "  store %s %s, %s %s, align 1\n", vi.byteVecTy, srcRaw, ptrType, basePtr)
+				return nil
+			}
+			maskv, err := c.loadK(kreg)
+			if err != nil {
+				return err
+			}
+			writePos := "0"
+			for i := 0; i < lanes; i++ {
+				bit := amd64MaskBitI1(c, maskv, i)
+				lane, gep, oldM, val, step, nextPos := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", lane, vecTy, sv, i)
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i%d, %s %s, i32 %s\n", gep, laneBits, ptrType, basePtr, writePos)
+				fmt.Fprintf(c.b, "  %%%s = load i%d, %s %%%s, align 1\n", oldM, laneBits, ptrType, gep)
+				fmt.Fprintf(c.b, "  %%%s = select i1 %s, i%d %%%s, i%d %%%s\n", val, bit, laneBits, lane, laneBits, oldM)
+				fmt.Fprintf(c.b, "  store i%d %%%s, %s %%%s, align 1\n", laneBits, val, ptrType, gep)
+				fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i32\n", step, bit)
+				fmt.Fprintf(c.b, "  %%%s = add i32 %s, %%%s\n", nextPos, writePos, step)
+				writePos = "%" + nextPos
+			}
+			return nil
+		}
+		return fmt.Errorf("amd64 %s unsupported dst: %q", spec.Op, ins.Raw)
+
+	case "vpermb", "vpermi2b":
+		if len(args) != 3 || args[2].Kind != asm.OpReg {
+			return fmt.Errorf("amd64 %s expects src1, src2, [Kmask,] dst: %q", spec.Op, ins.Raw)
+		}
+		vi, ok := c.x86VecInfoForReg(args[2].Reg)
+		if !ok {
+			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
+		}
+		lanes := vi.totalBits / 8
+		src1, err := vi.loadVec(args[0])
+		if err != nil {
+			return err
+		}
+		src2, err := vi.loadVec(args[1])
+		if err != nil {
+			return err
+		}
+		cur := "undef"
+		if spec.LLVMOp == "vpermb" {
+			// VPERMB table(src1), idx(src2), dst
+			maskBits := lanes - 1
+			for i := 0; i < lanes; i++ {
+				ix, m, ex, insE := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", ix, vi.byteVecTy, src2, i)
+				fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, %d\n", m, ix, maskBits)
+				fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i8 %%%s\n", ex, vi.byteVecTy, src1, m)
+				fmt.Fprintf(c.b, "  %%%s = insertelement %s %s, i8 %%%s, i32 %d\n", insE, vi.byteVecTy, cur, ex, i)
+				cur = "%" + insE
+			}
+		} else {
+			// VPERMI2B table2(src1), idx(src2), dst(table1)
+			table1, err := vi.loadReg(args[2].Reg)
+			if err != nil {
+				return err
+			}
+			maskBits := lanes - 1
+			for i := 0; i < lanes; i++ {
+				ix, low, hiBit, isHi, e1, e2, pick, insE := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", ix, vi.byteVecTy, src2, i)
+				fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, %d\n", low, ix, maskBits)
+				fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, %d\n", hiBit, ix, lanes)
+				fmt.Fprintf(c.b, "  %%%s = icmp ne i8 %%%s, 0\n", isHi, hiBit)
+				fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i8 %%%s\n", e1, vi.byteVecTy, table1, low)
+				fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i8 %%%s\n", e2, vi.byteVecTy, src1, low)
+				fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", pick, isHi, e2, e1)
+				fmt.Fprintf(c.b, "  %%%s = insertelement %s %s, i8 %%%s, i32 %d\n", insE, vi.byteVecTy, cur, pick, i)
+				cur = "%" + insE
+			}
+		}
+		if hasMask {
+			oldRaw, err := vi.loadReg(args[2].Reg)
+			if err != nil {
+				return err
+			}
+			cur, err = c.x86ApplyMask(kreg, zeroMask, lanes, vi.byteVecTy, cur, oldRaw)
+			if err != nil {
+				return err
+			}
+		}
+		return vi.storeVec(args[2].Reg, cur)
 	}
 	return fmt.Errorf("amd64: unhandled SIMD shuffle %s", spec.Op)
 }
 
-func (c *amd64Ctx) lowerX86VAESDeclarative(spec asm.OpSpec, ins asm.Instr) error {
+func (c *amd64Ctx) x86LoadVecOrBcst(vi x86VecInfo, op asm.Operand, bcst bool, laneBits int) (string, error) {
+	if bcst && op.Kind == asm.OpMem {
+		lanes := vi.totalBits / laneBits
+		elemTy := fmt.Sprintf("i%d", laneBits)
+		vecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
+		p, ptrType, err := c.ptrFromMem(op.Mem)
+		if err != nil {
+			return "", err
+		}
+		ld, ins0, splat := c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", ld, elemTy, ptrType, p)
+		fmt.Fprintf(c.b, "  %%%s = insertelement %s undef, %s %%%s, i32 0\n", ins0, vecTy, elemTy, ld)
+		fmt.Fprintf(c.b, "  %%%s = shufflevector %s %%%s, %s poison, <%d x i32> zeroinitializer\n", splat, vecTy, ins0, vecTy, lanes)
+		if vecTy == vi.byteVecTy {
+			return "%" + splat, nil
+		}
+		bc := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to %s\n", bc, vecTy, splat, vi.byteVecTy)
+		return "%" + bc, nil
+	}
+	return vi.loadVec(op)
+}
+
+func (c *amd64Ctx) lowerX86VAESDeclarative(spec asm.OpSpec, zeroMask bool, ins asm.Instr) error {
+	args, kreg, hasMask := x86StripEVEXMask(ins.Args)
 	switch spec.LLVMOp {
+	case "gf2affine", "gf2affineinv", "gf2mul":
+		bcst := strings.Contains(strings.ToUpper(string(ins.Op)), ".BCST")
+		var matOp, srcOp, dstOp asm.Operand
+		var imm int64
+		if spec.LLVMOp == "gf2mul" {
+			if len(args) != 3 || args[2].Kind != asm.OpReg {
+				return fmt.Errorf("amd64 %s expects src1, src2, [K,] dst: %q", spec.Op, ins.Raw)
+			}
+			matOp, srcOp, dstOp = args[0], args[1], args[2]
+		} else {
+			if len(args) != 4 || args[0].Kind != asm.OpImm || args[3].Kind != asm.OpReg {
+				return fmt.Errorf("amd64 %s expects $imm, mat, src, [K,] dst: %q", spec.Op, ins.Raw)
+			}
+			imm, matOp, srcOp, dstOp = args[0].Imm&255, args[1], args[2], args[3]
+		}
+		vi, ok := c.x86VecInfoForReg(dstOp.Reg)
+		if !ok {
+			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
+		}
+		matRaw, err := c.x86LoadVecOrBcst(vi, matOp, bcst, 64)
+		if err != nil {
+			return err
+		}
+		srcRaw, err := vi.loadVec(srcOp)
+		if err != nil {
+			return err
+		}
+		var intr string
+		switch spec.LLVMOp {
+		case "gf2affine":
+			intr = fmt.Sprintf("@llvm.x86.vgf2p8affineqb.%d", vi.totalBits)
+		case "gf2affineinv":
+			intr = fmt.Sprintf("@llvm.x86.vgf2p8affineinvqb.%d", vi.totalBits)
+		default:
+			intr = fmt.Sprintf("@llvm.x86.vgf2p8mulb.%d", vi.totalBits)
+		}
+		call := c.newTmp()
+		if spec.LLVMOp == "gf2mul" {
+			fmt.Fprintf(c.b, "  %%%s = call %s %s(%s %s, %s %s)\n", call, vi.byteVecTy, intr, vi.byteVecTy, srcRaw, vi.byteVecTy, matRaw)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = call %s %s(%s %s, %s %s, i8 %d)\n", call, vi.byteVecTy, intr, vi.byteVecTy, srcRaw, vi.byteVecTy, matRaw, imm)
+		}
+		res := "%" + call
+		if hasMask {
+			oldRaw, err := vi.loadReg(dstOp.Reg)
+			if err != nil {
+				return err
+			}
+			res, err = c.x86ApplyMask(kreg, zeroMask, vi.totalBits/8, vi.byteVecTy, res, oldRaw)
+			if err != nil {
+				return err
+			}
+		}
+		return vi.storeVec(dstOp.Reg, res)
 	case "aesimc":
 		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
 			return fmt.Errorf("amd64 VAESIMC expects src, Xdst: %q", ins.Raw)

@@ -155,7 +155,7 @@ func main() {
 		out      = flag.String("out", "", "write report to file (default stdout)")
 		format   = flag.String("format", "md", "output format: md|json")
 		repoRoot = flag.String("repo-root", ".", "plan9asm repository root for lowerers and conformance data")
-		corpus   = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9|dir")
+		corpus   = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9|dir|encoder")
 		goroot   = flag.String("goroot", runtime.GOROOT(), "Go root containing official assembler testdata")
 		input    = flag.String("input", "", "input file or directory for corpora that require one")
 	)
@@ -180,6 +180,8 @@ func main() {
 		pkgWithSFiles int
 		asmFiles      int
 	)
+	var catalog []opcodeCatalogReport
+	var encoderCatalog []encoderFormReport
 	switch *corpus {
 	case "std":
 		pkgs, err = listStdPackages(*goos, *goarch)
@@ -210,8 +212,10 @@ func main() {
 			fatalf("-corpus dir requires -input <directory>")
 		}
 		ops, forms, parseErrs, pkgWithSFiles, asmFiles, err = scanDirectory(*input, arch, *goarch)
+	case "encoder":
+		ops, forms, parseErrs, asmFiles, encoderCatalog, err = scanEncoderSynthesized(*goroot, arch, *goarch)
 	default:
-		fatalf("unsupported -corpus %q (expect std|go-asm|arm64-plan9|dir)", *corpus)
+		fatalf("unsupported -corpus %q (expect std|go-asm|arm64-plan9|dir|encoder)", *corpus)
 	}
 	if err != nil {
 		fatalf("scan %s corpus: %v", *corpus, err)
@@ -222,12 +226,12 @@ func main() {
 		fatalf("extract supported ops: %v", err)
 	}
 
-	var catalog []opcodeCatalogReport
-	var encoderCatalog []encoderFormReport
-	if *corpus == "go-asm" {
-		encoderCatalog, err = loadEncoderForms(*goroot, *goarch)
-		if err != nil {
-			fatalf("load official encoder forms: %v", err)
+	if *corpus == "go-asm" || *corpus == "encoder" {
+		if encoderCatalog == nil {
+			encoderCatalog, err = loadEncoderForms(*goroot, *goarch)
+			if err != nil {
+				fatalf("load official encoder forms: %v", err)
+			}
 		}
 		catalog, err = buildOpcodeCatalog(*goroot, arch, *goarch, ops, forms, supported)
 		if err != nil {
