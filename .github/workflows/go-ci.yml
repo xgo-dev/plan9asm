@@ -326,7 +326,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test ./... -coverprofile=coverage-windows-root.out
+          go test -coverpkg=./... ./... -coverprofile=coverage-windows-root.out
           (cd cmd/plan9asm && go test ./... -coverprofile=../../coverage-windows-plan9asm.out)
           (cd cmd/plan9asmll && go test ./... -coverprofile=../../coverage-windows-plan9asmll.out)
 
@@ -461,7 +461,7 @@ jobs:
 
       - name: Go test with coverage
         run: |
-          go test ./... -coverprofile=coverage-root.out
+          go test -coverpkg=./... ./... -coverprofile=coverage-root.out
           go tool cover -func=coverage-root.out | tail -n 1
 
       - name: Go test with coverage (cmd/plan9asm)
