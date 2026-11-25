@@ -279,6 +279,13 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 		"PUSH_REGS_HOST_TO_ABI0()", "POP_REGS_HOST_TO_ABI0()":
 		// Alignment directive emitted by stdlib asm; no semantic effect in our IR.
 		return false, nil
+	case "PREFETCHT0", "PREFETCHT1", "PREFETCHT2", "PREFETCHNTA", "PREFETCHW":
+		// Cache prefetch hints take one memory operand and do not modify
+		// architectural registers, flags, or memory contents.
+		if len(ins.Args) != 1 || (ins.Args[0].Kind != asm.OpMem && ins.Args[0].Kind != asm.OpSym && ins.Args[0].Kind != asm.OpFP) {
+			return false, fmt.Errorf("amd64 %s expects memory operand: %q", op, ins.Raw)
+		}
+		return false, nil
 	case "ADJSP":
 		if c.goarch != "386" {
 			return false, nil

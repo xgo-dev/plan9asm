@@ -265,11 +265,8 @@ func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 		fmt.Fprintf(c.b, "  %s = alloca i64\n", name)
 		fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", name)
 	}
-	if spSlot, ok := c.regSlot[asm.SP]; ok && (c.frameSize > 0 || c.hasSPMem()) {
+	if spSlot, ok := c.regSlot[asm.SP]; ok && c.hasSPMem() {
 		minOff, maxOff := c.stackOffsetRange()
-		if end := c.frameSize + 16; end > maxOff {
-			maxOff = end
-		}
 		const guard = int64(64)
 		bias := guard - minOff
 		size := bias + maxOff + guard

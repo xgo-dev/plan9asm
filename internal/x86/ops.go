@@ -266,6 +266,11 @@ var x86VecOtherSpecs = []asm.OpSpec{
 	{Op: "CRC32W", Family: asm.FamilyCrypto, Width: 32, Effect: asm.EffectReadWrite, ArchFeature: "+sse4.2"},
 	{Op: "CRC32L", Family: asm.FamilyCrypto, Width: 32, Effect: asm.EffectReadWrite, ArchFeature: "+sse4.2"},
 	{Op: "CRC32Q", Family: asm.FamilyCrypto, Width: 64, Effect: asm.EffectReadWrite, ArchFeature: "+sse4.2"},
+	{Op: "PREFETCHT0", Family: asm.FamilySystem, Effect: asm.EffectReadOnly},
+	{Op: "PREFETCHT1", Family: asm.FamilySystem, Effect: asm.EffectReadOnly},
+	{Op: "PREFETCHT2", Family: asm.FamilySystem, Effect: asm.EffectReadOnly},
+	{Op: "PREFETCHNTA", Family: asm.FamilySystem, Effect: asm.EffectReadOnly},
+	{Op: "PREFETCHW", Family: asm.FamilySystem, Effect: asm.EffectReadOnly},
 }
 
 // lowerDeclarativeVecBinOp lowers any FamilyVecBinOp entry from OpTable across
