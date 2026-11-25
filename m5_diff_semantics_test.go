@@ -344,9 +344,9 @@ int main(void) {
 }
 
 // TestM5_AMD64DiffSemantics verifies M1-M5 amd64 extensions under opt + Haswell llc
-// everywhere, and executes bit-for-bit runtime verification on amd64 hosts.
+// everywhere, and executes bit-for-bit runtime verification on amd64 hosts (and via Rosetta on darwin/arm64).
 func TestM5_AMD64DiffSemantics(t *testing.T) {
-	src := `
+	srcVerify := `
 TEXT ·amd64M5Kernel(SB),NOSPLIT,$0-16
 	MOVQ out+0(FP), DI
 	MOVQ in+8(FP), SI
@@ -420,8 +420,9 @@ TEXT ·amd64M5Kernel(SB),NOSPLIT,$0-16
 	LONG $0x90909090
 	QUAD $0x9090909090909090
 	RET
-
-// Executable AMD64 differential semantics kernel (no privileged ops or SP-changing POPW/LEAVE).
+`
+	srcExec := `
+// Executable AMD64 differential semantics kernel (no privileged ops, SP-changing POPW/LEAVE, or libm fmaf).
 TEXT ·amd64M5Exec(SB),NOSPLIT,$0-16
 	MOVQ out+0(FP), DI
 	MOVQ in+8(FP), SI
@@ -473,63 +474,83 @@ TEXT ·amd64M5Exec(SB),NOSPLIT,$0-16
 	MOVSD X4, 144(DI)
 	RET
 `
-	file, err := Parse(ArchAMD64, src)
-	if err != nil {
-		t.Fatalf("Parse amd64 M5 failed: %v", err)
-	}
-	triple := "x86_64-unknown-linux-gnu"
-	if runtime.GOOS == "darwin" {
-		triple = "x86_64-apple-macosx"
-	}
 	ptr2 := FrameLayout{Params: []FrameSlot{
 		{Offset: 0, Type: Ptr, Index: 0, Field: -1},
 		{Offset: 8, Type: Ptr, Index: 1, Field: -1},
 	}}
-	ll, err := Translate(file, Options{
-		TargetTriple: triple,
+	fileVerify, err := Parse(ArchAMD64, srcVerify)
+	if err != nil {
+		t.Fatalf("Parse amd64 M5 verify failed: %v", err)
+	}
+	llVerify, err := Translate(fileVerify, Options{
+		TargetTriple: "x86_64-unknown-linux-gnu",
 		Goarch:       "amd64",
 		ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
 		Sigs: map[string]FuncSig{
 			"amd64M5Kernel": {Name: "amd64M5Kernel", Args: []LLVMType{Ptr, Ptr}, Ret: Void, Frame: ptr2},
-			"amd64M5Exec":   {Name: "amd64M5Exec", Args: []LLVMType{Ptr, Ptr}, Ret: Void, Frame: ptr2},
 		},
 	})
 	if err != nil {
-		t.Fatalf("Translate amd64 M5 failed: %v", err)
+		t.Fatalf("Translate amd64 M5 verify failed: %v", err)
 	}
-	verifyLLVMWithTargetLLC(t, ll, "x86_64-unknown-linux-gnu", "-mcpu=haswell", "-mattr=+aes,+ssse3,+sse4.1,+sse4.2,+pclmul,+avx,+avx2,+sha,+popcnt,+adx")
+	verifyLLVMWithTargetLLC(t, llVerify, "x86_64-unknown-linux-gnu", "-mcpu=haswell", "-mattr=+aes,+ssse3,+sse4.1,+sse4.2,+pclmul,+avx,+avx2,+sha,+popcnt,+adx")
 
-	if runtime.GOARCH != "amd64" {
+	crossRosetta := runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" && rosettaAvailable()
+	if runtime.GOARCH != "amd64" && !crossRosetta {
 		return
 	}
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
 		t.Skip("llc/clang not found")
 	}
+	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
+	var runPrefix []string
+	if crossRosetta {
+		triple = "x86_64-apple-macosx"
+		runPrefix = []string{"/usr/bin/arch", "-x86_64"}
+	}
+	fileExec, err := Parse(ArchAMD64, srcExec)
+	if err != nil {
+		t.Fatalf("Parse amd64 M5 exec failed: %v", err)
+	}
+	llExec, err := Translate(fileExec, Options{
+		TargetTriple: triple,
+		Goarch:       "amd64",
+		ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		Sigs: map[string]FuncSig{
+			"amd64M5Exec": {Name: "amd64M5Exec", Args: []LLVMType{Ptr, Ptr}, Ret: Void, Frame: ptr2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Translate amd64 M5 exec failed: %v", err)
+	}
 	mainC := `
 #include <stdint.h>
 #include <stdio.h>
+#ifdef __MINGW32__
+int _fltused = 0;
+#endif
 extern void amd64M5Exec(uint64_t *out, uint64_t *in);
 int main(void) {
     uint64_t in[4] = {0x0102030405060757ULL, 0x1122334455667788ULL, 0x0000000000000083ULL, 0x99aabbccddeeff00ULL};
     uint64_t out[24] = {0};
     amd64M5Exec(out, in);
-    if (out[0] != 0x5707060504030201ULL) return 1; // MOVBEQ
-    if (out[1] != 0x0102030405060708ULL) return 2; // PDEPQ
-    if (out[2] != 0x12345678ULL) return 3;         // PEXTQ
-    if (out[3] != 14ULL || out[4] != 2ULL) return 4; // DIVQ 100/7
-    if (out[5] != 12ULL) return 5;                 // SALB $2, 3
-    if (out[6] != 0x12345678ULL) return 6;         // MOVQL
-    if (out[7] != 99ULL || out[8] != 77ULL) return 7; // XCHGQ reversed
-    if (out[9] != in[0] || out[12] != in[3]) return 8; // VMOVDQU64 YMM
-    if (out[13] != in[2] || out[14] != in[3]) return 9; // VEXTRACTF32X4 $1, Y0
-    if ((uint32_t)out[15] != 0xbf800000U) return 10; // MOVSS $(-1.0)
-    if ((out[16] & 0xffULL) != 0xc1ULL) return 11; // VGF2P8MULB(0x57, 0x83) == 0xc1
-    if (out[18] != 0x4024000000000000ULL) return 12; // VFMADD213SD 2*3+4 == 10.0
+    if (out[0] != 0x5707060504030201ULL) { fprintf(stderr, "out[0]=0x%llx\n", (unsigned long long)out[0]); return 1; }
+    if (out[1] != 0x0102030405060708ULL) { fprintf(stderr, "out[1]=0x%llx\n", (unsigned long long)out[1]); return 2; }
+    if (out[2] != 0x12345678ULL) { fprintf(stderr, "out[2]=0x%llx\n", (unsigned long long)out[2]); return 3; }
+    if (out[3] != 14ULL || out[4] != 2ULL) { fprintf(stderr, "out[3]=%llu out[4]=%llu\n", (unsigned long long)out[3], (unsigned long long)out[4]); return 4; }
+    if (out[5] != 12ULL) { fprintf(stderr, "out[5]=%llu\n", (unsigned long long)out[5]); return 5; }
+    if (out[6] != 0x12345678ULL) { fprintf(stderr, "out[6]=0x%llx\n", (unsigned long long)out[6]); return 6; }
+    if (out[7] != 99ULL || out[8] != 77ULL) { fprintf(stderr, "out[7]=%llu out[8]=%llu\n", (unsigned long long)out[7], (unsigned long long)out[8]); return 7; }
+    if (out[9] != in[0] || out[12] != in[3]) { fprintf(stderr, "out[9]=0x%llx out[12]=0x%llx\n", (unsigned long long)out[9], (unsigned long long)out[12]); return 8; }
+    if (out[13] != in[2] || out[14] != in[3]) { fprintf(stderr, "out[13]=0x%llx out[14]=0x%llx\n", (unsigned long long)out[13], (unsigned long long)out[14]); return 9; }
+    if ((uint32_t)out[15] != 0xbf800000U) { fprintf(stderr, "out[15]=0x%x\n", (unsigned)(uint32_t)out[15]); return 10; }
+    if ((out[16] & 0xffULL) != 0xc1ULL) { fprintf(stderr, "out[16]=0x%llx\n", (unsigned long long)out[16]); return 11; }
+    if (out[18] != 0x4024000000000000ULL) { fprintf(stderr, "out[18]=0x%llx\n", (unsigned long long)out[18]); return 12; }
     return 0;
 }
 `
-	compileAndRunRuntimeTestWithCompiler(t, llc, []string{clang}, "amd64_m5_diff", testTargetTriple(runtime.GOOS, runtime.GOARCH), ll, mainC, nil)
+	compileAndRunRuntimeTestForTarget(t, llc, clang, "amd64_m5_diff", triple, llExec, mainC, runPrefix)
 }
 
 // TestM5_ARM32EncoderOps verifies all M5 32-bit ARM encoder completeness ops.

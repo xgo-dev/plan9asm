@@ -575,7 +575,10 @@ func (c *amd64Ctx) evalF32(op asm.Operand) (string, error) {
 	case asm.OpReg:
 		return c.loadXLowF32(op.Reg)
 	case asm.OpImm:
-		return asm.FormatLLVMFloat64Literal(float64(float32(op.Imm))), nil
+		d, f := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast i64 %d to double\n", d, op.Imm)
+		fmt.Fprintf(c.b, "  %%%s = fptrunc double %%%s to float\n", f, d)
+		return "%" + f, nil
 	case asm.OpMem:
 		p, ptrType, err := c.ptrFromMem(op.Mem)
 		if err != nil {
