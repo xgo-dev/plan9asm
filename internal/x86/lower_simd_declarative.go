@@ -3239,28 +3239,59 @@ func (c *amd64Ctx) lowerX86VAESDeclarative(spec asm.OpSpec, zeroMask bool, ins a
 		if err != nil {
 			return err
 		}
-		var intr string
-		switch spec.LLVMOp {
-		case "gf2affine":
-			intr = fmt.Sprintf("@llvm.x86.vgf2p8affineqb.%d", vi.totalBits)
-		case "gf2affineinv":
-			intr = fmt.Sprintf("@llvm.x86.vgf2p8affineinvqb.%d", vi.totalBits)
-		default:
-			intr = fmt.Sprintf("@llvm.x86.vgf2p8mulb.%d", vi.totalBits)
-		}
-		call := c.newTmp()
+		nBytes := vi.totalBits / 8
+		var res string
 		if spec.LLVMOp == "gf2mul" {
-			fmt.Fprintf(c.b, "  %%%s = call %s %s(%s %s, %s %s)\n", call, vi.byteVecTy, intr, vi.byteVecTy, srcRaw, vi.byteVecTy, matRaw)
+			// Pure target-independent GF(2^8) multiply mod 0x11B (x^8 + x^4 + x^3 + x + 1).
+			// Compiles cleanly on any x86 target (including -mcpu=haswell without +gfni).
+			res = c.emitX86GF2P8MulB(vi.byteVecTy, nBytes, srcRaw, matRaw)
 		} else {
-			fmt.Fprintf(c.b, "  %%%s = call %s %s(%s %s, %s %s, i8 %d)\n", call, vi.byteVecTy, intr, vi.byteVecTy, srcRaw, vi.byteVecTy, matRaw, imm)
+			inBytes := srcRaw
+			if spec.LLVMOp == "gf2affineinv" {
+				// GF(2^8) multiplicative inverse: x^254 via addition chain in GF(2^8).
+				inBytes = c.emitX86GF2P8InvB(vi.byteVecTy, nBytes, srcRaw)
+			}
+			// Exact 8-step vectorized GF(2) affine matrix transform per qword lane.
+			acc := "zeroinitializer"
+			for bit := 0; bit < 8; bit++ {
+				rowIdx := 7 - bit
+				shufMask := make([]string, nBytes)
+				for i := 0; i < nBytes; i++ {
+					shufMask[i] = fmt.Sprintf("i32 %d", (i/8)*8+rowIdx)
+				}
+				rowVec, prod, pop, par := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
+					rowVec, vi.byteVecTy, matRaw, vi.byteVecTy, nBytes, strings.Join(shufMask, ", "))
+				fmt.Fprintf(c.b, "  %%%s = and %s %s, %%%s\n", prod, vi.byteVecTy, inBytes, rowVec)
+				fmt.Fprintf(c.b, "  %%%s = call %s @llvm.ctpop.v%di8(%s %%%s)\n", pop, vi.byteVecTy, nBytes, vi.byteVecTy, prod)
+				fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", par, vi.byteVecTy, pop, x86IntSplat(nBytes, 8, 1))
+				term := "%" + par
+				if bit > 0 {
+					sh := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = shl %s %s, %s\n", sh, vi.byteVecTy, term, x86IntSplat(nBytes, 8, int64(bit)))
+					term = "%" + sh
+				}
+				if acc == "zeroinitializer" {
+					acc = term
+				} else {
+					o := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = or %s %s, %s\n", o, vi.byteVecTy, acc, term)
+					acc = "%" + o
+				}
+			}
+			if imm != 0 {
+				x := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", x, vi.byteVecTy, acc, x86IntSplat(nBytes, 8, imm))
+				acc = "%" + x
+			}
+			res = acc
 		}
-		res := "%" + call
 		if hasMask {
 			oldRaw, err := vi.loadReg(dstOp.Reg)
 			if err != nil {
 				return err
 			}
-			res, err = c.x86ApplyMask(kreg, zeroMask, vi.totalBits/8, vi.byteVecTy, res, oldRaw)
+			res, err = c.x86ApplyMask(kreg, zeroMask, nBytes, vi.byteVecTy, res, oldRaw)
 			if err != nil {
 				return err
 			}
@@ -3325,6 +3356,46 @@ func (c *amd64Ctx) lowerX86VAESDeclarative(spec asm.OpSpec, zeroMask bool, ins a
 		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to %s\n", out, qTy, res, vi.byteVecTy)
 		return vi.storeVec(ins.Args[2].Reg, "%"+out)
 	}
+}
+
+func (c *amd64Ctx) emitX86GF2P8MulB(vecTy string, nBytes int, a, b string) string {
+	// Russian peasant multiplication in GF(2^8) modulo 0x11B (poly 0x1B).
+	ones := x86IntSplat(nBytes, 8, 1)
+	poly := x86IntSplat(nBytes, 8, 0x1b)
+	acc := "zeroinitializer"
+	curA := a
+	curB := b
+	for step := 0; step < 8; step++ {
+		lsb, cmp, term, nxtAcc := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", lsb, vecTy, curB, ones)
+		fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, zeroinitializer\n", cmp, vecTy, lsb)
+		fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s %s, %s zeroinitializer\n", term, nBytes, cmp, vecTy, curA, vecTy)
+		fmt.Fprintf(c.b, "  %%%s = xor %s %s, %%%s\n", nxtAcc, vecTy, acc, term)
+		acc = "%" + nxtAcc
+		if step < 7 {
+			hi, shl, xpoly, nxtA, nxtB := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, zeroinitializer\n", hi, vecTy, curA)
+			fmt.Fprintf(c.b, "  %%%s = shl %s %s, %s\n", shl, vecTy, curA, ones)
+			fmt.Fprintf(c.b, "  %%%s = xor %s %%%s, %s\n", xpoly, vecTy, shl, poly)
+			fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s %%%s, %s %%%s\n", nxtA, nBytes, hi, vecTy, xpoly, vecTy, shl)
+			fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %s\n", nxtB, vecTy, curB, ones)
+			curA = "%" + nxtA
+			curB = "%" + nxtB
+		}
+	}
+	return acc
+}
+
+func (c *amd64Ctx) emitX86GF2P8InvB(vecTy string, nBytes int, x string) string {
+	// x^254 in GF(2^8): x^(2+4+8+16+32+64+128) (and 0 -> 0).
+	sq := c.emitX86GF2P8MulB(vecTy, nBytes, x, x) // x^2
+	acc := sq
+	cur := sq
+	for i := 0; i < 6; i++ {
+		cur = c.emitX86GF2P8MulB(vecTy, nBytes, cur, cur)
+		acc = c.emitX86GF2P8MulB(vecTy, nBytes, acc, cur)
+	}
+	return acc
 }
 
 func x86IntSplat(lanes, bits int, val int64) string {

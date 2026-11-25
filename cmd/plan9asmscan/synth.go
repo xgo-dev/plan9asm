@@ -358,9 +358,15 @@ func synthesizeARM64Lines(row encoderFormReport) []string {
 	}
 	args := make([]string, 0, len(row.OperandClasses))
 	for i, entry := range row.OperandClasses {
-		_, cls, ok := strings.Cut(entry, "=")
+		role, cls, ok := strings.Cut(entry, "=")
 		if !ok {
 			cls = entry
+		}
+		// Go 1.20/1.21 arm64 Optab had 4 operand columns (from, reg, from3, to)
+		// followed by a numeric type_ column, which scanFixedEncoderTable parses
+		// as to2=<number>. Ignore non-C_* to2 entries for cross-Go compatibility.
+		if role == "to2" && !strings.HasPrefix(cls, "C_") {
+			continue
 		}
 		if cls == "C_TEXTSIZE" {
 			return nil
@@ -370,6 +376,9 @@ func synthesizeARM64Lines(row encoderFormReport) []string {
 			return nil
 		}
 		args = append(args, arg)
+	}
+	if len(args) == 0 {
+		return []string{op}
 	}
 	return []string{op + " " + strings.Join(args, ", ")}
 }
@@ -403,23 +412,17 @@ func synthARM64OptabOperand(op, cls string, idx int) (string, bool) {
 		return "R1.UXTW", true
 	case "C_ZCON":
 		return "$0", true
-	case "C_ADDCON", "C_ADDCON2", "C_BITCON", "C_MOVCON", "C_MOVCON2", "C_MOVCON3", "C_MBCON", "C_LCON", "C_VCON":
+	case "C_ADDCON", "C_ADDCON2", "C_BITCON", "C_MOVCON", "C_MOVCON2", "C_MOVCON3", "C_MBCON", "C_LCON", "C_VCON", "C_NCON", "C_SCON", "C_RCON", "C_CON":
 		return "$4", true
-	case "C_FCON":
+	case "C_FCON", "C_SFCON", "C_ZFCON":
 		return "$1.0", true
 	case "C_ZOREG":
 		return "(R1)", true
-	case "C_LOREG", "C_LOREGPOOL", "C_NOREG4K", "C_NPOREG", "C_NQOREG_16", "C_NSOREG", "C_NSOREG_4",
-		"C_PPOREG", "C_PQOREG_16", "C_PSOREG_4", "C_UOREG4K", "C_UOREG8K", "C_UOREG16K", "C_UOREG32K", "C_UOREG64K":
-		return "8(R1)", true
 	case "C_ROFF":
 		return "(R1)(R2)", true
-	case "C_ZAUTO", "C_LAUTO", "C_LAUTOPOOL", "C_NAUTO4K", "C_NPAUTO", "C_NQAUTO_16", "C_NSAUTO", "C_NSAUTO_4",
-		"C_PPAUTO", "C_PQAUTO_16", "C_PSAUTO_4", "C_UAUTO4K", "C_UAUTO8K", "C_UAUTO16K", "C_UAUTO32K", "C_UAUTO64K":
-		return "a+0(FP)", true
 	case "C_ADDR", "C_GOTADDR", "C_TLS_IE", "C_TLS_LE", "C_LEXT":
 		return "sym(SB)", true
-	case "C_AACON", "C_AACON2", "C_LACON", "C_VCONADDR":
+	case "C_AACON", "C_AACON2", "C_LACON", "C_VCONADDR", "C_LCONADDR":
 		return "$sym(SB)", true
 	case "C_SBRA":
 		return "target", true
@@ -428,7 +431,16 @@ func synthARM64OptabOperand(op, cls string, idx int) (string, bool) {
 	case "C_SPOP":
 		return "ISH", true
 	default:
-		return "", false
+		switch {
+		case strings.Contains(cls, "AUTO"):
+			return "a+0(FP)", true
+		case strings.Contains(cls, "OREG"):
+			return "8(R1)", true
+		case strings.Contains(cls, "CON"):
+			return "$4", true
+		default:
+			return "", false
+		}
 	}
 }
 

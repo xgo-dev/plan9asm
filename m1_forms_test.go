@@ -237,10 +237,8 @@ TEXT ·simdForms(SB),NOSPLIT,$0-0
 	}
 	for _, want := range []string{
 		"@llvm.ctpop.v64i8",
-		"@llvm.x86.vgf2p8affineqb.128",
-		"@llvm.x86.vgf2p8affineqb.512",
-		"@llvm.x86.vgf2p8affineinvqb.256",
-		"@llvm.x86.vgf2p8mulb.512",
+		"@llvm.ctpop.v16i8",
+		"@llvm.ctpop.v32i8",
 		"fmul double",
 	} {
 		if !strings.Contains(ir, want) {
@@ -248,6 +246,25 @@ TEXT ·simdForms(SB),NOSPLIT,$0-0
 		}
 	}
 	verifyLLVMIRWithOpt(t, ir)
+	verifyLLVMIRWithHaswellLLC(t, ir)
+}
+
+func verifyLLVMIRWithHaswellLLC(t *testing.T, ir string) {
+	t.Helper()
+	llc, err := exec.LookPath("llc")
+	if err != nil {
+		return
+	}
+	cmd := exec.Command(llc,
+		"-mtriple=x86_64-unknown-linux-gnu",
+		"-mcpu=haswell",
+		"-mattr=+aes,+ssse3,+sse4.1,+sse4.2,+pclmul,+avx,+avx2,+sha,+popcnt,+adx",
+		"-filetype=null",
+	)
+	cmd.Stdin = strings.NewReader(ir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("llc haswell codegen failed: %v\noutput:\n%s", err, string(out))
+	}
 }
 
 func TestM1_ErrorPaths(t *testing.T) {

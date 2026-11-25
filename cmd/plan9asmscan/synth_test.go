@@ -75,6 +75,12 @@ func TestSynthesizeEncoderLines(t *testing.T) {
 		t.Fatalf("arm64 MADD lines = %#v", got)
 	}
 	if got := synthesizeEncoderLines("arm64", encoderFormReport{
+		Opcode:         "ADD",
+		OperandClasses: []string{"from=C_REG", "to=C_REG", "to2=1"},
+	}); len(got) != 1 || got[0] != "ADD R0, R1" {
+		t.Fatalf("arm64 Go 1.20/1.21 numeric to2 lines = %#v", got)
+	}
+	if got := synthesizeEncoderLines("arm64", encoderFormReport{
 		Opcode:         "ZADD",
 		OperandClasses: []string{"args=Zm_T__Zdn_T__PgM__Zdn_T__1"},
 	}); len(got) != 1 || !strings.HasPrefix(got[0], "ZADD Z0.S, Z1.S, P0.M, Z2.S") {
