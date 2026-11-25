@@ -19,6 +19,7 @@ var OpTable = asm.NewOpTable(
 	x86ExtraSIMDSpecs,
 	x86M2FMACVTSpecs,
 	x86M2VecExtSpecs,
+	x86M3TailSpecs,
 )
 
 var x86ScalarSpecs = []asm.OpSpec{
