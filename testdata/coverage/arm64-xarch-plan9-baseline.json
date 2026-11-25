@@ -6,9 +6,9 @@
   "asm_files": 1,
   "unique_ops": 667,
   "unique_forms": 1108,
-  "supported_forms": 730,
+  "supported_forms": 848,
   "context_forms": 61,
-  "unsupported_forms": 317,
+  "unsupported_forms": 199,
   "parse_err_count": 0,
-  "coverage_fingerprint": "f102a0236842be7af9aad59ae57d223a7a66eacb1b0649ce6676434aa6df47bb"
+  "coverage_fingerprint": "1338ee9947dd47f3bdc0034963c58274ec70710da94612d7237d82a3ffb762f9"
 }

@@ -286,7 +286,7 @@ func TestM2_ErrorPaths(t *testing.T) {
 		"PHADDW X0",
 		"VPHADDW X0, X1",
 		"VPHADDW X0, X1, AX",
-		"VP4DPWSSD (BX), Z0, Z1",
+		"VP4DPWSSD (BX), $1, Z1",
 		"VP4DPWSSD (BX), [Z0-Z3], AX",
 		"VP4DPWSSD (BX), [AX-DX], Z2",
 		"PMADDWL X0",

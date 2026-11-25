@@ -556,6 +556,9 @@ func (c *amd64Ctx) evalF64(op asm.Operand) (string, error) {
 		fmt.Fprintf(c.b, "  %%%s = load double, %s %s, align 1\n", ld, ptrType, p)
 		return "%" + ld, nil
 	case asm.OpSym:
+		if fv, ok := x86ParseDollarFloat(op.Sym); ok {
+			return asm.FormatLLVMFloat64Literal(fv), nil
+		}
 		p, err := c.ptrFromSB(op.Sym)
 		if err != nil {
 			return "", err

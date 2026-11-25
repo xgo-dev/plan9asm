@@ -747,9 +747,9 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, nil
 
 	case "NEG":
-		// NEG src, dst => dst = -src
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 NEG expects src, dstReg: %q", ins.Raw)
+		// NEG [src,] dst => dst = -src
+		if (len(ins.Args) != 1 && len(ins.Args) != 2) || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 NEG expects [src,] dstReg: %q", ins.Raw)
 		}
 		src, err := c.eval64(ins.Args[0], false)
 		if err != nil {
@@ -757,7 +757,7 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = sub i64 0, %s\n", t, src)
-		return true, false, c.storeReg(ins.Args[1].Reg, "%"+t)
+		return true, false, c.storeReg(ins.Args[len(ins.Args)-1].Reg, "%"+t)
 
 	case "MULW":
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {
@@ -830,10 +830,11 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, c.storeReg(dst, "%"+t)
 
 	case "UMULH":
-		// UMULH a, b, dst -> high 64 bits of unsigned 128-bit product.
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 UMULH expects a, b, dstReg: %q", ins.Raw)
+		// UMULH a, [b,] dst -> high 64 bits of unsigned 128-bit product.
+		if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 UMULH expects a, [b,] dstReg: %q", ins.Raw)
 		}
+		dstOp := ins.Args[len(ins.Args)-1]
 		a, err := c.eval64(ins.Args[0], false)
 		if err != nil {
 			return true, false, err
@@ -852,7 +853,7 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = lshr i128 %%%s, 64\n", sh, m)
 		hi := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", hi, sh)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+hi)
+		return true, false, c.storeReg(dstOp.Reg, "%"+hi)
 
 	case "MADDW", "MSUBW":
 		if len(ins.Args) != 4 || ins.Args[3].Kind != asm.OpReg {

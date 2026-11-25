@@ -16,13 +16,14 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 	}
 	switch op {
 	case "BL", "CALL":
-		if len(ins.Args) != 1 {
+		if len(ins.Args) != 1 && len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("arm %s expects 1 operand: %q", op, ins.Raw)
 		}
+		tgtArg := ins.Args[len(ins.Args)-1]
 		emitCall := func() error {
-			switch ins.Args[0].Kind {
+			switch tgtArg.Kind {
 			case asm.OpReg:
-				addr, err := c.loadReg(ins.Args[0].Reg)
+				addr, err := c.loadReg(tgtArg.Reg)
 				if err != nil {
 					return err
 				}
@@ -30,7 +31,7 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 				c.captureHardwareFlags()
 				return nil
 			case asm.OpMem:
-				addr, _, _, err := c.addrI32(ins.Args[0].Mem, false)
+				addr, _, _, err := c.addrI32(tgtArg.Mem, false)
 				if err != nil {
 					return err
 				}
@@ -38,7 +39,7 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 				c.captureHardwareFlags()
 				return nil
 			case asm.OpSym:
-				return c.callSym(ins.Args[0])
+				return c.callSym(tgtArg)
 			default:
 				return fmt.Errorf("arm %s invalid target: %q", op, ins.Raw)
 			}

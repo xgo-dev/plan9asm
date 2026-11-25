@@ -225,6 +225,34 @@ func (c *amd64Ctx) lowerM2FMACVT(op asm.Op, ins asm.Instr) (ok bool, terminated 
 	return true, false, c.lowerX86CVT(spec, zeroMask, bcst, ins)
 }
 
+func x86Expand4RegGroup(op asm.Operand) []asm.Reg {
+	if op.Kind == asm.OpRegList && len(op.RegList) > 0 {
+		return op.RegList
+	}
+	if op.Kind == asm.OpReg {
+		s := strings.ToUpper(string(op.Reg))
+		if len(s) >= 2 && (s[0] == 'Z' || s[0] == 'Y' || s[0] == 'X') {
+			if idx, ok := amd64ParseZReg(op.Reg); ok {
+				return []asm.Reg{
+					asm.Reg(fmt.Sprintf("Z%d", idx)),
+					asm.Reg(fmt.Sprintf("Z%d", (idx+1)&31)),
+					asm.Reg(fmt.Sprintf("Z%d", (idx+2)&31)),
+					asm.Reg(fmt.Sprintf("Z%d", (idx+3)&31)),
+				}
+			}
+			if idx, ok := amd64ParseXReg(op.Reg); ok {
+				return []asm.Reg{
+					asm.Reg(fmt.Sprintf("X%d", idx)),
+					asm.Reg(fmt.Sprintf("X%d", (idx+1)&31)),
+					asm.Reg(fmt.Sprintf("X%d", (idx+2)&31)),
+					asm.Reg(fmt.Sprintf("X%d", (idx+3)&31)),
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (c *amd64Ctx) lowerX86FMA(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Instr) error {
 	args, kreg, hasMask := x86StripEVEXMask(ins.Args)
 	if len(args) != 3 || args[2].Kind != asm.OpReg {
@@ -234,9 +262,10 @@ func (c *amd64Ctx) lowerX86FMA(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Ins
 	order := spec.SubOp & 0xf0
 	isScalar := (spec.SubOp & fmaScalarFlag) != 0
 
-	// 4FMA: V4FMADDPS/SS, V4FNMADDPS/SS mem128, [Z0-Z3]/[X0-X3], [K,] dst
+	// 4FMA: V4FMADDPS/SS, V4FNMADDPS/SS mem128, [Z0-Z3]/[X0-X3] or Z0/X0, [K,] dst
 	if order == fmaOrder4x {
-		if args[1].Kind != asm.OpRegList || len(args[1].RegList) == 0 {
+		regList := x86Expand4RegGroup(args[1])
+		if len(regList) == 0 {
 			return fmt.Errorf("amd64 %s expects mem, [reg-list], [K,] dst: %q", spec.Op, ins.Raw)
 		}
 		var memPtr, memPtrTy string
@@ -261,7 +290,7 @@ func (c *amd64Ctx) lowerX86FMA(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Ins
 				return err
 			}
 			oldAcc := acc
-			for i, r := range args[1].RegList {
+			for i, r := range regList {
 				if i >= 4 {
 					break
 				}
@@ -304,7 +333,7 @@ func (c *amd64Ctx) lowerX86FMA(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Ins
 		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", accBC, vi.byteVecTy, oldBytes, vecTy)
 		acc := "%" + accBC
 		oldF := acc
-		for i, r := range args[1].RegList {
+		for i, r := range regList {
 			if i >= 4 {
 				break
 			}

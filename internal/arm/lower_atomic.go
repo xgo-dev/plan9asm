@@ -127,14 +127,21 @@ func (c *armCtx) lowerAtomic(op string, ins asm.Instr) (ok bool, terminated bool
 		return true, false, c.storeReg(hiReg, "%"+hi)
 
 	case "STREX", "STREXB":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpMem || ins.Args[2].Kind != asm.OpReg {
+		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm %s expects srcReg, mem, statusReg: %q", op, ins.Raw)
+		}
+		srcArg, memArg := ins.Args[0], ins.Args[1]
+		if srcArg.Kind == asm.OpMem && memArg.Kind == asm.OpReg {
+			srcArg, memArg = memArg, srcArg
+		}
+		if srcArg.Kind != asm.OpReg || memArg.Kind != asm.OpMem {
 			return true, false, fmt.Errorf("arm %s expects srcReg, mem, statusReg: %q", op, ins.Raw)
 		}
 		ty, align, err := armAtomicType(op)
 		if err != nil {
 			return true, false, err
 		}
-		src, err := c.loadReg(ins.Args[0].Reg)
+		src, err := c.loadReg(srcArg.Reg)
 		if err != nil {
 			return true, false, err
 		}
@@ -142,7 +149,7 @@ func (c *armCtx) lowerAtomic(op string, ins asm.Instr) (ok bool, terminated bool
 		if err != nil {
 			return true, false, err
 		}
-		ptr, err := c.atomicMemPtr(ins.Args[1].Mem)
+		ptr, err := c.atomicMemPtr(memArg.Mem)
 		if err != nil {
 			return true, false, err
 		}
@@ -153,14 +160,21 @@ func (c *armCtx) lowerAtomic(op string, ins asm.Instr) (ok bool, terminated bool
 		return true, false, c.storeReg(ins.Args[2].Reg, status)
 
 	case "STREXD":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpMem || ins.Args[2].Kind != asm.OpReg {
+		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm STREXD expects srcLoReg, mem, statusReg: %q", ins.Raw)
 		}
-		hiReg, err := armNextReg(ins.Args[0].Reg)
+		srcArg, memArg := ins.Args[0], ins.Args[1]
+		if srcArg.Kind == asm.OpMem && memArg.Kind == asm.OpReg {
+			srcArg, memArg = memArg, srcArg
+		}
+		if srcArg.Kind != asm.OpReg || memArg.Kind != asm.OpMem {
+			return true, false, fmt.Errorf("arm STREXD expects srcLoReg, mem, statusReg: %q", ins.Raw)
+		}
+		hiReg, err := armNextReg(srcArg.Reg)
 		if err != nil {
 			return true, false, err
 		}
-		lo, err := c.loadReg(ins.Args[0].Reg)
+		lo, err := c.loadReg(srcArg.Reg)
 		if err != nil {
 			return true, false, err
 		}
@@ -174,7 +188,7 @@ func (c *armCtx) lowerAtomic(op string, ins asm.Instr) (ok bool, terminated bool
 		new64 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = shl i64 %s, 32\n", hiShift, hi64)
 		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %s\n", new64, hiShift, lo64)
-		ptr, err := c.atomicMemPtr(ins.Args[1].Mem)
+		ptr, err := c.atomicMemPtr(memArg.Mem)
 		if err != nil {
 			return true, false, err
 		}

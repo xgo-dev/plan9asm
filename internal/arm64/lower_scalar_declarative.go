@@ -226,9 +226,10 @@ func (c *arm64Ctx) lowerARM64ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 	ty := fmt.Sprintf("i%d", spec.Width)
 	switch spec.LLVMOp {
 	case "neg", "ngc":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return fmt.Errorf("arm64 %s expects src, dstReg: %q", spec.Op, ins.Raw)
+		if (len(ins.Args) != 1 && len(ins.Args) != 2) || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+			return fmt.Errorf("arm64 %s expects [src,] dstReg: %q", spec.Op, ins.Raw)
 		}
+		dstReg := ins.Args[len(ins.Args)-1].Reg
 		src, err := c.evalWidth(ins.Args[0], spec.Width)
 		if err != nil {
 			return err
@@ -250,7 +251,7 @@ func (c *arm64Ctx) lowerARM64ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = sub %s %%%s, %%%s\n", t1, ty, t0, borrow)
 			res = "%" + t1
 		}
-		if err := c.storeWidth(ins.Args[1].Reg, res, spec.Width); err != nil {
+		if err := c.storeWidth(dstReg, res, spec.Width); err != nil {
 			return err
 		}
 		if spec.Flags == asm.FlagsWrite || spec.Flags == asm.FlagsReadWrite {
@@ -432,9 +433,10 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 	ty := fmt.Sprintf("i%d", spec.Width)
 	switch spec.LLVMOp {
 	case "sdiv", "udiv":
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
-			return fmt.Errorf("arm64 %s expects divisor, numer, dstReg: %q", spec.Op, ins.Raw)
+		if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+			return fmt.Errorf("arm64 %s expects divisor, [numer,] dstReg: %q", spec.Op, ins.Raw)
 		}
+		dstReg := ins.Args[len(ins.Args)-1].Reg
 		divisor, err := c.evalWidth(ins.Args[0], spec.Width)
 		if err != nil {
 			return err
@@ -462,12 +464,13 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		q, sel := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", q, spec.LLVMOp, ty, numer, divIn)
 		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s 0, %s %%%s\n", sel, zero, ty, ty, q)
-		return c.storeWidth(ins.Args[2].Reg, "%"+sel, spec.Width)
+		return c.storeWidth(dstReg, "%"+sel, spec.Width)
 
 	case "mneg":
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
-			return fmt.Errorf("arm64 %s expects a, b, dstReg: %q", spec.Op, ins.Raw)
+		if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+			return fmt.Errorf("arm64 %s expects a, [b,] dstReg: %q", spec.Op, ins.Raw)
 		}
+		dstReg := ins.Args[len(ins.Args)-1].Reg
 		a, err := c.evalWidth(ins.Args[0], spec.Width)
 		if err != nil {
 			return err
@@ -479,16 +482,17 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		m, n := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = mul %s %s, %s\n", m, ty, a, b)
 		fmt.Fprintf(c.b, "  %%%s = sub %s 0, %%%s\n", n, ty, m)
-		return c.storeWidth(ins.Args[2].Reg, "%"+n, spec.Width)
+		return c.storeWidth(dstReg, "%"+n, spec.Width)
 
 	case "mull", "mnegl", "maddl", "msubl":
-		want := 3
+		minArgs, maxArgs := 2, 3
 		if spec.LLVMOp == "maddl" || spec.LLVMOp == "msubl" {
-			want = 4
+			minArgs, maxArgs = 4, 4
 		}
-		if len(ins.Args) != want || ins.Args[want-1].Kind != asm.OpReg {
-			return fmt.Errorf("arm64 %s expects %d operands: %q", spec.Op, want, ins.Raw)
+		if len(ins.Args) < minArgs || len(ins.Args) > maxArgs || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+			return fmt.Errorf("arm64 %s expects %d operands: %q", spec.Op, maxArgs, ins.Raw)
 		}
+		dstReg := ins.Args[len(ins.Args)-1].Reg
 		a32, err := c.eval32(ins.Args[0])
 		if err != nil {
 			return err
@@ -528,12 +532,13 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %s\n", s, acc, out)
 			out = "%" + s
 		}
-		return c.storeReg(ins.Args[want-1].Reg, out)
+		return c.storeReg(dstReg, out)
 
 	case "smulh":
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
-			return fmt.Errorf("arm64 SMULH expects a, b, dstReg: %q", ins.Raw)
+		if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+			return fmt.Errorf("arm64 SMULH expects a, [b,] dstReg: %q", ins.Raw)
 		}
+		dstReg := ins.Args[len(ins.Args)-1].Reg
 		a, err := c.eval64(ins.Args[0], false)
 		if err != nil {
 			return err
@@ -548,7 +553,7 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", prod, a128, b128)
 		fmt.Fprintf(c.b, "  %%%s = lshr i128 %%%s, 64\n", sh, prod)
 		fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", hi, sh)
-		return c.storeReg(ins.Args[2].Reg, "%"+hi)
+		return c.storeReg(dstReg, "%"+hi)
 	}
 	return fmt.Errorf("arm64: unhandled mul/div %s", spec.Op)
 }

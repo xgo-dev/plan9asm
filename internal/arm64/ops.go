@@ -16,6 +16,7 @@ var OpTable = asm.NewOpTable(
 	arm64DeclarativeFPSpecs,
 	arm64NEONSpecs,
 	arm64SVESpecs,
+	arm64M5ExtSpecs,
 )
 
 var arm64ScalarSpecs = []asm.OpSpec{

@@ -42,6 +42,9 @@ var armScalarSpecs = []asm.OpSpec{
 	{Op: "MCR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mcr"},
 	{Op: "RFE", Family: asm.FamilyBranch, Effect: asm.EffectReadOnly, LLVMOp: "rfe"},
 	{Op: "BX", Family: asm.FamilyBranch, Effect: asm.EffectReadOnly, LLVMOp: "bx"},
+	{Op: "BXRET", Family: asm.FamilyBranch, Effect: asm.EffectReadOnly, LLVMOp: "bx"},
+	{Op: "DUFFZERO", Family: asm.FamilyNOP, Effect: asm.EffectNone},
+	{Op: "DUFFCOPY", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "END", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 }
 
@@ -54,6 +57,10 @@ var armBitMulSpecs = []asm.OpSpec{
 	{Op: "REV", Family: asm.FamilyBit, Width: 32, Effect: asm.EffectWriteOnly, LLVMOp: "rev"},
 	{Op: "REV16", Family: asm.FamilyBit, Width: 32, Effect: asm.EffectWriteOnly, LLVMOp: "rev16"},
 	{Op: "REVSH", Family: asm.FamilyBit, Width: 32, Signed: true, Effect: asm.EffectWriteOnly, LLVMOp: "revsh"},
+	{Op: "DIV", Family: asm.FamilyMulDiv, Width: 32, Signed: true, Effect: asm.EffectWriteOnly, LLVMOp: "sdiv"},
+	{Op: "DIVU", Family: asm.FamilyMulDiv, Width: 32, Effect: asm.EffectWriteOnly, LLVMOp: "udiv"},
+	{Op: "MOD", Family: asm.FamilyMulDiv, Width: 32, Signed: true, Effect: asm.EffectWriteOnly, LLVMOp: "srem"},
+	{Op: "MODU", Family: asm.FamilyMulDiv, Width: 32, Effect: asm.EffectWriteOnly, LLVMOp: "urem"},
 	{Op: "DIVHW", Family: asm.FamilyMulDiv, Width: 32, Signed: true, Effect: asm.EffectWriteOnly, LLVMOp: "sdiv"},
 	{Op: "DIVUHW", Family: asm.FamilyMulDiv, Width: 32, Effect: asm.EffectWriteOnly, LLVMOp: "udiv"},
 	{Op: "MULL", Family: asm.FamilyMulDiv, Width: 64, Signed: true, Effect: asm.EffectWriteOnly, LLVMOp: "mull"},
@@ -223,15 +230,22 @@ func (c *armCtx) lowerARMBX(cond string, ins asm.Instr) (bool, bool, error) {
 }
 
 func (c *armCtx) lowerARMSWP(spec asm.OpSpec, cond string, ins asm.Instr) error {
-	if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpMem || ins.Args[2].Kind != asm.OpReg {
+	if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
+		return fmt.Errorf("arm %s expects srcReg, (ptr), dstReg: %q", spec.Op, ins.Raw)
+	}
+	srcArg, memArg := ins.Args[0], ins.Args[1]
+	if srcArg.Kind == asm.OpMem && memArg.Kind == asm.OpReg {
+		srcArg, memArg = memArg, srcArg
+	}
+	if srcArg.Kind != asm.OpReg || memArg.Kind != asm.OpMem {
 		return fmt.Errorf("arm %s expects srcReg, (ptr), dstReg: %q", spec.Op, ins.Raw)
 	}
 	emit := func() error {
-		src, err := c.loadReg(ins.Args[0].Reg)
+		src, err := c.loadReg(srcArg.Reg)
 		if err != nil {
 			return err
 		}
-		addr, _, _, err := c.addrI32(ins.Args[1].Mem, false)
+		addr, _, _, err := c.addrI32(memArg.Mem, false)
 		if err != nil {
 			return err
 		}
@@ -460,18 +474,47 @@ func (c *armCtx) lowerARMDeclarativeBit(spec asm.OpSpec, cond string, ins asm.In
 		return c.selectRegWrite(ins.Args[1].Reg, cond, out)
 
 	case "bfc", "bfi", "bfx":
-		if (spec.LLVMOp == "bfc" && len(ins.Args) != 3) || (spec.LLVMOp != "bfc" && len(ins.Args) != 3 && len(ins.Args) != 4) {
+		if len(ins.Args) < 2 || len(ins.Args) > 4 || (spec.LLVMOp == "bfc" && len(ins.Args) == 4) {
 			return fmt.Errorf("arm %s unexpected operand count: %q", spec.Op, ins.Raw)
 		}
-		if ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpImm {
-			return fmt.Errorf("arm %s expects $width, $lsb: %q", spec.Op, ins.Raw)
+		var width, lsb int64
+		var srcOp, dstOp asm.Operand
+		if len(ins.Args) == 2 {
+			// Compact encoder form: $imm, Rd (width=imm&31, lsb=0)
+			if ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg {
+				return fmt.Errorf("arm %s expects $width, dst: %q", spec.Op, ins.Raw)
+			}
+			width = ins.Args[0].Imm & 31
+			if width == 0 {
+				width = 1
+			}
+			lsb = 0
+			srcOp = ins.Args[1]
+			dstOp = ins.Args[1]
+		} else if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg {
+			// Compact encoder 3-op form: $imm, Rn, Rd
+			width = ins.Args[0].Imm & 31
+			if width == 0 {
+				width = 1
+			}
+			lsb = 0
+			srcOp = ins.Args[1]
+			dstOp = ins.Args[2]
+		} else {
+			if ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpImm {
+				return fmt.Errorf("arm %s expects $width, $lsb: %q", spec.Op, ins.Raw)
+			}
+			width = ins.Args[0].Imm
+			lsb = ins.Args[1].Imm
+			dstOp = ins.Args[len(ins.Args)-1]
+			srcOp = dstOp
+			if len(ins.Args) == 4 {
+				srcOp = ins.Args[2]
+			}
 		}
-		width := ins.Args[0].Imm
-		lsb := ins.Args[1].Imm
 		if width <= 0 || lsb < 0 || lsb+width > 32 {
 			return fmt.Errorf("arm %s invalid width=%d lsb=%d: %q", spec.Op, width, lsb, ins.Raw)
 		}
-		dstOp := ins.Args[len(ins.Args)-1]
 		if dstOp.Kind != asm.OpReg {
 			return fmt.Errorf("arm %s dst must be reg: %q", spec.Op, ins.Raw)
 		}
@@ -490,10 +533,6 @@ func (c *armCtx) lowerARMDeclarativeBit(spec asm.OpSpec, cond string, ins asm.In
 			fmt.Fprintf(c.b, "  %%%s = and i32 %s, %d\n", res, dstV, int32(clearMask))
 			return c.selectRegWrite(dstOp.Reg, cond, "%"+res)
 		case "bfi":
-			srcOp := dstOp
-			if len(ins.Args) == 4 {
-				srcOp = ins.Args[2]
-			}
 			srcV, err := c.eval32(srcOp, false)
 			if err != nil {
 				return err
@@ -513,10 +552,6 @@ func (c *armCtx) lowerARMDeclarativeBit(spec asm.OpSpec, cond string, ins asm.In
 			fmt.Fprintf(c.b, "  %%%s = or i32 %%%s, %%%s\n", res, cleared, shifted)
 			return c.selectRegWrite(dstOp.Reg, cond, "%"+res)
 		case "bfx":
-			srcOp := dstOp
-			if len(ins.Args) == 4 {
-				srcOp = ins.Args[2]
-			}
 			srcV, err := c.eval32(srcOp, false)
 			if err != nil {
 				return err
@@ -554,7 +589,7 @@ func (c *armCtx) lowerARMDeclarativeBit(spec asm.OpSpec, cond string, ins asm.In
 
 func (c *armCtx) lowerARMDeclarativeMulDiv(spec asm.OpSpec, cond string, ins asm.Instr) error {
 	switch spec.LLVMOp {
-	case "sdiv", "udiv":
+	case "sdiv", "udiv", "srem", "urem":
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {
 			return fmt.Errorf("arm %s expects 2 or 3 operands: %q", spec.Op, ins.Raw)
 		}
@@ -584,8 +619,8 @@ func (c *armCtx) lowerARMDeclarativeMulDiv(spec asm.OpSpec, cond string, ins asm
 		fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", zero, divisor)
 		safeDiv := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 1, i32 %s\n", safeDiv, zero, divisor)
-		if spec.LLVMOp == "sdiv" {
-			// Guard INT32_MIN / -1 UB in LLVM sdiv.
+		if spec.LLVMOp == "sdiv" || spec.LLVMOp == "srem" {
+			// Guard INT32_MIN / -1 UB in LLVM sdiv/srem.
 			isMin := c.newTmp()
 			isNeg1 := c.newTmp()
 			ov := c.newTmp()
@@ -595,13 +630,13 @@ func (c *armCtx) lowerARMDeclarativeMulDiv(spec asm.OpSpec, cond string, ins asm
 			safeDiv2 := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 1, i32 %%%s\n", safeDiv2, ov, safeDiv)
 			q := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sdiv i32 %s, %%%s\n", q, numer, safeDiv2)
+			fmt.Fprintf(c.b, "  %%%s = %s i32 %s, %%%s\n", q, spec.LLVMOp, numer, safeDiv2)
 			sel := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 0, i32 %%%s\n", sel, zero, q)
 			return c.selectRegWrite(dst.Reg, cond, "%"+sel)
 		}
 		q := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = udiv i32 %s, %%%s\n", q, numer, safeDiv)
+		fmt.Fprintf(c.b, "  %%%s = %s i32 %s, %%%s\n", q, spec.LLVMOp, numer, safeDiv)
 		sel := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 0, i32 %%%s\n", sel, zero, q)
 		return c.selectRegWrite(dst.Reg, cond, "%"+sel)
@@ -1002,18 +1037,24 @@ func (c *armCtx) lowerARMDeclarativeFP(spec asm.OpSpec, cond string, ins asm.Ins
 		return c.armStoreFloat(ins.Args[1].Reg, cond, "%"+out, spec.Width)
 
 	case "mula", "muls", "nmula", "nmuls", "fmula", "fmuls", "fnmula", "fnmuls":
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
-			return fmt.Errorf("arm %s expects Fa, Fb, Fdst: %q", spec.Op, ins.Raw)
+		if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+			return fmt.Errorf("arm %s expects [Fa,] Fb, Fdst: %q", spec.Op, ins.Raw)
 		}
+		dstOp := ins.Args[len(ins.Args)-1]
 		a, err := c.armLoadFloat(ins.Args[0], spec.Width)
 		if err != nil {
 			return err
 		}
-		b, err := c.armLoadFloat(ins.Args[1], spec.Width)
+		var b string
+		if len(ins.Args) == 3 {
+			b, err = c.armLoadFloat(ins.Args[1], spec.Width)
+		} else {
+			b, err = c.armLoadFloat(dstOp, spec.Width)
+		}
 		if err != nil {
 			return err
 		}
-		acc, err := c.armLoadFloat(ins.Args[2], spec.Width)
+		acc, err := c.armLoadFloat(dstOp, spec.Width)
 		if err != nil {
 			return err
 		}
@@ -1034,7 +1075,7 @@ func (c *armCtx) lowerARMDeclarativeFP(spec asm.OpSpec, cond string, ins asm.Ins
 			}
 			res := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = call %s @llvm.fma.%s(%s %s, %s %s, %s %s)\n", res, ty, suf, ty, a, ty, b, ty, acc)
-			return c.armStoreFloat(ins.Args[2].Reg, cond, "%"+res, spec.Width)
+			return c.armStoreFloat(dstOp.Reg, cond, "%"+res, spec.Width)
 		}
 		prod := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = fmul %s %s, %s\n", prod, ty, a, b)
@@ -1045,7 +1086,7 @@ func (c *armCtx) lowerARMDeclarativeFP(spec asm.OpSpec, cond string, ins asm.Ins
 			} else {
 				fmt.Fprintf(c.b, "  %%%s = fsub %s %s, %%%s\n", res, ty, acc, prod)
 			}
-			return c.armStoreFloat(ins.Args[2].Reg, cond, "%"+res, spec.Width)
+			return c.armStoreFloat(dstOp.Reg, cond, "%"+res, spec.Width)
 		}
 		sum := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = fadd %s %s, %%%s\n", sum, ty, acc, prod)
@@ -1055,7 +1096,7 @@ func (c *armCtx) lowerARMDeclarativeFP(spec asm.OpSpec, cond string, ins asm.Ins
 			fmt.Fprintf(c.b, "  %%%s = fneg %s %%%s\n", neg, ty, sum)
 			out = "%" + neg
 		}
-		return c.armStoreFloat(ins.Args[2].Reg, cond, out, spec.Width)
+		return c.armStoreFloat(dstOp.Reg, cond, out, spec.Width)
 	}
 	return fmt.Errorf("arm: unhandled declarative FP op %s", spec.Op)
 }

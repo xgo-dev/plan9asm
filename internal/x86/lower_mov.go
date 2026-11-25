@@ -8,7 +8,7 @@ import (
 
 func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool, err error) {
 	switch op {
-	case "MOVQ", "MOVD", "MOVL", "MOVLQZX", "MOVLQSX", "MOVBQZX", "MOVBLZX", "MOVB", "MOVW", "MOVWLZX", "MOVWQZX", "MOVWQSX", "CMOVQLT":
+	case "MOVQ", "MOVD", "MOVL", "MOVQL", "MOVLQZX", "MOVLQSX", "MOVBQZX", "MOVBLZX", "MOVB", "MOVW", "MOVWLZX", "MOVWQZX", "MOVWQSX", "CMOVQLT":
 		// ok
 	default:
 		return false, false, nil
@@ -18,7 +18,7 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 	}
 	src, dst := ins.Args[0], ins.Args[1]
 	zeroExtendSmallDst := false
-	if op == "MOVLQZX" {
+	if op == "MOVLQZX" || op == "MOVQL" {
 		op = "MOVL"
 	}
 	if op == "MOVD" {
@@ -130,6 +130,10 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		case asm.OpImm:
 			small = fmt.Sprintf("%d", src.Imm)
 		case asm.OpReg:
+			if op == "MOVW" && isX86SystemOrSegIdent(string(src.Reg)) {
+				small = "0"
+				break
+			}
 			v64, err := c.loadReg(src.Reg)
 			if err != nil {
 				return true, false, err
@@ -172,6 +176,9 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		}
 		switch dst.Kind {
 		case asm.OpReg:
+			if op == "MOVW" && isX86SystemOrSegIdent(string(dst.Reg)) {
+				return true, false, nil
+			}
 			if zeroExtendSmallDst {
 				z := c.newTmp()
 				fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", z, widthTy, small)
@@ -256,9 +263,17 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			return true, false, c.storeFPResult(dst.FPOffset, asm.I64, v)
 		case asm.OpMem:
 			// Store i64 to memory (common for writing return values via a pointer).
-			v, err := c.evalI64(src)
-			if err != nil {
-				return true, false, err
+			var v string
+			var err error
+			if src.Kind == asm.OpIdent && isX86SystemOrSegIdent(src.Ident) {
+				v = "0"
+			} else if src.Kind == asm.OpReg && isX86SystemOrSegIdent(string(src.Reg)) {
+				v = "0"
+			} else {
+				v, err = c.evalI64(src)
+				if err != nil {
+					return true, false, err
+				}
 			}
 			p, ptrType, err := c.ptrFromMem(dst.Mem)
 			if err != nil {
@@ -309,12 +324,14 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		i32v, err := c.evalIntSized(src, asm.I32)
 		if err != nil {
 			// Preserve MOVL's existing treatment of unresolved constants from
-			// assembly include files. Explicit `$symbol(SB)` addresses are handled
-			// by evalIntSized above.
-			if src.Kind != asm.OpSym || strings.Contains(src.Sym, "(SB)") {
+			// assembly include files and descriptor/segment regs.
+			if (src.Kind == asm.OpIdent && isX86SystemOrSegIdent(src.Ident)) || (src.Kind == asm.OpReg && isX86SystemOrSegIdent(string(src.Reg))) {
+				i32v = "0"
+			} else if src.Kind != asm.OpSym || strings.Contains(src.Sym, "(SB)") {
 				return true, false, err
+			} else {
+				i32v = "0"
 			}
-			i32v = "0"
 		}
 		switch dst.Kind {
 		case asm.OpReg:

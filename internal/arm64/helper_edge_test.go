@@ -1098,7 +1098,7 @@ func TestARM64ArithmeticErrorCoverage(t *testing.T) {
 		{Op: "MUL", Raw: "MUL $1", Args: []asm.Operand{arm64ImmOp(1)}},
 		{Op: "MUL", Raw: "MUL $1, label", Args: []asm.Operand{arm64ImmOp(1), arm64IdentOp("label")}},
 		{Op: "MUL", Raw: "MUL $1, R0, label", Args: []asm.Operand{arm64ImmOp(1), arm64RegOp("R0"), arm64IdentOp("label")}},
-		{Op: "UMULH", Raw: "UMULH R0, R1", Args: []asm.Operand{arm64RegOp("R0"), arm64RegOp("R1")}},
+		{Op: "UMULH", Raw: "UMULH R0", Args: []asm.Operand{arm64RegOp("R0")}},
 		{Op: "MADDW", Raw: "MADDW R0, R1, R2", Args: []asm.Operand{arm64RegOp("R0"), arm64RegOp("R1"), arm64RegOp("R2")}},
 		{Op: "MADDW", Raw: "MADDW label, R1, R2, R3", Args: []asm.Operand{arm64IdentOp("label"), arm64RegOp("R1"), arm64RegOp("R2"), arm64RegOp("R3")}},
 		{Op: "MADDW", Raw: "MADDW R0, label, R2, R3", Args: []asm.Operand{arm64RegOp("R0"), arm64IdentOp("label"), arm64RegOp("R2"), arm64RegOp("R3")}},

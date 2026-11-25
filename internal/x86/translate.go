@@ -265,7 +265,7 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 		return false, nil
 	}
 	switch asm.Op(op) {
-	case asm.OpTEXT, asm.OpBYTE, asm.OpWORD:
+	case asm.OpTEXT, asm.OpBYTE, asm.OpWORD, asm.OpLONG, asm.OpQUAD:
 		return false, nil
 	case asm.OpRET:
 		if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpSym && strings.HasSuffix(ins.Args[0].Sym, "(SB)") {

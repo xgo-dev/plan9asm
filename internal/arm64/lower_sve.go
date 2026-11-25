@@ -44,6 +44,7 @@ func arm64ParseZReg(s string) (idx int, laneBits int, elemIdx int, ok bool) {
 // as P4, P4.B, P4.M, P1.Z, PN10.Z, PN12.H, or PN11[1].
 func arm64ParsePReg(s string) (idx int, laneBits int, mode byte, ok bool) {
 	s = strings.ToUpper(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "/", ".")
 	if br := strings.IndexByte(s, '['); br >= 0 {
 		s = s[:br]
 	}
@@ -476,14 +477,19 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 		return nil
 
 	case name == "PLDR":
-		if len(ins.Args) != 2 {
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
 			return fmt.Errorf("arm64 PLDR expects mem, Pt: %q", ins.Raw)
 		}
-		pi, _, _, ok := arm64ParsePReg(arm64OpText(ins.Args[1]))
+		dstArg := ins.Args[len(ins.Args)-1]
+		pi, _, _, ok := arm64ParsePReg(arm64OpText(dstArg))
 		if !ok {
 			return fmt.Errorf("arm64 PLDR expects P dst: %q", ins.Raw)
 		}
-		ptr, _, _, _, _, err := c.sveEvalMemPtr(ins.Args[0], 2)
+		memArg := ins.Args[0]
+		if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpImm {
+			memArg = asm.Operand{Kind: asm.OpMem, Mem: asm.MemRef{Base: ins.Args[0].Reg, Off: ins.Args[1].Imm * 2}}
+		}
+		ptr, _, _, _, _, err := c.sveEvalMemPtr(memArg, 2)
 		if err != nil {
 			return err
 		}
@@ -493,14 +499,18 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 		return nil
 
 	case name == "PSTR":
-		if len(ins.Args) != 2 {
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
 			return fmt.Errorf("arm64 PSTR expects Pt, mem: %q", ins.Raw)
 		}
 		pi, _, _, ok := arm64ParsePReg(arm64OpText(ins.Args[0]))
 		if !ok {
 			return fmt.Errorf("arm64 PSTR expects P src: %q", ins.Raw)
 		}
-		ptr, _, _, _, _, err := c.sveEvalMemPtr(ins.Args[1], 2)
+		memArg := ins.Args[1]
+		if len(ins.Args) == 3 && ins.Args[1].Kind == asm.OpReg && ins.Args[2].Kind == asm.OpImm {
+			memArg = asm.Operand{Kind: asm.OpMem, Mem: asm.MemRef{Base: ins.Args[1].Reg, Off: ins.Args[2].Imm * 2}}
+		}
+		ptr, _, _, _, _, err := c.sveEvalMemPtr(memArg, 2)
 		if err != nil {
 			return err
 		}
@@ -572,54 +582,79 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 
 	case strings.HasPrefix(name, "PWHILE"):
 		if len(ins.Args) < 3 {
-			return fmt.Errorf("arm64 %s expects Rn, Rm, Pd: %q", name, ins.Raw)
+			return fmt.Errorf("arm64 %s expects Rm, Rn, Pd: %q", name, ins.Raw)
 		}
-		// Forms: PWHILE* Rm, Rn, Pd | PWHILE* Rm, Rn, [Pd1, Pd2] | PWHILE* VLx4, Rm, Rn, PNd
+		// Plan 9 order: PWHILE* Rm(limit), Rn(start), Pd.T | PWHILE* VLx4, Rm, Rn, PNd
 		off := 0
 		if ins.Args[0].Kind == asm.OpIdent {
 			off = 1
 		}
-		rn, _ := c.loadReg(ins.Args[off].Reg)
-		rm, _ := c.loadReg(ins.Args[off+1].Reg)
+		limit, _ := c.loadReg(ins.Args[off].Reg)
+		start, _ := c.loadReg(ins.Args[off+1].Reg)
 		ty := "i64"
 		if strings.HasSuffix(name, "W") && !strings.HasSuffix(name, "RW") {
 			ty = "i32"
 			t1, t2 := c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t1, rn)
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t2, rm)
-			rn, rm = "%"+t1, "%"+t2
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t1, limit)
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t2, start)
+			limit, start = "%"+t1, "%"+t2
 		}
+		condPart := strings.TrimPrefix(name, "PWHILE")
 		pred := "slt"
 		switch {
-		case strings.Contains(name, "LE"):
+		case strings.HasPrefix(condPart, "LE"):
 			pred = "sle"
-		case strings.Contains(name, "LO"):
+		case strings.HasPrefix(condPart, "LO"):
 			pred = "ult"
-		case strings.Contains(name, "LS"):
+		case strings.HasPrefix(condPart, "LS"):
 			pred = "ule"
-		case strings.Contains(name, "GE"):
+		case strings.HasPrefix(condPart, "GE"):
 			pred = "sge"
-		case strings.Contains(name, "GT"):
+		case strings.HasPrefix(condPart, "GT"):
 			pred = "sgt"
-		case strings.Contains(name, "HI"):
+		case strings.HasPrefix(condPart, "HI"):
 			pred = "ugt"
-		case strings.Contains(name, "HS"):
+		case strings.HasPrefix(condPart, "HS"):
 			pred = "uge"
 		}
-		cmp, sel := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp %s %s %s, %s\n", cmp, pred, ty, rn, rm)
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i16 -1, i16 0\n", sel, cmp)
 		dst := ins.Args[len(ins.Args)-1]
+		laneBits := 8
+		if dst.Kind == asm.OpRegList && len(dst.RegList) > 0 {
+			if _, lb, _, ok := arm64ParsePReg(string(dst.RegList[0])); ok && lb != 0 {
+				laneBits = lb
+			}
+		} else if _, lb, _, ok := arm64ParsePReg(arm64OpText(dst)); ok && lb != 0 {
+			laneBits = lb
+		}
+		lanes := 128 / laneBits
+		stride := laneBits / 8
+		maskVal := "0"
+		active := "true"
+		for i := 0; i < lanes; i++ {
+			cur := start
+			if i > 0 {
+				ad := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = add %s %s, %d\n", ad, ty, start, i)
+				cur = "%" + ad
+			}
+			cmp, okLane, bit, orv := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp %s %s %s, %s\n", cmp, pred, ty, cur, limit)
+			fmt.Fprintf(c.b, "  %%%s = and i1 %s, %%%s\n", okLane, active, cmp)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i16 %d, i16 0\n", bit, okLane, 1<<uint(i*stride))
+			fmt.Fprintf(c.b, "  %%%s = or i16 %s, %%%s\n", orv, maskVal, bit)
+			active = "%" + okLane
+			maskVal = "%" + orv
+		}
 		if dst.Kind == asm.OpRegList {
 			for _, r := range dst.RegList {
 				if pi, _, _, ok := arm64ParsePReg(string(r)); ok {
-					c.storePIdx(pi, "%"+sel)
+					c.storePIdx(pi, maskVal)
 				}
 			}
 		} else if pi, _, _, ok := arm64ParsePReg(arm64OpText(dst)); ok {
-			c.storePIdx(pi, "%"+sel)
+			c.storePIdx(pi, maskVal)
 		}
-		c.sveSetPredFlags("%" + sel)
+		c.sveSetPredFlags(maskVal)
 		return nil
 
 	case name == "PCNTP" || name == "PFIRSTP" || name == "PLASTP" ||
@@ -630,10 +665,14 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 			return fmt.Errorf("arm64 %s expects >=2 operands: %q", name, ins.Raw)
 		}
 		dst := ins.Args[len(ins.Args)-1]
-		// Collect active predicate bitmask from predicate operand(s).
+		// Collect active predicate bitmask from predicate operand(s) and mask to lane stride.
 		pv := "0"
+		laneBits := 8
 		for _, a := range ins.Args[:len(ins.Args)-1] {
-			if pi, _, _, ok := arm64ParsePReg(arm64OpText(a)); ok {
+			if pi, lb, _, ok := arm64ParsePReg(arm64OpText(a)); ok {
+				if lb > laneBits {
+					laneBits = lb
+				}
 				cur := c.loadPIdx(pi)
 				if pv == "0" {
 					pv = cur
@@ -643,6 +682,15 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 					pv = "%" + an
 				}
 			}
+		}
+		if laneBits > 8 {
+			lm := uint16(0)
+			for b := 0; b < 16; b += laneBits / 8 {
+				lm |= 1 << uint(b)
+			}
+			mk := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i16 %s, %d\n", mk, pv, int16(lm))
+			pv = "%" + mk
 		}
 		cnt16, cnt64 := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call i16 @llvm.ctpop.i16(i16 %s)\n", cnt16, pv)
@@ -771,6 +819,7 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 	pIdx := -1
 	var memOp asm.Operand
 	hasMem := false
+	var gprArgs []asm.Reg
 	for _, a := range ins.Args {
 		switch a.Kind {
 		case asm.OpRegList:
@@ -793,7 +842,7 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 				}
 			} else if pi, _, _, ok := arm64ParsePReg(a.Sym); ok {
 				pIdx = pi
-			} else {
+			} else if !hasMem {
 				memOp = a
 				hasMem = true
 			}
@@ -805,8 +854,37 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 				}
 			} else if pi, _, _, ok := arm64ParsePReg(string(a.Reg)); ok {
 				pIdx = pi
+			} else {
+				gprArgs = append(gprArgs, a.Reg)
 			}
 		}
+	}
+	if !hasMem && len(gprArgs) > 0 {
+		// Encoder-table separate base/index register form (e.g. ZLD1B R0, R1, P0.Z, Z0.B).
+		mem := asm.MemRef{Base: gprArgs[0]}
+		if len(gprArgs) > 1 {
+			mem.Index = gprArgs[1]
+		}
+		memOp = asm.Operand{Kind: asm.OpMem, Mem: mem}
+		hasMem = true
+	}
+	if !hasMem && len(zRegs) >= 2 {
+		// Encoder-table vector-base + imm offset gather/scatter form (e.g. ZLD1B Z0.D, $1, P0.Z, Z1.D).
+		off := int64(0)
+		for _, a := range ins.Args {
+			if a.Kind == asm.OpImm {
+				off = a.Imm
+			}
+		}
+		addrZ := zRegs[0]
+		if isStore {
+			addrZ = zRegs[len(zRegs)-1]
+			zRegs = zRegs[:len(zRegs)-1]
+		} else {
+			zRegs = zRegs[1:]
+		}
+		memOp = asm.Operand{Kind: asm.OpMem, Mem: asm.MemRef{Base: asm.Reg(fmt.Sprintf("Z%d.D", addrZ)), Off: off}}
+		hasMem = true
 	}
 	if !hasMem || len(zRegs) == 0 {
 		return fmt.Errorf("arm64 %s missing mem or Z operand: %q", name, ins.Raw)

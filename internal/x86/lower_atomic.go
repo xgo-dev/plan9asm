@@ -224,7 +224,10 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("amd64 %s expects srcReg, dst: %q", op, ins.Raw)
 		}
-		srcReg := ins.Args[0]
+		srcReg, dstArg := ins.Args[0], ins.Args[1]
+		if (srcReg.Kind == asm.OpMem || srcReg.Kind == asm.OpSym) && dstArg.Kind == asm.OpReg {
+			srcReg, dstArg = dstArg, srcReg
+		}
 		if srcReg.Kind != asm.OpReg {
 			return true, false, fmt.Errorf("amd64 %s expects register src: %q", op, ins.Raw)
 		}
@@ -241,13 +244,13 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		if err != nil {
 			return true, false, err
 		}
-		if ins.Args[1].Kind == asm.OpReg {
-			dstReg := ins.Args[1].Reg
+		if dstArg.Kind == asm.OpReg {
+			dstReg := dstArg.Reg
 			srcT, err := c.evalIntSized(srcReg, ty)
 			if err != nil {
 				return true, false, err
 			}
-			dstT, err := c.evalIntSized(ins.Args[1], ty)
+			dstT, err := c.evalIntSized(dstArg, ty)
 			if err != nil {
 				return true, false, err
 			}
@@ -256,7 +259,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			}
 			return true, false, c.storeRegSized(dstReg, ty, srcT)
 		}
-		if ins.Args[1].Kind != asm.OpMem && ins.Args[1].Kind != asm.OpSym {
+		if dstArg.Kind != asm.OpMem && dstArg.Kind != asm.OpSym {
 			return true, false, fmt.Errorf("amd64 %s expects srcReg, mem/reg: %q", op, ins.Raw)
 		}
 		src, err := c.amd64AtomicTruncFromI64(src64, ty)
@@ -264,13 +267,13 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			return true, false, err
 		}
 		ptr := ""
-		if ins.Args[1].Kind == asm.OpMem {
-			ptr, err = c.amd64AtomicPtrFromMem(ins.Args[1].Mem)
+		if dstArg.Kind == asm.OpMem {
+			ptr, err = c.amd64AtomicPtrFromMem(dstArg.Mem)
 			if err != nil {
 				return true, false, err
 			}
 		} else {
-			ptr, err = c.ptrFromSB(ins.Args[1].Sym)
+			ptr, err = c.ptrFromSB(dstArg.Sym)
 			if err != nil {
 				return true, false, err
 			}

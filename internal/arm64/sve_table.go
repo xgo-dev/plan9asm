@@ -695,6 +695,24 @@ var arm64SVESpecs = []asm.OpSpec{
 	{Op: "ZZIP2", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
 	{Op: "ZZIPQ1", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
 	{Op: "ZZIPQ2", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	// Unobserved encoder-table SVE/SVE2.1 opcodes (M5)
+	{Op: "ZADDQP", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	{Op: "ZADDSUBP", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	{Op: "ZCMPLE", Family: asm.FamilyCompare, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "sve_cmp"},
+	{Op: "ZCMPLO", Family: asm.FamilyCompare, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "sve_cmp"},
+	{Op: "ZCMPLS", Family: asm.FamilyCompare, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "sve_cmp"},
+	{Op: "ZCMPLT", Family: asm.FamilyCompare, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "sve_cmp"},
+	{Op: "ZFCVTZSN", Family: asm.FamilyVecFMA, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "sve_fp"},
+	{Op: "ZFCVTZUN", Family: asm.FamilyVecFMA, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "sve_fp"},
+	{Op: "ZLUTI6", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	{Op: "ZSABAL", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	{Op: "ZSCVTFLT", Family: asm.FamilyVecFMA, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "sve_fp"},
+	{Op: "ZSQSHRN", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	{Op: "ZSQSHRUN", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	{Op: "ZSUBP", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	{Op: "ZUABAL", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
+	{Op: "ZUCVTFLT", Family: asm.FamilyVecFMA, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "sve_fp"},
+	{Op: "ZUQSHRN", Family: asm.FamilyVecBinOp, Effect: asm.EffectWriteOnly, LLVMOp: "sve_alu"},
 }
 
 var arm64SVETable = asm.NewOpTable(arm64SVESpecs)

@@ -2,6 +2,7 @@ package x86
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/asm"
@@ -455,16 +456,29 @@ func (c *amd64Ctx) loadMVecOperand(op asm.Operand) (string, error) {
 	}
 }
 
+func x86CleanZeroVecVal(v string, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	if strings.HasSuffix(v, " zeroinitializer") {
+		return "zeroinitializer", nil
+	}
+	return v, nil
+}
+
 func (c *amd64Ctx) x86VecInfoForReg(r asm.Reg) (x86VecInfo, bool) {
+	wrap := func(fn func(asm.Reg) (string, error)) func(asm.Reg) (string, error) {
+		return func(reg asm.Reg) (string, error) { return x86CleanZeroVecVal(fn(reg)) }
+	}
 	switch {
 	case isAMD64MReg(r):
-		return x86VecInfo{64, "<8 x i8>", c.loadMVecOperand, c.loadM, c.storeM}, true
+		return x86VecInfo{64, "<8 x i8>", c.loadMVecOperand, wrap(c.loadM), c.storeM}, true
 	case isAMD64XReg(r):
-		return x86VecInfo{128, "<16 x i8>", c.loadXVecOperand, c.loadX, c.storeX}, true
+		return x86VecInfo{128, "<16 x i8>", c.loadXVecOperand, wrap(c.loadX), c.storeX}, true
 	case isAMD64YReg(r):
-		return x86VecInfo{256, "<32 x i8>", c.loadYVecOperand, c.loadY, c.storeY}, true
+		return x86VecInfo{256, "<32 x i8>", c.loadYVecOperand, wrap(c.loadY), c.storeY}, true
 	case isAMD64ZReg(r):
-		return x86VecInfo{512, "<64 x i8>", c.loadZVecOperand, c.loadZ, c.storeZ}, true
+		return x86VecInfo{512, "<64 x i8>", c.loadZVecOperand, wrap(c.loadZ), c.storeZ}, true
 	default:
 		return x86VecInfo{}, false
 	}
@@ -537,10 +551,31 @@ func (c *amd64Ctx) storeXLowF32(r asm.Reg, val string) error {
 	return c.storeX(r, "%"+out)
 }
 
+func x86ParseDollarFloat(sym string) (float64, bool) {
+	s := strings.TrimSpace(sym)
+	if !strings.HasPrefix(s, "$") {
+		return 0, false
+	}
+	s = strings.TrimSpace(strings.TrimPrefix(s, "$"))
+	for strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") && len(s) >= 2 {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	if s == "" || strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
 func (c *amd64Ctx) evalF32(op asm.Operand) (string, error) {
 	switch op.Kind {
 	case asm.OpReg:
 		return c.loadXLowF32(op.Reg)
+	case asm.OpImm:
+		return asm.FormatLLVMFloat64Literal(float64(float32(op.Imm))), nil
 	case asm.OpMem:
 		p, ptrType, err := c.ptrFromMem(op.Mem)
 		if err != nil {
@@ -550,6 +585,9 @@ func (c *amd64Ctx) evalF32(op asm.Operand) (string, error) {
 		fmt.Fprintf(c.b, "  %%%s = load float, %s %s, align 1\n", t, ptrType, p)
 		return "%" + t, nil
 	case asm.OpSym:
+		if fv, ok := x86ParseDollarFloat(op.Sym); ok {
+			return asm.FormatLLVMFloat64Literal(float64(float32(fv))), nil
+		}
 		p, err := c.ptrFromSB(op.Sym)
 		if err != nil {
 			return "", err

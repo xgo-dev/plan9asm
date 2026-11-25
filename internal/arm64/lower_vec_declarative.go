@@ -2,6 +2,7 @@ package arm64
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/asm"
@@ -312,6 +313,53 @@ func (c *arm64Ctx) lowerVecDeclarative(op asm.Op, postInc bool, ins asm.Instr) (
 func (c *arm64Ctx) lowerNEONMoveStruct(spec asm.OpSpec, postInc bool, ins asm.Instr) error {
 	switch spec.LLVMOp {
 	case "vmovimm":
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpSym && ins.Args[1].Kind == asm.OpReg {
+			s := strings.TrimSpace(ins.Args[0].Sym)
+			if strings.HasPrefix(s, "$") {
+				// Symbolic constant or float immediate (e.g. VMOVS $const_q, V2).
+				imm := int64(0)
+				if iv, ok := arm64ParseDollarInt64(s); ok {
+					imm = iv
+				} else if fv, ok := arm64ParseDollarFloatFlex(s); ok {
+					if spec.Width == 32 {
+						imm = int64(uint32(math.Float32bits(float32(fv))))
+					} else {
+						imm = int64(math.Float64bits(fv))
+					}
+				}
+				v0, v1, bc := c.newTmp(), c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %d, i32 0\n", v0, imm)
+				fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 0, i32 1\n", v1, v0)
+				fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, v1)
+				return c.storeVReg(ins.Args[1].Reg, "%"+bc)
+			}
+			p, err := c.ptrFromSB(s)
+			if err != nil {
+				return err
+			}
+			if spec.Width == 128 {
+				ld := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
+				return c.storeVReg(ins.Args[1].Reg, "%"+ld)
+			}
+			ldTy := "i64"
+			if spec.Width == 32 {
+				ldTy = "i32"
+			}
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", ld, ldTy, p)
+			v64 := "%" + ld
+			if spec.Width == 32 {
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, ld)
+				v64 = "%" + z
+			}
+			v0, v1, bc := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %s, i32 0\n", v0, v64)
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 0, i32 1\n", v1, v0)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, v1)
+			return c.storeVReg(ins.Args[1].Reg, "%"+bc)
+		}
 		if spec.Width == 128 {
 			if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpImm || ins.Args[2].Kind != asm.OpReg {
 				return fmt.Errorf("arm64 VMOVQ expects $lo, $hi, Vdst: %q", ins.Raw)
@@ -407,18 +455,25 @@ func (c *arm64Ctx) lowerNEONMoveStruct(spec asm.OpSpec, postInc bool, ins asm.In
 		return nil
 
 	case "vstn":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || len(ins.Args[0].RegList) == 0 || ins.Args[1].Kind != asm.OpMem {
+		if len(ins.Args) != 2 {
 			return fmt.Errorf("arm64 %s expects [V...], mem: %q", spec.Op, ins.Raw)
 		}
-		n := len(ins.Args[0].RegList)
-		sh := parseNEONShape(ins.Args[0].RegList[0], false)
+		listArg, memArg := ins.Args[0], ins.Args[1]
+		if listArg.Kind == asm.OpMem && memArg.Kind == asm.OpRegList {
+			listArg, memArg = memArg, listArg
+		}
+		if listArg.Kind != asm.OpRegList || len(listArg.RegList) == 0 || memArg.Kind != asm.OpMem {
+			return fmt.Errorf("arm64 %s expects [V...], mem: %q", spec.Op, ins.Raw)
+		}
+		n := len(listArg.RegList)
+		sh := parseNEONShape(listArg.RegList[0], false)
 		elemBytes := sh.elemBits / 8
-		addr, base, inc, err := c.addrI64(ins.Args[1].Mem, false)
+		addr, base, inc, err := c.addrI64(memArg.Mem, false)
 		if err != nil {
 			return err
 		}
 		vecs := make([]string, n)
-		for k, reg := range ins.Args[0].RegList {
+		for k, reg := range listArg.RegList {
 			vecs[k], err = c.loadVShape(reg, sh)
 			if err != nil {
 				return err
@@ -531,17 +586,25 @@ func (c *arm64Ctx) lowerNEONUnary(spec asm.OpSpec, ins asm.Instr) error {
 }
 
 func (c *arm64Ctx) lowerNEONBinOp(spec asm.OpSpec, ins asm.Instr) error {
-	if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
-		return fmt.Errorf("arm64 %s expects Vsrc1, Vsrc2, Vdst: %q", spec.Op, ins.Raw)
+	if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[0].Kind != asm.OpReg || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
+		return fmt.Errorf("arm64 %s expects Vsrc1, [Vsrc2,] Vdst: %q", spec.Op, ins.Raw)
 	}
-	sh := parseNEONShape(ins.Args[2].Reg, spec.Float)
+	dstArg := ins.Args[len(ins.Args)-1]
+	lhsArg := dstArg
+	if len(ins.Args) == 3 {
+		if ins.Args[1].Kind != asm.OpReg {
+			return fmt.Errorf("arm64 %s expects Vsrc1, Vsrc2, Vdst: %q", spec.Op, ins.Raw)
+		}
+		lhsArg = ins.Args[1]
+	}
+	sh := parseNEONShape(dstArg.Reg, spec.Float)
 	vty := sh.vecTy()
 	// Plan 9 order: OP Vm, Vn, Vd => Vd = Vn op Vm
 	rhs, err := c.loadVShape(ins.Args[0].Reg, sh)
 	if err != nil {
 		return err
 	}
-	lhs, err := c.loadVShape(ins.Args[1].Reg, sh)
+	lhs, err := c.loadVShape(lhsArg.Reg, sh)
 	if err != nil {
 		return err
 	}
@@ -626,7 +689,7 @@ func (c *arm64Ctx) lowerNEONBinOp(spec asm.OpSpec, ins asm.Instr) error {
 	default:
 		return fmt.Errorf("arm64: unhandled NEON binop %s", spec.Op)
 	}
-	return c.storeVShape(ins.Args[2].Reg, out, sh)
+	return c.storeVShape(dstArg.Reg, out, sh)
 }
 
 func (c *arm64Ctx) lowerNEONFMA(spec asm.OpSpec, ins asm.Instr) error {

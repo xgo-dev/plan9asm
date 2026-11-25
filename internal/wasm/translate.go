@@ -1214,7 +1214,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err := emitBranch(op, ins.Args[0], op == "BRIF"); err != nil {
 				return err
 			}
-		case "GET":
+		case "GET", "LOCALGET":
 			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpReg {
 				return fmt.Errorf("Get expects one register")
 			}
@@ -1235,7 +1235,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 				return err
 			}
 			push(v)
-		case "SET", "TEE":
+		case "SET", "TEE", "LOCALSET", "LOCALTEE":
 			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpReg {
 				return fmt.Errorf("%s expects one register", ins.Op)
 			}
@@ -1247,14 +1247,68 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err != nil {
 				return err
 			}
-			if op == "TEE" {
+			if op == "TEE" || op == "LOCALTEE" {
 				push(v)
 			}
-		case "MOVB", "MOVW", "MOVD":
+		case "GLOBALGET":
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpReg {
+				v, err := loadRegister(ins.Args[0].Reg)
+				if err != nil {
+					return err
+				}
+				push(v)
+			} else {
+				push(wasmValue{typ: asm.I64, val: "0"})
+			}
+		case "GLOBALSET":
+			v, err := pop(op)
+			if err != nil {
+				return err
+			}
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpReg {
+				if _, err := storeRegister(ins.Args[0].Reg, v); err != nil {
+					return err
+				}
+			}
+		case "BRTABLE":
+			idx, err := pop(op)
+			if err != nil {
+				return err
+			}
+			idx, err = cast(idx, asm.I32, false)
+			if err != nil {
+				return err
+			}
+			if len(ins.Args) == 0 {
+				return fmt.Errorf("BrTable expects at least one target")
+			}
+			defTgt, err := controlTarget(ins.Args[len(ins.Args)-1])
+			if err != nil {
+				return err
+			}
+			defLbl := defTgt.endLabel
+			if defTgt.kind == "loop" {
+				defLbl = defTgt.startLabel
+			}
+			fmt.Fprintf(b, "  switch i32 %s, label %%%s [", idx.val, defLbl)
+			for ci := 0; ci < len(ins.Args)-1; ci++ {
+				tFrame, err := controlTarget(ins.Args[ci])
+				if err != nil {
+					return err
+				}
+				lbl := tFrame.endLabel
+				if tFrame.kind == "loop" {
+					lbl = tFrame.startLabel
+				}
+				fmt.Fprintf(b, " i32 %d, label %%%s", ci, lbl)
+			}
+			b.WriteString(" ]\n")
+			blockTerminated = true
+		case "MOVB", "MOVH", "MOVW", "MOVD":
 			if len(ins.Args) != 2 {
 				return fmt.Errorf("%s expects source and destination", ins.Op)
 			}
-			width := map[string]asm.LLVMType{"MOVB": asm.I8, "MOVW": asm.I32, "MOVD": asm.I64}[op]
+			width := map[string]asm.LLVMType{"MOVB": asm.I8, "MOVH": asm.I16, "MOVW": asm.I32, "MOVD": asm.I64}[op]
 			v, err := loadOperand(ins.Args[0], width)
 			if err != nil {
 				return err
@@ -1318,8 +1372,15 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			fmt.Fprintf(b, "  %%%s = %s double %s to i64\n", name, llvmOp, v.val)
 			push(wasmValue{typ: asm.I64, val: "%" + name})
 		case "F64LOAD":
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm {
+				ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: addressPtr}
+				if _, err := ext.lowerExtOp(op, ins); err != nil {
+					return err
+				}
+				continue
+			}
 			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpFP {
-				return fmt.Errorf("F64Load expects an FP slot")
+				return fmt.Errorf("F64Load expects an FP slot or offset")
 			}
 			v, err := loadOperand(ins.Args[0], asm.LLVMType("double"))
 			if err != nil {
@@ -1396,8 +1457,15 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			fmt.Fprintf(b, "  %%%s = call double @llvm.%s.f64(double %s)\n", name, intrinsic, v.val)
 			push(wasmValue{typ: asm.LLVMType("double"), val: "%" + name})
 		case "F64STORE":
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm {
+				ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: addressPtr}
+				if _, err := ext.lowerExtOp(op, ins); err != nil {
+					return err
+				}
+				continue
+			}
 			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpFP {
-				return fmt.Errorf("F64Store expects an FP slot")
+				return fmt.Errorf("F64Store expects an FP slot or offset")
 			}
 			v, err := pop(op)
 			if err != nil {
@@ -1409,11 +1477,11 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err := storeResult(ins.Args[0], v); err != nil {
 				return err
 			}
-		case "CURRENTMEMORY":
+		case "CURRENTMEMORY", "MEMORYSIZE":
 			name := newTmp()
 			fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.memory.size.i32(i32 0)\n", name)
 			push(wasmValue{typ: asm.I32, val: "%" + name})
-		case "GROWMEMORY":
+		case "GROWMEMORY", "MEMORYGROW":
 			pages, err := pop(op)
 			if err != nil {
 				return err
@@ -1491,7 +1559,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err := emitUnwindReturn(); err != nil {
 				return err
 			}
-		case "WASMRETURN":
+		case "WASMRETURN", "RETURN":
 			if useGoStack {
 				if err := emitRawReturn(); err != nil {
 					return err
@@ -1574,7 +1642,14 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			b.WriteString("  unreachable\n")
 			blockTerminated = true
 		default:
-			return fmt.Errorf("unsupported wasm instruction %s", ins.Op)
+			ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: addressPtr}
+			handled, err := ext.lowerExtOp(op, ins)
+			if err != nil {
+				return err
+			}
+			if !handled {
+				return fmt.Errorf("unsupported wasm instruction %s", ins.Op)
+			}
 		}
 	}
 	if len(controls) != 1 {

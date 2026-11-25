@@ -789,7 +789,16 @@ func (c *amd64Ctx) lowerX86M3VecMove(spec asm.OpSpec, ins asm.Instr) error {
 
 	case "movqozx":
 		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg || !isAMD64XReg(ins.Args[1].Reg) {
-			return fmt.Errorf("amd64 MOVQOZX expects Msrc, Xdst: %q", ins.Raw)
+			return fmt.Errorf("amd64 MOVQOZX expects Msrc/Xsrc, Xdst: %q", ins.Raw)
+		}
+		if ins.Args[0].Kind == asm.OpReg && isAMD64XReg(ins.Args[0].Reg) {
+			x, err := c.loadX(ins.Args[0].Reg)
+			if err != nil {
+				return err
+			}
+			pad := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> zeroinitializer, <16 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7, i32 16, i32 17, i32 18, i32 19, i32 20, i32 21, i32 22, i32 23>\n", pad, x)
+			return c.storeX(ins.Args[1].Reg, "%"+pad)
 		}
 		m, err := c.loadMVecOperand(ins.Args[0])
 		if err != nil {
@@ -800,8 +809,30 @@ func (c *amd64Ctx) lowerX86M3VecMove(spec asm.OpSpec, ins asm.Instr) error {
 		return c.storeX(ins.Args[1].Reg, "%"+pad)
 
 	case "movhl":
-		// MOV{H,L}P{S,D}: 2-op store (Xsrc, mem), 2-op SSE load (mem, Xdst), or 3-op VEX load (mem, Xsrc, Xdst)
+		// MOV{H,L}P{S,D}: 2-op store (Xsrc, mem), 2-op SSE load (mem/Xsrc, Xdst), or 3-op VEX load (mem, Xsrc, Xdst)
 		high := spec.SubOp == 1
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpReg && isAMD64XReg(ins.Args[0].Reg) && ins.Args[1].Kind == asm.OpReg && isAMD64XReg(ins.Args[1].Reg) {
+			// Register-register HL move (MOVHLPS / MOVLHPS / MOVHPD X, X encoder form)
+			sx, err := c.loadX(ins.Args[0].Reg)
+			if err != nil {
+				return err
+			}
+			dx, err := c.loadX(ins.Args[1].Reg)
+			if err != nil {
+				return err
+			}
+			sbc, dbc, el, insE, out := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			srcIdx, dstIdx := 0, 0
+			if high {
+				srcIdx, dstIdx = 0, 1
+			}
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", sbc, sx)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", dbc, dx)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 %d\n", el, sbc, srcIdx)
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %%%s, i32 %d\n", insE, dbc, el, dstIdx)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", out, insE)
+			return c.storeX(ins.Args[1].Reg, "%"+out)
+		}
 		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpReg && isAMD64XReg(ins.Args[0].Reg) {
 			x, err := c.loadX(ins.Args[0].Reg)
 			if err != nil {
@@ -1205,7 +1236,13 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 			return fmt.Errorf("amd64 POPW expects 1 operand: %q", ins.Raw)
 		}
 		if ins.Args[0].Kind == asm.OpReg {
+			if isX86SystemOrSegIdent(string(ins.Args[0].Reg)) {
+				return nil
+			}
 			return c.storeRegSized(ins.Args[0].Reg, asm.I16, "%"+ld)
+		}
+		if ins.Args[0].Kind == asm.OpIdent && isX86SystemOrSegIdent(ins.Args[0].Ident) {
+			return nil
 		}
 		if ins.Args[0].Kind == asm.OpMem {
 			p, pty, err := c.ptrFromMem(ins.Args[0].Mem)

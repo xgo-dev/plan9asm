@@ -494,8 +494,9 @@ func (c *amd64Ctx) lowerX86PHAddSub(spec asm.OpSpec, ins asm.Instr) error {
 func (c *amd64Ctx) lowerX86PMAddDP(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Instr) error {
 	args, kreg, hasMask := x86StripEVEXMask(ins.Args)
 	if spec.LLVMOp == "vp4dp" {
-		// VP4DPWSSD[S] mem128, [Z0-Z3], [K,] Zdst
-		if len(args) != 3 || args[1].Kind != asm.OpRegList || args[2].Kind != asm.OpReg {
+		// VP4DPWSSD[S] mem128, [Z0-Z3] or Z0, [K,] Zdst
+		regList := x86Expand4RegGroup(args[1])
+		if len(args) != 3 || len(regList) == 0 || args[2].Kind != asm.OpReg {
 			return fmt.Errorf("amd64 %s expects mem, [reg-list], [K,] Zdst: %q", spec.Op, ins.Raw)
 		}
 		vi, ok := c.x86VecInfoForReg(args[2].Reg)
@@ -518,7 +519,7 @@ func (c *amd64Ctx) lowerX86PMAddDP(spec asm.OpSpec, zeroMask, bcst bool, ins asm
 		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", accBC, vi.byteVecTy, oldB, vecTy)
 		acc := "%" + accBC
 		oldD := acc
-		for i, r := range args[1].RegList {
+		for i, r := range regList {
 			if i >= 4 {
 				break
 			}

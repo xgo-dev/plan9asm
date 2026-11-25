@@ -135,7 +135,7 @@ func TestTranslateWasmDiagnostics(t *testing.T) {
 		{name: "fill destination cast", body: "F64Load x+0(FP)\nI32Const $1\nI32Const $2\nMemoryFill", sig: frameF64, want: "unsupported wasm cast double to ptr"},
 		{name: "jump arguments", body: "JMP", want: "expects one target"},
 		{name: "call arguments", body: "Call", want: "expects one target"},
-		{name: "unsupported opcode", body: "I32Clz", want: "unsupported wasm instruction"},
+		{name: "unsupported opcode", body: "ReservedFD9A01", want: "unsupported wasm instruction"},
 		{name: "unterminated block", body: "Block", want: "unterminated wasm control blocks"},
 	}
 	for _, tc := range tests {

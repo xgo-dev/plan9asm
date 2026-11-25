@@ -2018,6 +2018,19 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("amd64 VMOVDQU64 expects src, dst: %q", ins.Raw)
 		}
+		isXY := func(o asm.Operand) bool {
+			if o.Kind != asm.OpReg {
+				return false
+			}
+			if _, ok := amd64ParseXReg(o.Reg); ok {
+				return true
+			}
+			_, ok := amd64ParseYReg(o.Reg)
+			return ok
+		}
+		if isXY(ins.Args[0]) || isXY(ins.Args[1]) {
+			return c.lowerVec("VMOVDQU", ins)
+		}
 		if ins.Args[1].Kind == asm.OpReg {
 			if _, ok := amd64ParseZReg(ins.Args[1].Reg); ok {
 				if ins.Args[0].Kind == asm.OpReg {
@@ -2654,23 +2667,54 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		return true, false, c.storeZ(ins.Args[3].Reg, "%"+x2)
 
 	case "VEXTRACTF32X4":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 VEXTRACTF32X4 expects $imm, Zsrc, Xdst: %q", ins.Raw)
+		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("amd64 VEXTRACTF32X4 expects $imm, Y/Zsrc, X/mem: %q", ins.Raw)
 		}
-		if _, ok := amd64ParseZReg(ins.Args[1].Reg); !ok {
+		var out string
+		if _, ok := amd64ParseZReg(ins.Args[1].Reg); ok {
+			idx := int(ins.Args[0].Imm & 0x3)
+			src, err := c.loadZ(ins.Args[1].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <64 x i8> %s, <64 x i8> zeroinitializer, <16 x i32> %s\n", t, src, llvmI32RangeMask(idx*16, 16))
+			out = "%" + t
+		} else if _, ok := amd64ParseYReg(ins.Args[1].Reg); ok {
+			idx := int(ins.Args[0].Imm & 0x1)
+			src, err := c.loadY(ins.Args[1].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <32 x i8> %s, <32 x i8> zeroinitializer, <16 x i32> %s\n", t, src, llvmI32RangeMask(idx*16, 16))
+			out = "%" + t
+		} else {
 			return false, false, nil
 		}
-		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
+		switch ins.Args[2].Kind {
+		case asm.OpReg:
+			if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
+				return false, false, nil
+			}
+			return true, false, c.storeX(ins.Args[2].Reg, out)
+		case asm.OpMem:
+			p, pty, err := c.ptrFromMem(ins.Args[2].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			fmt.Fprintf(c.b, "  store <16 x i8> %s, %s %s, align 1\n", out, pty, p)
+			return true, false, nil
+		case asm.OpSym:
+			p, err := c.ptrFromSB(ins.Args[2].Sym)
+			if err != nil {
+				return true, false, err
+			}
+			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", out, p)
+			return true, false, nil
+		default:
+			return true, false, fmt.Errorf("amd64 VEXTRACTF32X4 unsupported dst: %q", ins.Raw)
 		}
-		idx := int(ins.Args[0].Imm & 0x3)
-		src, err := c.loadZ(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <64 x i8> %s, <64 x i8> zeroinitializer, <16 x i32> %s\n", out, src, llvmI32RangeMask(idx*16, 16))
-		return true, false, c.storeX(ins.Args[2].Reg, "%"+out)
 
 	case "PCLMULQDQ":
 		// PCLMULQDQ $imm, Xsrc|mem, Xdst => mem src delegates to lowerSIMDDeclarative.
