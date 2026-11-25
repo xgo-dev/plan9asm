@@ -6,7 +6,8 @@ import (
 )
 
 // OpFamily classifies an instruction's lowering template, analogous to
-// Go cmd/internal/obj's optab classes but targeting LLVM IR emission.
+// Go cmd/internal/obj's optab classes and LLVM MCInstrDesc, targeting LLVM IR
+// emission and static ABI0 analysis.
 type OpFamily uint16
 
 const (
@@ -31,7 +32,8 @@ const (
 	FamilyString     // movs/stos/scas/cmps
 	FamilyX87        // legacy x87 FPU
 	FamilySyscall    // syscall/svc/swi
-	FamilySystem     // cpuid/xgetbv/rdtsc/mrs/msr/fence
+	FamilySystem     // cpuid/xgetbv/rdtsc/mrs/msr/fence/hints
+	FamilyMask       // AVX-512 K-mask / SVE predicate operations
 )
 
 // RegEffect describes how an instruction reads and writes its destination operand
@@ -59,14 +61,55 @@ const (
 	FlagsClobber              // leaves flags undefined
 )
 
+// RegMask records implicit architectural register/state dependencies for an
+// instruction descriptor so analyzers and lowerers share one source of truth.
+type RegMask uint16
+
+const (
+	ImplicitNone  RegMask = 0
+	ImplicitAX    RegMask = 1 << iota
+	ImplicitDX
+	ImplicitCX
+	ImplicitBX
+	ImplicitSI
+	ImplicitDI
+	ImplicitSP
+	ImplicitFlags
+	ImplicitMem
+	ImplicitX0
+	ImplicitLR
+)
+
+// FormMask describes accepted operand-shape properties for an instruction.
+type FormMask uint16
+
+const (
+	FormAny   FormMask = 0
+	Form0Op   FormMask = 1 << iota
+	Form1Op
+	Form2Op
+	Form3Op
+	Form4Op
+	FormRegMem
+	FormImm
+	FormCond
+	FormMaskK // accepts optional EVEX K mask operand
+	FormPair  // accepts register pair operand (R1, R2)
+)
+
 // OpSpec is a single declarative instruction descriptor (modeled after Go's
-// cmd/internal/obj optab entries, adapted for LLVM IR lowering and ABI0 checking).
-// One OpSpec row drives opcode discovery, ABI0 effect analysis, and parameterized
-// LLVM IR lowering without per-instruction boilerplate files.
+// cmd/internal/obj optab and LLVM MCInstrDesc, adapted for LLVM IR lowering
+// and ABI0 checking).
+//
+// Storing ISA knowledge as compact static OpSpec tables keeps SSA instruction
+// counts near zero (rodata globals) while driving opcode discovery, ABI0 effect
+// analysis, and parameterized LLVM IR lowering without per-instruction files.
 type OpSpec struct {
 	Op          Op
 	Family      OpFamily
-	Width       uint16     // total operand bit width (8, 16, 32, 64, 128, 256, 512; 0 = inferred)
+	SubOp       uint16     // family-specific semantic selector (atomic op, cond, rounding, etc.)
+	Width       uint16     // destination/operation bit width (8, 16, 32, 64, 128, 256, 512; 0 = inferred)
+	SrcWidth    uint16     // source operand bit width when different from Width (extends/converts)
 	LaneBits    uint8      // SIMD lane width in bits (8, 16, 32, 64; 0 = scalar)
 	Signed      bool       // signed integer semantics where applicable
 	Float       bool       // floating-point semantics
@@ -74,7 +117,11 @@ type OpSpec struct {
 	ThreeOp     bool       // non-destructive 3-operand form (VEX/EVEX/ARM64)
 	Effect      RegEffect  // destination read/write behavior for ABI0 tracking
 	Flags       FlagEffect // condition-flag interaction
-	LLVMOp      string     // LLVM IR opcode ("add", "fadd", ...) or intrinsic ("llvm.x86.aesni.aesenc")
+	Implicit    RegMask    // implicit register/memory dependencies
+	Forms       FormMask   // supported operand form flags
+	LLVMOp      string     // LLVM IR opcode ("add", "fadd", ...), semantic key, or intrinsic name
+	InlineAsm   string     // optional hardware inline-asm template for System/Hint/Barrier ops
+	Constraints string     // optional LLVM inline-asm constraints (defaults to "~{memory}")
 	ArchFeature string     // optional LLVM target feature attribute ("+avx2", "+aes", "+crc")
 }
 

@@ -78,6 +78,7 @@ func translateIRText(file *File, opt Options) (string, error) {
 
 	emitExternFuncDecls(&b, file, resolve, opt.Sigs, opt.WASMABI)
 
+	var body strings.Builder
 	attrRegistry := newFeatureAttrRegistry()
 	for i := range file.Funcs {
 		fn := &file.Funcs[i]
@@ -102,17 +103,17 @@ func translateIRText(file *File, opt Options) (string, error) {
 			sig.Attrs = attrRegistry.ref(inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, *fn))
 		}
 		if file.Arch == ArchARM && arm.FuncNeedsCFG(*fn) {
-			if err := arm.TranslateFunc(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+			if err := arm.TranslateFunc(&body, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 			continue
 		}
 		if file.Arch == ArchARM64 && arm64.FuncNeedsCFG(*fn) {
-			if err := arm64.TranslateFunc(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+			if err := arm64.TranslateFunc(&body, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 			continue
 		}
 		if sig.FrameLease != nil {
@@ -123,24 +124,29 @@ func translateIRText(file *File, opt Options) (string, error) {
 		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && x86.FuncNeedsCFG(*fn))) {
 			callOpt := opt
 			callOpt.ResolveSym = resolve
-			if err := x86.TranslateFuncWithOptions(&b, *fn, sig, callOpt); err != nil {
+			if err := x86.TranslateFuncWithOptions(&body, *fn, sig, callOpt); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 			continue
 		}
 		if file.Arch == ArchWASM {
-			if err := wasm.TranslateFunc(&b, *fn, sig, resolve, opt.Sigs, opt.WASMABI, opt.AnnotateSource); err != nil {
+			if err := wasm.TranslateFunc(&body, *fn, sig, resolve, opt.Sigs, opt.WASMABI, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 			continue
 		}
-		if err := translateFuncLinear(&b, file.Arch, *fn, sig, opt.AnnotateSource); err != nil {
+		if err := translateFuncLinear(&body, file.Arch, *fn, sig, opt.AnnotateSource); err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
-		b.WriteString("\n")
+		body.WriteString("\n")
 	}
+	bodyText := body.String()
+	if extraDecls := asm.CollectMissingLLVMIntrinsicDecls(b.String(), bodyText); extraDecls != "" {
+		b.WriteString(extraDecls)
+	}
+	b.WriteString(bodyText)
 	attrRegistry.emit(&b)
 	return b.String(), nil
 }
