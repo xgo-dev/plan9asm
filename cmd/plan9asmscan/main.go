@@ -143,9 +143,9 @@ type conformanceManifest struct {
 }
 
 var (
-	reCaseClause   = regexp.MustCompile(`case\s+([^:]+):`)
-	reOpSpecLit    = regexp.MustCompile(`\bOp:\s*"([A-Za-z][A-Za-z0-9._]*)"`)
-	reOpcodeName   = regexp.MustCompile("(?m)^\\s*(?:obj\\.A_ARCHSPECIFIC:\\s*)?\"([A-Z][A-Za-z0-9.]*)\",\\s*$")
+	reCaseClause = regexp.MustCompile(`case\s+([^:]+):`)
+	reOpSpecLit  = regexp.MustCompile(`\bOp:\s*"([A-Za-z][A-Za-z0-9._]*)"`)
+	reOpcodeName = regexp.MustCompile("(?m)^\\s*(?:obj\\.A_ARCHSPECIFIC:\\s*)?\"([A-Z][A-Za-z0-9.]*)\",\\s*$")
 )
 
 func main() {

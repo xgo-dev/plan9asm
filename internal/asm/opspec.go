@@ -66,8 +66,8 @@ const (
 type RegMask uint16
 
 const (
-	ImplicitNone  RegMask = 0
-	ImplicitAX    RegMask = 1 << iota
+	ImplicitNone RegMask = 0
+	ImplicitAX   RegMask = 1 << iota
 	ImplicitDX
 	ImplicitCX
 	ImplicitBX
@@ -84,8 +84,8 @@ const (
 type FormMask uint16
 
 const (
-	FormAny   FormMask = 0
-	Form0Op   FormMask = 1 << iota
+	FormAny FormMask = 0
+	Form0Op FormMask = 1 << iota
 	Form1Op
 	Form2Op
 	Form3Op
