@@ -100,3 +100,27 @@ func TestFormatMatrixHelpers(t *testing.T) {
 		t.Fatalf("expected P0/Z and P0/M expansion in %q", joined)
 	}
 }
+
+func TestAsmSourceMatchesArchBuildConstraints(t *testing.T) {
+	cases := []struct {
+		name   string
+		src    string
+		goarch string
+		want   bool
+	}{
+		{"negated other arch substring", "//go:build !arm64\nTEXT f(SB),$0\n", "arm", true},
+		{"negated same arch", "//go:build !arm\nTEXT f(SB),$0\n", "arm", false},
+		{"compound other arch", "//go:build arm64 && !purego\nTEXT f(SB),$0\n", "arm", false},
+		{"compound same arch", "//go:build arm64 && !purego\nTEXT f(SB),$0\n", "arm64", true},
+		{"or includes arch", "//go:build arm || arm64\nTEXT f(SB),$0\n", "arm", true},
+		{"or excludes arch", "//go:build arm || arm64\nTEXT f(SB),$0\n", "amd64", false},
+		{"negated or excludes arch", "//go:build !(arm || arm64)\nTEXT f(SB),$0\n", "arm", false},
+		{"negated or allows other", "//go:build !(arm || arm64)\nTEXT f(SB),$0\n", "amd64", true},
+		{"negated and allows non-excluded", "//go:build !(arm && purego)\nTEXT f(SB),$0\n", "arm", true},
+	}
+	for _, tc := range cases {
+		if got := asmSourceMatchesArch(tc.src, tc.goarch); got != tc.want {
+			t.Errorf("%s: asmSourceMatchesArch(%q, %q) = %v, want %v", tc.name, tc.src, tc.goarch, got, tc.want)
+		}
+	}
+}

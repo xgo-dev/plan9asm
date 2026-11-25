@@ -92,6 +92,7 @@ func BindGoARM64ABI0TailDeclarations(pkg GoPackage, file *File, resolve func(str
 		helpersBySym[fn.Sym] = fn
 	}
 
+	inventoryValidated := false
 	for _, root := range file.Funcs {
 		if strings.Contains(root.Sym, "<") || !arm64ABI0TailCandidate(file, root, resolve, result) {
 			continue
@@ -99,9 +100,15 @@ func BindGoARM64ABI0TailDeclarations(pkg GoPackage, file *File, resolve func(str
 		if resolve == nil || !strings.HasPrefix(root.Sym, "·") || strings.ContainsAny(strings.TrimPrefix(root.Sym, "·"), "·<>") {
 			return nil, fmt.Errorf("%w: ARM64 ABI0 tail needs an exact local declaration namespace", ErrProbeNeedsContext)
 		}
+		if !inventoryValidated {
+			if err := validateARM64ABI0SourceInventory(pkg); err != nil {
+				return nil, err
+			}
+			inventoryValidated = true
+		}
 		rootResolved := resolve(goTextSymbolForResolution(root.Sym))
 		declName := strings.TrimPrefix(root.Sym, "·")
-		if err := validateARM64ABI0SourceSelection(pkg, declName, rootResolved); err != nil {
+		if err := validateARM64ABI0Decl(pkg, declName, rootResolved); err != nil {
 			return nil, err
 		}
 		// Derive the helper<> signature from registers written in root before B helper<>(SB)
@@ -126,20 +133,9 @@ func BindGoARM64ABI0TailDeclarations(pkg GoPackage, file *File, resolve func(str
 	return result, nil
 }
 
-func validateARM64ABI0SourceSelection(pkg GoPackage, funcName, resolvedSym string) error {
+func validateARM64ABI0SourceInventory(pkg GoPackage) error {
 	if pkg.Types == nil || pkg.Types.Scope() == nil {
 		return fmt.Errorf("%w: ARM64 ABI0 tail lacks package types", ErrProbeNeedsContext)
-	}
-	// Check namespace identity: regular package matches pkg.Types.Path(),
-	// while executable main packages may link under "main".
-	namespaceOK := pkg.Path == pkg.Types.Path() ||
-		(pkg.Path == "main" && pkg.Types.Name() == "main" && resolvedSym == "main."+funcName)
-	if !namespaceOK {
-		return fmt.Errorf("%w: ARM64 ABI0 tail package namespace mismatch (%q vs %q)", ErrProbeNeedsContext, pkg.Path, pkg.Types.Path())
-	}
-	decl, ok := pkg.Types.Scope().Lookup(funcName).(*types.Func)
-	if !ok || decl == nil {
-		return fmt.Errorf("%w: ARM64 ABI0 tail missing Go declaration %q", ErrProbeNeedsContext, funcName)
 	}
 	sel := pkg.SourceSelection
 	if sel == nil || sel.Fset == nil || sel.TypesInfo == nil || sel.Sizes == nil ||
@@ -147,8 +143,6 @@ func validateARM64ABI0SourceSelection(pkg GoPackage, funcName, resolvedSym strin
 		len(sel.GoSources) != len(sel.SelectedGoFiles) || len(pkg.Syntax) != len(sel.SelectedGoFiles) {
 		return fmt.Errorf("%w: ARM64 ABI0 tail lacks complete selected Go source inventory", ErrProbeNeedsContext)
 	}
-
-	var matchedDecl *ast.Ident
 	total := 0
 	seen := make(map[string]bool, len(sel.SelectedGoFiles))
 	for i, filename := range sel.SelectedGoFiles {
@@ -174,6 +168,25 @@ func validateARM64ABI0SourceSelection(pkg GoPackage, funcName, resolvedSym strin
 		if err != nil || perr != nil || actualText != parsedText || pkg.Syntax[i].Name.Name != pkg.Types.Name() {
 			return fmt.Errorf("%w: ARM64 ABI0 tail syntax differs from selected bytes for %q", ErrProbeNeedsContext, filename)
 		}
+	}
+	return nil
+}
+
+func validateARM64ABI0Decl(pkg GoPackage, funcName, resolvedSym string) error {
+	// Check namespace identity: regular package matches pkg.Types.Path(),
+	// while executable main packages may link under "main".
+	namespaceOK := pkg.Path == pkg.Types.Path() ||
+		(pkg.Path == "main" && pkg.Types.Name() == "main" && resolvedSym == "main."+funcName)
+	if !namespaceOK {
+		return fmt.Errorf("%w: ARM64 ABI0 tail package namespace mismatch (%q vs %q)", ErrProbeNeedsContext, pkg.Path, pkg.Types.Path())
+	}
+	decl, ok := pkg.Types.Scope().Lookup(funcName).(*types.Func)
+	if !ok || decl == nil {
+		return fmt.Errorf("%w: ARM64 ABI0 tail missing Go declaration %q", ErrProbeNeedsContext, funcName)
+	}
+	sel := pkg.SourceSelection
+	var matchedDecl *ast.Ident
+	for i, filename := range sel.SelectedGoFiles {
 		for _, d := range pkg.Syntax[i].Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok || fn.Name == nil || fn.Name.Name != funcName {

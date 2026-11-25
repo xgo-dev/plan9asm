@@ -45,8 +45,8 @@ flowchart TD
 Go's `cmd/internal/obj/{x86,arm64,arm}` scales to thousands of instructions without hundreds of thousands of lines of hand-written code by separating **declarative opcode metadata** (`optab`) from **parameterized semantic lowering**. `plan9asm` adopts the same pattern:
 
 1. **Shared `OpSpec` / `OpTable` (`internal/asm/opspec.go`)**:
-   - Each instruction entry declares its opcode family (`FamilyMove`, `FamilyALU`, `FamilyShift`, `FamilyBit`, `FamilyMulDiv`, `FamilyAtomic`, `FamilyFP`, `FamilyMask`, `FamilyVecBinOp`, `FamilyVecUnary`, `FamilyVecShift`, `FamilyVecShuffle`, `FamilyCrypto`, `FamilySystem`, ...), operand width (`Width`/`SrcWidth`), lane geometry (`LaneBits`), read/write/zero-upper register effects (`OpEffect`), implicit register usage (`RegMask`), flags behavior (`FlagsBehavior`), target feature requirement (`ArchFeature`), and LLVM IR opcode / intrinsic / inline asm template.
-   - All four native backends (`internal/arm/ops.go`, `internal/arm64/lower_*_declarative.go`, `internal/x86/ops.go` + `lower_*_declarative.go`) register static `OpSpec` tables queried in O(1) via `asm.OpTable`.
+   - Each instruction entry declares its opcode family (`FamilyMove`, `FamilyALU`, `FamilyShift`, `FamilyBit`, `FamilyMulDiv`, `FamilyAtomic`, `FamilyFP`, `FamilyMask`, `FamilyVecBinOp`, `FamilyVecUnary`, `FamilyVecShift`, `FamilyVecShuffle`, `FamilyCrypto`, `FamilySystem`, ...), operand width (`Width`/`SrcWidth`), lane geometry (`LaneBits`), read/write/zero-upper register effects (`Effect`), implicit register usage (`Implicit`), flags behavior (`Flags`), target feature requirement (`ArchFeature`), and LLVM IR opcode / intrinsic / inline asm template.
+   - The three native lowering backends (`internal/arm/ops.go`, `internal/arm64/lower_*_declarative.go`, `internal/x86/ops.go` + `lower_*_declarative.go`) register static `OpSpec` tables queried in O(1) via `asm.OpTable`.
 2. **Parameterized family lowerers**:
    - Instead of writing one custom switch case per instruction (e.g., separate handlers for `VPADDB`/`VPADDW`/`VPADDD`/`VPADDQ`/`VPSUB*`/`VPMULL*`/`VPMIN*`/`VPMAX*`/`VADDPS`/`VADDPD` across XMM/YMM/ZMM + EVEX K-mask + `.Z` + `.BCST`, or AArch64 LSE atomics `{LDADD,LDCLR,LDEOR,LDOR,LDSMAX,LDSMIN,LDUMAX,LDUMIN,SWP,CAS} × {,A,L,AL} × {B,H,W,D}`, or NEON vector arithmetic across `.B8/.B16/.H4/.H8/.S2/.S4/.D2`), each family has one parameterized emitter that derives LLVM types, lane counts, and masking directly from `OpSpec`.
    - Adding a new instruction family member is a **1-line table row** with zero SSA bloat.
@@ -67,7 +67,7 @@ To close third-party Go library assembly gaps quickly without slow `go mod downl
    - Streams `.s` entries directly from Go module proxy ZIPs via HTTP `Range` requests (`remoteZipReaderAt`), parses them in-memory with `plan9asm.Parse`, and probes instructions with a deduplicated `(goarch, form)` cache (`ProbeInstruction`).
    - Supports `-modules=<csv|@file>` to target curated third-party libraries directly (skipping `index.golang.org`) and outputs a frequency-ranked `audit.top_gaps` list grouped by `(arch, opcode, form, error, hits, module_count, example)`.
 2. **Local directory / `$GOMODCACHE` scan (`cmd/plan9asmscan -corpus=dir -input=<dir>`)**:
-   - Walks any local repo, monorepo, or `$GOMODCACHE` directly in-memory, matching `.s` files to `GOARCH` via filename suffixes and `//go:build` directives, and produces the same structured JSON/text form-coverage report used for Go's official assembler corpus (`-corpus=go-asm`).
+   - Walks any local repo, monorepo, or `$GOMODCACHE` directly in-memory, matching `.s` files to `GOARCH` via filename suffixes and `//go:build` directives, and produces the same structured Markdown/JSON (`-format=md|json`) form-coverage report used for Go's official assembler corpus (`-corpus=go-asm`).
 
 ## Key Subsystems
 

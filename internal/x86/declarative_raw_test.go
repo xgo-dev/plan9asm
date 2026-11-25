@@ -203,6 +203,148 @@ func TestCheckABI0ResultInitBoundaries(t *testing.T) {
 			t.Fatalf("private SP escape err = %v, want ErrProbeNeedsContext", err)
 		}
 	})
+
+	t.Run("extended sub-registers alias parent GP", func(t *testing.T) {
+		file, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	MOVQ a+0(FP), R8
+	MOVB R8B, R9B
+	MOVQ a+0(FP), SI
+	MOVB SIB, DIB
+	MOVQ a+0(FP), R10
+	MOVL R10L, R11L
+	MOVB R8B, ret+8(FP)
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(file.Funcs[0], sig, "amd64"); err != nil {
+			t.Fatalf("extended sub-register aliases rejected: %v", err)
+		}
+	})
+
+	t.Run("implicit register writes and reads tracked", func(t *testing.T) {
+		// MULQ/CQO/CPUID/RDTSC initialize DX/AX; REP MOVSQ requires CX/SI/DI initialized.
+		okFile, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	MOVQ a+0(FP), AX
+	CQO
+	MOVQ DX, BX
+	MULQ BX
+	ADDQ DX, AX
+	RDTSC
+	ADDQ DX, AX
+	CPUID
+	ADDQ BX, AX
+	ADDQ CX, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(okFile.Funcs[0], sig, "amd64"); err != nil {
+			t.Fatalf("implicit writes rejected: %v", err)
+		}
+
+		// REP MOVSQ with uninitialized CX must fail.
+		badRep, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	MOVQ a+0(FP), SI
+	MOVQ a+0(FP), DI
+	REP; MOVSQ
+	MOVQ SI, ret+8(FP)
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(badRep.Funcs[0], sig, "amd64"); !errors.Is(err, asm.ErrProbeNeedsContext) {
+			t.Fatalf("REP MOVSQ with uninit CX err = %v, want ErrProbeNeedsContext", err)
+		}
+
+		// Full implicit read/write matrix: LOCK, MULXQ, DIVB, DIVQ, CDQE, XGETBV,
+		// RDTSCP, SYSCALL, LAHF, SAHF, XLAT, CMPXCHGQ, CMPXCHG16B, REP STOSQ/LODSQ/MOVSQ.
+		fullImplicit, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$32-16
+	MOVQ a+0(FP), AX
+	MOVQ AX, BX
+	MOVQ AX, CX
+	MOVQ AX, DX
+	MOVQ AX, SI
+	MOVQ AX, DI
+	MOVQ AX, 0(SP)
+	LOCK; ADDQ $1, 0(SP)
+	MULXQ BX, R8, R9
+	DIVB BL
+	DIVQ BX
+	CDQE
+	XGETBV
+	RDTSCP
+	SYSCALL
+	LAHF
+	SAHF
+	XLAT
+	CMPXCHGQ BX, 0(SP)
+	CMPXCHG16B 0(SP)
+	REP; STOSQ
+	REP; LODSQ
+	REP; MOVSQ
+	MOVQ R8, ret+8(FP)
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(fullImplicit.Funcs[0], sig, "amd64"); err != nil {
+			t.Fatalf("full implicit matrix rejected: %v", err)
+		}
+
+		// EffectPreserveUpper (e.g. ROUNDSD into uninitialized X1) must fail.
+		badPreserve, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	PXOR X0, X0
+	ROUNDSD $0, X0, X1
+	MOVQ a+0(FP), AX
+	MOVQ AX, ret+8(FP)
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(badPreserve.Funcs[0], sig, "amd64"); !errors.Is(err, asm.ErrProbeNeedsContext) {
+			t.Fatalf("EffectPreserveUpper uninit dst err = %v, want ErrProbeNeedsContext", err)
+		}
+	})
+}
+
+func TestRawVEX3ByteVZEROUPPERAndVZEROALL(t *testing.T) {
+	// 3-byte VEX C5 F8 77 = VZEROUPPER, C5 FC 77 = VZEROALL
+	file, err := asm.Parse(asm.ArchAMD64, `TEXT ·vzu(SB),NOSPLIT,$0-0
+	BYTE $0xC5; BYTE $0xF8; BYTE $0x77
+	BYTE $0xC5; BYTE $0xFC; BYTE $0x77
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeRawDirectives(file.Funcs[0].Instrs, "amd64")
+	if err != nil {
+		t.Fatalf("DecodeRawDirectives(3-byte VZEROUPPER/VZEROALL): %v", err)
+	}
+	var ops []asm.Op
+	for _, ins := range decoded {
+		if ins.DecodedFromRaw {
+			ops = append(ops, ins.Op)
+		}
+	}
+	if len(ops) != 2 || ops[0] != "VZEROUPPER" || ops[1] != "VZEROALL" {
+		t.Fatalf("decoded ops = %v, want [VZEROUPPER VZEROALL]", ops)
+	}
+	// Truncated 3-byte VEX opcode requiring ModRM must fail cleanly.
+	trunc, err := asm.Parse(asm.ArchAMD64, "TEXT ·t(SB),NOSPLIT,$0-0\n\tBYTE $0xC5; BYTE $0xF8; BYTE $0x58\n\tRET\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeRawDirectives(trunc.Funcs[0].Instrs, "amd64"); err == nil {
+		t.Fatalf("expected truncated VEX error")
+	}
 }
 
 func TestLinuxAMD64HardwareSyscallLowering(t *testing.T) {
@@ -228,5 +370,20 @@ func TestLinuxAMD64HardwareSyscallLowering(t *testing.T) {
 		if !strings.Contains(ir, want) {
 			t.Fatalf("Linux amd64 SYSCALL missing %q:\n%s", want, ir)
 		}
+	}
+}
+
+func TestImplicitRegEffectsAndCanonicalGP(t *testing.T) {
+	_, writes := implicitRegEffects("SYNTH", asm.OpSpec{
+		Implicit: asm.ImplicitAX | asm.ImplicitBX | asm.ImplicitCX | asm.ImplicitDX | asm.ImplicitSI | asm.ImplicitDI,
+	}, false)
+	if len(writes) != 6 {
+		t.Fatalf("implicitRegEffects fallback writes = %v, want 6 regs", writes)
+	}
+	if got := canonicalGP("r15b"); got != "R15" {
+		t.Fatalf("canonicalGP(r15b) = %q, want R15", got)
+	}
+	if got := canonicalGP("custom"); got != "CUSTOM" {
+		t.Fatalf("canonicalGP(custom) = %q, want CUSTOM", got)
 	}
 }

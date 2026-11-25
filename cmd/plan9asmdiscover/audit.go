@@ -462,7 +462,7 @@ func parseModuleSpecs(spec string) ([]moduleVersion, error) {
 		if modPath == "" {
 			return nil, fmt.Errorf("invalid module spec %q", item)
 		}
-		mv := moduleVersion{Path: modPath, Version: ver}
+		mv := moduleVersion{Path: modPath, Version: ver, Pinned: ver != ""}
 		k := scanKey(mv)
 		if _, dup := seen[k]; dup {
 			continue

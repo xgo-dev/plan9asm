@@ -164,7 +164,11 @@ func preprocessAssembly(src string, defines []string, opt *AssemblyPreprocessOpt
 		}
 	}
 	macroNames := []string{}
+	macroNamesDirty := true
 	refreshMacroNames := func() {
+		if !macroNamesDirty {
+			return
+		}
 		macroNames = macroNames[:0]
 		for name := range macros {
 			macroNames = append(macroNames, name)
@@ -173,8 +177,8 @@ func preprocessAssembly(src string, defines []string, opt *AssemblyPreprocessOpt
 		sort.Slice(macroNames, func(i, j int) bool {
 			return len(macroNames[i]) > len(macroNames[j])
 		})
+		macroNamesDirty = false
 	}
-	refreshMacroNames()
 
 	type ifState struct {
 		outerActive bool
@@ -221,6 +225,7 @@ func preprocessAssembly(src string, defines []string, opt *AssemblyPreprocessOpt
 	// in force at its invocation, not the final map after the whole source.
 	expandedConditions := map[int]bool{}
 	appendExpanded := func(line string) {
+		refreshMacroNames()
 		for _, expanded := range ExpandPPLine(line, macros, macroNames, 0) {
 			trim := strings.TrimSpace(expanded)
 			switch {
@@ -300,7 +305,7 @@ func preprocessAssembly(src string, defines []string, opt *AssemblyPreprocessOpt
 			}
 		}
 		macros[name] = Macro{body: body, params: defParams}
-		refreshMacroNames()
+		macroNamesDirty = true
 		defName = ""
 		defParams = nil
 		defBody.Reset()
@@ -499,7 +504,7 @@ func preprocessAssembly(src string, defines []string, opt *AssemblyPreprocessOpt
 					}
 				}
 				delete(macros, name)
-				refreshMacroNames()
+				macroNamesDirty = true
 			}
 			continue
 		}

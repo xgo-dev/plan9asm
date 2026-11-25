@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/build/constraint"
 	"io"
 	"os"
 	"os/exec"
@@ -509,6 +510,12 @@ func asmFileMatchesArch(name, goarch string) bool {
 	return true
 }
 
+var knownScanArches = map[string]bool{
+	"amd64": true, "386": true, "arm64": true, "arm": true, "wasm": true,
+	"ppc64le": true, "ppc64": true, "s390x": true, "riscv64": true,
+	"mips64le": true, "mips64": true, "mipsle": true, "mips": true, "loong64": true,
+}
+
 func asmSourceMatchesArch(src, goarch string) bool {
 	lines := strings.Split(src, "\n")
 	if len(lines) > 20 {
@@ -516,22 +523,46 @@ func asmSourceMatchesArch(src, goarch string) bool {
 	}
 	for _, line := range lines {
 		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "//go:build ") {
-			expr := strings.TrimSpace(strings.TrimPrefix(trim, "//go:build "))
-			if strings.Contains(expr, "!"+goarch) {
-				return false
-			}
-			for _, other := range []string{"amd64", "386", "arm64", "arm", "wasm", "ppc64", "s390x", "riscv64", "loong64", "mips"} {
-				if other == goarch {
-					continue
-				}
-				if expr == other {
-					return false
-				}
-			}
+		if !constraint.IsGoBuild(trim) {
+			continue
 		}
+		expr, err := constraint.Parse(trim)
+		if err != nil {
+			continue
+		}
+		return archConstraintSatisfiable(expr, goarch, false)
 	}
 	return true
+}
+
+func archConstraintSatisfiable(expr constraint.Expr, goarch string, negated bool) bool {
+	switch e := expr.(type) {
+	case *constraint.TagExpr:
+		if e.Tag == goarch {
+			return !negated
+		}
+		if knownScanArches[e.Tag] {
+			return negated
+		}
+		// Non-arch tags (OS, cgo, purego, go1.x, ...) may be either true or false.
+		return true
+	case *constraint.NotExpr:
+		return archConstraintSatisfiable(e.X, goarch, !negated)
+	case *constraint.AndExpr:
+		if negated {
+			// !(X && Y) == !X || !Y
+			return archConstraintSatisfiable(e.X, goarch, true) || archConstraintSatisfiable(e.Y, goarch, true)
+		}
+		return archConstraintSatisfiable(e.X, goarch, false) && archConstraintSatisfiable(e.Y, goarch, false)
+	case *constraint.OrExpr:
+		if negated {
+			// !(X || Y) == !X && !Y
+			return archConstraintSatisfiable(e.X, goarch, true) && archConstraintSatisfiable(e.Y, goarch, true)
+		}
+		return archConstraintSatisfiable(e.X, goarch, false) || archConstraintSatisfiable(e.Y, goarch, false)
+	default:
+		return true
+	}
 }
 
 func addFormStat(forms map[string]*formStat, arch plan9asm.Arch, goarch string, ins plan9asm.Instr, file string) {

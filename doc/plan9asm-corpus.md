@@ -297,8 +297,10 @@ successful `.o` generation alone is not an executable conformance claim.
 ## Go 1.20 through Go 1.27 differences
 
 The checked baseline stores a fingerprint for every Go minor version and
-architecture. It detects any form changing among supported, context-required,
-unsupported, or parser-failed states.
+architecture. `scripts/check-go-asm-coverage.sh` requires an exact coverage
+fingerprint match on Go 1.27, and enforces monotonic non-regression on older
+Go releases (`supported_forms` must not decrease and `unsupported_forms` must
+not increase, with zero parse failures).
 
 This version range describes the union of official namespaces, encoder tables,
 and assembler source corpora. The executable conformance cases are shared when
@@ -328,27 +330,27 @@ The Go 1.27 snapshot currently reports:
 
 | GOARCH | official names | encoder forms | observed ops | observed forms | supported | context | unsupported | runtime verified | parse failures |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 41 | 6 | 13 | 0 | 0 |
-| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 755 | 6 | 5981 | 35 | 0 |
-| arm | 181 | 528 | 135 | 500 | 312 | 34 | 154 | 0 | 0 |
-| arm64 | 1417 including SVE | 2964 | 1281 | 1980 | 457 | 47 | 1476 | 62 | 0 |
+| 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 54 | 6 | 0 | 0 | 0 |
+| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 6690 | 6 | 46 | 35 | 0 |
+| arm | 181 | 528 | 135 | 500 | 459 | 41 | 0 | 0 | 0 |
+| arm64 | 1417 including SVE | 2964 | 1281 | 1980 | 1927 | 53 | 0 | 64 | 0 |
 | wasm | 463 | 463 opcode-only rows | 71 | 120 | 0 | 120 | 0 | 0 | 0 |
 
-These numbers describe current implementation progress, not completion.
 Encoder forms use Go's internal operand classes and are a complete machine-
 readable inventory of the encoder rows; the wasm count is deliberately an
 opcode-only inventory because its Go backend has no such table. Observed forms
 use plan9asm's concrete shape classification and can outnumber encoder rows
 because generated testdata varies registers, address shapes, and concrete
-encodings. The large amd64 gap is mostly the exhaustive legacy/SIMD/AVX test
-matrix. Go 1.27 adds the ARM64 SVE corpus and encoder tables; SVE register
-lists are parsed and every currently unsupported lowering form is reported
-explicitly instead of being hidden as a parse failure.
+encodings. The remaining 46 unsupported amd64 forms are all 386-only x87
+instructions intentionally rejected in 64-bit mode. Go 1.27's ARM64 SVE corpus
+and encoder tables are lowered across all 1980 observed forms with zero parse
+failures.
 
 The machine-readable cross-version snapshots are in
-`testdata/coverage/go-asm-baseline.json`. A CI mismatch is blocking and
-must be investigated at form level before the snapshot is intentionally
-updated.
+`testdata/coverage/go-asm-baseline.json`. On Go 1.27, a CI fingerprint mismatch
+is blocking and must be investigated at form level before the snapshot is
+intentionally updated; on Go 1.20–1.26, any regression in `supported_forms`,
+increase in `unsupported_forms`, or parse failure is blocking.
 
 ## Adding or changing an instruction
 

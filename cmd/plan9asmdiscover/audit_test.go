@@ -96,6 +96,70 @@ TEXT ·armfn(SB),0,$0-0
 	if gap.Arch != "amd64" || gap.Opcode != "BOGUSOP" || gap.Hits != 2 || gap.ModuleCount != 1 {
 		t.Fatalf("unexpected top gap: %#v", gap)
 	}
+
+	// 2. Pinned mod@v1.0.0 must audit v1.0.0 directly without calling /@latest.
+	// 3. Indexed version already equal to @latest must download the ZIP only once.
+	var latestHits, zipOpenHits int
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/@latest"):
+			latestHits++
+			_, _ = io.WriteString(w, `{"Version":"v1.0.0"}`)
+		case strings.HasSuffix(r.URL.Path, "/@v/v1.0.0.zip"):
+			if r.Method == http.MethodHead {
+				zipOpenHits++
+			}
+			serveRangeData(t, w, r, archive.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv2.Close()
+
+	pinnedMods, err := parseModuleSpecs("example.com/crypto@v1.0.0")
+	if err != nil || len(pinnedMods) != 1 || !pinnedMods[0].Pinned {
+		t.Fatalf("parseModuleSpecs pinned = %#v, err=%v", pinnedMods, err)
+	}
+	repPinned, err := discover(context.Background(), srv2.Client(), config{
+		indexURL:    defaultIndexURL,
+		proxyURL:    srv2.URL,
+		modules:     pinnedMods,
+		audit:       true,
+		auditTop:    10,
+		workers:     1,
+		maxZipSize:  int64(archive.Len()) + 1024,
+		httpTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("discover pinned error = %v", err)
+	}
+	if latestHits != 0 {
+		t.Fatalf("pinned module called /@latest %d times, want 0", latestHits)
+	}
+	if repPinned.Audit == nil || repPinned.Audit.FilesAudited != 3 {
+		t.Fatalf("pinned audit = %#v, want 3 files", repPinned.Audit)
+	}
+
+	zipOpenHits = 0
+	repIndexed, err := discover(context.Background(), srv2.Client(), config{
+		indexURL:    defaultIndexURL,
+		proxyURL:    srv2.URL,
+		modules:     []moduleVersion{{Path: "example.com/crypto", Version: "v1.0.0"}},
+		audit:       true,
+		auditTop:    10,
+		workers:     1,
+		maxZipSize:  int64(archive.Len()) + 1024,
+		httpTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("discover indexed error = %v", err)
+	}
+	if zipOpenHits != 1 {
+		t.Fatalf("indexed==latest opened ZIP %d times, want 1", zipOpenHits)
+	}
+	if repIndexed.Audit == nil || repIndexed.Audit.FilesAudited != 3 {
+		t.Fatalf("indexed==latest audit = %#v, want 3 files", repIndexed.Audit)
+	}
 }
 
 func TestParseModuleSpecsCSVAndFile(t *testing.T) {

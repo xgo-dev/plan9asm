@@ -122,8 +122,18 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		return nil
 	}
 
+	repPrefix := false
 	for _, ins := range instrs {
 		op := asm.Op(strings.ToUpper(string(ins.Op)))
+		if op == "REP" || op == "REPN" {
+			repPrefix = true
+			continue
+		}
+		if op == "LOCK" {
+			continue
+		}
+		curRep := repPrefix
+		repPrefix = false
 		if op == asm.OpTEXT || op == asm.OpLABEL || op == "NOP" || op == "PCALIGN" ||
 			op == "NO_LOCAL_POINTERS" || op == "FUNCDATA" || op == "PCDATA" || op == "GO_ARGS" {
 			continue
@@ -180,11 +190,25 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			continue
 		}
 
-		// Check source operands.
+		// Check implicit architectural register reads (OpSpec.Implicit + string/mul/div/sys rules).
+		impReads, impWrites := implicitRegEffects(op, spec, curRep)
+		for _, r := range impReads {
+			if err := checkRead(asm.Operand{Kind: asm.OpReg, Reg: r}, ins.Raw); err != nil {
+				return nil, err
+			}
+		}
+
+		// Check source operands. EffectPreserveUpper preserves upper lanes of the
+		// destination register, so the destination is also read.
 		n := len(ins.Args)
 		readEnd := n - 1
-		if spec.Effect == asm.EffectReadOnly || spec.Effect == asm.EffectReadWrite {
+		if spec.Effect == asm.EffectReadOnly || spec.Effect == asm.EffectReadWrite ||
+			spec.Effect == asm.EffectPreserveUpper || (spec.Effect == asm.EffectImplicit && !spec.ThreeOp) {
 			readEnd = n
+		}
+		if spec.ThreeOp && spec.Effect == asm.EffectImplicit && n == 3 {
+			// MULXL/MULXQ src, hi, lo reads only src (args[0]) and writes both hi and lo.
+			readEnd = 1
 		}
 		srcTaintSP := false
 		srcFromRaw := false
@@ -213,10 +237,20 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 		}
 
-		if n > 0 && spec.Effect != asm.EffectReadOnly && spec.Effect != asm.EffectNone {
+		if spec.ThreeOp && spec.Effect == asm.EffectImplicit && n == 3 {
+			for i := 1; i < n; i++ {
+				if err := markWrite(ins.Args[i], srcFromRaw, srcTaintSP); err != nil {
+					return nil, err
+				}
+			}
+		} else if n > 0 && spec.Effect != asm.EffectReadOnly && spec.Effect != asm.EffectNone && spec.Effect != asm.EffectImplicit {
 			if err := markWrite(ins.Args[n-1], srcFromRaw, srcTaintSP); err != nil {
 				return nil, err
 			}
+		}
+		for _, r := range impWrites {
+			gpInit[r] = true
+			gpTaintedSP[r] = false
 		}
 	}
 
@@ -225,6 +259,82 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		InitializedVec: vecInit,
 		WrittenResults: writtenResults,
 	}, nil
+}
+
+func implicitRegEffects(op asm.Op, spec asm.OpSpec, repeated bool) (reads []asm.Reg, writes []asm.Reg) {
+	switch spec.Family {
+	case asm.FamilyString:
+		if repeated {
+			reads = append(reads, asm.CX)
+			writes = append(writes, asm.CX)
+		}
+		switch spec.LLVMOp {
+		case "movs", "cmps":
+			reads = append(reads, asm.SI, asm.DI)
+			writes = append(writes, asm.SI, asm.DI)
+		case "stos", "scas":
+			reads = append(reads, asm.AX, asm.DI)
+			writes = append(writes, asm.DI)
+		case "lods":
+			reads = append(reads, asm.SI)
+			writes = append(writes, asm.AX, asm.SI)
+		}
+		return reads, writes
+	}
+
+	switch op {
+	case "MULB", "MULW", "MULL", "MULQ":
+		return []asm.Reg{asm.AX}, []asm.Reg{asm.AX, asm.DX}
+	case "MULXL", "MULXQ":
+		return []asm.Reg{asm.DX}, nil
+	case "DIVB", "IDIVB":
+		return []asm.Reg{asm.AX}, []asm.Reg{asm.AX}
+	case "DIVW", "DIVL", "DIVQ", "IDIVW", "IDIVL", "IDIVQ":
+		return []asm.Reg{asm.AX, asm.DX}, []asm.Reg{asm.AX, asm.DX}
+	case "CQO", "CDQ", "CWD":
+		return []asm.Reg{asm.AX}, []asm.Reg{asm.DX}
+	case "CBW", "CWDE", "CDQE":
+		return []asm.Reg{asm.AX}, []asm.Reg{asm.AX}
+	case "CPUID":
+		return []asm.Reg{asm.AX}, []asm.Reg{asm.AX, asm.BX, asm.CX, asm.DX}
+	case "XGETBV":
+		return []asm.Reg{asm.CX}, []asm.Reg{asm.AX, asm.DX}
+	case "RDTSC":
+		return nil, []asm.Reg{asm.AX, asm.DX}
+	case "RDTSCP":
+		return nil, []asm.Reg{asm.AX, asm.DX, asm.CX}
+	case "SYSCALL":
+		return []asm.Reg{asm.AX}, []asm.Reg{asm.AX, asm.DX, asm.CX}
+	case "LAHF":
+		return nil, []asm.Reg{asm.AX}
+	case "SAHF":
+		return []asm.Reg{asm.AX}, nil
+	case "XLAT":
+		return []asm.Reg{asm.AX, asm.BX}, []asm.Reg{asm.AX}
+	case "CMPXCHGB", "CMPXCHGW", "CMPXCHGL", "CMPXCHGQ":
+		return []asm.Reg{asm.AX}, []asm.Reg{asm.AX}
+	case "CMPXCHG8B", "CMPXCHG16B":
+		return []asm.Reg{asm.AX, asm.DX, asm.BX, asm.CX}, []asm.Reg{asm.AX, asm.DX}
+	}
+
+	if spec.Implicit != asm.ImplicitNone {
+		for _, pair := range []struct {
+			mask asm.RegMask
+			reg  asm.Reg
+		}{
+			{asm.ImplicitAX, asm.AX},
+			{asm.ImplicitBX, asm.BX},
+			{asm.ImplicitCX, asm.CX},
+			{asm.ImplicitDX, asm.DX},
+			{asm.ImplicitSI, asm.SI},
+			{asm.ImplicitDI, asm.DI},
+		} {
+			if spec.Implicit&pair.mask != 0 {
+				writes = append(writes, pair.reg)
+			}
+		}
+	}
+	return reads, writes
 }
 
 func isZeroingIdiom(op asm.Op, args []asm.Operand) bool {
@@ -240,18 +350,17 @@ func isZeroingIdiom(op asm.Op, args []asm.Operand) bool {
 }
 
 func canonicalGP(r asm.Reg) asm.Reg {
-	switch asm.Reg(strings.ToUpper(string(r))) {
-	case asm.AL, asm.AH, asm.AX:
-		return asm.AX
-	case asm.BL, asm.BH, asm.BX:
-		return asm.BX
-	case asm.CL, asm.CH, asm.CX:
-		return asm.CX
-	case asm.DL, asm.DH, asm.DX:
-		return asm.DX
-	default:
-		return asm.Reg(strings.ToUpper(string(r)))
+	up := asm.Reg(strings.ToUpper(strings.TrimSpace(string(r))))
+	if base, _, ok := amd64ByteAlias(up); ok {
+		return base
 	}
+	if parsed, ok := asm.ParseReg(string(up)); ok {
+		if base, _, ok := amd64ByteAlias(parsed); ok {
+			return base
+		}
+		return parsed
+	}
+	return up
 }
 
 func anyVecRegIndex(r asm.Reg) (int, bool) {

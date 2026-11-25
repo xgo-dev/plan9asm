@@ -157,19 +157,39 @@ TEXT ·Copy(SB),NOSPLIT,$32-32
 		t.Fatalf("expected error on empty downloaded frame source")
 	}
 
-	// Capture via SDK & Downloaded wrappers (including default GOROOT resolution without GOROOT in env).
-	sdkFS, err := CaptureGoAMD64SDKFrameSource(ctx, pkg, GoAMD64FrameCaptureRequest{
+	// SDK capture must reject directories outside GOROOT/src, and succeed on a real SDK directory
+	// (also verifying GOROOT resolution via `go env GOROOT` when GOROOT is absent from env).
+	if _, err := CaptureGoAMD64SDKFrameSource(ctx, pkg, GoAMD64FrameCaptureRequest{
 		GoBinary:     goBin,
 		Directory:    dir,
 		AssemblyFile: "p_amd64.s",
 		Target:       "linux/amd64",
-	})
-	if err != nil {
-		t.Fatalf("CaptureGoAMD64SDKFrameSource: %v", err)
+	}); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("expected error on SDK capture outside GOROOT/src, got %v", err)
 	}
-	sdkFS.Close()
+	sdkDir := filepath.Join(runtime.GOROOT(), "src", "internal", "bytealg")
+	if entries, rerr := os.ReadDir(sdkDir); rerr == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), "_amd64.s") {
+				sdkFS, serr := CaptureGoAMD64SDKFrameSource(ctx, pkg, GoAMD64FrameCaptureRequest{
+					GoBinary:     "go",
+					Directory:    sdkDir,
+					AssemblyFile: e.Name(),
+					Target:       "linux/amd64",
+					Environment:  filterOutEnv(os.Environ(), "GOROOT"),
+				})
+				if serr != nil {
+					t.Fatalf("CaptureGoAMD64SDKFrameSource(%s): %v", e.Name(), serr)
+				}
+				sdkFS.Close()
+				break
+			}
+		}
+	}
 
-	dlFS, err := CaptureGoAMD64DownloadedFrameSource(ctx, pkg, GoAMD64DownloadedFrameCaptureRequest{
+	// Downloaded capture must reject directories outside GOMODCACHE/<escapedMod>@<ver>,
+	// and succeed inside a properly structured module cache directory (testing uppercase escaping too).
+	if _, err := CaptureGoAMD64DownloadedFrameSource(ctx, pkg, GoAMD64DownloadedFrameCaptureRequest{
 		Original: GoAMD64FrameCaptureRequest{
 			GoBinary:     goBin,
 			Directory:    dir,
@@ -177,13 +197,109 @@ TEXT ·Copy(SB),NOSPLIT,$32-32
 			Target:       "linux/amd64",
 			Environment:  append(os.Environ(), "GOROOT="+runtime.GOROOT()),
 		},
-		SourceModule:  "example.com/p",
+		SourceModule:  "example.com/P",
+		SourceVersion: "v1.0.0",
+	}); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("expected error on downloaded capture outside GOMODCACHE, got %v", err)
+	}
+
+	modCache := t.TempDir()
+	modDir := filepath.Join(modCache, "example.com", "!p@v1.0.0")
+	if err := os.MkdirAll(filepath.Join(modDir, "inc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "p.go"), []byte(goSrc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "inc", "defs.h"), []byte("#define MY_OFF 8\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	incAsm := "#include \"inc/defs.h\"\n" + asmSrc
+	if err := os.WriteFile(filepath.Join(modDir, "p_amd64.s"), []byte(incAsm), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dlEnv := append(filterOutEnv(os.Environ(), "GOMODCACHE"), "GOROOT="+runtime.GOROOT(), "GOMODCACHE="+modCache)
+	dlFS, err := CaptureGoAMD64DownloadedFrameSource(ctx, pkg, GoAMD64DownloadedFrameCaptureRequest{
+		Original: GoAMD64FrameCaptureRequest{
+			GoBinary:     goBin,
+			Directory:    modDir,
+			AssemblyFile: "p_amd64.s",
+			Target:       "linux/amd64",
+			Environment:  dlEnv,
+		},
+		SourceModule:  "example.com/P",
 		SourceVersion: "v1.0.0",
 	})
 	if err != nil {
 		t.Fatalf("CaptureGoAMD64DownloadedFrameSource: %v", err)
 	}
 	defer dlFS.Close()
+
+	// Verify included header tampering after capture is detected by Verify.
+	tamperModDir := filepath.Join(modCache, "example.com", "tamper@v1.0.0")
+	if err := os.MkdirAll(filepath.Join(tamperModDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tamperModDir, "p.go"), []byte(goSrc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hdrPath := filepath.Join(tamperModDir, "sub", "defs.h")
+	if err := os.WriteFile(hdrPath, []byte("#define K 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tamperModDir, "p_amd64.s"), []byte("#include \"sub/defs.h\"\nTEXT ·Copy(SB),NOSPLIT,$0-0\n\tRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tFS, err := CaptureGoAMD64FrameSource(ctx, pkg, GoAMD64FrameCaptureRequest{
+		GoBinary:     goBin,
+		Directory:    tamperModDir,
+		AssemblyFile: "p_amd64.s",
+		Target:       "linux/amd64",
+		Environment:  dlEnv,
+	})
+	if err != nil {
+		t.Fatalf("capture tamperModDir: %v", err)
+	}
+	if err := os.WriteFile(hdrPath, []byte("#define K 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tFS.Verify(ctx); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("expected Verify error after editing included header, got %v", err)
+	}
+	tFS.Close()
+
+	// Verify path traversal, escaping symlinks, invalid assembly names, and GOPATH/env modcache helpers.
+	if _, err := safeResolveWithin(modDir, "../escape.h"); err == nil {
+		t.Fatalf("expected safeResolveWithin to reject ../escape.h")
+	}
+	if _, err := safeResolveWithin(modDir, "/etc/passwd"); err == nil {
+		t.Fatalf("expected safeResolveWithin to reject absolute path")
+	}
+	outsideFile := filepath.Join(t.TempDir(), "secret.h")
+	if err := os.WriteFile(outsideFile, []byte("#define SECRET 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(modDir, "escape_link.h")
+	if err := os.Symlink(outsideFile, linkPath); err == nil {
+		if _, err := safeResolveWithin(modDir, "escape_link.h"); err == nil {
+			t.Fatalf("expected safeResolveWithin to reject escaping symlink")
+		}
+		_ = os.Remove(linkPath)
+	}
+	if _, err := CaptureGoAMD64FrameSource(ctx, pkg, GoAMD64FrameCaptureRequest{
+		GoBinary:     goBin,
+		Directory:    dir,
+		AssemblyFile: "../bad.s",
+		Target:       "linux/amd64",
+	}); !errors.Is(err, ErrProbeNeedsContext) {
+		t.Fatalf("expected error on invalid assembly filename, got %v", err)
+	}
+	if got := resolveAMD64FrameModCache(ctx, dir, []string{"GOPATH=" + modCache}, goBin); got != filepath.Join(modCache, "pkg", "mod") {
+		t.Fatalf("resolveAMD64FrameModCache(GOPATH) = %q", got)
+	}
+	if got := resolveAMD64FrameModCache(ctx, dir, filterOutEnv(filterOutEnv(os.Environ(), "GOMODCACHE"), "GOPATH"), goBin); got == "" {
+		t.Fatalf("expected non-empty GOMODCACHE from go env")
+	}
 
 	// Verify nil receiver & canceled context handling.
 	var nilFS *GoAMD64FrameSource
@@ -302,7 +418,7 @@ func BadRet() float64
 	}
 
 	// Modify captured file on disk -> Verify detects tampering & revokes lease.
-	if err := os.WriteFile(filepath.Join(dir, "p.go"), []byte(goSrc+"\n// edited\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(modDir, "p.go"), []byte(goSrc+"\n// edited\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := dlFS.Verify(ctx); !errors.Is(err, ErrProbeNeedsContext) {
@@ -574,6 +690,40 @@ func Take(n Nested) (complex64, complex128)
 	if err := validateAMD64PhysicalFrameLeases(spFile, testResolveSym("example.com/c"), map[string]FuncSig{"example.com/c.F": fSig}); !errors.Is(err, ErrProbeNeedsContext) {
 		t.Fatalf("expected unknown callee error, got %v", err)
 	}
+
+	// 6. ARM64 file with a tail-calling root AND an unrelated unbound <> helper
+	//    must still reject the unrelated unbound <> helper.
+	orphanSrc := `
+TEXT ·Entry(SB), NOSPLIT, $0-8
+	MOVD a+0(FP), R0
+	B helper<>(SB)
+
+TEXT helper<>(SB), NOSPLIT, $0-0
+	MOVD R0, R0
+	RET
+
+TEXT orphan<>(SB), NOSPLIT, $0-0
+	RET
+`
+	orphanFile, err := Parse(ArchARM64, orphanSrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanPkg := mustGoPackage(t, "example.com/a64", "package a64\nfunc Entry(a int64)\n")
+	if _, err := goSigsForAsmFile(orphanPkg, orphanFile, testResolveSym("example.com/a64"), "arm64", nil, nil, nil); err == nil || !strings.Contains(err.Error(), "missing signature for file-local assembly") {
+		t.Fatalf("expected missing signature error for unbound orphan<>, got %v", err)
+	}
+}
+
+func filterOutEnv(env []string, key string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func TestPR53ARM64TailAndBranchAndARMFPEdges(t *testing.T) {

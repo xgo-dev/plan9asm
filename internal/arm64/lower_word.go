@@ -5,10 +5,10 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/asm"
-	// lowerRawWord models flag-writing and decoded AArch64 instructions emitted as
-	// raw WORD encodings by generated Go assembly.
 )
 
+// lowerRawWord models flag-writing and decoded AArch64 instructions emitted as
+// raw WORD encodings by generated Go assembly.
 func (c *arm64Ctx) lowerRawWord(ins asm.Instr) error {
 	if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpImm || ins.Args[0].ImmRaw != "" {
 		return nil
@@ -55,15 +55,19 @@ func (c *arm64Ctx) lowerRawWord(ins asm.Instr) error {
 
 	// Fallback: decode arbitrary AArch64 WORD encodings via arm64asm and lower
 	// supported arithmetic/SIMD/crypto/barrier instructions through the normal
-	// pipeline. Buffer emission into a scratch builder so any decoded form whose
-	// operands are not yet modeled falls back cleanly without emitting partial IR.
+	// pipeline. Buffer emission into a scratch builder so literal-pool WORD data
+	// or unmodeled legacy Go 1.20-1.25 stdlib WORD forms fall back cleanly
+	// without emitting partial IR (matching main's pre-existing WORD behavior).
 	if decoded, ok := DecodeRawWord(word); ok {
 		op := asm.Op(strings.ToUpper(string(decoded.Op)))
-		if op == "SB" {
+		switch op {
+		case "SB":
 			fmt.Fprintln(c.b, `  call void asm sideeffect ".inst 0xd50330ff", "~{memory}"()`)
 			return nil
-		}
-		if op == "NOP" || op == "HINT" || op == "YIELD" || op == "DMB" || op == "DSB" || op == "ISB" || op == "DC" || op == "PRFM" {
+		case "DMB", "DSB", "ISB", "DC":
+			fmt.Fprintln(c.b, "  fence seq_cst")
+			return nil
+		case "NOP", "HINT", "YIELD", "PRFM":
 			return nil
 		}
 		savedB := c.b
@@ -73,6 +77,21 @@ func (c *arm64Ctx) lowerRawWord(ins asm.Instr) error {
 		handled, _, err := c.lowerArith(op, decoded)
 		if !handled {
 			handled, _, err = c.lowerVec(op, false, decoded)
+		}
+		if !handled {
+			handled, _, err = c.lowerVecDeclarative(op, false, decoded)
+		}
+		if !handled {
+			handled, _, err = c.lowerData(op, false, decoded)
+		}
+		if !handled {
+			handled, _, err = c.lowerScalarDeclarative(op, false, decoded)
+		}
+		if !handled {
+			handled, _, err = c.lowerFP(op, decoded)
+		}
+		if !handled {
+			handled, _, err = c.lowerFPDeclarative(op, false, decoded)
 		}
 		c.b = savedB
 		if handled && err == nil {

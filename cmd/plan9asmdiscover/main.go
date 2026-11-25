@@ -51,6 +51,7 @@ type latestInfo struct {
 type moduleVersion struct {
 	Path    string `json:"module"`
 	Version string `json:"version"`
+	Pinned  bool   `json:"-"`
 }
 
 type candidate struct {
@@ -481,13 +482,20 @@ func inspectIndexedModuleWithAudit(ctx context.Context, client *http.Client, pro
 		}
 		return latest, []moduleVersion{{Path: module.Path, Version: latestVersion}}, nil
 	}
-	// First check without auditing when we may upgrade to @latest; audit the
-	// final resolved version so counts are never double-counted.
-	indexed, err := inspectModuleVersionWithAudit(ctx, client, proxyURL, module.Path, module.Version, maxZipSize, nil)
+	if module.Pinned {
+		pinned, err := inspectModuleVersionWithAudit(ctx, client, proxyURL, module.Path, module.Version, maxZipSize, auditor)
+		if err != nil {
+			return candidate{}, nil, fmt.Errorf("inspect pinned version %s: %w", module.Version, err)
+		}
+		return pinned, []moduleVersion{{Path: module.Path, Version: module.Version}}, nil
+	}
+	// First inspect the indexed version and retain its .s payloads when auditing
+	// so if it is already @latest we audit in-memory without a second ZIP download.
+	indexed, indexedSources, err := inspectModuleVersionCaptured(ctx, client, proxyURL, module.Path, module.Version, maxZipSize, auditor != nil)
 	if err != nil {
 		return candidate{}, nil, fmt.Errorf("inspect indexed version %s: %w", module.Version, err)
 	}
-	scanned := []moduleVersion{module}
+	scanned := []moduleVersion{{Path: module.Path, Version: module.Version}}
 	if len(indexed.AsmFiles) == 0 {
 		return indexed, scanned, nil
 	}
@@ -497,7 +505,11 @@ func inspectIndexedModuleWithAudit(ctx context.Context, client *http.Client, pro
 	}
 	if latestVersion == module.Version {
 		if auditor != nil {
-			_, _ = inspectModuleVersionWithAudit(ctx, client, proxyURL, module.Path, module.Version, maxZipSize, auditor)
+			for _, src := range indexedSources {
+				if len(src.data) > 0 {
+					auditor.auditFile(module.Path, src.name, src.data)
+				}
+			}
 		}
 		return indexed, scanned, nil
 	}
@@ -528,6 +540,39 @@ func resolveLatest(ctx context.Context, client *http.Client, proxyURL, modulePat
 
 func inspectModuleVersion(ctx context.Context, client *http.Client, proxyURL, modulePath, version string, maxZipSize int64) (candidate, error) {
 	return inspectModuleVersionWithAudit(ctx, client, proxyURL, modulePath, version, maxZipSize, nil)
+}
+
+type capturedAsmSource struct {
+	name string
+	data []byte
+}
+
+func inspectModuleVersionCaptured(ctx context.Context, client *http.Client, proxyURL, modulePath, version string, maxZipSize int64, keepData bool) (candidate, []capturedAsmSource, error) {
+	escapedModule, err := escapeProxyPath(modulePath)
+	if err != nil {
+		return candidate{}, nil, err
+	}
+	escapedVersion, err := escapeProxyPath(version)
+	if err != nil {
+		return candidate{}, nil, err
+	}
+	zipURL := proxyURL + "/" + escapedModule + "/@v/" + escapedVersion + ".zip"
+	reader, zipSize, err := newHTTPReaderAt(ctx, client, zipURL, maxZipSize)
+	if err != nil {
+		return candidate{}, nil, fmt.Errorf("open %s ZIP: %w", version, err)
+	}
+	var captured []capturedAsmSource
+	var collect func(name string, data []byte)
+	if keepData {
+		collect = func(name string, data []byte) {
+			captured = append(captured, capturedAsmSource{name: name, data: data})
+		}
+	}
+	files, arches, err := inspectModuleZipReaderWithCallback(reader, zipSize, collect)
+	if err != nil {
+		return candidate{}, nil, fmt.Errorf("inspect %s: %w", version, err)
+	}
+	return candidate{Module: modulePath, Version: version, Architectures: arches, AsmFiles: files}, captured, nil
 }
 
 func inspectModuleVersionWithAudit(ctx context.Context, client *http.Client, proxyURL, modulePath, version string, maxZipSize int64, auditor *auditCollector) (candidate, error) {
@@ -582,6 +627,16 @@ func inspectModuleZipReader(reader io.ReaderAt, size int64) ([]string, []string,
 }
 
 func inspectModuleZipReaderWithAudit(reader io.ReaderAt, size int64, modulePath string, auditor *auditCollector) ([]string, []string, error) {
+	var cb func(name string, data []byte)
+	if auditor != nil {
+		cb = func(name string, data []byte) {
+			auditor.auditFile(modulePath, name, data)
+		}
+	}
+	return inspectModuleZipReaderWithCallback(reader, size, cb)
+}
+
+func inspectModuleZipReaderWithCallback(reader io.ReaderAt, size int64, onAsm func(name string, data []byte)) ([]string, []string, error) {
 	zr, err := zip.NewReader(reader, size)
 	if err != nil {
 		return nil, nil, err
@@ -634,8 +689,8 @@ func inspectModuleZipReaderWithAudit(reader io.ReaderAt, size int64, modulePath 
 		}
 		files = append(files, asmFile.name)
 		archSet[inferAssemblyArchitecture(asmFile.name)] = struct{}{}
-		if auditor != nil && len(data) > 0 {
-			auditor.auditFile(modulePath, asmFile.name, data)
+		if onAsm != nil && len(data) > 0 {
+			onAsm(asmFile.name, data)
 		}
 	}
 	arches := make([]string, 0, len(archSet))

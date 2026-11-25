@@ -209,7 +209,7 @@ var vexTable = map[vexKey]vexEntry{
 // decodeVEX decodes 2-byte (0xC5) and 3-byte (0xC4) VEX-encoded register-register
 // SIMD instructions cleanly in Plan 9 operand order.
 func decodeVEX(buf []byte, mode int) (asm.Instr, int, bool, error) {
-	if len(buf) < 4 || (buf[0] != 0xC5 && buf[0] != 0xC4) {
+	if len(buf) < 3 || (buf[0] != 0xC5 && buf[0] != 0xC4) {
 		return asm.Instr{}, 0, false, nil
 	}
 	var (
@@ -234,7 +234,7 @@ func decodeVEX(buf []byte, mode int) (asm.Instr, int, bool, error) {
 		pp = b1 & 0x03
 		idx = 2
 	} else {
-		if len(buf) < 5 {
+		if len(buf) < 4 {
 			return asm.Instr{}, 0, false, nil
 		}
 		b1, b2 := buf[1], buf[2]
@@ -254,20 +254,25 @@ func decodeVEX(buf []byte, mode int) (asm.Instr, int, bool, error) {
 		rmHigh = 0
 		vvvv &= 0x07
 	}
-	if idx+2 > len(buf) {
+	if idx >= len(buf) {
 		return asm.Instr{}, 0, true, fmt.Errorf("truncated VEX instruction")
 	}
 	opcode := buf[idx]
-	modrm := buf[idx+1]
-	n := idx + 2
 
-	// Handle VZEROUPPER (C5 F8 77) and VZEROALL (C5 FC 77) without ModRM.
+	// Handle 3-byte VZEROUPPER (C5 F8 77) and VZEROALL (C5 FC 77) (and 4-byte 0xC4 forms)
+	// without ModRM before checking ModRM byte length.
 	if opMap == 1 && pp == 0 && opcode == 0x77 {
 		if vecL == 0 {
 			return asm.Instr{Op: "VZEROUPPER", Raw: "VZEROUPPER", DecodedFromRaw: true}, idx + 1, true, nil
 		}
 		return asm.Instr{Op: "VZEROALL", Raw: "VZEROALL", DecodedFromRaw: true}, idx + 1, true, nil
 	}
+
+	if idx+2 > len(buf) {
+		return asm.Instr{}, 0, true, fmt.Errorf("truncated VEX instruction")
+	}
+	modrm := buf[idx+1]
+	n := idx + 2
 
 	entry, ok := vexTable[vexKey{opMap: opMap, pp: pp, opcode: opcode}]
 	if !ok {

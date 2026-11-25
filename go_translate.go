@@ -147,6 +147,15 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		if err != nil {
 			return nil, fmt.Errorf("%s: arm64 tail %s: %w", pkgPath, asmName, err)
 		}
+		for _, fn := range file.Funcs {
+			if !strings.HasSuffix(goStripABISuffix(fn.Sym), "<>") {
+				continue
+			}
+			resolved := resolve(goTextSymbolForResolution(fn.Sym))
+			if _, ok := sigs[resolved]; !ok {
+				return nil, fmt.Errorf("%s: sigs %s: missing signature for file-local assembly %q; supply ManualSig or use the native backend", pkgPath, asmName, resolved)
+			}
+		}
 	}
 	if err := validateGoClosureContextLoads(file, opt.GOARCH, resolve, sigs); err != nil {
 		return nil, fmt.Errorf("%s: closure %s: %w", pkgPath, asmName, err)
@@ -269,16 +278,33 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 	// A file-local symbol does not imply a zero-argument C or Go signature.
 	// Keep signatures obtained from declarations, supported tail-call inference,
 	// or ManualSig; raw register entry points require the native backend.
-	// For ARM64 ABI0 private tail helpers, allow BindGoARM64ABI0TailDeclarations
-	// to supply the helper signature right after goSigsForAsmFile returns.
-	if b.goarch != "arm64" || !GoARM64ABI0TailDeclarationBindingNeeded(file) {
-		for resolved := range b.localSigs {
-			if _, ok := b.sigs[resolved]; !ok {
-				return nil, fmt.Errorf("missing signature for file-local assembly %q; supply ManualSig or use the native backend", resolved)
-			}
+	// For ARM64 ABI0 private tail helpers, only defer the specific helper<>
+	// targets branched to by an ABI0 root; any other unbound <> symbol fails now.
+	var deferredTailTargets map[string]bool
+	if b.goarch == "arm64" && GoARM64ABI0TailDeclarationBindingNeeded(file) {
+		deferredTailTargets = arm64PrivateTailTargetSet(file, resolve)
+	}
+	for resolved := range b.localSigs {
+		if _, ok := b.sigs[resolved]; !ok && !deferredTailTargets[resolved] {
+			return nil, fmt.Errorf("missing signature for file-local assembly %q; supply ManualSig or use the native backend", resolved)
 		}
 	}
 	return b.sigs, nil
+}
+
+func arm64PrivateTailTargetSet(file *File, resolve func(string) string) map[string]bool {
+	targets := make(map[string]bool)
+	for _, root := range file.Funcs {
+		if strings.Contains(root.Sym, "<") {
+			continue
+		}
+		for _, ins := range root.Instrs {
+			if name, ok := arm64PrivateTailTarget(ins); ok {
+				targets[resolve(goTextSymbolForResolution(name))] = true
+			}
+		}
+	}
+	return targets
 }
 
 func wasmUsesNativeReturn(fn Func) bool {
@@ -563,6 +589,7 @@ func DeriveGoFuncABI0Signature(name string, fn *types.Func, goarch string, sz ty
 }
 
 func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, sigs map[string]FuncSig) error {
+	checkedLeases := make(map[uintptr]bool)
 	for _, fn := range file.Funcs {
 		if !funcUsesPhysicalAMD64SP(fn) {
 			continue
@@ -572,10 +599,15 @@ func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, s
 		if !ok {
 			return fmt.Errorf("%w: missing signature for physical AMD64 frame %q", ErrProbeNeedsContext, name)
 		}
-		// If a live lease was attached by GoAMD64FrameSource.BindFixedLocal, verify it is still live.
+		// If a live lease was attached by GoAMD64FrameSource.BindFixedLocal, verify it is still live
+		// (deduplicated per shared lease closure so multi-function files hash snapshots once).
 		if sig.FrameLease != nil {
-			if err := sig.FrameLease(); err != nil {
-				return err
+			leasePtr := reflect.ValueOf(sig.FrameLease).Pointer()
+			if !checkedLeases[leasePtr] {
+				if err := sig.FrameLease(); err != nil {
+					return err
+				}
+				checkedLeases[leasePtr] = true
 			}
 			continue
 		}
