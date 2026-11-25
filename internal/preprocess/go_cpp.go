@@ -64,6 +64,7 @@ func preprocessGoAssemblyObserved(src string, options AssemblyPreprocessOptions,
 	var output strings.Builder
 	var previous ppGoToken
 	statementTokens := 0
+	opcodeHead := false
 	parserPositionInitialized := false
 	for {
 		token, err := input.next()
@@ -111,12 +112,32 @@ func preprocessGoAssemblyObserved(src string, options AssemblyPreprocessOptions,
 					return "", err
 				}
 			}
-			previous, statementTokens = ppGoToken{}, 0
+			previous, statementTokens, opcodeHead = ppGoToken{}, 0, false
 			continue
 		}
-		if statementTokens != 0 && (ppGoTokenNeedsSpace(previous, token) ||
-			statementTokens == 1 && previous.kind == scanner.Ident && token.kind != ':') {
-			output.WriteByte(' ')
+		if statementTokens == 0 {
+			opcodeHead = token.kind == scanner.Ident
+		} else {
+			needSpace := ppGoTokenNeedsSpace(previous, token)
+			if opcodeHead {
+				switch {
+				case previous.kind == scanner.Ident && token.kind == '.':
+					needSpace = false
+				case previous.kind == '.' && token.kind == scanner.Ident:
+					needSpace = false
+				case previous.kind == scanner.Ident && token.kind == ':':
+					opcodeHead = false
+					needSpace = false
+				default:
+					opcodeHead = false
+					if token.kind != ';' {
+						needSpace = true
+					}
+				}
+			}
+			if needSpace {
+				output.WriteByte(' ')
+			}
 		}
 		start := output.Len()
 		output.WriteString(token.text)
@@ -129,6 +150,7 @@ func preprocessGoAssemblyObserved(src string, options AssemblyPreprocessOptions,
 		statementTokens++
 		if token.kind == ';' || token.kind == ':' {
 			statementTokens = 0
+			opcodeHead = false
 		}
 	}
 	return output.String(), nil

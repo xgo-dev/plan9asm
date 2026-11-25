@@ -246,6 +246,8 @@ var x86VecOtherSpecs = []asm.OpSpec{
 	{Op: "MOVAPS", Family: asm.FamilyMove, Width: 128, Effect: asm.EffectWriteOnly},
 	{Op: "MOVDQU", Family: asm.FamilyMove, Width: 128, Effect: asm.EffectWriteOnly},
 	{Op: "MOVDQA", Family: asm.FamilyMove, Width: 128, Effect: asm.EffectWriteOnly},
+	{Op: "VMOVQ", Family: asm.FamilyMove, Effect: asm.EffectWriteZeroUpper},
+	{Op: "VMOVD", Family: asm.FamilyMove, Effect: asm.EffectWriteZeroUpper},
 	{Op: "VMOVDQU", Family: asm.FamilyMove, Effect: asm.EffectWriteZeroUpper},
 	{Op: "VMOVDQA", Family: asm.FamilyMove, Effect: asm.EffectWriteZeroUpper},
 	{Op: "VMOVAPS", Family: asm.FamilyMove, Effect: asm.EffectWriteZeroUpper},

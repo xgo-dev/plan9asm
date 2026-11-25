@@ -22,6 +22,13 @@ type ABI0EffectReport struct {
 // Driven directly by OpTable so adding new instructions automatically participates
 // in effect tracking without per-opcode boilerplate.
 func CheckABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string) (*ABI0EffectReport, error) {
+	return CheckABI0ResultInitWithSigs(fn, sig, goarch, nil, nil)
+}
+
+// CheckABI0ResultInitWithSigs extends CheckABI0ResultInit with callee ABI0
+// signatures so outgoing CALLs can verify outgoing parameter slots and mark
+// callee ABI0 result stack slots initialized.
+func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, resolve func(string) string, sigs map[string]asm.FuncSig) (*ABI0EffectReport, error) {
 	instrs, err := DecodeRawDirectives(fn.Instrs, goarch)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", asm.ErrProbeNeedsContext, err)
@@ -131,7 +138,22 @@ func CheckABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string) (*ABI0Effe
 			continue
 		}
 		if op == "CALL" {
-			// Outgoing ABI0 call clobbers volatile caller-saved state unless re-loaded from stack.
+			// Outgoing ABI0 call: if callee ABI0 frame layout is known, verify
+			// its incoming stack parameters and mark its stack result slots initialized.
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpSym && resolve != nil && sigs != nil {
+				raw := strings.TrimSuffix(strings.TrimSpace(ins.Args[0].Sym), "(SB)")
+				callee := resolve(raw)
+				if csig, ok := sigs[callee]; ok && len(csig.ArgRegs) == 0 && len(csig.Frame.Params) > 0 {
+					for _, ps := range csig.Frame.Params {
+						if !localSlotsInit[ps.Offset] {
+							return nil, fmt.Errorf("%w: %s reads uninitialized outgoing ABI0 arg slot %d(SP)", asm.ErrProbeNeedsContext, ins.Raw, ps.Offset)
+						}
+					}
+					for _, rs := range csig.Frame.Results {
+						localSlotsInit[rs.Offset] = true
+					}
+				}
+			}
 			gpInit[asm.AX] = true
 			gpTaintedSP[asm.AX] = false
 			continue

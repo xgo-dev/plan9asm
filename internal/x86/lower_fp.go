@@ -530,11 +530,8 @@ func (c *amd64Ctx) evalFPToF64(off int64) (string, error) {
 		loaded := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", loaded, ty, c.classicFramePtr(off))
 		arg = "%" + loaded
-	} else if slot.Field >= 0 {
-		aggTy := c.sig.Args[idx]
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", t, aggTy, arg, slot.Field)
-		arg = "%" + t
+	} else if len(slot.Fields) > 0 || slot.Field >= 0 {
+		arg = c.extractFrameSlotArg(c.sig.Args[idx], arg, slot)
 	}
 	switch ty {
 	case asm.LLVMType("double"):

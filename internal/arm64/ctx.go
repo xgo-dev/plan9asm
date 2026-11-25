@@ -22,6 +22,9 @@ type arm64Ctx struct {
 	usedRegs map[asm.Reg]bool
 	regSlot  map[asm.Reg]string // reg -> alloca name
 
+	localStackSlot string // byte-addressable backing storage for ARM64 SP/RSP frame accesses
+	frameSize      int64
+
 	usedVRegs map[int]bool
 	vRegSlot  map[int]string // vreg index -> alloca name (<16 x i8>)
 
@@ -52,6 +55,7 @@ func newARM64Ctx(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(
 		sigs:           sigs,
 		annotate:       annotate,
 		blocks:         arm64SplitBlocks(fn),
+		frameSize:      fn.FrameSize,
 		usedRegs:       map[asm.Reg]bool{},
 		regSlot:        map[asm.Reg]string{},
 		usedVRegs:      map[int]bool{},
@@ -200,6 +204,51 @@ func (c *arm64Ctx) scanUsedRegs() {
 	markReg(asm.SP)
 }
 
+func (c *arm64Ctx) hasSPMem() bool {
+	for _, blk := range c.blocks {
+		for _, ins := range blk.instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind == asm.OpMem && (arg.Mem.Base == asm.SP || arg.Mem.Base == "RSP") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (c *arm64Ctx) hasOutgoingSPArgs() bool {
+	for _, blk := range c.blocks {
+		for _, ins := range blk.instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind == asm.OpMem && (arg.Mem.Base == asm.SP || arg.Mem.Base == "RSP") && arg.Mem.Off >= 8 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (c *arm64Ctx) stackOffsetRange() (minOff, maxOff int64) {
+	for _, blk := range c.blocks {
+		for _, ins := range blk.instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind != asm.OpMem || (arg.Mem.Base != asm.SP && arg.Mem.Base != "RSP") {
+					continue
+				}
+				if arg.Mem.Off < minOff {
+					minOff = arg.Mem.Off
+				}
+				if end := arg.Mem.Off + 16; end > maxOff {
+					maxOff = end
+				}
+			}
+		}
+	}
+	return minOff, maxOff
+}
+
 func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 	c.scanUsedRegs()
 	regs := make([]string, 0, len(c.usedRegs))
@@ -215,6 +264,25 @@ func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 		c.regSlot[r] = name
 		fmt.Fprintf(c.b, "  %s = alloca i64\n", name)
 		fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", name)
+	}
+	if spSlot, ok := c.regSlot[asm.SP]; ok && (c.frameSize > 0 || c.hasSPMem()) {
+		minOff, maxOff := c.stackOffsetRange()
+		if end := c.frameSize + 16; end > maxOff {
+			maxOff = end
+		}
+		const guard = int64(64)
+		bias := guard - minOff
+		size := bias + maxOff + guard
+		if size < 256 {
+			size = 256
+		}
+		c.localStackSlot = "%local_stack"
+		fmt.Fprintf(c.b, "  %s = alloca [%d x i8], align 16\n", c.localStackSlot, size)
+		base := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = getelementptr inbounds [%d x i8], ptr %s, i32 0, i64 %d\n", base, size, c.localStackSlot, bias)
+		addr := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i64\n", addr, base)
+		fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", addr, spSlot)
 	}
 
 	// Vector registers: keep as <16 x i8> to cover most stdlib NEON byte ops.

@@ -132,6 +132,12 @@ func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCon
 		return true, c.lowerRET()
 	case asm.OpWORD:
 		return false, c.lowerRawWord(ins)
+	case "SB":
+		if len(ins.Args) != 0 {
+			return false, fmt.Errorf("arm64 SB expects no operands: %q", ins.Raw)
+		}
+		fmt.Fprintln(c.b, `  call void asm sideeffect ".inst 0xd50330ff", "~{memory}"()`)
+		return false, nil
 	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "DMB", "DSB", "ISB", "DC", "PRFM",
 		"BREAK", "BRK", "UNDEF", "#UNDEF", "YIELD", "NOP",
 		"FLDPD", "FSTPD", "FMOVS", "STY",

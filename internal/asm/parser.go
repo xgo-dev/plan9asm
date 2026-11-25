@@ -52,12 +52,17 @@ type Func struct {
 //   - #define NAME <body> with optional single-line continuation via '\' and
 //     macro invocation when the entire statement is just NAME.
 func Parse(arch Arch, src string) (*File, error) {
-	f := &File{Arch: arch}
-
 	pp, err := preprocess.Preprocess(src)
 	if err != nil {
 		return nil, err
 	}
+	return ParsePreprocessed(arch, pp)
+}
+
+// ParsePreprocessed parses assembly source that has already been preprocessed
+// by PreprocessAssembly, without running the legacy macro expander a second time.
+func ParsePreprocessed(arch Arch, pp string) (*File, error) {
+	f := &File{Arch: arch}
 
 	sc := bufio.NewScanner(strings.NewReader(pp))
 	lineno := 0

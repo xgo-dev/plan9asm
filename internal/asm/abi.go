@@ -74,6 +74,10 @@ type FrameSlot struct {
 	// Field is the index of the extracted field within the argument aggregate.
 	// When Field < 0, the slot refers directly to %arg(Index).
 	Field int
+	// Fields holds a multi-level extractvalue path for nested structs/arrays.
+	Fields []int
+	// Name optionally preserves the Go result parameter name.
+	Name string
 }
 
 // X87Mode selects how explicit x87 instructions in 386 Plan 9 assembly are lowered.

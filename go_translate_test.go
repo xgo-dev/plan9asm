@@ -191,6 +191,7 @@ func TestTranslateGoModule_X87Mode(t *testing.T) {
 func Round(x float64) int64
 `)
 	asm := []byte(`TEXT ·Round(SB),NOSPLIT,$0-16
+	FINIT
 	FMOVD x+0(FP), F0
 	FRNDINT
 	FMOVVP F0, ret+8(FP)
@@ -210,7 +211,7 @@ func Round(x float64) int64
 	defer tr.Module.Dispose()
 
 	ir := tr.Module.String()
-	if !strings.Contains(ir, "@llvm.floor.f64") || strings.Contains(ir, "frndint") {
+	if !strings.Contains(ir, "@llvm.ctlz.i64") || strings.Contains(ir, "asm sideeffect") {
 		t.Fatalf("software x87 mode was not propagated:\n%s", ir)
 	}
 }

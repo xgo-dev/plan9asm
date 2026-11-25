@@ -166,6 +166,9 @@ func validateARM64ABI0SourceSelection(pkg GoPackage, funcName, resolvedSym strin
 		if err != nil {
 			return fmt.Errorf("%w: ARM64 ABI0 tail selected Go source parse error: %v", ErrProbeNeedsContext, err)
 		}
+		if pkg.Syntax[i] == nil || sel.Fset.Position(pkg.Syntax[i].Pos()).Filename != filename {
+			return fmt.Errorf("%w: ARM64 ABI0 tail syntax file mismatch for %q", ErrProbeNeedsContext, filename)
+		}
 		actualText, err := formatASTFile(pkg.Syntax[i], sel.Fset)
 		parsedText, perr := formatASTFile(parsed, parsedFset)
 		if err != nil || perr != nil || actualText != parsedText || pkg.Syntax[i].Name.Name != pkg.Types.Name() {

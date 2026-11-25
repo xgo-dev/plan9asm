@@ -43,15 +43,19 @@ type amd64Ctx struct {
 	usedZRegs map[int]bool
 	zRegSlot  map[int]string // zmm reg index -> alloca name (<64 x i8>)
 
-	usedKRegs      map[int]bool
-	kRegSlot       map[int]string // avx512 mask reg index -> alloca name (i64)
-	usedX87        bool
-	usesX87Convert bool
-	x87Slot        [8]string // x87 stack registers, represented as f64 values
-	x87ControlSlot string
-	x87StatusSlot  string // condition-code status populated by FTST for FSTSW
-	x87IntegerSlot string // hardware FISTP result for explicit 386 x87 lowering
-	x87Mode        asm.X87Mode
+	usedKRegs        map[int]bool
+	kRegSlot         map[int]string // avx512 mask reg index -> alloca name (i64)
+	usedX87          bool
+	usesX87Convert   bool
+	x87Slot          [8]string // x87 stack registers as 80-bit extended { i64, i16 }
+	x87ValueScratch  [3]string // hardware x87 binary80 scratch slots
+	x87ScalarScratch string    // hardware x87 64-bit scalar transfer slot
+	x87NativeStatus  string    // hardware x87 status word capture slot
+	x87ControlSlot   string
+	x87StatusSlot    string // condition-code status populated by FTST/FRNDINT for FSTSW
+	x87IntegerSlot   string // kept for scratch compatibility
+	x87CWInitialized bool   // tracks explicit control-word initialization in software mode
+	x87Mode          asm.X87Mode
 
 	flagsZSlot     string
 	flagsSltSlot   string // signed negative-style bit for J{L,LE,G,GE}-like checks
@@ -389,8 +393,8 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		for i := range c.x87Slot {
 			name := fmt.Sprintf("%%x87_f%d", i)
 			c.x87Slot[i] = name
-			fmt.Fprintf(c.b, "  %s = alloca double\n", name)
-			fmt.Fprintf(c.b, "  store double 0.000000e+00, ptr %s\n", name)
+			fmt.Fprintf(c.b, "  %s = alloca %s\n", name, x87ValueType)
+			fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, x87ZeroValue, name)
 		}
 		c.x87ControlSlot = "%x87_control"
 		c.x87StatusSlot = "%x87_status"
@@ -398,9 +402,16 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		fmt.Fprintf(c.b, "  store i16 895, ptr %s\n", c.x87ControlSlot) // 0x037f
 		fmt.Fprintf(c.b, "  %s = alloca i16\n", c.x87StatusSlot)
 		fmt.Fprintf(c.b, "  store i16 0, ptr %s\n", c.x87StatusSlot)
-		if c.useHardwareX87() && c.usesX87Convert {
-			c.x87IntegerSlot = "%x87_hw_integer"
-			fmt.Fprintf(c.b, "  %s = alloca i64\n", c.x87IntegerSlot)
+		if c.useHardwareX87() {
+			for i := range c.x87ValueScratch {
+				name := fmt.Sprintf("%%x87_hw_v%d", i)
+				c.x87ValueScratch[i] = name
+				fmt.Fprintf(c.b, "  %s = alloca %s\n", name, x87ValueType)
+			}
+			c.x87ScalarScratch = "%x87_hw_scalar"
+			c.x87NativeStatus = "%x87_hw_status"
+			fmt.Fprintf(c.b, "  %s = alloca i64\n", c.x87ScalarScratch)
+			fmt.Fprintf(c.b, "  %s = alloca i16\n", c.x87NativeStatus)
 		}
 	}
 
@@ -592,12 +603,7 @@ func (c *amd64Ctx) emit386ClassicFrame() error {
 		if slot.Index < 0 || slot.Index >= len(c.sig.Args) {
 			return fmt.Errorf("FP frame slot: invalid arg index %d at +%d(FP)", slot.Index, slot.Offset)
 		}
-		value := fmt.Sprintf("%%arg%d", slot.Index)
-		if slot.Field >= 0 {
-			extracted := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", extracted, c.sig.Args[slot.Index], value, slot.Field)
-			value = "%" + extracted
-		}
+		value := c.extractFrameSlotArg(c.sig.Args[slot.Index], fmt.Sprintf("%%arg%d", slot.Index), slot)
 		fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", slot.Type, value, c.classicFramePtr(slot.Offset))
 	}
 	for _, slot := range c.fpResults {
@@ -1217,6 +1223,24 @@ func (c *amd64Ctx) markFPResultWritten(off int64) {
 	}
 }
 
+func (c *amd64Ctx) extractFrameSlotArg(aggTy asm.LLVMType, arg string, slot asm.FrameSlot) string {
+	if len(slot.Fields) > 0 {
+		parts := make([]string, len(slot.Fields))
+		for i, f := range slot.Fields {
+			parts[i] = strconv.Itoa(f)
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %s\n", t, aggTy, arg, strings.Join(parts, ", "))
+		return "%" + t
+	}
+	if slot.Field >= 0 {
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", t, aggTy, arg, slot.Field)
+		return "%" + t
+	}
+	return arg
+}
+
 func (c *amd64Ctx) evalFPToI64(off int64) (string, error) {
 	slot, ok := c.fpParam(off)
 	if !ok {
@@ -1291,18 +1315,15 @@ func (c *amd64Ctx) evalFPToI64(off int64) (string, error) {
 	}
 	arg := fmt.Sprintf("%%arg%d", idx)
 
-	// If this FP slot refers to a field within an aggregate argument (string/slice),
-	// extract that field first.
+	// If this FP slot refers to a field within an aggregate argument (string/slice/struct/array),
+	// extract that field path first.
 	ty := slot.Type
 	if c.classicFrame != "" {
 		loaded := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", loaded, ty, c.classicFramePtr(off))
 		arg = "%" + loaded
-	} else if slot.Field >= 0 {
-		aggTy := c.sig.Args[idx]
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", t, aggTy, arg, slot.Field)
-		arg = "%" + t
+	} else if len(slot.Fields) > 0 || slot.Field >= 0 {
+		arg = c.extractFrameSlotArg(c.sig.Args[idx], arg, slot)
 	}
 	switch ty {
 	case asm.Ptr:

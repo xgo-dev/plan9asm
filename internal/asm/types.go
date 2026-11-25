@@ -552,24 +552,40 @@ func evalImmExpr(e ast.Expr) (uint64, bool) {
 }
 
 func ParseFP(s string) (name string, off int64, ok bool) {
-	// Minimal: name+off(FP)
-	// Examples: a+0(FP), b+8(FP), ret+16(FP)
+	// Supports name+off(FP) and name+(expr)(FP), e.g. a_Hi+(8+8)(FP).
 	s = strings.TrimSpace(s)
 	if !strings.HasSuffix(s, "(FP)") {
 		return "", 0, false
 	}
 	base := strings.TrimSuffix(s, "(FP)")
-	plus := strings.LastIndexByte(base, '+')
+	plus := -1
+	depth := 0
+	for i := 0; i < len(base); i++ {
+		switch base[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '+':
+			if depth == 0 {
+				plus = i
+			}
+		}
+	}
 	if plus <= 0 || plus == len(base)-1 {
 		return "", 0, false
 	}
 	name = strings.TrimSpace(base[:plus])
 	offStr := strings.TrimSpace(base[plus+1:])
-	off, err := strconv.ParseInt(offStr, 0, 64)
-	if err != nil {
-		return "", 0, false
+	if off, err := strconv.ParseInt(offStr, 0, 64); err == nil {
+		return name, off, true
 	}
-	return name, off, true
+	if u, ok := ParseImmExpr(offStr); ok {
+		return name, int64(u), true
+	}
+	return "", 0, false
 }
 
 func ParseFPAddr(s string) (name string, off int64, ok bool) {

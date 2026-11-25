@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
-	"go/format"
 	"go/token"
 	"go/types"
 	"reflect"
@@ -105,18 +104,28 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		resolve = func(sym string) string { return goStripABISuffix(sym) }
 	}
 
-	if bytes.Contains(src, []byte("const_")) {
-		src = goExpandConsts(src, pkg.Types, pkg.Imports)
-	}
-	// Struct layout macros only exist when the assembly includes go_asm.h.
-	// Keep the common path cheap: building them walks every package-scope type.
-	if bytes.Contains(src, []byte("go_asm.h")) {
-		src = goExpandAsmHeaderTypes(src, pkg.Types, opt.GOARCH)
-	}
-
-	file, err := Parse(arch, string(src))
-	if err != nil {
-		return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
+	var file *File
+	if opt.SourcePreprocessed {
+		file, err = asm.ParsePreprocessed(arch, string(src))
+		if err != nil {
+			return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
+		}
+		if err := validatePreprocessedResolvedImmediates(file); err != nil {
+			return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
+		}
+	} else {
+		if bytes.Contains(src, []byte("const_")) {
+			src = goExpandConsts(src, pkg.Types, pkg.Imports)
+		}
+		// Struct layout macros only exist when the assembly includes go_asm.h.
+		// Keep the common path cheap: building them walks every package-scope type.
+		if bytes.Contains(src, []byte("go_asm.h")) {
+			src = goExpandAsmHeaderTypes(src, pkg.Types, opt.GOARCH)
+		}
+		file, err = Parse(arch, string(src))
+		if err != nil {
+			return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
+		}
 	}
 	if opt.KeepFunc != nil {
 		keep := make([]Func, 0, len(file.Funcs))
@@ -138,6 +147,9 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		if err != nil {
 			return nil, fmt.Errorf("%s: arm64 tail %s: %w", pkgPath, asmName, err)
 		}
+	}
+	if err := validateGoClosureContextLoads(file, opt.GOARCH, resolve, sigs); err != nil {
+		return nil, fmt.Errorf("%s: closure %s: %w", pkgPath, asmName, err)
 	}
 	volatileGlobals, err := collectValidatedImportedGlobals(pkg, file, resolve)
 	if err != nil {
@@ -406,7 +418,7 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 					continue
 				}
 			}
-			if tailJump && hasCallerSig {
+			if tailJump && hasCallerSig && !(b.goarch == "arm64" && strings.HasSuffix(base, "<>")) {
 				// Best-effort fallback for helper<> tail-jumps where the callee is an
 				// internal asm label with no Go declaration. Callers can override this
 				// via ManualSig when the inferred signature is not identical.
@@ -464,7 +476,7 @@ func (b *goSigBuilder) addGoDeclSig(sym string) error {
 	if !ok {
 		return nil
 	}
-	fs, err := goFuncSigForDeclaredFunc(resolved, fn, b.goarch, b.sz, b.frameSz, false)
+	fs, err := goFuncSigForDeclaredFunc(resolved, fn, b.goarch, b.sz, b.frameSz, true)
 	if err != nil {
 		return err
 	}
@@ -582,7 +594,9 @@ func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, s
 				}
 			}
 		}
-		if _, err := x86.CheckABI0ResultInit(fn, sig, "amd64"); err != nil {
+		if _, err := x86.CheckABI0ResultInitWithSigs(fn, sig, "amd64", func(s string) string {
+			return resolve(goStripABISuffix(s))
+		}, sigs); err != nil {
 			return err
 		}
 	}
@@ -666,7 +680,7 @@ func collectValidatedImportedGlobals(pkg GoPackage, file *File, resolve func(str
 					if len(files) == 0 {
 						return nil, fmt.Errorf("%w: imported global %s lacks dependency syntax for %q", ErrProbeNeedsContext, res, impPath)
 					}
-					if err := verifyImportedVarSyntax(files, varName, v.Type()); err != nil {
+					if err := verifyImportedVarSyntax(files, varName, v.Type(), suppliedImp); err != nil {
 						return nil, fmt.Errorf("%w: imported global %s: %v", ErrProbeNeedsContext, res, err)
 					}
 				}
@@ -680,8 +694,7 @@ func collectValidatedImportedGlobals(pkg GoPackage, file *File, resolve func(str
 	return volatile, nil
 }
 
-func verifyImportedVarSyntax(files []*ast.File, varName string, wantType types.Type) error {
-	wantStr := types.TypeString(wantType, func(p *types.Package) string { return p.Name() })
+func verifyImportedVarSyntax(files []*ast.File, varName string, wantType types.Type, pkg *types.Package) error {
 	for _, f := range files {
 		if f == nil {
 			continue
@@ -700,13 +713,8 @@ func verifyImportedVarSyntax(files []*ast.File, varName string, wantType types.T
 					if id.Name != varName {
 						continue
 					}
-					if vs.Type != nil {
-						var buf bytes.Buffer
-						if err := format.Node(&buf, token.NewFileSet(), vs.Type); err == nil {
-							if strings.TrimSpace(buf.String()) != wantStr {
-								return fmt.Errorf("syntax type %q differs from checked type %q", buf.String(), wantStr)
-							}
-						}
+					if vs.Type != nil && !astTypeMatchesGoType(vs.Type, wantType, pkg) {
+						return fmt.Errorf("syntax type for %q differs from checked type %s", varName, wantType.String())
 					}
 					return nil
 				}
@@ -714,6 +722,237 @@ func verifyImportedVarSyntax(files []*ast.File, varName string, wantType types.T
 		}
 	}
 	return fmt.Errorf("variable %q not declared in dependency syntax", varName)
+}
+
+func astTypeMatchesGoType(expr ast.Expr, t types.Type, pkg *types.Package) bool {
+	if expr == nil || t == nil {
+		return false
+	}
+	for {
+		if p, ok := expr.(*ast.ParenExpr); ok {
+			expr = p.X
+			continue
+		}
+		break
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		switch tt := t.(type) {
+		case *types.Basic:
+			if e.Name == tt.Name() {
+				return true
+			}
+			return (e.Name == "byte" && tt.Kind() == types.Uint8) ||
+				(e.Name == "rune" && tt.Kind() == types.Int32)
+		case *types.Named:
+			if tt.Obj() == nil || e.Name != tt.Obj().Name() {
+				return false
+			}
+			return tt.Obj().Pkg() == nil || pkg == nil || tt.Obj().Pkg() == pkg
+		case *types.Interface:
+			return e.Name == "any" && tt.Empty()
+		default:
+			if reflect.TypeOf(t).String() == "*types.Alias" {
+				return astTypeMatchesGoType(expr, t.Underlying(), pkg)
+			}
+			return false
+		}
+	case *ast.SelectorExpr:
+		switch tt := t.(type) {
+		case *types.Basic:
+			return e.Sel.Name == "Pointer" && tt.Kind() == types.UnsafePointer
+		case *types.Named:
+			return tt.Obj() != nil && e.Sel.Name == tt.Obj().Name() && tt.Obj().Pkg() != nil
+		default:
+			if reflect.TypeOf(t).String() == "*types.Alias" {
+				return astTypeMatchesGoType(expr, t.Underlying(), pkg)
+			}
+			return false
+		}
+	case *ast.StarExpr:
+		pt, ok := t.Underlying().(*types.Pointer)
+		return ok && astTypeMatchesGoType(e.X, pt.Elem(), pkg)
+	case *ast.ArrayType:
+		if e.Len == nil {
+			sl, ok := t.Underlying().(*types.Slice)
+			return ok && astTypeMatchesGoType(e.Elt, sl.Elem(), pkg)
+		}
+		ar, ok := t.Underlying().(*types.Array)
+		if !ok || !astTypeMatchesGoType(e.Elt, ar.Elem(), pkg) {
+			return false
+		}
+		if lit, ok := e.Len.(*ast.BasicLit); ok && lit.Kind == token.INT {
+			if n, err := strconv.ParseInt(lit.Value, 0, 64); err == nil && n != ar.Len() {
+				return false
+			}
+		}
+		return true
+	case *ast.StructType:
+		st, ok := t.Underlying().(*types.Struct)
+		if !ok {
+			return false
+		}
+		idx := 0
+		if e.Fields != nil {
+			for _, f := range e.Fields.List {
+				count := len(f.Names)
+				if count == 0 {
+					count = 1
+				}
+				for i := 0; i < count; i++ {
+					if idx >= st.NumFields() {
+						return false
+					}
+					sf := st.Field(idx)
+					if len(f.Names) > 0 && f.Names[i].Name != sf.Name() {
+						return false
+					}
+					if !astTypeMatchesGoType(f.Type, sf.Type(), pkg) {
+						return false
+					}
+					idx++
+				}
+			}
+		}
+		return idx == st.NumFields()
+	case *ast.MapType:
+		mp, ok := t.Underlying().(*types.Map)
+		return ok && astTypeMatchesGoType(e.Key, mp.Key(), pkg) && astTypeMatchesGoType(e.Value, mp.Elem(), pkg)
+	case *ast.ChanType:
+		ch, ok := t.Underlying().(*types.Chan)
+		return ok && astTypeMatchesGoType(e.Value, ch.Elem(), pkg)
+	case *ast.InterfaceType:
+		_, ok := t.Underlying().(*types.Interface)
+		return ok
+	case *ast.FuncType:
+		_, ok := t.Underlying().(*types.Signature)
+		return ok
+	default:
+		return false
+	}
+}
+
+func validatePreprocessedResolvedImmediates(file *File) error {
+	if file == nil {
+		return nil
+	}
+	for _, fn := range file.Funcs {
+		for _, ins := range fn.Instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind == OpImm && arg.ImmRaw != "" {
+					return fmt.Errorf("%s: unresolved symbolic immediate %q", fn.Sym, arg.ImmRaw)
+				}
+				if arg.Kind == OpSym {
+					s := strings.TrimSpace(arg.Sym)
+					if strings.HasPrefix(s, "$") && !strings.Contains(s, "(") {
+						return fmt.Errorf("%s: unresolved symbolic immediate %q", fn.Sym, s)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// validateGoClosureContextLoads rejects unmodified gc NEEDCTXT assembly entries
+// that dereference the hidden closure context register (DX on 386/amd64, R26 on
+// arm64) without any Go/helper parameter or prior write initializing it.
+func validateGoClosureContextLoads(file *File, goarch string, resolve func(string) string, sigs map[string]FuncSig) error {
+	var ctxtReg Reg
+	switch goarch {
+	case "amd64", "386":
+		ctxtReg = DX
+	case "arm64":
+		ctxtReg = Reg("R26")
+	default:
+		return nil
+	}
+	for _, fn := range file.Funcs {
+		if strings.HasSuffix(fn.Sym, "<>") {
+			continue
+		}
+		resolved := resolve(goTextSymbolForResolution(fn.Sym))
+		sig, ok := sigs[resolved]
+		if !ok {
+			continue
+		}
+		passedInArgReg := false
+		for _, r := range sig.ArgRegs {
+			if r == ctxtReg {
+				passedInArgReg = true
+				break
+			}
+		}
+		if passedInArgReg {
+			continue
+		}
+		if funcWritesReg(fn, goarch, ctxtReg) {
+			continue
+		}
+		for _, ins := range fn.Instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind == OpMem && arg.Mem.Base == ctxtReg {
+					return fmt.Errorf("%w: uninitialized closure context load %s", ErrProbeNeedsContext, strings.TrimSpace(ins.Raw))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func funcWritesReg(fn Func, goarch string, target Reg) bool {
+	isTarget := func(r Reg) bool {
+		if r == target {
+			return true
+		}
+		if target == DX && (r == DL || r == DH) {
+			return true
+		}
+		return false
+	}
+	for _, ins := range fn.Instrs {
+		op := strings.ToUpper(string(ins.Op))
+		if target == DX {
+			switch op {
+			case "CPUID", "XGETBV", "RDTSC", "RDTSCP", "SYSCALL", "CALL",
+				"MULQ", "MULL", "MULW", "IMULQ", "IMULL", "DIVQ", "DIVL", "IDIVQ", "IDIVL",
+				"CQO", "CDQ", "CWD", "POPQ", "POPL", "POPAL":
+				return true
+			}
+		}
+		if target == Reg("R26") && (op == "BL" || op == "CALL") {
+			return true
+		}
+		if len(ins.Args) == 0 {
+			continue
+		}
+		// Check destination operand (last arg on Plan 9 asm, or both args for XCHG/XADD/LDP/etc.).
+		dst := ins.Args[len(ins.Args)-1]
+		if dst.Kind == OpReg && isTarget(dst.Reg) {
+			switch op {
+			case "CMPQ", "CMPL", "CMPW", "CMPB", "TESTQ", "TESTL", "TESTW", "TESTB",
+				"CMP", "CMN", "TST", "TSTW", "CBZ", "CBNZ", "TBZ", "TBNZ":
+				// Comparisons only read operands.
+			default:
+				return true
+			}
+		}
+		if dst.Kind == OpRegList {
+			for _, r := range dst.RegList {
+				if isTarget(r) {
+					return true
+				}
+			}
+		}
+		if len(ins.Args) >= 2 && (strings.HasPrefix(op, "XCHG") || strings.HasPrefix(op, "XADD") || strings.HasPrefix(op, "LDP") || strings.HasPrefix(op, "LDAXP")) {
+			for _, arg := range ins.Args {
+				if arg.Kind == OpReg && isTarget(arg.Reg) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func goFuncSigForDeclaredFunc(name string, fn *types.Func, goarch string, sz, frameSz types.Sizes, withFrame bool) (FuncSig, error) {
@@ -979,11 +1218,25 @@ func goLLVMTypeForTypeWithSizes(t types.Type, goarch string, sz types.Sizes) (LL
 		return LLVMType("{ ptr, i32, i32 }"), nil
 	case *types.Interface:
 		return LLVMType("{ ptr, ptr }"), nil
+	case *types.Array:
+		elem, err := goLLVMTypeForTypeWithSizes(tt.Elem(), goarch, sz)
+		if err != nil {
+			return "", err
+		}
+		return LLVMType(fmt.Sprintf("[%d x %s]", tt.Len(), elem)), nil
 	case *types.Struct:
 		if tt.NumFields() == 0 {
 			return LLVMType("[0 x i8]"), nil
 		}
-		return "", fmt.Errorf("unsupported struct type %s", tt.String())
+		fields := make([]string, tt.NumFields())
+		for i := range fields {
+			field, err := goLLVMTypeForTypeWithSizes(tt.Field(i).Type(), goarch, sz)
+			if err != nil {
+				return "", err
+			}
+			fields[i] = string(field)
+		}
+		return LLVMType("{ " + strings.Join(fields, ", ") + " }"), nil
 	case *types.Named:
 		return goLLVMTypeForTypeWithSizes(tt.Underlying(), goarch, sz)
 	default:
@@ -1007,6 +1260,10 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 	off := startOff
 	argIdx := 0
 	for i := 0; i < tup.Len(); i++ {
+		name := ""
+		if flattenAgg {
+			name = tup.At(i).Name()
+		}
 		t := tup.At(i).Type()
 		a := int64(frameSz.Alignof(t))
 		off = goAlignOff(off, a)
@@ -1016,7 +1273,7 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 			if flattenAgg {
 				for _, part := range parts {
 					args = append(args, part.Type)
-					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: -1})
+					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: -1, Name: name})
 					argIdx++
 				}
 			} else {
@@ -1026,7 +1283,7 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 				}
 				args = append(args, ty)
 				for _, part := range parts {
-					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: part.Field})
+					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: part.Field, Fields: part.Fields})
 				}
 				argIdx++
 			}
@@ -1039,7 +1296,7 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 			return nil, nil, 0, e
 		}
 		args = append(args, ty)
-		slots = append(slots, FrameSlot{Offset: off, Type: ty, Index: argIdx, Field: -1})
+		slots = append(slots, FrameSlot{Offset: off, Type: ty, Index: argIdx, Field: -1, Name: name})
 		argIdx++
 		off += int64(frameSz.Sizeof(t))
 	}
@@ -1050,6 +1307,7 @@ type goFramePart struct {
 	Offset int64
 	Type   LLVMType
 	Field  int
+	Fields []int
 }
 
 func goFramePartsForType(t types.Type, goarch string) ([]goFramePart, bool) {
@@ -1065,15 +1323,71 @@ func goFramePartsForTypeWithSizes(t types.Type, goarch string, sz, frameSz types
 	}
 	switch u := t.Underlying().(type) {
 	case *types.Basic:
-		if u.Kind() == types.String {
+		switch u.Kind() {
+		case types.String:
 			return []goFramePart{{Offset: 0, Type: Ptr, Field: 0}, {Offset: word, Type: wordTy, Field: 1}}, true
+		case types.Complex64:
+			return []goFramePart{{Offset: 0, Type: "float", Field: 0}, {Offset: 4, Type: "float", Field: 1}}, true
+		case types.Complex128:
+			return []goFramePart{{Offset: 0, Type: "double", Field: 0}, {Offset: 8, Type: "double", Field: 1}}, true
 		}
 	case *types.Slice:
 		return []goFramePart{{Offset: 0, Type: Ptr, Field: 0}, {Offset: word, Type: wordTy, Field: 1}, {Offset: 2 * word, Type: wordTy, Field: 2}}, true
 	case *types.Interface:
 		return []goFramePart{{Offset: 0, Type: Ptr, Field: 0}, {Offset: word, Type: Ptr, Field: 1}}, true
+	case *types.Struct:
+		fields := make([]*types.Var, u.NumFields())
+		for i := range fields {
+			fields[i] = u.Field(i)
+		}
+		offsets := frameSz.Offsetsof(fields)
+		var parts []goFramePart
+		for i, field := range fields {
+			children, ok := goNestedFrameParts(field.Type(), goarch, sz, frameSz, i, offsets[i])
+			if !ok {
+				return nil, false
+			}
+			parts = append(parts, children...)
+		}
+		return parts, true
+	case *types.Array:
+		var parts []goFramePart
+		for i := int64(0); i < u.Len(); i++ {
+			children, ok := goNestedFrameParts(u.Elem(), goarch, sz, frameSz, int(i), i*frameSz.Sizeof(u.Elem()))
+			if !ok {
+				return nil, false
+			}
+			parts = append(parts, children...)
+		}
+		return parts, true
 	}
 	return nil, false
+}
+
+func goNestedFrameParts(t types.Type, goarch string, sz, frameSz types.Sizes, field int, offset int64) ([]goFramePart, bool) {
+	parts, aggregate := goFramePartsForTypeWithSizes(t, goarch, sz, frameSz)
+	if !aggregate {
+		typ, err := goLLVMTypeForTypeWithSizes(t, goarch, sz)
+		if err != nil {
+			return nil, false
+		}
+		parts = []goFramePart{{Type: typ, Field: -1}}
+	}
+	for i := range parts {
+		part := &parts[i]
+		path := []int{field}
+		if len(part.Fields) != 0 {
+			path = append(path, part.Fields...)
+		} else if part.Field >= 0 {
+			path = append(path, part.Field)
+		}
+		part.Offset += offset
+		part.Field = field
+		if len(path) > 1 {
+			part.Fields = path
+		}
+	}
+	return parts, true
 }
 
 func goWordSize(goarch string) int {

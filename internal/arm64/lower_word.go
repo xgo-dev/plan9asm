@@ -57,6 +57,10 @@ func (c *arm64Ctx) lowerRawWord(ins asm.Instr) error {
 	// supported arithmetic/SIMD/crypto instructions through the normal pipeline.
 	if decoded, ok := DecodeRawWord(word); ok {
 		op := asm.Op(strings.ToUpper(string(decoded.Op)))
+		if op == "SB" {
+			fmt.Fprintln(c.b, `  call void asm sideeffect ".inst 0xd50330ff", "~{memory}"()`)
+			return nil
+		}
 		if op == "NOP" || op == "HINT" || op == "YIELD" || op == "DMB" || op == "DSB" || op == "ISB" {
 			return nil
 		}

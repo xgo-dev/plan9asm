@@ -14,7 +14,7 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 	}
 	switch op {
 	case "MOVOU", "MOVOA", "MOVUPS", "MOVAPS", "MOVO", "MOVQ", "MOVL", "MOVD",
-		"VMOVDQU", "VMOVDQA", "VMOVNTDQ", "VMOVDQU64", "VMOVDQA64", "VMOVAPS", "VMOVAPD",
+		"VMOVQ", "VMOVD", "VMOVDQU", "VMOVDQA", "VMOVNTDQ", "VMOVDQU64", "VMOVDQA64", "VMOVAPS", "VMOVAPD",
 		"VPCMPEQB", "VPCMPGTB", "VPMOVMSKB", "VZEROUPPER", "VZEROALL", "VPBROADCASTB", "VPBROADCASTQ", "VPAND", "VPXOR", "VPOR", "VPADDD", "VPADDQ", "VPTEST",
 		"VPANDQ", "VPXORQ", "VPORQ", "VPCLMULQDQ", "VPTERNLOGD", "VEXTRACTF32X4",
 		"VPERMB", "VGF2P8AFFINEQB", "VPERMI2B", "VPCOMPRESSQ", "VPOPCNTB", "VPCMPUQ",
@@ -125,6 +125,12 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		return true, false, nil
 	}
 
+	if op == "VMOVD" {
+		op = "MOVD"
+	}
+	if op == "VMOVQ" {
+		op = "MOVQ"
+	}
 	if op == "VMOVDQA" {
 		op = "VMOVDQU"
 	}

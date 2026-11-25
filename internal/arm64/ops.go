@@ -66,6 +66,7 @@ var arm64BranchAtomicSpecs = []asm.OpSpec{
 	{Op: "TBNZ", Family: asm.FamilyBranch, Effect: asm.EffectReadOnly},
 	{Op: "RET", Family: asm.FamilyBranch, Effect: asm.EffectReadOnly},
 	{Op: "SVC", Family: asm.FamilySyscall, Effect: asm.EffectImplicit, Flags: asm.FlagsWrite},
+	{Op: "SB", Family: asm.FamilySystem, Effect: asm.EffectNone},
 	{Op: "MRS", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly},
 	{Op: "LDAR", Family: asm.FamilyAtomic, Width: 64, Effect: asm.EffectWriteOnly},
 	{Op: "STLR", Family: asm.FamilyAtomic, Width: 64, Effect: asm.EffectReadOnly},

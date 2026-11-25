@@ -638,9 +638,9 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 		"@__plan9asm_movsl",
 		`asm sideeffect "fnstcw $0"`,
 		`asm sideeffect "fldcw $0"`,
-		`asm sideeffect "fldl $1; frndint; fstpl $0"`,
-		`asm sideeffect "fldl $1; fistpll $0"`,
-		"@llvm.sqrt.f64",
+		`asm sideeffect "fldt $3; frndint; fnstsw $2; fstpt $0"`,
+		`asm sideeffect "fldt $1; fistpll $0"`,
+		`asm sideeffect "fldt $3; fsqrt; fnstsw $2; fstpt $0"`,
 		"%x87_control = alloca i16",
 		"%local_stack = alloca",
 		`"target-features"="+sse2"`,
@@ -669,39 +669,53 @@ func TestTranslate386X87Modes(t *testing.T) {
 	for _, want := range []string{
 		`asm sideeffect "fnstcw $0"`,
 		`asm sideeffect "fldcw $0"`,
-		`asm sideeffect "fldl $1; frndint; fstpl $0"`,
-		`asm sideeffect "fldl $1; fistpll $0"`,
+		`asm sideeffect "fldt $3; frndint; fnstsw $2; fstpt $0"`,
+		`asm sideeffect "fldt $1; fistpll $0"`,
 	} {
 		if !strings.Contains(hardware, want) {
 			t.Fatalf("hardware x87 IR missing %q:\n%s", want, hardware)
 		}
 	}
-	for _, unwanted := range []string{
-		"call double @llvm.floor.f64",
-		"call double @llvm.ceil.f64",
-		"call double @llvm.trunc.f64",
-		"fcmp uge double",
-	} {
-		if strings.Contains(hardware, unwanted) {
-			t.Fatalf("hardware x87 IR unexpectedly contains %q:\n%s", unwanted, hardware)
-		}
+	if strings.Contains(hardware, "call i64 @llvm.ctlz.i64") {
+		t.Fatalf("hardware x87 IR unexpectedly contains portable software rounding:\n%s", hardware)
 	}
 
 	software := translate386RoundingIR(t, X87Software)
-	for _, want := range []string{
-		"call double @llvm.floor.f64",
-		"call double @llvm.ceil.f64",
-		"call double @llvm.trunc.f64",
-		"fcmp uge double",
-	} {
-		if !strings.Contains(software, want) {
-			t.Fatalf("software x87 IR missing %q:\n%s", want, software)
-		}
+	if !strings.Contains(software, "call i64 @llvm.ctlz.i64") {
+		t.Fatalf("software x87 IR missing portable ctlz rounding:\n%s", software)
 	}
-	if strings.Contains(software, "frndint") || strings.Contains(software, "fistpll") {
-		t.Fatalf("software x87 IR unexpectedly contains hardware rounding:\n%s", software)
+	if strings.Contains(software, "asm sideeffect") {
+		t.Fatalf("software x87 IR unexpectedly contains hardware inline asm:\n%s", software)
 	}
 	compile386IR(t, software, "software_x87")
+
+	// Software mode without FINIT/FLDCW must reject uninitialized control word.
+	uninitFile, err := Parse(ArchAMD64, `TEXT round(SB),NOSPLIT,$0-16
+	FMOVD value+0(FP), F0
+	FRNDINT
+	FMOVVP F0, ret+8(FP)
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Translate(uninitFile, Options{
+		Goarch:  "386",
+		X87Mode: X87Software,
+		Sigs: map[string]FuncSig{
+			"round": {
+				Name: "round",
+				Args: []LLVMType{LLVMType("double")},
+				Ret:  I64,
+				Frame: FrameLayout{
+					Params:  []FrameSlot{{Offset: 0, Type: LLVMType("double"), Index: 0, Field: -1}},
+					Results: []FrameSlot{{Offset: 8, Type: I64, Index: 0, Field: -1}},
+				},
+			},
+		},
+	}); err == nil || !strings.Contains(err.Error(), "instruction probe needs function context: result initialization") {
+		t.Fatalf("uninitialized software x87 error = %v", err)
+	}
 
 	file, err := Parse(ArchAMD64, "TEXT invalid(SB),NOSPLIT,$0-0\nRET\n")
 	if err != nil {
@@ -813,14 +827,26 @@ func TestTranslate386X87Codegen(t *testing.T) {
 
 func translate386RoundingIR(t *testing.T, mode X87Mode) string {
 	t.Helper()
-	file, err := Parse(ArchAMD64, `TEXT round(SB),NOSPLIT,$0-16
+	src := `TEXT round(SB),NOSPLIT,$0-16
 	FMOVD value+0(FP), F0
 	FSTCW -2(SP)
 	FLDCW -2(SP)
 	FRNDINT
 	FMOVVP F0, ret+8(FP)
 	RET
-`)
+`
+	if mode == X87Software {
+		src = `TEXT round(SB),NOSPLIT,$0-16
+	FINIT
+	FMOVD value+0(FP), F0
+	FSTCW -2(SP)
+	FLDCW -2(SP)
+	FRNDINT
+	FMOVVP F0, ret+8(FP)
+	RET
+`
+	}
+	file, err := Parse(ArchAMD64, src)
 	if err != nil {
 		t.Fatal(err)
 	}

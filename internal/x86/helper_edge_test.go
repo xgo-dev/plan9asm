@@ -2334,7 +2334,7 @@ func TestTranslate386FUCOMIClearsSignedCondition(t *testing.T) {
 		t.Fatalf("lowerX87(FUCOMI) = (%v, %v, %v)", ok, terminated, err)
 	}
 	got := b.String()[start:]
-	for _, want := range []string{"fcmp ueq double", "fcmp ult double", "store i1 false, ptr %flags_slt"} {
+	for _, want := range []string{"ptr %flags_z", "ptr %flags_cf", "store i1 false, ptr %flags_slt"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("FUCOMI lowering missing %q:\n%s", want, got)
 		}
