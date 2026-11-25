@@ -17,6 +17,8 @@ var OpTable = asm.NewOpTable(
 	x86VecOtherSpecs,
 	x86ExtraScalarSpecs,
 	x86ExtraSIMDSpecs,
+	x86M2FMACVTSpecs,
+	x86M2VecExtSpecs,
 )
 
 var x86ScalarSpecs = []asm.OpSpec{
@@ -233,6 +235,10 @@ var x86VecBinOpSpecs = []asm.OpSpec{
 	{Op: "VPMAXSD", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "smax", ArchFeature: "+avx2"},
 	{Op: "VPMINUD", Family: asm.FamilyVecBinOp, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "umin", ArchFeature: "+avx2"},
 	{Op: "VPMAXUD", Family: asm.FamilyVecBinOp, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "umax", ArchFeature: "+avx2"},
+	{Op: "VPMINSQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "smin", ArchFeature: "+avx512f"},
+	{Op: "VPMAXSQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "smax", ArchFeature: "+avx512f"},
+	{Op: "VPMINUQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "umin", ArchFeature: "+avx512f"},
+	{Op: "VPMAXUQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "umax", ArchFeature: "+avx512f"},
 
 	// VEX/EVEX 3-operand packed FP ops
 	{Op: "VADDPS", Family: asm.FamilyVecBinOp, LaneBits: 32, Float: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "fadd", ArchFeature: "+avx"},
