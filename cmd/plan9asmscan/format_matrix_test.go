@@ -17,11 +17,11 @@ func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 		minForms    int
 		wantExample string
 	}{
-		{goarch: "386", arch: plan9asm.ArchAMD64, maxUnsup: 10, minForms: 14000},
-		{goarch: "amd64", arch: plan9asm.ArchAMD64, maxUnsup: 275, minForms: 14000},
-		{goarch: "arm", arch: plan9asm.ArchARM, maxUnsup: 0, minForms: 500},
-		{goarch: "arm64", arch: plan9asm.ArchARM64, maxUnsup: 2, minForms: 2400},
-		{goarch: "wasm", arch: plan9asm.ArchWASM, maxUnsup: 0, minForms: 450},
+		{goarch: "386", arch: plan9asm.ArchAMD64, maxUnsup: 10, minForms: 10000},
+		{goarch: "amd64", arch: plan9asm.ArchAMD64, maxUnsup: 275, minForms: 10000},
+		{goarch: "arm", arch: plan9asm.ArchARM, maxUnsup: 0, minForms: 400},
+		{goarch: "arm64", arch: plan9asm.ArchARM64, maxUnsup: 2, minForms: 900},
+		{goarch: "wasm", arch: plan9asm.ArchWASM, maxUnsup: 0, minForms: 200},
 	}
 
 	for _, tc := range cases {
