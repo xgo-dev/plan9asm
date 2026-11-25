@@ -129,13 +129,77 @@ func TestInferAuditArchBuildTagsAndTokens(t *testing.T) {
 	}{
 		{"sha256_amd64_avx2.s", "", "amd64", true},
 		{"aes_arm64_ce.s", "", "arm64", true},
+		{"legacy_386_sse.s", "", "386", true},
+		{"wasm_exec_wasm.s", "", "wasm", true},
 		{"generic.s", "//go:build arm && !arm64\nTEXT ·f(SB),0,$0\n", "arm", true},
+		{"plusbuild.s", "// +build amd64\nTEXT ·f(SB),0,$0\n", "amd64", true},
 		{"dual.s", "//go:build amd64 || arm64\nTEXT ·f(SB),0,$0\n", "", false},
+		{"plain.s", "TEXT ·f(SB),0,$0\n", "", false},
 	}
 	for _, tc := range cases {
 		_, got, ok := inferAuditArch(tc.name, []byte(tc.src))
 		if ok != tc.ok || got != tc.want {
 			t.Errorf("inferAuditArch(%q) = (%q, %v), want (%q, %v)", tc.name, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+func TestAuditCollectorParseErrorAndTopNAndContext(t *testing.T) {
+	col := newAuditCollector()
+	col.auditFile("example.com/a", "p/parse_amd64.s", []byte("not valid plan9 asm at all"))
+	col.auditFile("example.com/a", "p/ctx_amd64.s", []byte("TEXT ·f(SB),0,$0-0\n\tJMP target\n\tBOGUSA AX, BX\n\tBOGUSB $1, AX\n\tBOGUSB $1, AX\n\tBOGUSB $2, AX\n\tRET\n"))
+	col.auditFile("example.com/b", "p/more_amd64.s", []byte("TEXT ·g(SB),0,$0-0\n\tBOGUSA CX, DX\n\tRET\n"))
+	col.auditFile("example.com/c", "p/unknown.s", []byte("TEXT ·u(SB),0,$0-0\n\tRET\n"))
+
+	sum := col.summarize(1)
+	if sum.ParseErrors != 1 || len(sum.ParseErrorSamples) != 1 {
+		t.Fatalf("ParseErrors = %d samples=%v, want 1", sum.ParseErrors, sum.ParseErrorSamples)
+	}
+	if sum.ContextForms < 1 {
+		t.Fatalf("expected >=1 context form, got %d", sum.ContextForms)
+	}
+	if len(sum.TopGaps) != 1 {
+		t.Fatalf("TopGaps len = %d, want 1 (capped by topN)", len(sum.TopGaps))
+	}
+	if _, err := parseModuleSpecs("@/nonexistent/path/to/mods.txt"); err == nil {
+		t.Fatal("expected error for missing -modules file")
+	}
+	if _, err := parseModuleSpecs("   "); err != nil {
+		t.Fatalf("empty spec should not error: %v", err)
+	}
+}
+
+func TestDiscoverFromIndexWithAudit(t *testing.T) {
+	archive := testModuleZip(t)
+	ts := time.Date(2025, time.February, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/index":
+			_, _ = io.WriteString(w, `{"Path":"example.com/lib","Version":"v1.0.0","Timestamp":"`+ts+`"}`+"\n")
+		case strings.HasSuffix(r.URL.Path, "/@latest"):
+			_, _ = io.WriteString(w, `{"Version":"v1.0.0"}`)
+		case strings.HasSuffix(r.URL.Path, "/@v/v1.0.0.zip"):
+			serveRangeData(t, w, r, archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	rep, err := discover(context.Background(), server.Client(), config{
+		indexURL:    server.URL + "/index",
+		proxyURL:    server.URL,
+		limit:       10,
+		audit:       true,
+		auditTop:    10,
+		workers:     1,
+		maxZipSize:  int64(len(archive)) + 1024,
+		httpTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("discover(index+audit) error = %v", err)
+	}
+	if rep.IndexEntries != 1 || rep.Audit == nil || rep.Audit.FilesAudited != 1 {
+		t.Fatalf("unexpected index+audit report: entries=%d audit=%#v", rep.IndexEntries, rep.Audit)
 	}
 }
