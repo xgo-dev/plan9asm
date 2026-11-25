@@ -509,18 +509,30 @@ TEXT ·m7ARM64STPFP(SB), NOSPLIT, $0-32
 	verifyLLVMWithTargetLLC(t, ir, "aarch64-unknown-linux-gnu")
 
 	// Execute bit-for-bit on host (re-compile target-independent IR for host triple!).
+	// Wrap the { i64, i64 } return value in a void(i64, i64, ptr) shim so C ABI matches
+	// both SysV (Linux/macOS) and Win64 MSVC (where 16-byte C structs use hidden sret).
 	if hostTriple != "" {
-		hostIR := strings.Replace(ir, `target triple = "`+triple+`"`, `target triple = "`+hostTriple+`"`, 1)
+		hostIR := strings.Replace(ir, `target triple = "`+triple+`"`, `target triple = "`+hostTriple+`"`, 1) + `
+define void @m7ARM64STPFPOut(i64 %a, i64 %b, ptr %out) {
+entry:
+  %r = call { i64, i64 } @m7ARM64STPFP(i64 %a, i64 %b)
+  %v0 = extractvalue { i64, i64 } %r, 0
+  %v1 = extractvalue { i64, i64 } %r, 1
+  store i64 %v0, ptr %out, align 8
+  %p1 = getelementptr i64, ptr %out, i64 1
+  store i64 %v1, ptr %p1, align 8
+  ret void
+}
+`
 		mainC := `
 #include <stdint.h>
 #include <stdio.h>
 #ifdef __MINGW32__
 int _fltused = 0;
 #endif
-typedef struct { uint64_t a; uint64_t b; } pair64;
 extern uint64_t m7ARM64VAddArrangements(uint64_t a, uint64_t b);
 extern uint64_t m7ARM64VAddpAndUaddlv(uint64_t a, uint64_t b);
-extern pair64 m7ARM64STPFP(uint64_t a, uint64_t b);
+extern void m7ARM64STPFPOut(uint64_t a, uint64_t b, uint64_t *out);
 
 int main(void) {
 	// a = 0x00ff00ff00ff00ff, b = 0x0001000100010001
@@ -545,9 +557,10 @@ int main(void) {
 		fprintf(stderr, "m7ARM64VAddpAndUaddlv mismatch: got=0x%llx want=0x%llx\n", (unsigned long long)r2, (unsigned long long)exp2);
 		return 2;
 	}
-	pair64 p = m7ARM64STPFP(10, 42);
-	if (p.a != 0x1112131415161718ULL + 10ULL || p.b != 42ULL) {
-		fprintf(stderr, "m7ARM64STPFP mismatch: a=0x%llx b=%llu\n", (unsigned long long)p.a, (unsigned long long)p.b);
+	uint64_t out[2] = {0, 0};
+	m7ARM64STPFPOut(10, 42, out);
+	if (out[0] != 0x1112131415161718ULL + 10ULL || out[1] != 42ULL) {
+		fprintf(stderr, "m7ARM64STPFP mismatch: a=0x%llx b=%llu\n", (unsigned long long)out[0], (unsigned long long)out[1]);
 		return 3;
 	}
 	printf("M7_ARM64_OK\n");
