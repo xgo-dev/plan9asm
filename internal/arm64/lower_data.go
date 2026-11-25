@@ -140,8 +140,27 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 		return true, false, fmt.Errorf("arm64 LDP unsupported src: %q", ins.Raw)
 
 	case "LDPW":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpMem || ins.Args[1].Kind != asm.OpRegList || len(ins.Args[1].RegList) != 2 {
-			return true, false, fmt.Errorf("arm64 LDPW expects mem, (reg,reg): %q", ins.Raw)
+		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpRegList || len(ins.Args[1].RegList) != 2 {
+			return true, false, fmt.Errorf("arm64 LDPW expects mem/sym, (reg,reg): %q", ins.Raw)
+		}
+		if ins.Args[0].Kind == asm.OpSym {
+			p, err := c.ptrFromSB(ins.Args[0].Sym)
+			if err != nil {
+				return true, false, err
+			}
+			v0t, z0t, p1, v1t, z1t := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s\n", v0t, p)
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z0t, v0t)
+			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 4\n", p1, p)
+			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %%%s\n", v1t, p1)
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z1t, v1t)
+			if err := c.storeReg(ins.Args[1].RegList[0], "%"+z0t); err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeReg(ins.Args[1].RegList[1], "%"+z1t)
+		}
+		if ins.Args[0].Kind != asm.OpMem {
+			return true, false, fmt.Errorf("arm64 LDPW expects mem/sym, (reg,reg): %q", ins.Raw)
 		}
 		mem := ins.Args[0].Mem
 		addr, base, inc, err := c.addrI64(mem, postInc)
@@ -174,8 +193,32 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 		return true, false, nil
 
 	case "STPW":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || len(ins.Args[0].RegList) != 2 || ins.Args[1].Kind != asm.OpMem {
-			return true, false, fmt.Errorf("arm64 STPW expects (reg,reg), mem: %q", ins.Raw)
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || len(ins.Args[0].RegList) != 2 {
+			return true, false, fmt.Errorf("arm64 STPW expects (reg,reg), mem/sym: %q", ins.Raw)
+		}
+		if ins.Args[1].Kind == asm.OpSym {
+			p, err := c.ptrFromSB(ins.Args[1].Sym)
+			if err != nil {
+				return true, false, err
+			}
+			v0, err := c.loadReg(ins.Args[0].RegList[0])
+			if err != nil {
+				return true, false, err
+			}
+			v1, err := c.loadReg(ins.Args[0].RegList[1])
+			if err != nil {
+				return true, false, err
+			}
+			t0, p1, t1 := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t0, v0)
+			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s\n", t0, p)
+			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 4\n", p1, p)
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t1, v1)
+			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %%%s\n", t1, p1)
+			return true, false, nil
+		}
+		if ins.Args[1].Kind != asm.OpMem {
+			return true, false, fmt.Errorf("arm64 STPW expects (reg,reg), mem/sym: %q", ins.Raw)
 		}
 		mem := ins.Args[1].Mem
 		addr, base, inc, err := c.addrI64(mem, postInc)
@@ -209,8 +252,30 @@ func (c *arm64Ctx) lowerData(op asm.Op, postInc bool, ins asm.Instr) (ok bool, t
 		return true, false, nil
 
 	case "STP":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || len(ins.Args[0].RegList) != 2 || ins.Args[1].Kind != asm.OpMem {
-			return true, false, fmt.Errorf("arm64 STP expects (reg,reg), mem: %q", ins.Raw)
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || len(ins.Args[0].RegList) != 2 {
+			return true, false, fmt.Errorf("arm64 STP expects (reg,reg), mem/sym: %q", ins.Raw)
+		}
+		if ins.Args[1].Kind == asm.OpSym {
+			p, err := c.ptrFromSB(ins.Args[1].Sym)
+			if err != nil {
+				return true, false, err
+			}
+			v0, err := c.loadReg(ins.Args[0].RegList[0])
+			if err != nil {
+				return true, false, err
+			}
+			v1, err := c.loadReg(ins.Args[0].RegList[1])
+			if err != nil {
+				return true, false, err
+			}
+			p1 := c.newTmp()
+			fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v0, p)
+			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 8\n", p1, p)
+			fmt.Fprintf(c.b, "  store i64 %s, ptr %%%s\n", v1, p1)
+			return true, false, nil
+		}
+		if ins.Args[1].Kind != asm.OpMem {
+			return true, false, fmt.Errorf("arm64 STP expects (reg,reg), mem/sym: %q", ins.Raw)
 		}
 		mem := ins.Args[1].Mem
 		addr, base, inc, err := c.addrI64(mem, postInc)

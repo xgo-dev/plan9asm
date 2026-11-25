@@ -12,6 +12,9 @@ var OpTable = asm.NewOpTable(
 	arm64ScalarSpecs,
 	arm64BranchAtomicSpecs,
 	arm64SIMDAndCryptoSpecs,
+	arm64ExtraScalarSpecs,
+	arm64DeclarativeFPSpecs,
+	arm64NEONSpecs,
 )
 
 var arm64ScalarSpecs = []asm.OpSpec{

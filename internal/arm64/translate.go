@@ -140,7 +140,7 @@ func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCon
 		return false, nil
 	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "DMB", "DSB", "ISB", "DC", "PRFM",
 		"BREAK", "BRK", "UNDEF", "#UNDEF", "YIELD", "NOP",
-		"FLDPD", "FSTPD", "FMOVS", "STY",
+		"FLDPD", "FSTPD", "STY",
 		"P256ADDINLINE", "P256MULBY2INLINE", "MOV",
 		"#IFDEF", "#ELSE", "#ENDIF":
 		return false, nil
@@ -152,13 +152,25 @@ func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCon
 	if ok, term, err := c.lowerAtomic(op, ins); ok {
 		return term, err
 	}
+	if ok, term, err := c.lowerAtomicDeclarative(op, ins); ok {
+		return term, err
+	}
 	if ok, term, err := c.lowerVec(op, postInc, ins); ok {
+		return term, err
+	}
+	if ok, term, err := c.lowerVecDeclarative(op, postInc, ins); ok {
 		return term, err
 	}
 	if ok, term, err := c.lowerArith(op, ins); ok {
 		return term, err
 	}
+	if ok, term, err := c.lowerScalarDeclarative(op, postInc, ins); ok {
+		return term, err
+	}
 	if ok, term, err := c.lowerFP(op, ins); ok {
+		return term, err
+	}
+	if ok, term, err := c.lowerFPDeclarative(op, postInc, ins); ok {
 		return term, err
 	}
 	if ok, term, err := c.lowerSyscall(op, ins); ok {

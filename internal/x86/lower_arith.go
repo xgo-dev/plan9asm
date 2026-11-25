@@ -470,12 +470,10 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, fmt.Errorf("amd64 NEGL expects reg/mem dst: %q", ins.Raw)
 		}
 	case "RCRQ":
-		// Rotate through carry right (count=1) used by runtime time division path.
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpImm {
-			return true, false, fmt.Errorf("amd64 RCRQ expects $count, dstReg: %q", ins.Raw)
-		}
-		if ins.Args[0].Imm != 1 || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 RCRQ currently supports $1, reg: %q", ins.Raw)
+		// Rotate through carry right (count=1) fast path; general counts/operands
+		// fall through to lowerScalarDeclarative.
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpImm || ins.Args[0].Imm != 1 || ins.Args[1].Kind != asm.OpReg {
+			return false, false, nil
 		}
 		dv, err := c.loadReg(ins.Args[1].Reg)
 		if err != nil {
@@ -619,16 +617,15 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, nil
 
 	case "ADCQ", "SBBQ":
-		// Add/subtract with carry/borrow: src, dstReg.
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects src, dstReg: %q", op, ins.Raw)
+		// Add/subtract with carry/borrow: src, dst (reg or mem).
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 %s expects src, dst: %q", op, ins.Raw)
 		}
 		src, err := c.evalI64(ins.Args[0])
 		if err != nil {
 			return true, false, err
 		}
-		dst := ins.Args[1].Reg
-		dv, err := c.loadReg(dst)
+		dv, storeDst, err := c.loadIntDestination(ins.Args[1], asm.I64)
 		if err != nil {
 			return true, false, err
 		}
@@ -650,7 +647,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			res := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %s\n", res, sum, cf64)
 			out := "%" + res
-			if err := c.storeReg(dst, out); err != nil {
+			if err := storeDst(out); err != nil {
 				return true, false, err
 			}
 
@@ -675,7 +672,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		res2 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = sub i64 %%%s, %s\n", res2, res, cf64)
 		out := "%" + res2
-		if err := c.storeReg(dst, out); err != nil {
+		if err := storeDst(out); err != nil {
 			return true, false, err
 		}
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", borrow, c.flagsCFSlot)
@@ -1624,6 +1621,30 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, c.storeReg(dst, "%"+z)
 
 	case "SHLW", "SHRW", "SARW", "SALW":
+		if len(ins.Args) == 3 && (op == "SHLW" || op == "SHRW") && ins.Args[2].Kind == asm.OpReg {
+			// 16-bit double-precision shift (SHLDW/SHRDW): amt, src, dst
+			cntRaw, err := c.evalIntSized(ins.Args[0], asm.I16)
+			if err != nil {
+				return true, false, err
+			}
+			src, err := c.evalIntSized(ins.Args[1], asm.I16)
+			if err != nil {
+				return true, false, err
+			}
+			dst, err := c.evalIntSized(ins.Args[2], asm.I16)
+			if err != nil {
+				return true, false, err
+			}
+			cntM, rem, res := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i16 %s, 31\n", cntM, cntRaw)
+			fmt.Fprintf(c.b, "  %%%s = urem i16 %%%s, 16\n", rem, cntM)
+			if op == "SHLW" {
+				fmt.Fprintf(c.b, "  %%%s = call i16 @llvm.fshl.i16(i16 %s, i16 %s, i16 %%%s)\n", res, dst, src, rem)
+			} else {
+				fmt.Fprintf(c.b, "  %%%s = call i16 @llvm.fshr.i16(i16 %s, i16 %s, i16 %%%s)\n", res, src, dst, rem)
+			}
+			return true, false, c.storeRegSized(ins.Args[2].Reg, asm.I16, "%"+res)
+		}
 		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("amd64 %s expects amt, dstReg: %q", op, ins.Raw)
 		}

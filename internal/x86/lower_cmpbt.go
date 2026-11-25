@@ -62,23 +62,11 @@ func (c *amd64Ctx) lowerCmpBt(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, nil
 
 	case "BTQ":
-		// BTQ $imm, reg (sets CF to selected bit)
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 BTQ expects $imm, reg: %q", ins.Raw)
+		// BTQ bit(imm|reg), dst(reg|mem): sets CF to selected bit.
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 BTQ expects bit, dst: %q", ins.Raw)
 		}
-		v, err := c.loadReg(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		amt := ins.Args[0].Imm & 63
-		sh := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", sh, v, amt)
-		and := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", and, sh)
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, and)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		return true, false, nil
+		return true, false, c.lowerX86ExtraBit(asm.OpSpec{Op: "BTQ", Width: 64, LLVMOp: "bt"}, ins)
 
 	case "BTSQ", "BTRQ":
 		// BTSQ/BTRQ src, dstReg|dstMem: CF = old bit, then set or

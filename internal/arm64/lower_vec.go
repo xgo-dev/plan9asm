@@ -129,11 +129,11 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 		return true, false, nil
 
 	case "FLDPQ":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpMem || ins.Args[1].Kind != asm.OpRegList || len(ins.Args[1].RegList) != 2 {
-			return true, false, fmt.Errorf("arm64 FLDPQ expects mem, (Freg,Freg): %q", ins.Raw)
+		if len(ins.Args) != 2 || (ins.Args[0].Kind != asm.OpMem && ins.Args[0].Kind != asm.OpSym) || ins.Args[1].Kind != asm.OpRegList || len(ins.Args[1].RegList) != 2 {
+			return true, false, fmt.Errorf("arm64 FLDPQ expects mem/sym, (Freg,Freg): %q", ins.Raw)
 		}
-		mem := ins.Args[0].Mem
-		addr, base, inc, err := c.addrI64(mem, postInc)
+		preInc := strings.Contains(strings.ToUpper(string(ins.Op)), ".W")
+		ptr, base, inc, update, err := c.arm64PairPtr(ins.Args[0], preInc, postInc)
 		if err != nil {
 			return true, false, err
 		}
@@ -142,21 +142,19 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 			if !ok {
 				return true, false, fmt.Errorf("arm64 FLDPQ expects FP register pair: %q", ins.Raw)
 			}
-			loadAddr := addr
+			loadPtr := ptr
 			if i != 0 {
 				next := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, 16\n", next, addr)
-				loadAddr = "%" + next
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 16\n", next, ptr)
+				loadPtr = "%" + next
 			}
-			ptr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, loadAddr)
 			value := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %%%s, align 1\n", value, ptr)
+			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", value, loadPtr)
 			if err := c.storeVReg(asm.Reg(fmt.Sprintf("V%d", idx)), "%"+value); err != nil {
 				return true, false, err
 			}
 		}
-		if postInc {
+		if update {
 			if err := c.updatePostInc(base, inc); err != nil {
 				return true, false, err
 			}
@@ -505,7 +503,54 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 		return true, false, nil
 
 	case "VST1":
-		// VST1.P [Vn...], mem
+		// VST1 Vn.lane[i], mem (single-lane store) or VST1.P [Vn...], mem
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpMem {
+			if kind, lane, ok := arm64ParseVRegLane(ins.Args[0].Reg); ok {
+				v, err := c.loadVReg(ins.Args[0].Reg)
+				if err != nil {
+					return true, false, err
+				}
+				addr, base, inc, err := c.addrI64(ins.Args[1].Mem, false)
+				if err != nil {
+					return true, false, err
+				}
+				pt := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, addr)
+				var elemBytes int64
+				switch kind {
+				case 'B':
+					elemBytes = 1
+					ex := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", ex, v, lane)
+					fmt.Fprintf(c.b, "  store i8 %%%s, ptr %%%s, align 1\n", ex, pt)
+				case 'H':
+					elemBytes = 2
+					bc, ex := c.newTmp(), c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <8 x i16>\n", bc, v)
+					fmt.Fprintf(c.b, "  %%%s = extractelement <8 x i16> %%%s, i32 %d\n", ex, bc, lane)
+					fmt.Fprintf(c.b, "  store i16 %%%s, ptr %%%s, align 1\n", ex, pt)
+				case 'S':
+					elemBytes = 4
+					bc, ex := c.newTmp(), c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", bc, v)
+					fmt.Fprintf(c.b, "  %%%s = extractelement <4 x i32> %%%s, i32 %d\n", ex, bc, lane)
+					fmt.Fprintf(c.b, "  store i32 %%%s, ptr %%%s, align 1\n", ex, pt)
+				case 'D':
+					elemBytes = 8
+					bc, ex := c.newTmp(), c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, v)
+					fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 %d\n", ex, bc, lane)
+					fmt.Fprintf(c.b, "  store i64 %%%s, ptr %%%s, align 1\n", ex, pt)
+				}
+				if postInc {
+					if inc == 0 {
+						inc = elemBytes
+					}
+					return true, false, c.updatePostInc(base, inc)
+				}
+				return true, false, nil
+			}
+		}
 		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || ins.Args[1].Kind != asm.OpMem {
 			return true, false, fmt.Errorf("arm64 VST1 expects [v,...], mem: %q", ins.Raw)
 		}
@@ -543,48 +588,29 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 		return true, false, nil
 
 	case "VCMEQ":
-		// VCMEQ Va.B16, Vb.B16, Vd.B16 (or D2 lane-wide compare)
-		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 VCMEQ expects reg, reg, reg: %q", ins.Raw)
+		// VCMEQ Va, Vb, Vd or VCMEQ $0, Vb, Vd (any arrangement .B8/.B16/.H4/.H8/.S2/.S4/.D2)
+		if len(ins.Args) != 3 || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VCMEQ expects reg/$0, reg, reg: %q", ins.Raw)
 		}
-		s0 := strings.ToUpper(string(ins.Args[0].Reg))
-		s1 := strings.ToUpper(string(ins.Args[1].Reg))
-		if strings.Contains(s0, ".D2") || strings.Contains(s1, ".D2") {
-			a, err := c.loadVReg(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			b, err := c.loadVReg(ins.Args[1].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			ab := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", ab, a)
-			bb := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bb, b)
-			cmp := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp eq <2 x i64> %%%s, %%%s\n", cmp, ab, bb)
-			sext := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = sext <2 x i1> %%%s to <2 x i64>\n", sext, cmp)
-			out := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", out, sext)
-			return true, false, c.storeVReg(ins.Args[2].Reg, "%"+out)
+		if ins.Args[0].Kind == asm.OpImm {
+			return true, false, c.lowerNEONCompare(asm.OpSpec{Op: "VCMEQ", LLVMOp: "eq"}, ins)
 		}
-
-		a, err := c.loadVReg(ins.Args[0].Reg)
+		if ins.Args[0].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VCMEQ expects reg/$0, reg, reg: %q", ins.Raw)
+		}
+		sh := parseNEONShape(ins.Args[2].Reg, false)
+		a, err := c.loadVShape(ins.Args[0].Reg, sh)
 		if err != nil {
 			return true, false, err
 		}
-		b, err := c.loadVReg(ins.Args[1].Reg)
+		b, err := c.loadVShape(ins.Args[1].Reg, sh)
 		if err != nil {
 			return true, false, err
 		}
-		cmp := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq <16 x i8> %s, %s\n", cmp, a, b)
-		sext := c.newTmp()
-		// sext i1 -> i8 yields 0 or -1 (0xFF), which matches CMEQ's all-ones convention.
-		fmt.Fprintf(c.b, "  %%%s = sext <16 x i1> %%%s to <16 x i8>\n", sext, cmp)
-		return true, false, c.storeVReg(ins.Args[2].Reg, "%"+sext)
+		cmp, sext := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", cmp, sh.vecTy(), a, b)
+		fmt.Fprintf(c.b, "  %%%s = sext <%d x i1> %%%s to %s\n", sext, sh.lanes, cmp, sh.vecTy())
+		return true, false, c.storeVShape(ins.Args[2].Reg, "%"+sext, sh)
 
 	case "VAND":
 		// VAND Va, Vb, Vd

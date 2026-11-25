@@ -100,6 +100,33 @@ func (c *arm64Ctx) setFlagsAdd(dst, src, res string) {
 	c.storeFlag(c.flagsVSlot, "%"+ov)
 }
 
+func (c *arm64Ctx) setFlagsAdd32(dst, src, res string) {
+	c.flagsWritten = true
+
+	z := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
+	n := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", n, res)
+	carry := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, %s\n", carry, res, dst)
+
+	x1 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x1, dst, src)
+	nx1 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = xor i32 %%%s, -1\n", nx1, x1)
+	x2 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x2, dst, res)
+	x3 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", x3, nx1, x2)
+	ov := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", ov, x3)
+
+	c.storeFlag(c.flagsZSlot, "%"+z)
+	c.storeFlag(c.flagsNSlot, "%"+n)
+	c.storeFlag(c.flagsCSlot, "%"+carry)
+	c.storeFlag(c.flagsVSlot, "%"+ov)
+}
+
 func (c *arm64Ctx) setConditionalCompareFlags(cond, lhs, rhs string, nzcv int64, word, add bool) error {
 	predicate, err := c.condValue(cond)
 	if err != nil {

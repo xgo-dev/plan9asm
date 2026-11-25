@@ -8,33 +8,8 @@ import (
 
 func (c *armCtx) lowerData(op, cond string, postInc bool, ins asm.Instr) (ok bool, terminated bool, err error) {
 	switch op {
-	case "MOVD":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("arm MOVD expects 2 operands: %q", ins.Raw)
-		}
-		src, dst := ins.Args[0], ins.Args[1]
-		switch {
-		case src.Kind == asm.OpReg && strings.HasPrefix(string(src.Reg), "F") && dst.Kind == asm.OpMem:
-			v, err := c.loadFReg(src.Reg)
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeMem(dst.Mem, 64, postInc, v)
-		case src.Kind == asm.OpMem && dst.Kind == asm.OpReg && strings.HasPrefix(string(dst.Reg), "F"):
-			v, err := c.loadMem(src.Mem, 64, postInc, false)
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeFReg(dst.Reg, v)
-		case src.Kind == asm.OpReg && strings.HasPrefix(string(src.Reg), "F") && dst.Kind == asm.OpReg && strings.HasPrefix(string(dst.Reg), "F"):
-			v, err := c.loadFReg(src.Reg)
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeFReg(dst.Reg, v)
-		default:
-			return true, false, fmt.Errorf("arm MOVD unsupported operands: %q", ins.Raw)
-		}
+	case "MOVD", "MOVF":
+		return true, false, c.lowerARMMOVFOrD(op, cond, postInc, ins)
 	case "MOVW":
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("arm MOVW expects 2 operands: %q", ins.Raw)
@@ -57,7 +32,7 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins asm.Instr) (ok boo
 			return true, false, err
 		}
 		return true, false, c.storeARMValue(dst, v, 32, cond, postInc, ins.Raw)
-	case "MOVB", "MOVBU", "MOVH", "MOVHU":
+	case "MOVB", "MOVBS", "MOVBU", "MOVH", "MOVHS", "MOVHU":
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("arm %s expects 2 operands: %q", op, ins.Raw)
 		}
@@ -71,13 +46,42 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins asm.Instr) (ok boo
 		}
 		v := ""
 		bits := 8
-		if op == "MOVH" || op == "MOVHU" {
+		if op == "MOVH" || op == "MOVHS" || op == "MOVHU" {
 			bits = 16
 		}
-		if src.Kind == asm.OpMem {
-			v, err = c.loadMem(src.Mem, bits, postInc, op == "MOVB" || op == "MOVH")
-		} else {
+		signed := op == "MOVB" || op == "MOVBS" || op == "MOVH" || op == "MOVHS"
+		switch src.Kind {
+		case asm.OpMem:
+			v, err = c.loadMem(src.Mem, bits, postInc, signed)
+		case asm.OpSym:
+			if strings.HasPrefix(strings.TrimSpace(src.Sym), "$") {
+				v, err = c.eval32(src, false)
+			} else {
+				p, perr := c.ptrFromSB(src.Sym)
+				if perr != nil {
+					return true, false, perr
+				}
+				ld, ext := c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i%d, ptr %s\n", ld, bits, p)
+				if signed {
+					fmt.Fprintf(c.b, "  %%%s = sext i%d %%%s to i32\n", ext, bits, ld)
+				} else {
+					fmt.Fprintf(c.b, "  %%%s = zext i%d %%%s to i32\n", ext, bits, ld)
+				}
+				v = "%" + ext
+			}
+		default:
 			v, err = c.eval32(src, false)
+			if err == nil && dst.Kind == asm.OpReg {
+				tr, ext := c.newTmp(), c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i32 %s to i%d\n", tr, v, bits)
+				if signed {
+					fmt.Fprintf(c.b, "  %%%s = sext i%d %%%s to i32\n", ext, bits, tr)
+				} else {
+					fmt.Fprintf(c.b, "  %%%s = zext i%d %%%s to i32\n", ext, bits, tr)
+				}
+				v = "%" + ext
+			}
 		}
 		if err != nil {
 			return true, false, err

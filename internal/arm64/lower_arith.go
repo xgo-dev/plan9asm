@@ -588,18 +588,21 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, c.storeReg(ins.Args[1].Reg, "%"+z)
 
 	case "CRC32B", "CRC32H", "CRC32W", "CRC32X", "CRC32CB", "CRC32CH", "CRC32CW", "CRC32CX":
-		// CRC32{B,H,W,X} srcReg, dstReg
-		// CRC32C{B,H,W,X} srcReg, dstReg
-		// Semantics: dst = crc32(dst, src)
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects reg, reg: %q", op, ins.Raw)
+		// CRC32{B,H,W,X} dataReg, [crcReg,] dstReg
+		// Semantics: dst = crc32(crc, data)
+		if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || (len(ins.Args) == 3 && ins.Args[2].Kind != asm.OpReg) {
+			return true, false, fmt.Errorf("arm64 %s expects reg, [reg,] reg: %q", op, ins.Raw)
 		}
 		src64, err := c.loadReg(ins.Args[0].Reg)
 		if err != nil {
 			return true, false, err
 		}
-		dstReg := ins.Args[1].Reg
-		crc64, err := c.loadReg(dstReg)
+		crcReg := ins.Args[1].Reg
+		dstReg := crcReg
+		if len(ins.Args) == 3 {
+			dstReg = ins.Args[2].Reg
+		}
+		crc64, err := c.loadReg(crcReg)
 		if err != nil {
 			return true, false, err
 		}
@@ -696,7 +699,11 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, nil
 
 	case "CCMP", "CCMPW", "CCMN", "CCMNW":
-		if len(ins.Args) != 4 || ins.Args[0].Kind != asm.OpIdent || ins.Args[3].Kind != asm.OpImm {
+		if len(ins.Args) != 4 || ins.Args[3].Kind != asm.OpImm {
+			return true, false, fmt.Errorf("arm64 %s expects condition, lhs, rhs, $nzcv: %q", op, ins.Raw)
+		}
+		condName, condOK := arm64ConditionOperand(ins.Args[0])
+		if !condOK {
 			return true, false, fmt.Errorf("arm64 %s expects condition, lhs, rhs, $nzcv: %q", op, ins.Raw)
 		}
 		if ins.Args[3].Imm < 0 || ins.Args[3].Imm > 15 {
@@ -720,7 +727,7 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err != nil {
 			return true, false, err
 		}
-		return true, false, c.setConditionalCompareFlags(ins.Args[0].Ident, lhs, rhs, ins.Args[3].Imm, word, add)
+		return true, false, c.setConditionalCompareFlags(condName, lhs, rhs, ins.Args[3].Imm, word, add)
 
 	case "CMN":
 		if len(ins.Args) != 2 {

@@ -15,6 +15,8 @@ var OpTable = asm.NewOpTable(
 	x86BranchAndSystemSpecs,
 	x86VecBinOpSpecs,
 	x86VecOtherSpecs,
+	x86ExtraScalarSpecs,
+	x86ExtraSIMDSpecs,
 )
 
 var x86ScalarSpecs = []asm.OpSpec{
@@ -200,6 +202,14 @@ var x86VecBinOpSpecs = []asm.OpSpec{
 	{Op: "VPSUBQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "sub", ArchFeature: "+avx2"},
 	{Op: "VPMULLW", Family: asm.FamilyVecBinOp, LaneBits: 16, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "mul", ArchFeature: "+avx"},
 	{Op: "VPMULLD", Family: asm.FamilyVecBinOp, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "mul", ArchFeature: "+avx"},
+	{Op: "PMULUDQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Effect: asm.EffectReadWrite, LLVMOp: "pmuludq", ArchFeature: "+sse2"},
+	{Op: "VPMULUDQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "pmuludq", ArchFeature: "+avx2"},
+	{Op: "PMULDQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "pmuldq", ArchFeature: "+sse4.1"},
+	{Op: "VPMULDQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "pmuldq", ArchFeature: "+avx2"},
+	{Op: "PMULHW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "pmulhw", ArchFeature: "+sse2"},
+	{Op: "VPMULHW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "pmulhw", ArchFeature: "+avx2"},
+	{Op: "PMULHUW", Family: asm.FamilyVecBinOp, LaneBits: 16, Effect: asm.EffectReadWrite, LLVMOp: "pmulhuw", ArchFeature: "+sse2"},
+	{Op: "VPMULHUW", Family: asm.FamilyVecBinOp, LaneBits: 16, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "pmulhuw", ArchFeature: "+avx2"},
 	{Op: "VPAND", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "and", ArchFeature: "+avx"},
 	{Op: "VPANDD", Family: asm.FamilyVecBinOp, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "and", ArchFeature: "+avx512f"},
 	{Op: "VPANDQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "and", ArchFeature: "+avx512f"},
@@ -237,6 +247,62 @@ var x86VecBinOpSpecs = []asm.OpSpec{
 	{Op: "VORPD", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "or", ArchFeature: "+avx"},
 	{Op: "VXORPS", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "xor", ArchFeature: "+avx"},
 	{Op: "VXORPD", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "xor", ArchFeature: "+avx"},
+
+	// Extended packed integer/FP binary ops: saturating, ANDN, PSIGN, compares, min/max, mul-high, avg
+	{Op: "VPMULLQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "mul", ArchFeature: "+avx512dq"},
+	{Op: "ANDNPS", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "andn"},
+	{Op: "VANDNPS", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "andn", ArchFeature: "+avx"},
+	{Op: "VANDNPD", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "andn", ArchFeature: "+avx"},
+	{Op: "VPANDN", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "andn", ArchFeature: "+avx"},
+	{Op: "VPANDND", Family: asm.FamilyVecBinOp, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "andn", ArchFeature: "+avx512f"},
+	{Op: "VPANDNQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "andn", ArchFeature: "+avx512f"},
+	{Op: "PADDSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, Saturating: true, Effect: asm.EffectReadWrite, LLVMOp: "sadd.sat"},
+	{Op: "PADDSW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, Saturating: true, Effect: asm.EffectReadWrite, LLVMOp: "sadd.sat"},
+	{Op: "PADDUSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Saturating: true, Effect: asm.EffectReadWrite, LLVMOp: "uadd.sat"},
+	{Op: "PADDUSW", Family: asm.FamilyVecBinOp, LaneBits: 16, Saturating: true, Effect: asm.EffectReadWrite, LLVMOp: "uadd.sat"},
+	{Op: "PSUBSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, Saturating: true, Effect: asm.EffectReadWrite, LLVMOp: "ssub.sat"},
+	{Op: "PSUBSW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, Saturating: true, Effect: asm.EffectReadWrite, LLVMOp: "ssub.sat"},
+	{Op: "PSUBUSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Saturating: true, Effect: asm.EffectReadWrite, LLVMOp: "usub.sat"},
+	{Op: "PSUBUSW", Family: asm.FamilyVecBinOp, LaneBits: 16, Saturating: true, Effect: asm.EffectReadWrite, LLVMOp: "usub.sat"},
+	{Op: "VPADDSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, Saturating: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "sadd.sat", ArchFeature: "+avx2"},
+	{Op: "VPADDSW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, Saturating: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "sadd.sat", ArchFeature: "+avx2"},
+	{Op: "VPADDUSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Saturating: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "uadd.sat", ArchFeature: "+avx2"},
+	{Op: "VPADDUSW", Family: asm.FamilyVecBinOp, LaneBits: 16, Saturating: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "uadd.sat", ArchFeature: "+avx2"},
+	{Op: "VPSUBSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, Saturating: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "ssub.sat", ArchFeature: "+avx2"},
+	{Op: "VPSUBSW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, Saturating: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "ssub.sat", ArchFeature: "+avx2"},
+	{Op: "VPSUBUSB", Family: asm.FamilyVecBinOp, LaneBits: 8, Saturating: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "usub.sat", ArchFeature: "+avx2"},
+	{Op: "VPSUBUSW", Family: asm.FamilyVecBinOp, LaneBits: 16, Saturating: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "usub.sat", ArchFeature: "+avx2"},
+	{Op: "MINPS", Family: asm.FamilyVecBinOp, LaneBits: 32, Float: true, Effect: asm.EffectReadWrite, LLVMOp: "fmin"},
+	{Op: "MAXPS", Family: asm.FamilyVecBinOp, LaneBits: 32, Float: true, Effect: asm.EffectReadWrite, LLVMOp: "fmax"},
+	{Op: "MINPD", Family: asm.FamilyVecBinOp, LaneBits: 64, Float: true, Effect: asm.EffectReadWrite, LLVMOp: "fmin"},
+	{Op: "MAXPD", Family: asm.FamilyVecBinOp, LaneBits: 64, Float: true, Effect: asm.EffectReadWrite, LLVMOp: "fmax"},
+	{Op: "VMINPS", Family: asm.FamilyVecBinOp, LaneBits: 32, Float: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "fmin", ArchFeature: "+avx"},
+	{Op: "VMAXPS", Family: asm.FamilyVecBinOp, LaneBits: 32, Float: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "fmax", ArchFeature: "+avx"},
+	{Op: "VMINPD", Family: asm.FamilyVecBinOp, LaneBits: 64, Float: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "fmin", ArchFeature: "+avx"},
+	{Op: "VMAXPD", Family: asm.FamilyVecBinOp, LaneBits: 64, Float: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "fmax", ArchFeature: "+avx"},
+	{Op: "PSIGNB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "psign"},
+	{Op: "PSIGNW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "psign"},
+	{Op: "PSIGND", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "psign"},
+	{Op: "VPSIGNB", Family: asm.FamilyVecBinOp, LaneBits: 8, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "psign", ArchFeature: "+avx2"},
+	{Op: "VPSIGNW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "psign", ArchFeature: "+avx2"},
+	{Op: "VPSIGND", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "psign", ArchFeature: "+avx2"},
+	{Op: "PCMPEQW", Family: asm.FamilyVecBinOp, LaneBits: 16, Effect: asm.EffectReadWrite, LLVMOp: "cmpeq"},
+	{Op: "PCMPEQD", Family: asm.FamilyVecBinOp, LaneBits: 32, Effect: asm.EffectReadWrite, LLVMOp: "cmpeq"},
+	{Op: "PCMPEQQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Effect: asm.EffectReadWrite, LLVMOp: "cmpeq"},
+	{Op: "PCMPGTW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
+	{Op: "PCMPGTL", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
+	{Op: "PCMPGTD", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
+	{Op: "PCMPGTQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Signed: true, Effect: asm.EffectReadWrite, LLVMOp: "cmpgt"},
+	{Op: "VPCMPEQW", Family: asm.FamilyVecBinOp, LaneBits: 16, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpeq", ArchFeature: "+avx2"},
+	{Op: "VPCMPEQD", Family: asm.FamilyVecBinOp, LaneBits: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpeq", ArchFeature: "+avx2"},
+	{Op: "VPCMPEQQ", Family: asm.FamilyVecBinOp, LaneBits: 64, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpeq", ArchFeature: "+avx2"},
+	{Op: "VPCMPGTW", Family: asm.FamilyVecBinOp, LaneBits: 16, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpgt", ArchFeature: "+avx2"},
+	{Op: "VPCMPGTD", Family: asm.FamilyVecBinOp, LaneBits: 32, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpgt", ArchFeature: "+avx2"},
+	{Op: "VPCMPGTQ", Family: asm.FamilyVecBinOp, LaneBits: 64, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "cmpgt", ArchFeature: "+avx2"},
+	{Op: "PAVGB", Family: asm.FamilyVecBinOp, LaneBits: 8, Effect: asm.EffectReadWrite, LLVMOp: "pavg"},
+	{Op: "PAVGW", Family: asm.FamilyVecBinOp, LaneBits: 16, Effect: asm.EffectReadWrite, LLVMOp: "pavg"},
+	{Op: "VPAVGB", Family: asm.FamilyVecBinOp, LaneBits: 8, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "pavg", ArchFeature: "+avx2"},
+	{Op: "VPAVGW", Family: asm.FamilyVecBinOp, LaneBits: 16, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "pavg", ArchFeature: "+avx2"},
 }
 
 var x86VecOtherSpecs = []asm.OpSpec{
@@ -274,59 +340,44 @@ var x86VecOtherSpecs = []asm.OpSpec{
 }
 
 // lowerDeclarativeVecBinOp lowers any FamilyVecBinOp entry from OpTable across
-// 128-bit XMM, 256-bit YMM, and 512-bit ZMM registers using one parameterized
-// LLVM IR template.
+// 128-bit XMM, 256-bit YMM, and 512-bit ZMM registers (including EVEX K-masked
+// and .Z zero-masked forms) using one parameterized LLVM IR template.
 func (c *amd64Ctx) lowerDeclarativeVecBinOp(op asm.Op, ins asm.Instr) (ok bool, terminated bool, err error) {
-	spec, found := OpTable.Lookup(op)
+	rawOp := strings.ToUpper(string(ins.Op))
+	zeroMask := strings.Contains(rawOp, ".Z")
+	bcst := strings.Contains(rawOp, ".BCST")
+	baseOp := op
+	if dot := strings.IndexByte(string(baseOp), '.'); dot >= 0 {
+		baseOp = asm.Op(string(baseOp)[:dot])
+	}
+	spec, found := OpTable.Lookup(baseOp)
 	if !found || spec.Family != asm.FamilyVecBinOp || spec.LLVMOp == "" {
 		return false, false, nil
 	}
+	args, kreg, hasMask := x86StripEVEXMask(ins.Args)
 	wantArgs := 2
 	if spec.ThreeOp {
 		wantArgs = 3
 	}
-	if len(ins.Args) != wantArgs {
+	if len(args) != wantArgs {
 		return true, false, fmt.Errorf("x86 %s expects %d operands: %q", op, wantArgs, ins.Raw)
 	}
-	dstOp := ins.Args[wantArgs-1]
+	dstOp := args[wantArgs-1]
 	if dstOp.Kind != asm.OpReg {
 		return true, false, fmt.Errorf("x86 %s requires vector register destination: %q", op, ins.Raw)
 	}
 
-	var (
-		totalBits int
-		byteVecTy string
-		loadVec   func(asm.Operand) (string, error)
-		storeVec  func(asm.Reg, string) error
-	)
-	switch {
-	case isAMD64XReg(dstOp.Reg):
-		totalBits, byteVecTy, loadVec, storeVec = 128, "<16 x i8>", c.loadXVecOperand, c.storeX
-	case isAMD64YReg(dstOp.Reg):
-		totalBits, byteVecTy, loadVec, storeVec = 256, "<32 x i8>", c.loadYVecOperand, c.storeY
-	case isAMD64ZReg(dstOp.Reg):
-		totalBits, byteVecTy, loadVec, storeVec = 512, "<64 x i8>", c.loadZVecOperand, c.storeZ
-	default:
+	vi, ok := c.x86VecInfoForReg(dstOp.Reg)
+	if !ok {
 		return true, false, fmt.Errorf("x86 %s unsupported destination register %s: %q", op, dstOp.Reg, ins.Raw)
 	}
+	totalBits, byteVecTy, loadVec, storeVec := vi.totalBits, vi.byteVecTy, vi.loadVec, vi.storeVec
 
 	var lhsOp, rhsOp asm.Operand
 	if spec.ThreeOp {
-		// Plan 9 3-operand VEX/EVEX order: OP src1(rm), src2(vvvv), dst
-		// For non-commutative ops (sub/div): dst = src2 op src1.
-		rhsOp, lhsOp = ins.Args[0], ins.Args[1]
+		rhsOp, lhsOp = args[0], args[1]
 	} else {
-		// Plan 9 2-operand SSE order: OP src, dst => dst = dst op src.
-		rhsOp, lhsOp = ins.Args[0], dstOp
-	}
-
-	lhsRaw, err := loadVec(lhsOp)
-	if err != nil {
-		return true, false, err
-	}
-	rhsRaw, err := loadVec(rhsOp)
-	if err != nil {
-		return true, false, err
+		rhsOp, lhsOp = args[0], dstOp
 	}
 
 	laneBits := int(spec.LaneBits)
@@ -344,14 +395,39 @@ func (c *amd64Ctx) lowerDeclarativeVecBinOp(op asm.Op, ins asm.Instr) (ok bool, 
 	}
 	opVecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
 
-	lhsVal, rhsVal := lhsRaw, rhsRaw
+	lhsRaw, err := loadVec(lhsOp)
+	if err != nil {
+		return true, false, err
+	}
+	var rhsVal string
+	if bcst && rhsOp.Kind == asm.OpMem {
+		p, ptrType, err := c.ptrFromMem(rhsOp.Mem)
+		if err != nil {
+			return true, false, err
+		}
+		ld, ins0, splat := c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", ld, elemTy, ptrType, p)
+		fmt.Fprintf(c.b, "  %%%s = insertelement %s undef, %s %%%s, i32 0\n", ins0, opVecTy, elemTy, ld)
+		fmt.Fprintf(c.b, "  %%%s = shufflevector %s %%%s, %s poison, <%d x i32> zeroinitializer\n", splat, opVecTy, ins0, opVecTy, lanes)
+		rhsVal = "%" + splat
+	} else {
+		rhsRaw, err := loadVec(rhsOp)
+		if err != nil {
+			return true, false, err
+		}
+		rhsVal = rhsRaw
+		if opVecTy != byteVecTy {
+			rt := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", rt, byteVecTy, rhsRaw, opVecTy)
+			rhsVal = "%" + rt
+		}
+	}
+
+	lhsVal := lhsRaw
 	if opVecTy != byteVecTy {
 		lt := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", lt, byteVecTy, lhsRaw, opVecTy)
 		lhsVal = "%" + lt
-		rt := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", rt, byteVecTy, rhsRaw, opVecTy)
-		rhsVal = "%" + rt
 	}
 
 	var resVal string
@@ -363,10 +439,100 @@ func (c *amd64Ctx) lowerDeclarativeVecBinOp(op asm.Op, ins asm.Instr) (ok bool, 
 		sel := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s %s, %s %s\n", sel, lanes, cmp, opVecTy, lhsVal, opVecTy, rhsVal)
 		resVal = "%" + sel
+	case "fmin", "fmax":
+		pred := "olt"
+		if spec.LLVMOp == "fmax" {
+			pred = "ogt"
+		}
+		cmp, sel := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = fcmp %s %s %s, %s\n", cmp, pred, opVecTy, lhsVal, rhsVal)
+		fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s %s, %s %s\n", sel, lanes, cmp, opVecTy, lhsVal, opVecTy, rhsVal)
+		resVal = "%" + sel
+	case "andn":
+		inv, out := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", inv, opVecTy, lhsVal, x86IntSplat(lanes, laneBits, -1))
+		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", out, opVecTy, inv, rhsVal)
+		resVal = "%" + out
+	case "sadd.sat", "uadd.sat", "ssub.sat", "usub.sat":
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.v%di%d(%s %s, %s %s)\n", out, opVecTy, spec.LLVMOp, lanes, laneBits, opVecTy, lhsVal, opVecTy, rhsVal)
+		resVal = "%" + out
+	case "psign":
+		neg, isNeg, isZero, sel1, sel2 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = sub %s zeroinitializer, %s\n", neg, opVecTy, lhsVal)
+		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, zeroinitializer\n", isNeg, opVecTy, rhsVal)
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, zeroinitializer\n", isZero, opVecTy, rhsVal)
+		fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s %%%s, %s %s\n", sel1, lanes, isNeg, opVecTy, neg, opVecTy, lhsVal)
+		fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s zeroinitializer, %s %%%s\n", sel2, lanes, isZero, opVecTy, opVecTy, sel1)
+		resVal = "%" + sel2
+	case "cmpeq", "cmpgt":
+		pred := "eq"
+		if spec.LLVMOp == "cmpgt" {
+			pred = "sgt"
+		}
+		cmp, sx := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp %s %s %s, %s\n", cmp, pred, opVecTy, lhsVal, rhsVal)
+		fmt.Fprintf(c.b, "  %%%s = sext <%d x i1> %%%s to %s\n", sx, lanes, cmp, opVecTy)
+		resVal = "%" + sx
+	case "pmuludq", "pmuldq":
+		// Low 32 bits of each 64-bit lane multiplied to full 64-bit lane.
+		l32, r32, le, re, prod := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		ty32 := fmt.Sprintf("<%d x i32>", lanes)
+		ext := "zext"
+		if spec.LLVMOp == "pmuldq" {
+			ext = "sext"
+		}
+		fmt.Fprintf(c.b, "  %%%s = trunc %s %s to %s\n", l32, opVecTy, lhsVal, ty32)
+		fmt.Fprintf(c.b, "  %%%s = trunc %s %s to %s\n", r32, opVecTy, rhsVal, ty32)
+		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s to %s\n", le, ext, ty32, l32, opVecTy)
+		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s to %s\n", re, ext, ty32, r32, opVecTy)
+		fmt.Fprintf(c.b, "  %%%s = mul %s %%%s, %%%s\n", prod, opVecTy, le, re)
+		resVal = "%" + prod
+	case "pmulhw", "pmulhuw":
+		wTy := fmt.Sprintf("<%d x i32>", lanes)
+		ext := "zext"
+		if spec.LLVMOp == "pmulhw" {
+			ext = "sext"
+		}
+		lw, rw, prod, sh, tr := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", lw, ext, opVecTy, lhsVal, wTy)
+		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", rw, ext, opVecTy, rhsVal, wTy)
+		fmt.Fprintf(c.b, "  %%%s = mul %s %%%s, %%%s\n", prod, wTy, lw, rw)
+		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %s\n", sh, wTy, prod, x86IntSplat(lanes, 32, 16))
+		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", tr, wTy, sh, opVecTy)
+		resVal = "%" + tr
+	case "pavg":
+		wBits := laneBits * 2
+		wTy := fmt.Sprintf("<%d x i%d>", lanes, wBits)
+		lz, rz, sum, sum1, sh, tr := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", lz, opVecTy, lhsVal, wTy)
+		fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", rz, opVecTy, rhsVal, wTy)
+		fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", sum, wTy, lz, rz)
+		fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %s\n", sum1, wTy, sum, x86IntSplat(lanes, wBits, 1))
+		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %s\n", sh, wTy, sum1, x86IntSplat(lanes, wBits, 1))
+		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", tr, wTy, sh, opVecTy)
+		resVal = "%" + tr
 	default:
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", out, spec.LLVMOp, opVecTy, lhsVal, rhsVal)
 		resVal = "%" + out
+	}
+
+	if hasMask {
+		oldRaw, err := vi.loadReg(dstOp.Reg)
+		if err != nil {
+			return true, false, err
+		}
+		oldVal := oldRaw
+		if opVecTy != byteVecTy {
+			obc := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", obc, byteVecTy, oldRaw, opVecTy)
+			oldVal = "%" + obc
+		}
+		resVal, err = c.x86ApplyMask(kreg, zeroMask, lanes, opVecTy, resVal, oldVal)
+		if err != nil {
+			return true, false, err
+		}
 	}
 
 	if opVecTy != byteVecTy {

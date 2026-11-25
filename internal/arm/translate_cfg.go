@@ -103,6 +103,9 @@ func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr 
 	if ok, term, err := c.lowerData(baseOp, cond, postInc, ins); ok {
 		return term, err
 	}
+	if ok, term, err := c.lowerDeclarative(baseOp, cond, postInc, setFlags, ins); ok {
+		return term, err
+	}
 	if ok, term, err := c.lowerArith(baseOp, cond, setFlags, ins); ok {
 		return term, err
 	}

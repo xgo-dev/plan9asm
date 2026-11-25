@@ -20,6 +20,28 @@ func (c *amd64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 
 	switch op {
 	case "MOVAPD", "ANDPD", "ANDNPD", "ORPD", "XORPS":
+		if op == "MOVAPD" && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpReg && (ins.Args[1].Kind == asm.OpMem || ins.Args[1].Kind == asm.OpSym) {
+			if _, ok := amd64ParseXReg(ins.Args[0].Reg); ok {
+				v, err := c.loadX(ins.Args[0].Reg)
+				if err != nil {
+					return true, false, err
+				}
+				if ins.Args[1].Kind == asm.OpMem {
+					p, ptrType, err := c.ptrFromMem(ins.Args[1].Mem)
+					if err != nil {
+						return true, false, err
+					}
+					fmt.Fprintf(c.b, "  store <16 x i8> %s, %s %s, align 1\n", v, ptrType, p)
+					return true, false, nil
+				}
+				p, err := c.ptrFromSB(ins.Args[1].Sym)
+				if err != nil {
+					return true, false, err
+				}
+				fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", v, p)
+				return true, false, nil
+			}
+		}
 		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("amd64 %s expects src, Xdst: %q", op, ins.Raw)
 		}
@@ -275,7 +297,10 @@ func (c *amd64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		return true, false, c.storeXLowF64(ins.Args[1].Reg, "%"+t)
 
 	case "VADDSD":
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
+		if len(ins.Args) != 3 {
+			return false, false, nil
+		}
+		if ins.Args[2].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("amd64 VADDSD expects src1, src2, Xdst: %q", ins.Raw)
 		}
 		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {

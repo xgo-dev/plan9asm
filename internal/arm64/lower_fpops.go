@@ -21,6 +21,21 @@ func (c *arm64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		switch ins.Args[1].Kind {
 		case asm.OpReg:
 			return true, false, c.storeReg(ins.Args[1].Reg, bits)
+		case asm.OpMem:
+			if ins.Args[0].Kind != asm.OpReg {
+				return true, false, fmt.Errorf("arm64 FMOVD memory dst requires register src: %q", ins.Raw)
+			}
+			return true, false, c.storeMem(ins.Args[1].Mem, 64, strings.Contains(strings.ToUpper(string(ins.Op)), ".P"), bits)
+		case asm.OpSym:
+			if ins.Args[0].Kind != asm.OpReg {
+				return true, false, fmt.Errorf("arm64 FMOVD symbol dst requires register src: %q", ins.Raw)
+			}
+			p, perr := c.ptrFromSB(ins.Args[1].Sym)
+			if perr != nil {
+				return true, false, perr
+			}
+			fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", bits, p)
+			return true, false, nil
 		case asm.OpFP:
 			return true, false, c.storeFPResult64(ins.Args[1].FPOffset, bits)
 		default:
@@ -354,26 +369,7 @@ func (c *arm64Ctx) storeF64(dst asm.Operand, v string) error {
 }
 
 func arm64ParseDollarFloat(sym string) (float64, bool) {
-	if !strings.HasPrefix(sym, "$") {
-		return 0, false
-	}
-	s := strings.TrimSpace(strings.TrimPrefix(sym, "$"))
-	if s == "" {
-		return 0, false
-	}
-	// Integer-looking immediates are handled by arm64ParseDollarInt64.
-	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
-		return 0, false
-	}
-	// Heuristic: require decimal/exponent marker.
-	if !strings.ContainsAny(s, ".eE") {
-		return 0, false
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, false
-	}
-	return v, true
+	return arm64ParseDollarFloatFlex(sym)
 }
 
 func arm64ParseDollarInt64(sym string) (int64, bool) {

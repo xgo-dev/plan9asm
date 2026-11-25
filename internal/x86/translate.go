@@ -361,6 +361,15 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 	if ok, term, err := c.lowerArith(asm.Op(op), ins); ok {
 		return term, err
 	}
+	if ok, term, err := c.lowerDeclarativeVecBinOp(asm.Op(op), ins); ok {
+		return term, err
+	}
+	if ok, term, err := c.lowerSIMDDeclarative(asm.Op(op), ins); ok {
+		return term, err
+	}
+	if ok, term, err := c.lowerScalarDeclarative(asm.Op(op), ins); ok {
+		return term, err
+	}
 	return false, fmt.Errorf("amd64: unsupported instruction %s", ins.Op)
 }
 
