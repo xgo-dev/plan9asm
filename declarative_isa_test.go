@@ -1163,8 +1163,8 @@ func TestDeclarativeFPSlotScalarF32(t *testing.T) {
 					Args: []LLVMType{LLVMType("double")},
 					Ret:  tc.retType,
 					Frame: FrameLayout{
-						Params:  []FrameSlot{{Offset: 0, Type: LLVMType("double"), Index: 0}},
-						Results: []FrameSlot{{Offset: 8, Type: tc.retType, Index: 0}},
+						Params:  []FrameSlot{{Offset: 0, Type: LLVMType("double"), Index: 0, Field: -1}},
+						Results: []FrameSlot{{Offset: 8, Type: tc.retType, Index: 0, Field: -1}},
 					},
 				},
 			},
