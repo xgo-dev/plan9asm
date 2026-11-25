@@ -1,0 +1,555 @@
+package asm
+
+import (
+	"bufio"
+	"fmt"
+	"github.com/xgo-dev/plan9asm/internal/preprocess"
+	"strconv"
+	"strings"
+)
+
+// File is a parsed Plan 9 asm source file (subset).
+type File struct {
+	Arch  Arch
+	Funcs []Func
+
+	// Data and Globl capture a minimal subset of the Plan 9 DATA/GLOBL directives
+	// used by some stdlib asm (e.g. hash/crc32/crc32_amd64.s).
+	//
+	// These are emitted as LLVM globals by the translator so loads like:
+	//   MOVOA r2r1<>+0(SB), X0
+	// can be translated without relying on an overlay/alt package.
+	Data  []DataStmt
+	Globl []GloblStmt
+}
+
+type Func struct {
+	// Sym is the symbol name from the TEXT directive with (SB) trimmed.
+	// It may contain the Plan 9 middle dot (·).
+	Sym string
+
+	// FrameSize and ArgSize retain the numeric $frame-args values from TEXT.
+	// WebAssembly's Go ABI uses FrameSize to address FP operands through the
+	// linear-memory stack and to restore SP on return. A missing -args suffix
+	// leaves ArgSize at zero.
+	FrameSize int64
+	ArgSize   int64
+
+	Instrs []Instr
+}
+
+// Parse parses a subset of Go/Plan 9 assembly syntax.
+//
+// Currently supported:
+//   - TEXT directives (function start)
+//   - MOVQ/ADDQ/SUBQ/XORQ/MOVL, CPUID, XGETBV, BYTE, RET
+//   - Operands: immediate ($imm), register (AX/BX/CX/DX), and name+off(FP)
+//
+// Also supported at a minimal level:
+//   - #include is ignored
+//   - #define NAME <body> with optional single-line continuation via '\' and
+//     macro invocation when the entire statement is just NAME.
+func Parse(arch Arch, src string) (*File, error) {
+	f := &File{Arch: arch}
+
+	pp, err := preprocess.Preprocess(src)
+	if err != nil {
+		return nil, err
+	}
+
+	sc := bufio.NewScanner(strings.NewReader(pp))
+	lineno := 0
+	var cur *Func
+	for sc.Scan() {
+		lineno++
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		for _, stmt := range SplitSemicolons(line) {
+			if stmt == "" {
+				continue
+			}
+			if strings.HasSuffix(stmt, ":") {
+				if cur == nil {
+					return nil, fmt.Errorf("line %d: label outside TEXT: %q", lineno, stmt)
+				}
+				lbl := strings.TrimSpace(strings.TrimSuffix(stmt, ":"))
+				if lbl == "" {
+					return nil, fmt.Errorf("line %d: empty label: %q", lineno, stmt)
+				}
+				cur.Instrs = append(cur.Instrs, Instr{
+					Op:   OpLABEL,
+					Args: []Operand{{Kind: OpLabel, Sym: lbl}},
+					Raw:  stmt,
+				})
+				continue
+			}
+			// Support "label: INSTR ..." on one statement.
+			if c := strings.IndexByte(stmt, ':'); c >= 0 {
+				left := strings.TrimSpace(stmt[:c])
+				right := strings.TrimSpace(stmt[c+1:])
+				if left != "" && right != "" && !strings.ContainsAny(left, " \t") {
+					if cur == nil {
+						return nil, fmt.Errorf("line %d: label outside TEXT: %q", lineno, stmt)
+					}
+					cur.Instrs = append(cur.Instrs, Instr{
+						Op:   OpLABEL,
+						Args: []Operand{{Kind: OpLabel, Sym: left}},
+						Raw:  left + ":",
+					})
+					stmt = right
+				}
+			}
+
+			opStr, rest := SplitOpcode(stmt)
+			op := Op(strings.ToUpper(opStr))
+			if arch == ArchWASM {
+				// Go's wasm assembler distinguishes low-level WebAssembly Call
+				// and Return from the high-level Go ABI CALL and RET pseudos by
+				// spelling. Preserve that distinction after normalization.
+				switch opStr {
+				case "Call":
+					op = "WASMCALL"
+				case "Return":
+					op = "WASMRETURN"
+				}
+			}
+			switch op {
+			case OpTEXT:
+				// TEXT name(SB), flags, $frame-args
+				parts := strings.Split(rest, ",")
+				if len(parts) < 1 {
+					return nil, fmt.Errorf("line %d: invalid TEXT: %q", lineno, stmt)
+				}
+				sym := strings.TrimSpace(parts[0])
+				if !strings.HasSuffix(sym, "(SB)") {
+					return nil, fmt.Errorf("line %d: TEXT symbol must end with (SB): %q", lineno, sym)
+				}
+				sym = strings.TrimSpace(strings.TrimSuffix(sym, "(SB)"))
+				if sym == "" {
+					return nil, fmt.Errorf("line %d: empty TEXT symbol: %q", lineno, stmt)
+				}
+				frameSize, argSize, err := parseTEXTFrame(parts)
+				if err != nil {
+					return nil, fmt.Errorf("line %d: %v", lineno, err)
+				}
+				f.Funcs = append(f.Funcs, Func{Sym: sym, FrameSize: frameSize, ArgSize: argSize})
+				cur = &f.Funcs[len(f.Funcs)-1]
+				cur.Instrs = append(cur.Instrs, Instr{Op: OpTEXT, Raw: stmt})
+				continue
+
+			case "DATA":
+				// Be permissive: some stdlib asm emits DATA while parser still
+				// tracks the previous TEXT as current.
+				ds, err := ParseDATAStmt(arch, rest)
+				if err != nil {
+					return nil, fmt.Errorf("line %d: %v", lineno, err)
+				}
+				f.Data = append(f.Data, ds)
+				continue
+
+			case "GLOBL":
+				// Be permissive: some stdlib asm emits data symbols while parser
+				// still tracks the previous TEXT as current.
+				gs, err := parseGLOBLStmt(rest)
+				if err != nil {
+					return nil, fmt.Errorf("line %d: %v", lineno, err)
+				}
+				f.Globl = append(f.Globl, gs)
+				continue
+
+			case OpCPUID, OpXGETBV:
+				if cur == nil {
+					return nil, fmt.Errorf("line %d: %s outside TEXT: %q", lineno, op, stmt)
+				}
+				if strings.TrimSpace(rest) != "" {
+					return nil, fmt.Errorf("line %d: %s takes no operands: %q", lineno, op, stmt)
+				}
+				cur.Instrs = append(cur.Instrs, Instr{Op: op, Raw: stmt})
+				continue
+
+			case OpBYTE, OpWORD:
+				if cur == nil {
+					return nil, fmt.Errorf("line %d: %s outside TEXT: %q", lineno, op, stmt)
+				}
+				args, err := parseOperandsCSV(arch, op, rest)
+				if err != nil {
+					return nil, fmt.Errorf("line %d: %v", lineno, err)
+				}
+				if len(args) != 1 || args[0].Kind != OpImm {
+					return nil, fmt.Errorf("line %d: %s expects single immediate operand: %q", lineno, op, stmt)
+				}
+				cur.Instrs = append(cur.Instrs, Instr{Op: op, Args: args, Raw: stmt})
+				continue
+
+			case OpRET:
+				if cur == nil {
+					return nil, fmt.Errorf("line %d: RET outside TEXT: %q", lineno, stmt)
+				}
+				if strings.TrimSpace(rest) != "" {
+					// A symbol operand is a tail call; register operands retain the
+					// architecture-specific return behavior.
+					args, err := parseOperandsCSV(arch, op, rest)
+					if err != nil {
+						return nil, fmt.Errorf("line %d: %v", lineno, err)
+					}
+					cur.Instrs = append(cur.Instrs, Instr{Op: op, Args: args, Raw: stmt})
+					continue
+				}
+				cur.Instrs = append(cur.Instrs, Instr{Op: OpRET, Raw: stmt})
+				continue
+
+			default:
+				if cur == nil {
+					return nil, fmt.Errorf("line %d: instruction outside TEXT: %q", lineno, stmt)
+				}
+				// For now, parse unknown opcodes as generic instructions. The translator
+				// is responsible for rejecting unsupported ones.
+				args, err := parseOperandsCSV(arch, op, rest)
+				if err != nil {
+					return nil, fmt.Errorf("line %d: %v", lineno, err)
+				}
+				cur.Instrs = append(cur.Instrs, Instr{Op: op, Args: args, Raw: stmt})
+				continue
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if len(f.Funcs) == 0 && len(f.Data) == 0 && len(f.Globl) == 0 {
+		return nil, fmt.Errorf("no TEXT directive found")
+	}
+	return f, nil
+}
+
+func parseTEXTFrame(parts []string) (frameSize, argSize int64, err error) {
+	if len(parts) < 2 {
+		return 0, 0, nil
+	}
+	spec := strings.TrimSpace(parts[len(parts)-1])
+	if !strings.HasPrefix(spec, "$") {
+		return 0, 0, nil
+	}
+	spec = strings.TrimSpace(strings.TrimPrefix(spec, "$"))
+	frameText, argText := spec, ""
+	if i := strings.LastIndex(spec, "-"); i > 0 {
+		frameText, argText = strings.TrimSpace(spec[:i]), strings.TrimSpace(spec[i+1:])
+	}
+	frame, ok := ParseImmExpr(frameText)
+	if !ok {
+		return 0, 0, fmt.Errorf("unresolved TEXT frame size %q", frameText)
+	}
+	if argText == "" {
+		return int64(frame), 0, nil
+	}
+	args, ok := ParseImmExpr(argText)
+	if !ok {
+		return 0, 0, fmt.Errorf("unresolved TEXT argument size %q", argText)
+	}
+	return int64(frame), int64(args), nil
+}
+
+func ParseDATAStmt(arch Arch, rest string) (DataStmt, error) {
+	// DATA sym+off(SB)/width, $value
+	lhs, rhs, ok := strings.Cut(rest, ",")
+	if !ok {
+		return DataStmt{}, fmt.Errorf("invalid DATA: %q", "DATA "+rest)
+	}
+	lhs = strings.TrimSpace(lhs)
+	rhs = strings.TrimSpace(rhs)
+	if lhs == "" || rhs == "" {
+		return DataStmt{}, fmt.Errorf("invalid DATA: %q", "DATA "+rest)
+	}
+
+	// lhs: sym+off(SB)/width
+	symPart, widthStr, ok := strings.Cut(lhs, "/")
+	if !ok {
+		return DataStmt{}, fmt.Errorf("DATA missing /width: %q", "DATA "+rest)
+	}
+	width, err := parseWidth(arch, widthStr)
+	if err != nil || width <= 0 {
+		return DataStmt{}, fmt.Errorf("DATA invalid width %q: %q", widthStr, "DATA "+rest)
+	}
+
+	symPart = strings.TrimSpace(symPart)
+	if !strings.HasSuffix(symPart, "(SB)") {
+		return DataStmt{}, fmt.Errorf("DATA symbol must end with (SB): %q", "DATA "+rest)
+	}
+	symPart = strings.TrimSuffix(symPart, "(SB)")
+	symPart = strings.TrimSpace(symPart)
+	if symPart == "" {
+		return DataStmt{}, fmt.Errorf("DATA empty symbol: %q", "DATA "+rest)
+	}
+
+	sym, off := SplitSymPlusOff(symPart)
+
+	val, ok := ParseImm(rhs)
+	var payload []byte
+	var addr string
+	if !ok {
+		trimRHS := strings.TrimSpace(rhs)
+		if strings.HasPrefix(trimRHS, "$\"") {
+			str, err := strconv.Unquote(strings.TrimPrefix(trimRHS, "$"))
+			if err == nil && int64(len(str)) <= width {
+				payload = []byte(str)
+				ok = true
+			}
+		}
+	}
+	if !ok {
+		// Accept symbol-address initializers (e.g. $runtime·main(SB)) even when
+		// relocation details are not modeled; encode as zero placeholder.
+		if strings.HasPrefix(strings.TrimSpace(rhs), "$") {
+			if sym, symOK := ParseSym(strings.TrimPrefix(strings.TrimSpace(rhs), "$")); symOK {
+				addr = sym
+				val = 0
+				ok = true
+			}
+		}
+	}
+	if !ok {
+		return DataStmt{}, fmt.Errorf("DATA invalid immediate %q: %q", rhs, "DATA "+rest)
+	}
+	return DataStmt{Sym: sym, Off: off, Width: width, Value: uint64(val), Payload: payload, Addr: addr}, nil
+}
+
+func parseWidth(arch Arch, s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	switch strings.ToUpper(s) {
+	case "PTRSIZE":
+		switch arch {
+		case ArchAMD64, ArchARM64, ArchWASM:
+			return 8, nil
+		default:
+			return 4, nil
+		}
+	}
+	return parseInt(s)
+}
+
+func parseGLOBLStmt(rest string) (GloblStmt, error) {
+	// GLOBL sym(SB), flags, $size
+	parts := strings.Split(rest, ",")
+	if len(parts) != 3 {
+		return GloblStmt{}, fmt.Errorf("invalid GLOBL: %q", "GLOBL "+rest)
+	}
+	symPart := strings.TrimSpace(parts[0])
+	flags := strings.TrimSpace(parts[1])
+	sizePart := strings.TrimSpace(parts[2])
+	if !strings.HasSuffix(symPart, "(SB)") {
+		return GloblStmt{}, fmt.Errorf("GLOBL symbol must end with (SB): %q", "GLOBL "+rest)
+	}
+	sym := strings.TrimSpace(strings.TrimSuffix(symPart, "(SB)"))
+	if sym == "" {
+		return GloblStmt{}, fmt.Errorf("GLOBL empty symbol: %q", "GLOBL "+rest)
+	}
+	sz, ok := ParseImm(sizePart)
+	if (!ok || sz < 0) && strings.HasPrefix(sizePart, "$(") && strings.HasSuffix(sizePart, ")") {
+		// Some platform asm uses symbolic struct-size macros in GLOBL sizes
+		// (e.g. $(machTimebaseInfo__size)). We don't evaluate include-time
+		// macros here, so keep a conservative non-zero placeholder size.
+		sz, ok = 64, true
+	}
+	if !ok || sz < 0 {
+		return GloblStmt{}, fmt.Errorf("GLOBL invalid size %q: %q", sizePart, "GLOBL "+rest)
+	}
+	return GloblStmt{Sym: sym, Flags: flags, Size: int64(sz)}, nil
+}
+
+func SplitSymPlusOff(s string) (sym string, off int64) {
+	// Best-effort parse for forms like:
+	//   name+0
+	//   name-8
+	// If offset parsing fails, treat the entire string as a symbol name.
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", 0
+	}
+	// Prefer the last '+' or '-' as the separator.
+	sep := strings.LastIndexAny(s, "+-")
+	if sep <= 0 || sep == len(s)-1 {
+		return s, 0
+	}
+	n, err := parseInt(s[sep:])
+	if err != nil {
+		return s, 0
+	}
+	return strings.TrimSpace(s[:sep]), n
+}
+
+func parseInt(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty int")
+	}
+	// Accept 0x... too.
+	return strconv.ParseInt(s, 0, 64)
+}
+
+func parseOperandsCSV(arch Arch, op Op, s string) ([]Operand, error) {
+	if s == "" {
+		return nil, nil
+	}
+	parts := SplitTopLevelCSV(s)
+	out := make([]Operand, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		legacy := []string{part}
+		if arch == ArchAMD64 && op == "SHLL" {
+			legacy = splitLegacyColonOperand(part)
+		}
+		for _, item := range legacy {
+			op, err := parseOperandForArch(arch, item)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, op)
+		}
+	}
+	// Direct branches treat a bare token as a label even when it also looks like
+	// an architecture register (for example amd64 JL V1 and ARM BEQ X7 in Go
+	// 1.23's math/big assembly). Indirect branch and call opcodes stay outside
+	// this rule because their bare register operands are meaningful.
+	if branchRegisterTokenIsLabel(arch, op) && len(out) == 1 && out[0].Kind == OpReg {
+		out[0] = Operand{Kind: OpIdent, Ident: strings.TrimSpace(s)}
+	}
+	return out, nil
+}
+
+func parseOperandForArch(arch Arch, s string) (Operand, error) {
+	if arch == ArchWASM {
+		if reg, ok := parseWASMReg(s); ok {
+			return Operand{Kind: OpReg, Reg: reg}, nil
+		}
+		if !strings.HasPrefix(strings.TrimSpace(s), "$") {
+			if mem, matched, err := ParseWASMMem(s); matched {
+				if err != nil {
+					return Operand{}, err
+				}
+				return Operand{Kind: OpMem, Mem: mem}, nil
+			}
+		}
+	}
+	return ParseOperand(s)
+}
+
+func ParseWASMMem(s string) (mem MemRef, matched bool, err error) {
+	s = strings.TrimSpace(s)
+	open := strings.LastIndexByte(s, '(')
+	if open < 0 || !strings.HasSuffix(s, ")") {
+		return MemRef{}, false, nil
+	}
+	base, ok := parseWASMReg(strings.TrimSpace(s[open+1 : len(s)-1]))
+	if !ok {
+		return MemRef{}, false, nil
+	}
+	offset := strings.TrimSpace(s[:open])
+	if offset == "" {
+		return MemRef{Base: base}, true, nil
+	}
+	if n, parseErr := strconv.ParseInt(offset, 0, 64); parseErr == nil {
+		return MemRef{Base: base, Off: n}, true, nil
+	}
+	if n, ok := ParseImmExpr(offset); ok {
+		return MemRef{Base: base, Off: int64(n)}, true, nil
+	}
+	return MemRef{Base: base, OffRaw: offset}, true, nil
+}
+
+var wasmRegisterPrefixes = [...]struct {
+	name string
+	max  int
+}{
+	{name: "R", max: 15},
+	{name: "F", max: 31},
+	{name: "V", max: 15},
+}
+
+func parseWASMReg(s string) (Reg, bool) {
+	name := strings.TrimSpace(s)
+	upper := strings.ToUpper(name)
+	switch upper {
+	case "SP", "CTXT", "G", "RET0", "RET1", "RET2", "RET3", "PAUSE", "PC_B":
+		return Reg(upper), true
+	}
+	for _, prefix := range wasmRegisterPrefixes {
+		if !strings.HasPrefix(upper, prefix.name) {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(upper, prefix.name))
+		if err == nil && 0 <= n && n <= prefix.max {
+			return Reg(upper), true
+		}
+	}
+	return "", false
+}
+
+func branchRegisterTokenIsLabel(arch Arch, op Op) bool {
+	name := NormalizeInstructionOpcode(op)
+	switch arch {
+	case ArchAMD64:
+		return (strings.HasPrefix(name, "J") && name != "JMP") || strings.HasPrefix(name, "LOOP")
+	case ArchARM:
+		return isARMBranchOpcode(name) && name != "BL" && name != "BX" && name != "BLX" && name != "RET"
+	case ArchARM64:
+		return isARM64BranchOpcode(name) && name != "BL" && name != "BR" && name != "BLR" && name != "RET" && name != "ERET"
+	default:
+		return false
+	}
+}
+
+// Go's x86 assembler retains an old three-operand spelling where left:right
+// means right, left. For example R11:AX in SHLL CX, R11:AX is equivalent to
+// SHLL CX, AX, R11. Keep this in the parser so official assembler testdata can
+// describe the canonical three-operand form.
+func splitLegacyColonOperand(s string) []string {
+	par := 0
+	brk := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			par++
+		case ')':
+			if par > 0 {
+				par--
+			}
+		case '[':
+			brk++
+		case ']':
+			if brk > 0 {
+				brk--
+			}
+		case ':':
+			if par == 0 && brk == 0 {
+				left := strings.TrimSpace(s[:i])
+				right := strings.TrimSpace(s[i+1:])
+				if left != "" && right != "" {
+					return []string{right, left}
+				}
+			}
+		}
+	}
+	return []string{s}
+}
+
+func SplitOpcode(stmt string) (op, rest string) {
+	opEnd := strings.IndexAny(stmt, " \t")
+	if opEnd < 0 {
+		return stmt, ""
+	}
+	return strings.TrimSpace(stmt[:opEnd]), strings.TrimSpace(stmt[opEnd:])
+}
+
+func SplitSemicolons(line string) []string {
+	parts := strings.Split(line, ";")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
+}

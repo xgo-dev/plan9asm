@@ -3,6 +3,8 @@ package plan9asm
 import (
 	"strings"
 	"testing"
+
+	"github.com/xgo-dev/plan9asm/internal/asm"
 )
 
 func TestParseDataOnlyFile(t *testing.T) {
@@ -72,11 +74,11 @@ GLOBL ·symptr<>(SB), NOPTR, $(machTimebaseInfo__size)
 		t.Fatalf("unexpected macro-sized GLOBL: %#v", gs)
 	}
 
-	comma, err := parseDATAStmt(ArchARM64, `·comma(SB)/12, $"hello, world"`)
+	comma, err := asm.ParseDATAStmt(ArchARM64, `·comma(SB)/12, $"hello, world"`)
 	if err != nil || string(comma.Payload) != "hello, world" {
 		t.Fatalf("parse comma string DATA = (%#v, %v)", comma, err)
 	}
-	if _, err := parseDATAStmt(ArchARM64, `·short(SB)/4, $"hello"`); err == nil {
+	if _, err := asm.ParseDATAStmt(ArchARM64, `·short(SB)/4, $"hello"`); err == nil {
 		t.Fatal("oversized string DATA unexpectedly parsed")
 	}
 }
@@ -88,8 +90,8 @@ func TestParseDataRejectsMalformedPayloads(t *testing.T) {
 		`·empty(SB)/8,`,
 		`·quote(SB)/8, $"unterminated`,
 	} {
-		if _, err := parseDATAStmt(ArchARM64, stmt); err == nil {
-			t.Errorf("parseDATAStmt(%q) unexpectedly succeeded", stmt)
+		if _, err := asm.ParseDATAStmt(ArchARM64, stmt); err == nil {
+			t.Errorf("ParseDATAStmt(%q) unexpectedly succeeded", stmt)
 		}
 	}
 	if _, err := Parse(ArchARM64, "// no directives\n"); err == nil {

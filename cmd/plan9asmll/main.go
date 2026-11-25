@@ -687,7 +687,7 @@ func resolveSymFunc(pkgPath string) func(sym string) string {
 var abiSuffixRe = regexp.MustCompile(`<ABI[^>]*>$`)
 var (
 	reCaseString = regexp.MustCompile(`case\s+"([A-Za-z0-9_.$]+)"`)
-	reCaseOp     = regexp.MustCompile(`case\s+Op([A-Za-z0-9_]+)`)
+	reCaseOp     = regexp.MustCompile(`case\s+(?:asm\.)?Op([A-Za-z0-9_]+)`)
 	reQuotedOp   = regexp.MustCompile(`"([A-Za-z0-9_.$]+)"`)
 	reOpToken    = regexp.MustCompile(`Op([A-Za-z0-9_]+)`)
 )
@@ -1216,13 +1216,30 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 	}
 
 	backendArch := goarch
+	internalDir := goarch
 	if goarch == "386" {
 		backendArch = "amd64"
+		internalDir = "x86"
+	} else if goarch == "amd64" {
+		internalDir = "x86"
 	}
-	glob := filepath.Join(repoRoot, backendArch+"_*.go")
-	files, err := filepath.Glob(glob)
-	if err != nil {
-		return nil, err
+	var files []string
+	seen := map[string]struct{}{}
+	for _, glob := range []string{
+		filepath.Join(repoRoot, "internal", internalDir, "*.go"),
+		filepath.Join(repoRoot, backendArch+"_*.go"),
+	} {
+		matches, err := filepath.Glob(glob)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			if _, ok := seen[m]; ok {
+				continue
+			}
+			seen[m] = struct{}{}
+			files = append(files, m)
+		}
 	}
 	files = append(files, filepath.Join(repoRoot, "translate.go"))
 	sort.Strings(files)

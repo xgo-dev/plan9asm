@@ -2,133 +2,14 @@ package plan9asm
 
 import (
 	"fmt"
-	"regexp"
+	"github.com/xgo-dev/plan9asm/internal/arm"
+	"github.com/xgo-dev/plan9asm/internal/arm64"
+	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/wasm"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 	"sort"
 	"strings"
 )
-
-type LLVMType string
-
-const (
-	Void LLVMType = "void"
-	I1   LLVMType = "i1"
-	I8   LLVMType = "i8"
-	I16  LLVMType = "i16"
-	I32  LLVMType = "i32"
-	I64  LLVMType = "i64"
-	Ptr  LLVMType = "ptr"
-)
-
-type FuncSig struct {
-	Name  string
-	Args  []LLVMType
-	Ret   LLVMType // use Void for void-return
-	Attrs string   // optional function attributes group (e.g. "#0")
-
-	// WASMContext is the physical closure-environment parameter carried in
-	// WebAssembly's CTXT pseudo-register. It precedes Args in the LLVM entry but
-	// is not part of the Go function signature, so FrameSlot.Index continues to
-	// address Args without an offset. The zero value means that the entry does
-	// not consume an incoming CTXT value.
-	WASMContext LLVMType
-
-	// WASMNative keeps the function's declared WebAssembly signature when
-	// Options.WASMABI selects the official Go stack ABI. It is used for the
-	// small set of runtime exports and assembly helpers that intentionally do
-	// not use the resumable (PC_B) -> unwind convention.
-	WASMNative bool
-
-	// ArgRegs optionally specifies which architectural registers correspond to
-	// Args for arm64 asm that passes values in non-sequential registers.
-	//
-	// When empty, args are assumed to map to R0..R7 in order (ABIInternal-ish).
-	//
-	// This is used for intra-asm tailcalls like:
-	//   B helper<>(SB)
-	// where helper expects inputs in a custom register assignment.
-	ArgRegs []Reg
-
-	// Frame provides a minimal stack-frame model for resolving name+off(FP)
-	// references in Go/Plan9 assembly into LLVM function args/returns.
-	//
-	// This is intentionally limited to the classic Go assembler convention used
-	// by stdlib .s files (e.g. internal/cpu/cpu_x86.s).
-	Frame FrameLayout
-}
-
-// WASMABI selects the physical ABI used for WebAssembly Plan 9 assembly.
-// Direct is LLGo's existing native LLVM calling convention. Go uses the
-// official linear-memory stack, mutable register globals, PC_B resume input,
-// and an i32 unwind result.
-type WASMABI uint8
-
-const (
-	WASMABIDirect WASMABI = iota
-	WASMABIGo
-)
-
-func (a WASMABI) valid() bool { return a == WASMABIDirect || a == WASMABIGo }
-
-type FrameLayout struct {
-	Params  []FrameSlot
-	Results []FrameSlot
-}
-
-type FrameSlot struct {
-	Offset int64
-	Type   LLVMType
-	Index  int // index into LLVM function arguments (for Params) or results tuple (for Results)
-	// Field is the index of the extracted field within the argument aggregate.
-	// It is used for classic Go asm slots like b_base+0(FP) when the Go-level
-	// parameter is passed as a struct (string/slice header).
-	//
-	// When Field < 0, the slot refers directly to %arg(Index).
-	Field int
-}
-
-// X87Mode selects how explicit x87 instructions in 386 Plan 9 assembly are
-// lowered. Hand-written assembly may use x87 mnemonics regardless of GO386;
-// the Go-supported Pentium MMX-or-newer baseline has an x87 unit, so the
-// default emits hardware instructions. Software mode is reserved for custom
-// targets that explicitly cannot execute x87 instructions.
-type X87Mode uint8
-
-const (
-	X87Auto X87Mode = iota
-	X87Hardware
-	X87Software
-)
-
-func (m X87Mode) valid() bool {
-	return m >= X87Auto && m <= X87Software
-}
-
-type Options struct {
-	TargetTriple string
-
-	// ResolveSym maps the TEXT symbol (with (SB) trimmed) into the final linker
-	// symbol name to emit in LLVM IR. If nil, the symbol is used as-is.
-	ResolveSym func(sym string) string
-
-	// Sigs maps resolved symbol name -> signature.
-	Sigs map[string]FuncSig
-
-	// Goarch is used for a few arch-specific translations (e.g. x86 CPUID).
-	Goarch string
-
-	// WASMABI selects the WebAssembly physical ABI. Its zero value preserves
-	// the direct ABI used by existing plan9asm callers.
-	WASMABI WASMABI
-
-	// X87Mode controls explicit x87 instruction lowering for GOARCH=386. Auto
-	// uses hardware, matching the Go 386 target contract. Software retains the
-	// portable LLVM fallback for custom targets without x87 hardware.
-	X87Mode X87Mode
-
-	// AnnotateSource emits source asm lines as IR comments before lowering each
-	// instruction, for translation debugging.
-	AnnotateSource bool
-}
 
 // Translate converts a parsed Plan 9 asm File into LLVM IR text (`.ll`).
 //
@@ -148,7 +29,7 @@ func translateIRText(file *File, opt Options) (string, error) {
 	if file == nil {
 		return "", fmt.Errorf("nil file")
 	}
-	if !opt.X87Mode.valid() {
+	if !opt.X87Mode.Valid() {
 		return "", fmt.Errorf("invalid x87 mode %d", opt.X87Mode)
 	}
 	if len(file.Funcs) == 0 && len(file.Data) == 0 && len(file.Globl) == 0 {
@@ -159,12 +40,12 @@ func translateIRText(file *File, opt Options) (string, error) {
 	if resolve == nil {
 		resolve = func(s string) string { return s }
 	}
-	if !opt.WASMABI.valid() {
+	if !opt.WASMABI.Valid() {
 		return "", fmt.Errorf("invalid wasm ABI %d", opt.WASMABI)
 	}
 	if file.Arch == ArchWASM && opt.WASMABI == WASMABIDirect {
 		for _, fn := range file.Funcs {
-			if !wasmNeedsIncomingContext(fn) {
+			if !wasm.NeedsIncomingContext(fn) {
 				continue
 			}
 			name := resolve(fn.Sym)
@@ -220,29 +101,29 @@ func translateIRText(file *File, opt Options) (string, error) {
 		if sig.Attrs == "" {
 			sig.Attrs = attrRegistry.ref(inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, *fn))
 		}
-		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
-			if err := translateFuncARM(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+		if file.Arch == ArchARM && arm.FuncNeedsCFG(*fn) {
+			if err := arm.TranslateFunc(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")
 			continue
 		}
-		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
-			if err := translateFuncARM64(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+		if file.Arch == ArchARM64 && arm64.FuncNeedsCFG(*fn) {
+			if err := arm64.TranslateFunc(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")
 			continue
 		}
-		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && funcNeedsAMD64CFG(*fn))) {
-			if err := translateFuncX86(&b, *fn, sig, resolve, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.X87Mode, opt.AnnotateSource); err != nil {
+		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && x86.FuncNeedsCFG(*fn))) {
+			if err := x86.TranslateFunc(&b, *fn, sig, resolve, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.X87Mode, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")
 			continue
 		}
 		if file.Arch == ArchWASM {
-			if err := translateFuncWASM(&b, *fn, sig, resolve, opt.Sigs, opt.WASMABI, opt.AnnotateSource); err != nil {
+			if err := wasm.TranslateFunc(&b, *fn, sig, resolve, opt.Sigs, opt.WASMABI, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			b.WriteString("\n")
@@ -296,10 +177,10 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 			continue
 		}
 		if file.Arch == ArchWASM && wasmABI == WASMABIGo && !sig.WASMNative {
-			fmt.Fprintf(b, "declare i32 %s(i32)\n", llvmGlobal(funcSigSymbol(name, sig)))
+			fmt.Fprintf(b, "declare i32 %s(i32)\n", asm.LLVMGlobal(asm.FuncSigSymbol(name, sig)))
 			continue
 		}
-		fmt.Fprintf(b, "declare %s %s(", sig.Ret, llvmGlobal(funcSigSymbol(name, sig)))
+		fmt.Fprintf(b, "declare %s %s(", sig.Ret, asm.LLVMGlobal(asm.FuncSigSymbol(name, sig)))
 		argIndex := 0
 		if sig.WASMContext != "" {
 			b.WriteString(string(sig.WASMContext))
@@ -321,13 +202,6 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 	if len(names) != 0 {
 		b.WriteString("\n")
 	}
-}
-
-func funcSigSymbol(resolved string, sig FuncSig) string {
-	if sig.Name != "" {
-		return sig.Name
-	}
-	return resolved
 }
 
 func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig) {
@@ -366,7 +240,7 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 					continue
 				}
 				s := strings.TrimSpace(arg.Sym)
-				base, off, ok := parseSBRef(s)
+				base, off, ok := asm.ParseSBRef(s)
 				if !ok || base == "" {
 					continue
 				}
@@ -398,7 +272,7 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 		return
 	}
 	for name := range need {
-		fmt.Fprintf(b, "%s = external global i8\n", llvmGlobal(name))
+		fmt.Fprintf(b, "%s = external global i8\n", asm.LLVMGlobal(name))
 	}
 	b.WriteString("\n")
 }
@@ -481,7 +355,7 @@ func emitDataGlobals(b *strings.Builder, file *File, resolve func(string) string
 			copy(buf[off:], p)
 		}
 		align := bestAlign(int64(len(buf)))
-		fmt.Fprintf(b, "%s = constant [%d x i8] %s, align %d\n", llvmGlobal(name), len(buf), llvmI8ArrayInit(buf), align)
+		fmt.Fprintf(b, "%s = constant [%d x i8] %s, align %d\n", asm.LLVMGlobal(name), len(buf), llvmI8ArrayInit(buf), align)
 	}
 	return nil
 }
@@ -568,7 +442,7 @@ func llvmI8ArrayInit(b []byte) string {
 
 func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, annotateSource bool) error {
 	// Function header.
-	fmt.Fprintf(b, "define %s %s(", sig.Ret, llvmGlobal(sig.Name))
+	fmt.Fprintf(b, "define %s %s(", sig.Ret, asm.LLVMGlobal(sig.Name))
 	for i, t := range sig.Args {
 		if i > 0 {
 			b.WriteString(", ")
@@ -755,7 +629,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 		case Ptr:
 			return ssaVal{typ: Ptr, val: "null"}, nil
 		default:
-			return ssaVal{typ: t, val: llvmZeroValue(t)}, nil
+			return ssaVal{typ: t, val: asm.LLVMZeroValue(t)}, nil
 		}
 	}
 
@@ -954,7 +828,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 	terminated := false
 	for _, ins := range fn.Instrs {
 		if annotateSource {
-			emitIRSourceComment(b, ins.Raw)
+			asm.EmitIRSourceComment(b, ins.Raw)
 		}
 		switch ins.Op {
 		case OpTEXT:
@@ -965,8 +839,8 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 			if src.Kind != OpIdent || dst.Kind != OpReg {
 				return fmt.Errorf("MRS expects ident, reg: %q", ins.Raw)
 			}
-			sysreg := arm64CanonicalSysReg(src.Ident)
-			if v, ok := arm64CompileSafeMRSValue(sysreg); ok {
+			sysreg := arm64.CanonicalSysReg(src.Ident)
+			if v, ok := arm64.CompileSafeMRSValue(sysreg); ok {
 				reg[dst.Reg] = ssaVal{typ: I64, val: v}
 				continue
 			}
@@ -1360,7 +1234,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 		if sig.Ret == Void {
 			b.WriteString("  ret void\n")
 		} else {
-			fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, llvmZeroValue(sig.Ret))
+			fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, asm.LLVMZeroValue(sig.Ret))
 		}
 	}
 
@@ -1375,12 +1249,4 @@ func archReturnReg(arch Arch) Reg {
 	return AX
 }
 
-var llvmIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-func llvmGlobal(name string) string {
-	// LLVM requires quoting if name contains special characters (like / or .).
-	if llvmIdentRe.MatchString(name) {
-		return "@" + name
-	}
-	return "@\"" + strings.ReplaceAll(name, "\"", "\\\"") + "\""
-}
+// LLVM requires quoting if name contains special characters (like / or .).

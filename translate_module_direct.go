@@ -6,6 +6,10 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/llvm"
+	"github.com/xgo-dev/plan9asm/internal/arm"
+	"github.com/xgo-dev/plan9asm/internal/arm64"
+	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 )
 
 var errDirectModuleUnsupported = errors.New("direct module lowering unsupported")
@@ -71,15 +75,15 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("%s: %v", name, err)
 		}
-		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
+		if file.Arch == ArchARM && arm.FuncNeedsCFG(*fn) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("arm CFG lowering required for %s", name)
 		}
-		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
+		if file.Arch == ArchARM64 && arm64.FuncNeedsCFG(*fn) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("arm64 CFG lowering required for %s", name)
 		}
-		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && funcNeedsAMD64CFG(*fn))) {
+		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && x86.FuncNeedsCFG(*fn))) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("x86 CFG lowering required for %s", name)
 		}
@@ -313,8 +317,8 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 				return directUnsupportedf("MRS expects ident, reg: %q", ins.Raw)
 			}
 			i64Ty, _ := llvmTypeFromLLVMType(ctx, I64)
-			sysreg := arm64CanonicalSysReg(src.Ident)
-			if v, ok := arm64CompileSafeMRSValue(sysreg); ok {
+			sysreg := arm64.CanonicalSysReg(src.Ident)
+			if v, ok := arm64.CompileSafeMRSValue(sysreg); ok {
 				if v != "0" {
 					return directUnsupportedf("unexpected compile-safe MRS value %q", v)
 				}
@@ -647,7 +651,7 @@ func llvmTypeFromLLVMType(ctx llvm.Context, ty LLVMType) (llvm.Type, error) {
 	case "double":
 		return ctx.DoubleType(), nil
 	default:
-		fields, ok := parseLiteralStructFields(ty)
+		fields, ok := asm.ParseLiteralStructFields(ty)
 		if !ok {
 			return llvm.Type{}, directUnsupportedf("unsupported LLVM type %q", ty)
 		}

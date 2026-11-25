@@ -12,10 +12,13 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/llvm"
+	"github.com/xgo-dev/plan9asm/internal/asm"
+
+	// GoPackage provides the Go declarations and syntax needed to bind a Plan 9
+	// asm file to real Go symbols.
+	"github.com/xgo-dev/plan9asm/internal/wasm"
 )
 
-// GoPackage provides the Go declarations and syntax needed to bind a Plan 9
-// asm file to real Go symbols.
 type GoPackage struct {
 	Path    string
 	Types   *types.Package
@@ -226,7 +229,7 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 					fs = FuncSig{Name: resolved, Ret: Void}
 				}
 			}
-			if wasmNeedsIncomingContext(fn) {
+			if wasm.NeedsIncomingContext(fn) {
 				fs.WASMContext = Ptr
 			}
 			b.sigs[resolved] = fs
@@ -245,7 +248,7 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 
 func wasmUsesNativeReturn(fn Func) bool {
 	for _, ins := range fn.Instrs {
-		if normalizeInstructionOpcode(ins.Op) == "WASMRETURN" {
+		if asm.NormalizeInstructionOpcode(ins.Op) == "WASMRETURN" {
 			return true
 		}
 	}

@@ -35,7 +35,7 @@ func TestNativeARM64Source(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data) != 2 || data[0] != (NativeData{"probe.entry", 8}) {
+	if len(data) != 2 || data[0] != (NativeData{Name: "probe.entry", Size: 8}) {
 		t.Fatalf("data=%v", data)
 	}
 	for _, want := range []string{`bl "_strlen"`, `.quad Lnative_func_0`, "fmov d0, x1", ".section __DATA_CONST,__const"} {

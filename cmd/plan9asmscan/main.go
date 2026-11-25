@@ -773,10 +773,16 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 	seen := map[string]struct{}{}
 	var files []string
 	loweringArch := goarch
+	internalDir := goarch
 	if loweringArch == "386" {
 		loweringArch = "amd64"
+		internalDir = "x86"
+	} else if loweringArch == "amd64" {
+		internalDir = "x86"
 	}
 	patterns := []string{
+		filepath.Join(repoRoot, "internal", internalDir, "*.go"),
+		filepath.Join(repoRoot, "internal", "asm", "parser.go"),
 		filepath.Join(repoRoot, loweringArch+"_*.go"),
 		filepath.Join(repoRoot, "parser.go"),
 	}
@@ -809,6 +815,10 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 				switch {
 				case strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"") && len(item) >= 2:
 					if op := normalizeOp(strings.Trim(item, "\"")); op != "" {
+						supported[op] = struct{}{}
+					}
+				case strings.HasPrefix(item, "asm.Op"):
+					if op := normalizeOp(strings.TrimPrefix(item, "asm.Op")); op != "" {
 						supported[op] = struct{}{}
 					}
 				case strings.HasPrefix(item, "Op"):
