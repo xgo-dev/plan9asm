@@ -143,8 +143,9 @@ type conformanceManifest struct {
 }
 
 var (
-	reCaseClause = regexp.MustCompile(`case\s+([^:]+):`)
-	reOpcodeName = regexp.MustCompile("(?m)^\\s*(?:obj\\.A_ARCHSPECIFIC:\\s*)?\"([A-Z][A-Za-z0-9.]*)\",\\s*$")
+	reCaseClause   = regexp.MustCompile(`case\s+([^:]+):`)
+	reOpSpecLit    = regexp.MustCompile(`\bOp:\s*"([A-Za-z][A-Za-z0-9._]*)"`)
+	reOpcodeName   = regexp.MustCompile("(?m)^\\s*(?:obj\\.A_ARCHSPECIFIC:\\s*)?\"([A-Z][A-Za-z0-9.]*)\",\\s*$")
 )
 
 func main() {
@@ -154,9 +155,9 @@ func main() {
 		out      = flag.String("out", "", "write report to file (default stdout)")
 		format   = flag.String("format", "md", "output format: md|json")
 		repoRoot = flag.String("repo-root", ".", "plan9asm repository root for lowerers and conformance data")
-		corpus   = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9")
+		corpus   = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9|dir")
 		goroot   = flag.String("goroot", runtime.GOROOT(), "Go root containing official assembler testdata")
-		input    = flag.String("input", "", "input file for corpora that require one")
+		input    = flag.String("input", "", "input file or directory for corpora that require one")
 	)
 	flag.Parse()
 
@@ -204,8 +205,13 @@ func main() {
 			fatalf("-corpus arm64-plan9 requires -input")
 		}
 		ops, forms, parseErrs, asmFiles, err = scanARM64Plan9Cases(*input)
+	case "dir":
+		if strings.TrimSpace(*input) == "" {
+			fatalf("-corpus dir requires -input <directory>")
+		}
+		ops, forms, parseErrs, pkgWithSFiles, asmFiles, err = scanDirectory(*input, arch, *goarch)
 	default:
-		fatalf("unsupported -corpus %q (expect std|go-asm|arm64-plan9)", *corpus)
+		fatalf("unsupported -corpus %q (expect std|go-asm|arm64-plan9|dir)", *corpus)
 	}
 	if err != nil {
 		fatalf("scan %s corpus: %v", *corpus, err)
@@ -396,6 +402,130 @@ func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch, goarch string) (map[string
 		}
 	}
 	return ops, forms, parseErrs, pkgWithSFiles, asmFiles, nil
+}
+
+// scanDirectory walks an arbitrary directory tree (such as a cloned third-party
+// repo or GOMODCACHE) and parses/probes every .s file matching goarch in-memory
+// without invoking `go list` or `llc`.
+func scanDirectory(root string, arch plan9asm.Arch, goarch string) (map[string]*opStat, map[string]*formStat, []parseErr, int, int, error) {
+	ops := map[string]*opStat{}
+	forms := map[string]*formStat{}
+	var parseErrs []parseErr
+	pkgDirs := map[string]bool{}
+	asmFiles := 0
+
+	err := filepath.Walk(root, func(p string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if info.IsDir() {
+			base := info.Name()
+			if base == ".git" || base == "vendor" || base == "testdata" || base == "cache" || base == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(info.Name()), ".s") {
+			return nil
+		}
+		if !asmFileMatchesArch(info.Name(), goarch) {
+			return nil
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		if !asmSourceMatchesArch(string(src), goarch) {
+			return nil
+		}
+		asmFiles++
+		dir := filepath.Dir(p)
+		pkgDirs[dir] = true
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			rel = p
+		}
+		rel = filepath.ToSlash(rel)
+
+		file, err := plan9asm.Parse(arch, string(src))
+		if err != nil {
+			if strings.Contains(err.Error(), "no TEXT directive found") {
+				return nil
+			}
+			parseErrs = append(parseErrs, parseErr{File: rel, Err: err.Error()})
+			return nil
+		}
+		for _, fn := range file.Funcs {
+			for _, ins := range fn.Instrs {
+				if ins.Op == plan9asm.OpLABEL {
+					continue
+				}
+				nop := normalizeOp(string(ins.Op))
+				if nop == "" {
+					continue
+				}
+				addFormStat(forms, arch, goarch, ins, rel)
+				s := ops[nop]
+				if s == nil {
+					s = &opStat{Files: map[string]int{}, Pkgs: map[string]int{}}
+					ops[nop] = s
+				}
+				s.Count++
+				s.Files[rel]++
+				s.Pkgs[filepath.ToSlash(dir)]++
+			}
+		}
+		if len(file.Data) > 0 {
+			addOpStat(ops, "DATA", rel, filepath.ToSlash(dir), len(file.Data))
+		}
+		if len(file.Globl) > 0 {
+			addOpStat(ops, "GLOBL", rel, filepath.ToSlash(dir), len(file.Globl))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, nil, 0, 0, err
+	}
+	return ops, forms, parseErrs, len(pkgDirs), asmFiles, nil
+}
+
+func asmFileMatchesArch(name, goarch string) bool {
+	base := strings.TrimSuffix(strings.ToLower(name), ".s")
+	knownArches := []string{"amd64", "386", "arm64", "arm", "wasm", "ppc64le", "ppc64", "s390x", "riscv64", "mips64le", "mips64", "mipsle", "mips", "loong64"}
+	parts := strings.Split(base, "_")
+	for _, part := range parts[1:] {
+		for _, ka := range knownArches {
+			if part == ka {
+				return part == goarch
+			}
+		}
+	}
+	return true
+}
+
+func asmSourceMatchesArch(src, goarch string) bool {
+	lines := strings.Split(src, "\n")
+	if len(lines) > 20 {
+		lines = lines[:20]
+	}
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "//go:build ") {
+			expr := strings.TrimSpace(strings.TrimPrefix(trim, "//go:build "))
+			if strings.Contains(expr, "!"+goarch) {
+				return false
+			}
+			for _, other := range []string{"amd64", "386", "arm64", "arm", "wasm", "ppc64", "s390x", "riscv64", "loong64", "mips"} {
+				if other == goarch {
+					continue
+				}
+				if expr == other {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func addFormStat(forms map[string]*formStat, arch plan9asm.Arch, goarch string, ins plan9asm.Instr, file string) {
@@ -807,6 +937,11 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", f, err)
+		}
+		for _, m := range reOpSpecLit.FindAllSubmatch(src, -1) {
+			if op := normalizeOp(string(m[1])); op != "" {
+				supported[op] = struct{}{}
+			}
 		}
 		for _, m := range reCaseClause.FindAllSubmatch(src, -1) {
 			items := strings.Split(string(m[1]), ",")

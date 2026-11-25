@@ -77,12 +77,16 @@ type discoveryReport struct {
 	Scanned       []moduleVersion `json:"scanned"`
 	Matched       []candidate     `json:"matched"`
 	Failures      []scanFailure   `json:"failures,omitempty"`
+	Audit         *auditSummary   `json:"audit,omitempty"`
 }
 
 type config struct {
 	indexURL    string
 	proxyURL    string
 	since       string
+	modules     []moduleVersion
+	audit       bool
+	auditTop    int
 	limit       int
 	workers     int
 	maxZipSize  int64
@@ -111,10 +115,17 @@ func main() {
 	maxZipSize := flag.Int64("max-zip-bytes", defaultMaxZipSize, "maximum remote module ZIP size considered")
 	httpTimeout := flag.Duration("http-timeout", defaultHTTPTimeout, "timeout for each index or proxy request")
 	out := flag.String("out", "", "write JSON to this file instead of stdout")
+	modulesFlag := flag.String("modules", "", "optional comma-separated module[@version] list or @file (skips module index)")
+	audit := flag.Bool("audit", false, "parse and probe discovered .s files in-memory and emit frequency-ranked gap summary")
+	auditTop := flag.Int("audit-top", 100, "maximum unsupported form gaps included in audit.top_gaps (0 = unlimited)")
 	var seenReports pathListFlag
 	flag.Var(&seenReports, "seen-report", "prior discovery report to skip (repeatable)")
 	flag.Parse()
 	seen, err := loadSeenReports(seenReports)
+	if err != nil {
+		fatal(err)
+	}
+	explicitModules, err := parseModuleSpecs(*modulesFlag)
 	if err != nil {
 		fatal(err)
 	}
@@ -123,6 +134,9 @@ func main() {
 		indexURL:    *indexURL,
 		proxyURL:    strings.TrimRight(*proxyURL, "/"),
 		since:       *since,
+		modules:     explicitModules,
+		audit:       *audit,
+		auditTop:    *auditTop,
 		limit:       *limit,
 		workers:     *workers,
 		maxZipSize:  *maxZipSize,
@@ -188,35 +202,52 @@ func validateConfig(cfg config) error {
 }
 
 func discover(ctx context.Context, client *http.Client, cfg config) (discoveryReport, error) {
-	entries, nextSince, err := readIndex(ctx, client, cfg.indexURL, cfg.since, cfg.limit)
-	if err != nil {
-		return discoveryReport{}, err
-	}
-	moduleSet := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		moduleSet[entry.Path] = entry.Version
-	}
-	modules := make([]moduleVersion, 0, len(moduleSet))
-	for modulePath, version := range moduleSet {
-		modules = append(modules, moduleVersion{Path: modulePath, Version: version})
+	var modules []moduleVersion
+	var nextSince string
+	var indexCount int
+	if len(cfg.modules) > 0 {
+		modules = append([]moduleVersion(nil), cfg.modules...)
+	} else {
+		entries, cursor, err := readIndex(ctx, client, cfg.indexURL, cfg.since, cfg.limit)
+		if err != nil {
+			return discoveryReport{}, err
+		}
+		indexCount = len(entries)
+		nextSince = cursor
+		moduleSet := make(map[string]string, len(entries))
+		for _, entry := range entries {
+			moduleSet[entry.Path] = entry.Version
+		}
+		modules = make([]moduleVersion, 0, len(moduleSet))
+		for modulePath, version := range moduleSet {
+			modules = append(modules, moduleVersion{Path: modulePath, Version: version})
+		}
 	}
 	sort.Slice(modules, func(i, j int) bool { return modules[i].Path < modules[j].Path })
 	uniqueModules := len(modules)
 	modules, skipped := filterPreviouslyScanned(modules, cfg.seen)
 
-	matched, failures, scanned := inspectModules(ctx, client, cfg.proxyURL, modules, cfg.workers, cfg.maxZipSize)
-	return discoveryReport{
+	var auditor *auditCollector
+	if cfg.audit {
+		auditor = newAuditCollector()
+	}
+	matched, failures, scanned := inspectModulesWithAudit(ctx, client, cfg.proxyURL, modules, cfg.workers, cfg.maxZipSize, auditor)
+	rep := discoveryReport{
 		SchemaVersion: discoverySchema,
 		GeneratedAt:   time.Now().UTC(),
 		Since:         cfg.since,
 		NextSince:     nextSince,
-		IndexEntries:  len(entries),
+		IndexEntries:  indexCount,
 		UniqueModules: uniqueModules,
 		Skipped:       skipped,
 		Scanned:       scanned,
 		Matched:       matched,
 		Failures:      failures,
-	}, nil
+	}
+	if auditor != nil {
+		rep.Audit = auditor.summarize(cfg.auditTop)
+	}
+	return rep, nil
 }
 
 func loadSeenReports(paths []string) (map[string]struct{}, error) {
@@ -355,6 +386,10 @@ func readIndex(ctx context.Context, client *http.Client, endpoint, since string,
 }
 
 func inspectModules(ctx context.Context, client *http.Client, proxyURL string, modules []moduleVersion, workers int, maxZipSize int64) ([]candidate, []scanFailure, []moduleVersion) {
+	return inspectModulesWithAudit(ctx, client, proxyURL, modules, workers, maxZipSize, nil)
+}
+
+func inspectModulesWithAudit(ctx context.Context, client *http.Client, proxyURL string, modules []moduleVersion, workers int, maxZipSize int64, auditor *auditCollector) ([]candidate, []scanFailure, []moduleVersion) {
 	tasks := make(chan moduleVersion)
 	results := make(chan candidate)
 	errorsOut := make(chan scanFailure)
@@ -365,7 +400,7 @@ func inspectModules(ctx context.Context, client *http.Client, proxyURL string, m
 		go func() {
 			defer wg.Done()
 			for module := range tasks {
-				item, scanned, err := inspectIndexedModule(ctx, client, proxyURL, module, maxZipSize)
+				item, scanned, err := inspectIndexedModuleWithAudit(ctx, client, proxyURL, module, maxZipSize, auditor)
 				for _, version := range scanned {
 					completed <- version
 				}
@@ -431,7 +466,24 @@ func inspectModules(ctx context.Context, client *http.Client, proxyURL string, m
 }
 
 func inspectIndexedModule(ctx context.Context, client *http.Client, proxyURL string, module moduleVersion, maxZipSize int64) (candidate, []moduleVersion, error) {
-	indexed, err := inspectModuleVersion(ctx, client, proxyURL, module.Path, module.Version, maxZipSize)
+	return inspectIndexedModuleWithAudit(ctx, client, proxyURL, module, maxZipSize, nil)
+}
+
+func inspectIndexedModuleWithAudit(ctx context.Context, client *http.Client, proxyURL string, module moduleVersion, maxZipSize int64, auditor *auditCollector) (candidate, []moduleVersion, error) {
+	if module.Version == "" {
+		latestVersion, err := resolveLatest(ctx, client, proxyURL, module.Path)
+		if err != nil {
+			return candidate{}, nil, err
+		}
+		latest, err := inspectModuleVersionWithAudit(ctx, client, proxyURL, module.Path, latestVersion, maxZipSize, auditor)
+		if err != nil {
+			return candidate{}, nil, err
+		}
+		return latest, []moduleVersion{{Path: module.Path, Version: latestVersion}}, nil
+	}
+	// First check without auditing when we may upgrade to @latest; audit the
+	// final resolved version so counts are never double-counted.
+	indexed, err := inspectModuleVersionWithAudit(ctx, client, proxyURL, module.Path, module.Version, maxZipSize, nil)
 	if err != nil {
 		return candidate{}, nil, fmt.Errorf("inspect indexed version %s: %w", module.Version, err)
 	}
@@ -444,9 +496,12 @@ func inspectIndexedModule(ctx context.Context, client *http.Client, proxyURL str
 		return candidate{}, scanned, err
 	}
 	if latestVersion == module.Version {
+		if auditor != nil {
+			_, _ = inspectModuleVersionWithAudit(ctx, client, proxyURL, module.Path, module.Version, maxZipSize, auditor)
+		}
 		return indexed, scanned, nil
 	}
-	latest, err := inspectModuleVersion(ctx, client, proxyURL, module.Path, latestVersion, maxZipSize)
+	latest, err := inspectModuleVersionWithAudit(ctx, client, proxyURL, module.Path, latestVersion, maxZipSize, auditor)
 	if err != nil {
 		return candidate{}, scanned, err
 	}
@@ -472,6 +527,10 @@ func resolveLatest(ctx context.Context, client *http.Client, proxyURL, modulePat
 }
 
 func inspectModuleVersion(ctx context.Context, client *http.Client, proxyURL, modulePath, version string, maxZipSize int64) (candidate, error) {
+	return inspectModuleVersionWithAudit(ctx, client, proxyURL, modulePath, version, maxZipSize, nil)
+}
+
+func inspectModuleVersionWithAudit(ctx context.Context, client *http.Client, proxyURL, modulePath, version string, maxZipSize int64, auditor *auditCollector) (candidate, error) {
 	escapedModule, err := escapeProxyPath(modulePath)
 	if err != nil {
 		return candidate{}, err
@@ -485,7 +544,7 @@ func inspectModuleVersion(ctx context.Context, client *http.Client, proxyURL, mo
 	if err != nil {
 		return candidate{}, fmt.Errorf("open %s ZIP: %w", version, err)
 	}
-	files, arches, err := inspectModuleZipReader(reader, zipSize)
+	files, arches, err := inspectModuleZipReaderWithAudit(reader, zipSize, modulePath, auditor)
 	if err != nil {
 		return candidate{}, fmt.Errorf("inspect %s: %w", version, err)
 	}
@@ -519,6 +578,10 @@ func inspectModuleZip(data []byte) ([]string, []string, error) {
 }
 
 func inspectModuleZipReader(reader io.ReaderAt, size int64) ([]string, []string, error) {
+	return inspectModuleZipReaderWithAudit(reader, size, "", nil)
+}
+
+func inspectModuleZipReaderWithAudit(reader io.ReaderAt, size int64, modulePath string, auditor *auditCollector) ([]string, []string, error) {
 	zr, err := zip.NewReader(reader, size)
 	if err != nil {
 		return nil, nil, err
@@ -558,19 +621,22 @@ func inspectModuleZipReader(reader io.ReaderAt, size int64) ([]string, []string,
 	}
 	files := make([]string, 0, len(asmFiles))
 	archSet := make(map[string]struct{})
-	for _, asm := range asmFiles {
-		if _, ok := goDirs[path.Dir(asm.name)]; !ok {
+	for _, asmFile := range asmFiles {
+		if _, ok := goDirs[path.Dir(asmFile.name)]; !ok {
 			continue
 		}
-		hasContent, err := zipAssemblyFileHasContent(asm.file)
+		data, hasContent, err := readZipAssemblyBytes(asmFile.file)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read %s: %w", asm.name, err)
+			return nil, nil, fmt.Errorf("read %s: %w", asmFile.name, err)
 		}
 		if !hasContent {
 			continue
 		}
-		files = append(files, asm.name)
-		archSet[inferAssemblyArchitecture(asm.name)] = struct{}{}
+		files = append(files, asmFile.name)
+		archSet[inferAssemblyArchitecture(asmFile.name)] = struct{}{}
+		if auditor != nil && len(data) > 0 {
+			auditor.auditFile(modulePath, asmFile.name, data)
+		}
 	}
 	arches := make([]string, 0, len(archSet))
 	for arch := range archSet {

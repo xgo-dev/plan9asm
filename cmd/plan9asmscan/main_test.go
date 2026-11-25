@@ -381,13 +381,13 @@ GLOBL foo(SB), RODATA, $8
 
 func TestAddFormStatCachesConcreteInstructionsWithoutCollapsingValues(t *testing.T) {
 	forms := map[string]*formStat{}
-	for _, imm := range []int64{1, 7, 7} {
+	for _, imm := range []int64{1, 17, 17} {
 		addFormStat(forms, plan9asm.ArchAMD64, "amd64", plan9asm.Instr{
-			Op:  "RCRQ",
-			Raw: "RCRQ immediate, AX",
+			Op:  "PSRLDQ",
+			Raw: "PSRLDQ immediate, X0",
 			Args: []plan9asm.Operand{
 				{Kind: plan9asm.OpImm, Imm: imm},
-				{Kind: plan9asm.OpReg, Reg: plan9asm.AX},
+				{Kind: plan9asm.OpReg, Reg: plan9asm.Reg("X0")},
 			},
 		}, "fixture.s")
 	}
