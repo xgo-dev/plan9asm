@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/importer"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -191,6 +193,7 @@ extern void diffShiftsRotates(uint64_t val, uint64_t cnt, uint64_t *out);
 extern void diffDoubleShift16(uint64_t dst, uint64_t src, uint64_t cnt, uint64_t *out);
 extern void diffDoubleShift3264(uint64_t dst, uint64_t src, uint64_t cnt, uint64_t *out);
 extern void diffFlagsSaveRestore(uint64_t a, uint64_t b, uint64_t *out);
+extern uint64_t diffPushfqRawIF(void);
 extern void diffBitCond(uint64_t a, uint64_t b, uint64_t *out);
 extern void diffAtomicAndString(uint8_t *buf, uint64_t val, uint64_t *out);
 extern int64_t diffZeroArgCaller(void);
@@ -314,6 +317,7 @@ int main(void) {
     }
 
     printf("zeroarg=%016llx\n", (unsigned long long)(uint64_t)diffZeroArgCaller());
+    printf("pushfq_raw_if=%016llx\n", (unsigned long long)diffPushfqRawIF());
 
     for (int i = 0; i < nArith; i++) {
         uint64_t out8[8] = {0};
@@ -400,10 +404,14 @@ int main(void) {
 			t.Fatalf("dshift16[5] slot %d = %q, want 42 (full=%s)", slot, ds16[slot], llvmMap["dshift16[5]"])
 		}
 	}
-	// Round 6 P1 #2 & #3: flags[1] is a=15, b=1 -> [0]&1==1, [1]&1==1, [2]==1, [3]==0, [8]==0x10 (16)
+	// Round 6 P1 #2 & #3 + Round 7 P1 #2 (IF=0x200 in raw PUSHFQ):
+	// flags[1] is a=15, b=1 -> [0]==0x0247 (IF|ZF|PF|1|CF), [1]==0x0247, [2]==1, [3]==0, [8]==0x10 (16)
 	fl := strings.Split(llvmMap["flags[1]"], ",")
-	if fl[2] != "0000000000000001" || fl[3] != "0000000000000000" || fl[8] != "0000000000000010" {
-		t.Fatalf("flags[1] unexpected PUSHFQ/POPFQ/LAHF(AF): %s", llvmMap["flags[1]"])
+	if fl[0] != "0000000000000247" || fl[1] != "0000000000000247" || fl[2] != "0000000000000001" || fl[3] != "0000000000000000" || fl[8] != "0000000000000010" {
+		t.Fatalf("flags[1] unexpected PUSHFQ(IF=0x200)/POPFQ/LAHF(AF): %s", llvmMap["flags[1]"])
+	}
+	if got := llvmMap["pushfq_raw_if"]; got != "0000000002000200" {
+		t.Fatalf("pushfq_raw_if = %q, want 0000000002000200 (IF=0x200 at entry and after ring-3 POPFQ)", got)
 	}
 	// Round 5 P1: arith64[14] is a=MinInt64, b=1 -> CMPQ: JMI=0, JLT=1 (bit0=0, bit1=1 in [5])
 	ar14 := strings.Split(llvmMap["arith64[14]"], ",")
@@ -477,7 +485,8 @@ int main(void) {
 
 	// Step D: Native Go amd64 machine-code differential comparison!
 	if runtime.GOARCH != "amd64" {
-		t.Logf("portable LLVM -O2 execution + SHA-NI/Round6 golden checks PASSED (%d cases); native amd64 Go-asm diff runs on amd64 runners", len(llvmMap))
+		writeAMD64DiffGateExecutionReport(t, llcTool, false, llvmMap, nil, nil, "")
+		t.Logf("portable LLVM -O2 execution + SHA-NI/Round6/Round7 golden checks PASSED (%d cases); native amd64 Go-asm diff runs on amd64 runners", len(llvmMap))
 		return
 	}
 
@@ -498,17 +507,21 @@ int main(void) {
 
 	compared := 0
 	var mismatches []string
+	failedKeys := map[string]bool{}
 	for k, want := range oracleMap {
 		got, ok := llvmMap[k]
 		if !ok {
 			mismatches = append(mismatches, fmt.Sprintf("%s: missing from LLVM transcript (oracle=%s)", k, want))
+			failedKeys[k] = true
 			continue
 		}
 		compared++
 		if got != want {
 			mismatches = append(mismatches, fmt.Sprintf("%s:\n  go-asm:   %s\n  plan9asm: %s", k, want, got))
+			failedKeys[k] = true
 		}
 	}
+	writeAMD64DiffGateExecutionReport(t, llcTool, true, llvmMap, oracleMap, failedKeys, hwPending)
 	if compared == 0 {
 		t.Fatalf("zero differential cases compared between Go native amd64 and plan9asm")
 	}
@@ -522,6 +535,444 @@ int main(void) {
 	}
 	t.Logf("AMD64 machine-code differential gate PASSED: total_llvm_cases=%d native_diff_compared=%d hw_pending=%q",
 		len(llvmMap), compared, hwPending)
+}
+
+type amd64DiffExecutionReport struct {
+	SchemaVersion   int                       `json:"schema_version"`
+	Goarch          string                    `json:"goarch"`
+	Goos            string                    `json:"goos"`
+	GoVersion       string                    `json:"go_version"`
+	LLVMVersion     string                    `json:"llvm_version,omitempty"`
+	NativeOracleRan bool                      `json:"native_oracle_ran"`
+	TotalInputs     int                       `json:"total_inputs"`
+	ComparedInputs  int                       `json:"compared_inputs"`
+	FailedInputs    int                       `json:"failed_inputs"`
+	Cases           []amd64DiffCaseExecResult `json:"cases"`
+}
+
+type amd64DiffCaseExecResult struct {
+	ID                string   `json:"id"`
+	Asm               string   `json:"asm"`
+	Status            string   `json:"status"`
+	ExecutedInputs    int      `json:"executed_inputs"`
+	ComparedInputs    int      `json:"compared_inputs"`
+	FailedInputs      int      `json:"failed_inputs"`
+	MissingHWFeatures []string `json:"missing_hw_features,omitempty"`
+	Forms             []string `json:"forms"`
+}
+
+func mergeAndWriteAMD64DiffReport(t *testing.T, nativeOracle bool, llvmVersion string, newCases []amd64DiffCaseExecResult) {
+	t.Helper()
+	reportPath := strings.TrimSpace(os.Getenv("PLAN9ASM_DIFF_REPORT_OUT"))
+	if reportPath == "" {
+		return
+	}
+	rep := amd64DiffExecutionReport{
+		SchemaVersion:   1,
+		Goarch:          "amd64",
+		Goos:            runtime.GOOS,
+		GoVersion:       runtime.Version(),
+		LLVMVersion:     llvmVersion,
+		NativeOracleRan: nativeOracle,
+	}
+	byID := map[string]amd64DiffCaseExecResult{}
+	if existing, err := os.ReadFile(reportPath); err == nil && len(existing) > 0 {
+		var prev amd64DiffExecutionReport
+		if err := json.Unmarshal(existing, &prev); err == nil && prev.SchemaVersion == 1 && prev.Goarch == "amd64" {
+			if prev.LLVMVersion != "" && rep.LLVMVersion == "" {
+				rep.LLVMVersion = prev.LLVMVersion
+			}
+			rep.NativeOracleRan = rep.NativeOracleRan || prev.NativeOracleRan
+			for _, c := range prev.Cases {
+				byID[c.ID] = c
+			}
+		}
+	}
+	for _, c := range newCases {
+		byID[c.ID] = c
+	}
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	rep.Cases = make([]amd64DiffCaseExecResult, 0, len(ids))
+	for _, id := range ids {
+		c := byID[id]
+		rep.Cases = append(rep.Cases, c)
+		rep.TotalInputs += c.ExecutedInputs
+		rep.ComparedInputs += c.ComparedInputs
+		rep.FailedInputs += c.FailedInputs
+	}
+	data, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal diff report: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("mkdir diff report dir: %v", err)
+	}
+	if err := os.WriteFile(reportPath, data, 0o644); err != nil {
+		t.Fatalf("write diff report %s: %v", reportPath, err)
+	}
+}
+
+func recordAMD64ConformanceManifestCases(t *testing.T, asmRel string, nativeRan bool) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv("PLAN9ASM_DIFF_REPORT_OUT")) == "" {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join("testdata", "conformance", "manifest.json"))
+	if err != nil {
+		t.Fatalf("read conformance manifest: %v", err)
+	}
+	var manifest testConformanceManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("parse conformance manifest: %v", err)
+	}
+	var cases []amd64DiffCaseExecResult
+	for _, tc := range manifest.Cases {
+		if tc.Goarch != "amd64" || tc.Asm != asmRel || tc.Validation != "execute" {
+			continue
+		}
+		status := "portable_only"
+		compared := 0
+		if nativeRan {
+			status = "passed"
+			compared = 1
+		}
+		cases = append(cases, amd64DiffCaseExecResult{
+			ID:             tc.ID,
+			Asm:            tc.Asm,
+			Status:         status,
+			ExecutedInputs: 1,
+			ComparedInputs: compared,
+			Forms:          append([]string(nil), tc.Forms...),
+		})
+	}
+	mergeAndWriteAMD64DiffReport(t, nativeRan, "", cases)
+}
+
+func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracle bool, llvmMap, oracleMap map[string]string, failedKeys map[string]bool, hwPending string) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv("PLAN9ASM_DIFF_REPORT_OUT")) == "" {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join("testdata", "conformance", "manifest.json"))
+	if err != nil {
+		t.Fatalf("read conformance manifest: %v", err)
+	}
+	var manifest testConformanceManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("parse conformance manifest: %v", err)
+	}
+	llvmVer := ""
+	if out, err := exec.Command(llcTool, "--version").CombinedOutput(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, "LLVM version ") {
+				llvmVer = strings.TrimSpace(line)
+				break
+			}
+		}
+	}
+	pendingSet := map[string]bool{}
+	for _, item := range strings.Split(hwPending, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			pendingSet[item] = true
+		}
+	}
+	casePrefixes := map[string][]string{
+		"amd64-diff-gate-scalar-arith-flags":      {"arith64[", "arithw[", "muldiv["},
+		"amd64-diff-gate-shifts-rotates-double16": {"shift[", "dshift16[", "dshift3264["},
+		"amd64-diff-gate-flags-save-restore":      {"flags[", "pushfq_raw_if"},
+		"amd64-diff-gate-bit-atomic-string-abi0":  {"bit[", "atomstr[", "zeroarg"},
+		"amd64-diff-gate-adx":                     {"adx["},
+		"amd64-diff-gate-sse42-ssse3":             {"pcmpestri0c["},
+		"amd64-diff-gate-sha-ni":                  {"sha256[", "sha1["},
+	}
+	matchesAny := func(k string, prefixes []string) bool {
+		for _, p := range prefixes {
+			if k == p || strings.HasPrefix(k, p) {
+				return true
+			}
+		}
+		return false
+	}
+	var results []amd64DiffCaseExecResult
+	for _, tc := range manifest.Cases {
+		if tc.Goarch != "amd64" || tc.Asm != "amd64/diff_gate_amd64.s" || tc.Validation != "execute" {
+			continue
+		}
+		prefixes := casePrefixes[tc.ID]
+		execCnt, cmpCnt, failCnt := 0, 0, 0
+		for k := range llvmMap {
+			if matchesAny(k, prefixes) {
+				execCnt++
+			}
+		}
+		for k := range oracleMap {
+			if matchesAny(k, prefixes) {
+				cmpCnt++
+				if failedKeys[k] {
+					failCnt++
+				}
+			}
+		}
+		var missingHW []string
+		for _, f := range tc.HWFeatures {
+			if pendingSet[f] {
+				missingHW = append(missingHW, f)
+			}
+		}
+		status := "portable_only"
+		if nativeOracle {
+			switch {
+			case failCnt > 0:
+				status = "failed"
+			case len(missingHW) > 0 && cmpCnt == 0:
+				status = "hw_pending"
+			case cmpCnt > 0:
+				status = "passed"
+			default:
+				status = "failed"
+			}
+		}
+		results = append(results, amd64DiffCaseExecResult{
+			ID:                tc.ID,
+			Asm:               tc.Asm,
+			Status:            status,
+			ExecutedInputs:    execCnt,
+			ComparedInputs:    cmpCnt,
+			FailedInputs:      failCnt,
+			MissingHWFeatures: missingHW,
+			Forms:             append([]string(nil), tc.Forms...),
+		})
+	}
+	mergeAndWriteAMD64DiffReport(t, nativeOracle, llvmVer, results)
+}
+
+// TestTranslateGoModuleAMD64PopAndPushfqInitPropagation verifies Round 7 P1 #1
+// (POP* inherits exact byte-level stack initialization; PUSHF*/POPF* and
+// LAHF/SAHF inherit exact flag-init state rather than forging initialized flags)
+// and P1 #2 (raw PUSHFQ exports user-mode IF = 0x200).
+func TestTranslateGoModuleAMD64PopAndPushfqInitPropagation(t *testing.T) {
+	checkCase := func(name, goSrc, asmSrc string, wantErr bool) string {
+		t.Helper()
+		fset := token.NewFileSet()
+		astFile, err := parser.ParseFile(fset, "p.go", goSrc, 0)
+		if err != nil {
+			t.Fatalf("%s: parse go: %v", name, err)
+		}
+		cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+		pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
+		if err != nil {
+			t.Fatalf("%s: typecheck go: %v", name, err)
+		}
+		res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(asmSrc), GoModuleOptions{
+			FileName:     "p_amd64.s",
+			GOOS:         "linux",
+			GOARCH:       "amd64",
+			TargetTriple: "x86_64-unknown-linux-gnu",
+			ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		})
+		if wantErr {
+			if err == nil {
+				ir := res.Module.String()
+				res.Module.Dispose()
+				t.Fatalf("%s: expected error, got success:\n%s", name, ir)
+			}
+			return ""
+		}
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		ir := res.Module.String()
+		res.Module.Dispose()
+		return ir
+	}
+
+	goRet64 := "package p\nfunc f() uint64\n"
+	goRet8 := "package p\nfunc f() uint8\n"
+
+	// P1 #1a: MOVB $1, AL; PUSHQ AX; POPQ BX -> returning full 64-bit BX MUST FAIL.
+	checkCase("partial-pushq-popq-ret64", goRet64, `
+TEXT ·f(SB), $0-8
+	MOVB $1, AL
+	PUSHQ AX
+	POPQ BX
+	MOVQ BX, ret+0(FP)
+	RET
+`, true)
+
+	// Positive counterpart: returning only initialized low byte BL MUST PASS.
+	checkCase("partial-pushq-popq-ret8", goRet8, `
+TEXT ·f(SB), $0-1
+	MOVB $1, AL
+	PUSHQ AX
+	POPQ BX
+	MOVB BL, ret+0(FP)
+	RET
+`, false)
+
+	// Partial 16-bit PUSHW/POPW -> returning full 16-bit word MUST FAIL.
+	checkCase("partial-pushw-popw-ret16", "package p\nfunc f() uint16\n", `
+TEXT ·f(SB), $0-2
+	MOVB $1, AL
+	PUSHW AX
+	POPW BX
+	MOVW BX, ret+0(FP)
+	RET
+`, true)
+
+	// POPQ from unpushed stack MUST FAIL.
+	checkCase("popq-unpushed-stack", goRet64, `
+TEXT ·f(SB), $0-8
+	POPQ BX
+	MOVQ BX, ret+0(FP)
+	RET
+`, true)
+
+	// P1 #1b: PUSHFQ; POPFQ at entry MUST NOT forge defined CF/OF.
+	checkCase("pushfq-popfq-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("pushfq-popfq-forges-of", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPFQ
+	MOVQ $0, AX
+	SETOS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("pushfw-popfw-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFW
+	POPFW
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
+	// Round-tripping entry PUSHFQ through a GP register or 0(SP) MUST NOT forge CF.
+	checkCase("pushfq-popq-pushq-popfq-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ AX
+	PUSHQ AX
+	POPFQ
+	MOVQ $0, BX
+	SETCS BL
+	MOVQ BX, ret+0(FP)
+	RET
+`, true)
+	checkCase("pushfq-movsp-pushq-popfq-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	MOVQ 0(SP), AX
+	POPQ CX
+	PUSHQ AX
+	POPFQ
+	MOVQ $0, BX
+	SETCS BL
+	MOVQ BX, ret+0(FP)
+	RET
+`, true)
+
+	// STC defines CF only: PUSHFQ; CLC; POPFQ allows SETCS (CF) but rejects SETOS (OF).
+	checkCase("stc-pushfq-popfq-cf-ok", goRet64, `
+TEXT ·f(SB), $0-8
+	STC
+	PUSHFQ
+	CLC
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, false)
+	checkCase("stc-pushfq-popfq-of-rejected", goRet64, `
+TEXT ·f(SB), $0-8
+	STC
+	PUSHFQ
+	CLC
+	POPFQ
+	MOVQ $0, AX
+	SETOS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
+	// LAHF; SAHF at entry MUST NOT forge defined CF.
+	checkCase("lahf-sahf-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	LAHF
+	SAHF
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
+	// Explicit initialized register pushed and popped into POPFQ initializes flags,
+	// whereas partial-byte push leaves OF (bit 11 in byte 1) uninitialized.
+	checkCase("movq-pushq-popfq-all-flags-ok", goRet64, `
+TEXT ·f(SB), $0-8
+	MOVQ $0x203, AX
+	PUSHQ AX
+	POPFQ
+	MOVQ $0, BX
+	SETCS BL
+	MOVQ BX, ret+0(FP)
+	RET
+`, false)
+	checkCase("movb-pushq-popfq-of-rejected", goRet64, `
+TEXT ·f(SB), $0-8
+	MOVB $1, AL
+	PUSHQ AX
+	POPFQ
+	MOVQ $0, BX
+	SETOS BL
+	MOVQ BX, ret+0(FP)
+	RET
+`, true)
+
+	// P1 #2: PUSHFQ; POPQ AX; ANDQ $0x200, AX at entry MUST PASS and fold to 512 under LLVM 22 -O2!
+	rawIFIR := checkCase("pushfq-raw-if-bit9", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $0x200, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`, false)
+	optTool := findLLVM22Tool("opt")
+	if optTool != "" {
+		tmp := t.TempDir()
+		inPath := filepath.Join(tmp, "raw_if.ll")
+		outPath := filepath.Join(tmp, "raw_if_opt.ll")
+		if err := os.WriteFile(inPath, []byte(rawIFIR), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
+			t.Fatalf("LLVM 22 opt -O2 failed: %v\n%s", err, out)
+		}
+		optBytes, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(optBytes), "ret i64 512") {
+			t.Fatalf("expected PUSHFQ; POPQ AX; ANDQ $0x200, AX to fold to ret i64 512 under LLVM 22 -O2:\n%s", string(optBytes))
+		}
+	}
 }
 
 // TestStep1ExplicitUnsupportedAuditRegistry verifies that every audited

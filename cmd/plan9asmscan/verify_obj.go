@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -16,6 +19,8 @@ type objProbeItem struct {
 	form string
 	ins  plan9asm.Instr
 }
+
+var llvm22VersionRE = regexp.MustCompile(`(?im)\bLLVM version (22(?:\.[0-9A-Za-z._-]+)?)`)
 
 func llcTripleForGoarch(goarch string) string {
 	switch goarch {
@@ -34,22 +39,58 @@ func llcTripleForGoarch(goarch string) string {
 	}
 }
 
-func llcArgsForGoarch(goarch string) []string {
+func llcArgsForGoarch(goarch, outPath string) []string {
 	triple := llcTripleForGoarch(goarch)
-	args := []string{"-mtriple=" + triple, "-filetype=null", "-"}
+	args := []string{"-mtriple=" + triple, "-filetype=obj", "-o", outPath, "-"}
 	if goarch == "amd64" || goarch == "386" {
 		args = append(args, "-mattr=+aes,+ssse3,+sse4.1,+sse4.2,+pclmul,+avx,+avx2,+avx512f,+avx512bw,+avx512cd,+avx512dq,+avx512vl,+avx512vbmi,+avx512vbmi2,+avx512vnni,+avx512bitalg,+avx512vpopcntdq,+gfni,+vaes,+vpclmulqdq,+sha,+popcnt,+adx,+bmi,+bmi2,+f16c,+fma,+fsgsbase,+rdpid,+rdrnd,+rdseed,+movbe,+clflushopt,+clwb,+cldemote")
 	}
 	return args
 }
 
-func findLLCTool() (string, error) {
-	for _, name := range []string{"llc-22", "llc"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p, nil
+// findLLCTool locates an LLVM 22 llc binary and validates its reported version.
+// Unversioned or non-22 llc binaries are explicitly rejected so -verify-obj
+// always matches the LLVM 22 toolchain contract.
+func findLLCTool() (string, string, error) {
+	var candidates []string
+	if llvmConfig := strings.TrimSpace(os.Getenv("LLVM_CONFIG")); llvmConfig != "" {
+		verOut, err := exec.Command(llvmConfig, "--version").Output()
+		if err != nil {
+			return "", "", fmt.Errorf("LLVM_CONFIG=%q --version failed: %w", llvmConfig, err)
 		}
+		verStr := strings.TrimSpace(string(verOut))
+		if !strings.HasPrefix(verStr, "22.") && verStr != "22" {
+			return "", "", fmt.Errorf("LLVM_CONFIG=%q reports LLVM %s, require LLVM 22 for -verify-obj", llvmConfig, verStr)
+		}
+		binOut, err := exec.Command(llvmConfig, "--bindir").Output()
+		if err != nil {
+			return "", "", fmt.Errorf("LLVM_CONFIG=%q --bindir failed: %w", llvmConfig, err)
+		}
+		candidates = append(candidates, filepath.Join(strings.TrimSpace(string(binOut)), "llc"))
+	} else {
+		candidates = append(candidates, "llc-22", "llc")
 	}
-	return "", fmt.Errorf("llc not found in PATH (required by -verify-obj)")
+	var rejected []string
+	for _, candidate := range candidates {
+		p, err := exec.LookPath(candidate)
+		if err != nil {
+			continue
+		}
+		out, err := exec.Command(p, "--version").CombinedOutput()
+		if err != nil {
+			rejected = append(rejected, fmt.Sprintf("%s (--version failed: %v)", p, err))
+			continue
+		}
+		if m := llvm22VersionRE.FindSubmatch(out); m != nil {
+			return p, string(m[1]), nil
+		}
+		firstLine := strings.TrimSpace(strings.Split(string(out), "\n")[0])
+		rejected = append(rejected, fmt.Sprintf("%s (%s)", p, firstLine))
+	}
+	if len(rejected) > 0 {
+		return "", "", fmt.Errorf("LLVM 22 llc not found (required by -verify-obj); rejected non-22 binaries: %s", strings.Join(rejected, "; "))
+	}
+	return "", "", fmt.Errorf("LLVM 22 llc not found in PATH (required by -verify-obj)")
 }
 
 var translateMu sync.Mutex
@@ -129,8 +170,21 @@ func buildBatchIR(arch plan9asm.Arch, goarch string, items []objProbeItem) (stri
 	return ir, err
 }
 
-func runLLCOnIR(llcPath string, llcArgs []string, ir string) error {
-	cmd := exec.Command(llcPath, llcArgs...)
+// runLLCOnIR compiles LLVM IR to a real target object file (-filetype=obj) in
+// tmpDir and verifies a non-empty object file was actually written.
+func runLLCOnIR(llcPath, goarch, tmpDir, ir string) error {
+	f, err := os.CreateTemp(tmpDir, "plan9asm-*.o")
+	if err != nil {
+		return fmt.Errorf("create temp object file: %w", err)
+	}
+	objPath := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(objPath)
+		return fmt.Errorf("close temp object file: %w", err)
+	}
+	defer os.Remove(objPath)
+
+	cmd := exec.Command(llcPath, llcArgsForGoarch(goarch, objPath)...)
 	cmd.Stdin = strings.NewReader(ir)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -142,16 +196,23 @@ func runLLCOnIR(llcPath string, llcArgs []string, ir string) error {
 		}
 		return fmt.Errorf("%v: %s", err, msg)
 	}
+	fi, err := os.Stat(objPath)
+	if err != nil {
+		return fmt.Errorf("object file not emitted: %w", err)
+	}
+	if fi.Size() == 0 {
+		return fmt.Errorf("object file emitted empty (0 bytes)")
+	}
 	return nil
 }
 
-func verifyObjChunk(llcPath string, llcArgs []string, arch plan9asm.Arch, goarch string, items []objProbeItem, compiled map[string]bool, failed map[string]string, mu *sync.Mutex) {
+func verifyObjChunk(llcPath, goarch, tmpDir string, arch plan9asm.Arch, items []objProbeItem, compiled map[string]bool, failed map[string]string, mu *sync.Mutex) {
 	if len(items) == 0 {
 		return
 	}
 	ir, err := buildBatchIR(arch, goarch, items)
 	if err == nil {
-		if llcErr := runLLCOnIR(llcPath, llcArgs, ir); llcErr == nil {
+		if llcErr := runLLCOnIR(llcPath, goarch, tmpDir, ir); llcErr == nil {
 			mu.Lock()
 			for _, it := range items {
 				compiled[it.form] = true
@@ -171,16 +232,20 @@ func verifyObjChunk(llcPath string, llcArgs []string, arch plan9asm.Arch, goarch
 		return
 	}
 	mid := len(items) / 2
-	verifyObjChunk(llcPath, llcArgs, arch, goarch, items[:mid], compiled, failed, mu)
-	verifyObjChunk(llcPath, llcArgs, arch, goarch, items[mid:], compiled, failed, mu)
+	verifyObjChunk(llcPath, goarch, tmpDir, arch, items[:mid], compiled, failed, mu)
+	verifyObjChunk(llcPath, goarch, tmpDir, arch, items[mid:], compiled, failed, mu)
 }
 
-func verifyObjectCompilation(arch plan9asm.Arch, goarch string, forms map[string]*formStat) (map[string]bool, map[string]string, error) {
-	llcPath, err := findLLCTool()
+func verifyObjectCompilation(arch plan9asm.Arch, goarch string, forms map[string]*formStat) (map[string]bool, map[string]string, string, error) {
+	llcPath, llvmVer, err := findLLCTool()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	llcArgs := llcArgsForGoarch(goarch)
+	tmpDir, err := os.MkdirTemp("", "plan9asm-verify-obj-*")
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("create temp dir for -verify-obj: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	items := make([]objProbeItem, 0, len(forms))
 	for _, st := range forms {
@@ -219,7 +284,6 @@ func verifyObjectCompilation(arch plan9asm.Arch, goarch string, forms map[string
 			go func() {
 				defer wg.Done()
 				for it := range ch {
-					// Seed 4 typed stack values so unary/binary/ternary/simd wasm ops lower cleanly.
 					ir, ok := translateWASMSampleForObj(it.ins)
 					if !ok {
 						mu.Lock()
@@ -227,7 +291,7 @@ func verifyObjectCompilation(arch plan9asm.Arch, goarch string, forms map[string
 						mu.Unlock()
 						continue
 					}
-					if err := runLLCOnIR(llcPath, llcArgs, ir); err != nil {
+					if err := runLLCOnIR(llcPath, goarch, tmpDir, ir); err != nil {
 						mu.Lock()
 						failed[it.form] = err.Error()
 						mu.Unlock()
@@ -240,7 +304,7 @@ func verifyObjectCompilation(arch plan9asm.Arch, goarch string, forms map[string
 			}()
 		}
 		wg.Wait()
-		return compiled, failed, nil
+		return compiled, failed, llvmVer, nil
 	}
 
 	const batchSize = 128
@@ -272,12 +336,12 @@ func verifyObjectCompilation(arch plan9asm.Arch, goarch string, forms map[string
 		go func() {
 			defer wg.Done()
 			for chunk := range ch {
-				verifyObjChunk(llcPath, llcArgs, arch, goarch, chunk, compiled, failed, &mu)
+				verifyObjChunk(llcPath, goarch, tmpDir, arch, chunk, compiled, failed, &mu)
 			}
 		}()
 	}
 	wg.Wait()
-	return compiled, failed, nil
+	return compiled, failed, llvmVer, nil
 }
 
 func translateWASMSampleForObj(ins plan9asm.Instr) (string, bool) {

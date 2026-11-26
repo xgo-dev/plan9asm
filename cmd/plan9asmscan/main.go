@@ -65,13 +65,20 @@ type report struct {
 	SupportedForms           int    `json:"supported_forms"`
 	IRGeneratedForms         int    `json:"ir_generated_forms"`
 	ObjectCompiledVerified   bool   `json:"object_compiled_verified,omitempty"`
+	ObjectCompileLLVMVersion string `json:"object_compile_llvm_version,omitempty"`
 	ObjectCompiledForms      int    `json:"object_compiled_forms,omitempty"`
 	ObjectCompileFailedForms int    `json:"object_compile_failed_forms,omitempty"`
 	ContextForms             int    `json:"context_forms"`
 	UnsupportedForms         int    `json:"unsupported_forms"`
 	OfficialOpcodes          int    `json:"official_opcodes"`
 	RuntimeVerifiedForms     int    `json:"runtime_verified_forms"`
+	ManifestExecuteForms     int    `json:"manifest_execute_forms"`
+	ManifestHWGatedForms     int    `json:"manifest_hw_gated_forms,omitempty"`
+	DiffReportLoaded         bool   `json:"diff_report_loaded"`
+	DiffReportNativeOracle   bool   `json:"diff_report_native_oracle,omitempty"`
+	DiffReportComparedInputs int    `json:"diff_report_compared_inputs,omitempty"`
 	DiffVerifiedForms        int    `json:"diff_verified_forms"`
+	DiffFailedForms          int    `json:"diff_failed_forms,omitempty"`
 	HWPendingForms           int    `json:"hw_pending_forms,omitempty"`
 	CompileOnlyForms         int    `json:"compile_only_forms,omitempty"`
 	EncoderOpcodes           int    `json:"encoder_opcodes"`
@@ -102,10 +109,12 @@ type unsupportedReasonGroup struct {
 }
 
 type hwPendingFormReport struct {
-	Form       string   `json:"form"`
-	Family     string   `json:"family"`
-	Opcode     string   `json:"opcode"`
-	HWFeatures []string `json:"hw_features"`
+	Form              string   `json:"form"`
+	Family            string   `json:"family"`
+	Opcode            string   `json:"opcode"`
+	HWFeatures        []string `json:"hw_features,omitempty"`
+	MissingHWFeatures []string `json:"missing_hw_features,omitempty"`
+	Cases             []string `json:"cases,omitempty"`
 }
 
 type opReport struct {
@@ -138,6 +147,8 @@ type formReport struct {
 	ObjectCompiled  bool     `json:"object_compiled,omitempty"`
 	ObjectError     string   `json:"object_error,omitempty"`
 	RuntimeVerified bool     `json:"runtime_verified"`
+	DiffStatus      string   `json:"diff_status,omitempty"`
+	DiffCases       []string `json:"diff_cases,omitempty"`
 	HWFeatures      []string `json:"hw_features,omitempty"`
 	CompileOnly     bool     `json:"compile_only,omitempty"`
 }
@@ -179,15 +190,16 @@ var (
 
 func main() {
 	var (
-		goos      = flag.String("goos", runtime.GOOS, "target GOOS")
-		goarch    = flag.String("goarch", runtime.GOARCH, "target GOARCH (386/amd64/arm64/arm/wasm)")
-		out       = flag.String("out", "", "write report to file (default stdout)")
-		format    = flag.String("format", "md", "output format: md|json")
-		repoRoot  = flag.String("repo-root", ".", "plan9asm repository root for lowerers and conformance data")
-		corpus    = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9|dir|encoder|formats")
-		goroot    = flag.String("goroot", runtime.GOROOT(), "Go root containing official assembler testdata")
-		input     = flag.String("input", "", "input file or directory for corpora that require one")
-		verifyObj = flag.Bool("verify-obj", false, "verify LLVM llc object compilation for every IR-generated form")
+		goos       = flag.String("goos", runtime.GOOS, "target GOOS")
+		goarch     = flag.String("goarch", runtime.GOARCH, "target GOARCH (386/amd64/arm64/arm/wasm)")
+		out        = flag.String("out", "", "write report to file (default stdout)")
+		format     = flag.String("format", "md", "output format: md|json")
+		repoRoot   = flag.String("repo-root", ".", "plan9asm repository root for lowerers and conformance data")
+		corpus     = flag.String("corpus", "std", "corpus to scan: std|go-asm|arm64-plan9|dir|encoder|formats")
+		goroot     = flag.String("goroot", runtime.GOROOT(), "Go root containing official assembler testdata")
+		input      = flag.String("input", "", "input file or directory for corpora that require one")
+		verifyObj  = flag.Bool("verify-obj", false, "verify LLVM 22 llc -filetype=obj object emission for every IR-generated form")
+		diffReport = flag.String("diff-report", "", "path to machine-code differential gate execution report JSON")
 	)
 	flag.Parse()
 
@@ -275,13 +287,22 @@ func main() {
 		fatalf("load executable conformance manifest: %v", err)
 	}
 	rep := buildReport(*corpus, goVersion(*goroot), *goos, *goarch, len(pkgs), pkgWithSFiles, asmFiles, ops, forms, supported, catalog, verified, compileOnly, parseErrs)
-	attachHWPendingCatalog(&rep, hwFeatures)
+	attachManifestHWFeatures(&rep, hwFeatures)
+	if strings.TrimSpace(*diffReport) != "" {
+		dr, err := loadDiffExecutionReport(*diffReport)
+		if err != nil {
+			fatalf("load diff report: %v", err)
+		}
+		if err := attachDiffExecutionReport(&rep, dr); err != nil {
+			fatalf("attach diff report: %v", err)
+		}
+	}
 	if *verifyObj {
-		compiled, failed, err := verifyObjectCompilation(arch, *goarch, forms)
+		compiled, failed, llvmVer, err := verifyObjectCompilation(arch, *goarch, forms)
 		if err != nil {
 			fatalf("verify object compilation: %v", err)
 		}
-		attachObjectCompilation(&rep, compiled, failed)
+		attachObjectCompilation(&rep, compiled, failed, llvmVer)
 	}
 	attachEncoderCatalog(&rep, ops, encoderCatalog)
 
@@ -905,12 +926,11 @@ func loadConformanceForms(repoRoot string) (map[string]struct{}, map[string]stru
 	return runtimeForms, compileOnlyForms, hwFeatures, nil
 }
 
-func attachHWPendingCatalog(rep *report, hwFeatures map[string][]string) {
+func attachManifestHWFeatures(rep *report, hwFeatures map[string][]string) {
 	if len(hwFeatures) == 0 {
 		return
 	}
-	rep.HWPendingForms = 0
-	rep.HWPendingByForm = nil
+	rep.ManifestHWGatedForms = 0
 	for i := range rep.Forms {
 		key := rep.Goarch + "\x00" + rep.Forms[i].Form
 		feats := hwFeatures[key]
@@ -918,21 +938,13 @@ func attachHWPendingCatalog(rep *report, hwFeatures map[string][]string) {
 			continue
 		}
 		rep.Forms[i].HWFeatures = feats
-		rep.HWPendingForms++
-		rep.HWPendingByForm = append(rep.HWPendingByForm, hwPendingFormReport{
-			Form:       rep.Forms[i].Form,
-			Family:     rep.Forms[i].Family,
-			Opcode:     rep.Forms[i].Opcode,
-			HWFeatures: feats,
-		})
+		rep.ManifestHWGatedForms++
 	}
-	sort.Slice(rep.HWPendingByForm, func(i, j int) bool {
-		return rep.HWPendingByForm[i].Form < rep.HWPendingByForm[j].Form
-	})
 }
 
-func attachObjectCompilation(rep *report, compiled map[string]bool, failed map[string]string) {
+func attachObjectCompilation(rep *report, compiled map[string]bool, failed map[string]string, llvmVer string) {
 	rep.ObjectCompiledVerified = true
+	rep.ObjectCompileLLVMVersion = llvmVer
 	rep.ObjectCompiledForms = 0
 	rep.ObjectCompileFailedForms = 0
 	for i := range rep.Forms {
@@ -1341,7 +1353,10 @@ func buildReport(
 	})
 
 	rep.IRGeneratedForms = rep.SupportedForms
-	rep.DiffVerifiedForms = rep.RuntimeVerifiedForms
+	rep.ManifestExecuteForms = rep.RuntimeVerifiedForms
+	// DiffVerifiedForms and HWPendingForms are populated strictly from an actual
+	// execution report passed via -diff-report, never blindly from static manifest.
+	rep.DiffVerifiedForms = 0
 
 	// Build queryable unsupported_catalog grouped by normalized reason.
 	reasonGroups := map[string]*struct {
@@ -1416,14 +1431,17 @@ func renderMarkdown(rep report) []byte {
 	fmt.Fprintf(&b, "- metric 1 — IR generated (lowering succeeds): `%d` (`%d` context-required, `%d` explicitly unsupported)\n",
 		rep.IRGeneratedForms, rep.ContextForms, rep.UnsupportedForms)
 	if rep.ObjectCompiledVerified {
-		fmt.Fprintf(&b, "- metric 2 — object compiled (LLVM llc verified): `%d` (`%d` failed)\n",
-			rep.ObjectCompiledForms, rep.ObjectCompileFailedForms)
+		fmt.Fprintf(&b, "- metric 2 — object compiled (LLVM %s `llc -filetype=obj` verified): `%d` (`%d` failed)\n",
+			rep.ObjectCompileLLVMVersion, rep.ObjectCompiledForms, rep.ObjectCompileFailedForms)
 	} else {
-		fmt.Fprintf(&b, "- metric 2 — object compiled (LLVM llc verified): _not run (pass `-verify-obj`)_\n")
+		fmt.Fprintf(&b, "- metric 2 — object compiled (LLVM 22 `llc -filetype=obj` verified): _not run (pass `-verify-obj`)_\n")
 	}
-	fmt.Fprintf(&b, "- metric 3 — semantically differentially verified (machine-code execution): `%d`\n", rep.DiffVerifiedForms)
-	if rep.HWPendingForms > 0 {
-		fmt.Fprintf(&b, "- hardware-feature-gated forms (optional ISA extension): `%d`\n", rep.HWPendingForms)
+	if rep.DiffReportLoaded {
+		fmt.Fprintf(&b, "- metric 3 — semantically differentially verified (execution report): `%d` passed, `%d` hw-pending, `%d` failed (`native_oracle=%v`, `compared_inputs=%d`; static manifest declares `%d` execute forms)\n",
+			rep.DiffVerifiedForms, rep.HWPendingForms, rep.DiffFailedForms, rep.DiffReportNativeOracle, rep.DiffReportComparedInputs, rep.ManifestExecuteForms)
+	} else {
+		fmt.Fprintf(&b, "- metric 3 — semantically differentially verified (execution report): _not run (pass `-diff-report <file>`; static manifest declares `%d` execute forms, `%d` optional-ISA gated)_\n",
+			rep.ManifestExecuteForms, rep.ManifestHWGatedForms)
 	}
 	if rep.CompileOnlyForms > 0 {
 		fmt.Fprintf(&b, "- explicit compile-only forms observed in this corpus: `%d`\n", rep.CompileOnlyForms)
@@ -1536,14 +1554,18 @@ func renderMarkdown(rep report) []byte {
 		}
 	}
 
-	b.WriteString("\n## Hardware-Feature-Gated Forms (optional ISA)\n\n")
+	b.WriteString("\n## Hardware-Pending Forms (from execution report)\n\n")
 	if len(rep.HWPendingByForm) == 0 {
 		b.WriteString("_none_\n")
 	} else {
-		b.WriteString("| family | form | hw_features |\n")
-		b.WriteString("|---|---|---|\n")
+		b.WriteString("| family | form | missing_hw_features | cases |\n")
+		b.WriteString("|---|---|---|---|\n")
 		for _, item := range rep.HWPendingByForm {
-			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", item.Family, item.Form, strings.Join(item.HWFeatures, ", "))
+			feats := item.MissingHWFeatures
+			if len(feats) == 0 {
+				feats = item.HWFeatures
+			}
+			fmt.Fprintf(&b, "| %s | `%s` | %s | %s |\n", item.Family, item.Form, strings.Join(feats, ", "), strings.Join(item.Cases, ", "))
 		}
 	}
 

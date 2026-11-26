@@ -144,6 +144,7 @@ func runDiffGateOracleLines() (lines []string, hwPending []string) {
 	}
 
 	lines = append(lines, fmt.Sprintf("zeroarg=%016x", uint64(diffZeroArgCaller())))
+	lines = append(lines, fmt.Sprintf("pushfq_raw_if=%016x", diffPushfqRawIF()))
 
 	if hasADX {
 		for i, p := range arithPairs {
@@ -229,8 +230,11 @@ func TestAMD64DiffGateNativeSanity(t *testing.T) {
 	}
 	var fl [16]uint64
 	diffFlagsSaveRestore(15, 1, &fl)
-	if fl[0]&1 != 1 || fl[1]&1 != 1 || fl[2] != 1 || fl[3] != 0 || fl[8] != 16 {
-		t.Fatalf("diffFlagsSaveRestore(15, 1) = %#x, unexpected CF/AF", fl)
+	if fl[0]&1 != 1 || fl[0]&0x200 != 0x200 || fl[1]&1 != 1 || fl[1]&0x200 != 0x200 || fl[2] != 1 || fl[3] != 0 || fl[8] != 16 {
+		t.Fatalf("diffFlagsSaveRestore(15, 1) = %#x, unexpected CF/IF/AF", fl)
+	}
+	if got := diffPushfqRawIF(); got != 0x0000000002000200 {
+		t.Fatalf("diffPushfqRawIF() = %#x, want 0x2000200 (IF=0x200 preserved)", got)
 	}
 	_, _, hasSHA := cpuidFeatures()
 	if hasSHA {

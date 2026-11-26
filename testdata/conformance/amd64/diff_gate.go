@@ -18,6 +18,8 @@ func diffDoubleShift3264(dst, src, cnt uint64, out *[16]uint64)
 
 func diffFlagsSaveRestore(a, b uint64, out *[16]uint64)
 
+func diffPushfqRawIF() uint64
+
 func diffBitCond(a, b uint64, out *[16]uint64)
 
 func diffAtomicAndString(buf *[64]byte, val uint64, out *[16]uint64)

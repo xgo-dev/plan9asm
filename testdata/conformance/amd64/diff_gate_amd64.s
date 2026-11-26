@@ -918,22 +918,22 @@ TEXT ·diffFlagsSaveRestore(SB), NOSPLIT, $0-24
 	MOVQ b+8(FP), R9
 	MOVQ out+16(FP), DI
 
-	// [0] STC -> PUSHFQ -> POPQ AX -> mask 0x0cd7 (CF=1, bit1=1)
+	// [0] STC -> PUSHFQ -> POPQ AX -> mask 0xffff (full low 16-bit FLAGS incl. IF=0x200, CF=1, bit1=1)
 	CLD
 	CMPQ R8, R8
 	STC
 	PUSHFQ
 	POPQ AX
-	ANDQ $0x0cd7, AX
+	ANDQ $0xffff, AX
 	MOVQ AX, 0(DI)
 
-	// [1] STC -> PUSHFQ -> MOVQ 0(SP), AX -> POPQ BX (unified SP stack!)
+	// [1] STC -> PUSHFQ -> MOVQ 0(SP), AX -> POPQ BX (unified SP stack, full low 16-bit FLAGS incl. IF!)
 	CMPQ R8, R8
 	STC
 	PUSHFQ
 	MOVQ 0(SP), AX
 	POPQ BX
-	ANDQ $0x0cd7, AX
+	ANDQ $0xffff, AX
 	MOVQ AX, 8(DI)
 
 	// [2] STC -> PUSHFQ -> CLC -> POPFQ -> SETCS (must restore CF=1)
@@ -954,11 +954,11 @@ TEXT ·diffFlagsSaveRestore(SB), NOSPLIT, $0-24
 	SETCS AL
 	MOVQ AX, 24(DI)
 
-	// [4] CMPQ a, b -> PUSHFQ -> POPQ & 0x0cd7
+	// [4] CMPQ a, b -> PUSHFQ -> POPQ & 0xffff (includes IF=0x200, OF, DF, SF, ZF, AF, PF, 1, CF)
 	CMPQ R8, R9
 	PUSHFQ
 	POPQ AX
-	ANDQ $0x0cd7, AX
+	ANDQ $0xffff, AX
 	MOVQ AX, 32(DI)
 
 	// [5] CMPQ a, b -> PUSHFQ -> clobber flags -> POPFQ -> LAHF&0xd7 | OF<<8
@@ -976,12 +976,12 @@ TEXT ·diffFlagsSaveRestore(SB), NOSPLIT, $0-24
 	ORQ BX, AX
 	MOVQ AX, 40(DI)
 
-	// [6] PUSHFW -> POPW & 0x0cd7
+	// [6] PUSHFW -> POPW & 0xffff (includes IF=0x200)
 	CMPQ R8, R9
 	PUSHFW
 	MOVQ $0, AX
 	POPW AX
-	ANDQ $0x0cd7, AX
+	ANDQ $0xffff, AX
 	MOVQ AX, 48(DI)
 
 	// [7] CMPQ a, b -> PUSHFW -> clobber flags -> POPFW -> LAHF&0xd7 | OF<<8
@@ -1072,6 +1072,25 @@ TEXT ·diffFlagsSaveRestore(SB), NOSPLIT, $0-24
 	MOVQ $0, R10
 	POPW R10
 	MOVQ R10, 120(DI)
+	RET
+
+// diffPushfqRawIF verifies reading raw RFLAGS bit 9 (IF = 0x200) directly at
+// function entry (without any prior flag producer) and confirms ring-3 POPFQ
+// cannot clear IF.
+TEXT ·diffPushfqRawIF(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $0x200, AX
+	// Also test pushing 0, POPFQ, then PUSHFQ -> IF (bit 9) stays 1 in user mode!
+	MOVQ $0x02, BX
+	PUSHQ BX
+	POPFQ
+	PUSHFQ
+	POPQ CX
+	ANDQ $0x200, CX
+	SHLQ $16, CX
+	ORQ CX, AX
+	MOVQ AX, ret+0(FP)
 	RET
 
 // diffBitCond tests BT*/BTS*/BTR*/BTC* (incl. ZF preservation), BSF*/BSR*, BSWAP*, NOT*.

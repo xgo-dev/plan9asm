@@ -362,17 +362,56 @@ GLOBL foo(SB), RODATA, $8
 	if len(rep.ClusterStats) == 0 || len(rep.FamilyStats) == 0 {
 		t.Fatalf("buildReport() expected cluster/family stats")
 	}
-	if rep.RuntimeVerifiedForms != 1 || rep.DiffVerifiedForms != 1 || rep.IRGeneratedForms != rep.SupportedForms {
-		t.Fatalf("metrics mismatch: runtime=%d diff=%d ir=%d supported=%d",
-			rep.RuntimeVerifiedForms, rep.DiffVerifiedForms, rep.IRGeneratedForms, rep.SupportedForms)
+	if rep.RuntimeVerifiedForms != 1 || rep.ManifestExecuteForms != 1 || rep.DiffVerifiedForms != 0 || rep.DiffReportLoaded || rep.IRGeneratedForms != rep.SupportedForms {
+		t.Fatalf("metrics mismatch without diff report: runtime=%d manifest=%d diff=%d loaded=%v ir=%d supported=%d",
+			rep.RuntimeVerifiedForms, rep.ManifestExecuteForms, rep.DiffVerifiedForms, rep.DiffReportLoaded, rep.IRGeneratedForms, rep.SupportedForms)
 	}
-	attachHWPendingCatalog(&rep, map[string][]string{"amd64\x00MOVQ immediate,gpr64": {"sse4.2"}})
-	if rep.HWPendingForms != 1 || len(rep.HWPendingByForm) != 1 {
-		t.Fatalf("HWPendingForms = %d (%#v), want 1", rep.HWPendingForms, rep.HWPendingByForm)
+	attachManifestHWFeatures(&rep, map[string][]string{"amd64\x00MOVQ immediate,gpr64": {"sse4.2"}})
+	if rep.ManifestHWGatedForms != 1 || rep.HWPendingForms != 0 {
+		t.Fatalf("static manifest hw_gated=%d hw_pending=%d, want 1 and 0 before diff report", rep.ManifestHWGatedForms, rep.HWPendingForms)
 	}
-	attachObjectCompilation(&rep, map[string]bool{"MOVQ immediate,gpr64": true}, nil)
-	if !rep.ObjectCompiledVerified || rep.ObjectCompiledForms != 1 {
-		t.Fatalf("object compilation metrics = (%v, %d), want (true, 1)", rep.ObjectCompiledVerified, rep.ObjectCompiledForms)
+	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
+		SchemaVersion:   1,
+		Goarch:          "amd64",
+		NativeOracleRan: true,
+		ComparedInputs:  7,
+		Cases: []diffCaseExecResult{
+			{
+				ID:                "case-pending",
+				Status:            "hw_pending",
+				MissingHWFeatures: []string{"sse4.2"},
+				Forms:             []string{"MOVQ immediate,gpr64"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("attachDiffExecutionReport(hw_pending): %v", err)
+	}
+	if !rep.DiffReportLoaded || rep.DiffVerifiedForms != 0 || rep.HWPendingForms != 1 || len(rep.HWPendingByForm) != 1 {
+		t.Fatalf("after hw_pending diff report: loaded=%v diff=%d pending=%d (%#v)", rep.DiffReportLoaded, rep.DiffVerifiedForms, rep.HWPendingForms, rep.HWPendingByForm)
+	}
+	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
+		SchemaVersion:   1,
+		Goarch:          "amd64",
+		NativeOracleRan: true,
+		ComparedInputs:  7,
+		Cases: []diffCaseExecResult{
+			{
+				ID:             "case-pass",
+				Status:         "passed",
+				ExecutedInputs: 7,
+				ComparedInputs: 7,
+				Forms:          []string{"MOVQ immediate,gpr64"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("attachDiffExecutionReport(passed): %v", err)
+	}
+	if rep.DiffVerifiedForms != 1 || rep.HWPendingForms != 0 {
+		t.Fatalf("after passed diff report: diff=%d pending=%d, want 1 and 0", rep.DiffVerifiedForms, rep.HWPendingForms)
+	}
+	attachObjectCompilation(&rep, map[string]bool{"MOVQ immediate,gpr64": true}, nil, "22.1.8")
+	if !rep.ObjectCompiledVerified || rep.ObjectCompiledForms != 1 || rep.ObjectCompileLLVMVersion != "22.1.8" {
+		t.Fatalf("object compilation metrics = (%v, %d, %q), want (true, 1, 22.1.8)", rep.ObjectCompiledVerified, rep.ObjectCompiledForms, rep.ObjectCompileLLVMVersion)
 	}
 	if got := normalizeUnsupportedReason(`plan9asm.probe: "FXSAVE (BX)": amd64: unsupported instruction FXSAVE (x87/SSE/XSAVE state save/restore is not modeled): "FXSAVE (BX)"`); got != "x87/SSE/XSAVE state save/restore is not modeled" {
 		t.Fatalf("normalizeUnsupportedReason = %q", got)
@@ -382,10 +421,10 @@ GLOBL foo(SB), RODATA, $8
 	for _, want := range []string{
 		"# Plan9 Asm Scan Report (linux/amd64)",
 		"metric 1 — IR generated",
-		"metric 2 — object compiled",
-		"metric 3 — semantically differentially verified",
+		"metric 2 — object compiled (LLVM 22.1.8 `llc -filetype=obj` verified)",
+		"metric 3 — semantically differentially verified (execution report): `1` passed, `0` hw-pending",
 		"## Explicit Unsupported Catalog (grouped by reason)",
-		"## Hardware-Feature-Gated Forms (optional ISA)",
+		"## Hardware-Pending Forms (from execution report)",
 		"## Cluster Summary",
 		"## Unsupported Ops (vs current lowerers)",
 		"good.s",
@@ -393,6 +432,62 @@ GLOBL foo(SB), RODATA, $8
 		if !strings.Contains(md, want) {
 			t.Fatalf("renderMarkdown() missing %q in:\n%s", want, md)
 		}
+	}
+}
+
+func TestVerifyObjRequiresLLVM22AndRealObjectEmission(t *testing.T) {
+	// 1. Verify findLLCTool rejects non-LLVM-22 binaries instead of accepting any llc.
+	fakeDir := t.TempDir()
+	fakeName := "llc"
+	fakeScript := "#!/bin/sh\necho 'LLVM (http://llvm.org/):'\necho '  LLVM version 19.1.0'\n"
+	if runtime.GOOS == "windows" {
+		fakeName = "llc.cmd"
+		fakeScript = "@echo off\r\necho LLVM version 19.1.0\r\n"
+	}
+	fakePath := filepath.Join(fakeDir, fakeName)
+	if err := os.WriteFile(fakePath, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(fakePath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("rejects-non-22", func(t *testing.T) {
+		t.Setenv("LLVM_CONFIG", "")
+		t.Setenv("PATH", fakeDir)
+		if p, ver, err := findLLCTool(); err == nil {
+			t.Fatalf("findLLCTool unexpectedly accepted non-22 llc: %q (%q)", p, ver)
+		} else if !strings.Contains(err.Error(), "LLVM 22") {
+			t.Fatalf("unexpected error for non-22 llc: %v", err)
+		}
+	})
+
+	// 2. Verify runLLCOnIR runs real -filetype=obj emission (failing on a cross-section
+	// symbol-difference relocation that -filetype=null silently accepts).
+	llcPath, ver, err := findLLCTool()
+	if err != nil {
+		t.Skipf("LLVM 22 llc unavailable: %v", err)
+	}
+	if !strings.HasPrefix(ver, "22.") && ver != "22" {
+		t.Fatalf("findLLCTool returned unexpected version %q", ver)
+	}
+	badRelocIR := `target triple = "x86_64-unknown-linux-gnu"
+@g1 = global i32 1, section ".sec_a"
+@g2 = global i32 2, section ".sec_b"
+@diff = constant i64 sub (i64 ptrtoint (ptr @g1 to i64), i64 ptrtoint (ptr @g2 to i64))
+`
+	if err := runLLCOnIR(llcPath, "amd64", t.TempDir(), badRelocIR); err == nil {
+		t.Fatalf("runLLCOnIR accepted cross-section symbol-difference relocation; expected -filetype=obj emission failure")
+	}
+	goodIR := `target triple = "x86_64-unknown-linux-gnu"
+define i64 @ok(i64 %x) {
+  %y = add i64 %x, 1
+  ret i64 %y
+}
+`
+	if err := runLLCOnIR(llcPath, "amd64", t.TempDir(), goodIR); err != nil {
+		t.Fatalf("runLLCOnIR rejected valid IR: %v", err)
 	}
 }
 

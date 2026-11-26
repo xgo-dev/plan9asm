@@ -31,6 +31,10 @@ for goarch in "${required_arches[@]}"; do
   if [[ "$goarch" == "wasm" ]]; then
     goos=js
   fi
+  extra_args=()
+  if [[ -n "${PLAN9ASM_DIFF_REPORT_DIR:-}" && -f "${PLAN9ASM_DIFF_REPORT_DIR}/${goarch}.json" ]]; then
+    extra_args+=("-diff-report=${PLAN9ASM_DIFF_REPORT_DIR}/${goarch}.json")
+  fi
   go run ./cmd/plan9asmscan \
     -corpus=go-asm \
     -goroot="$go_root" \
@@ -38,6 +42,7 @@ for goarch in "${required_arches[@]}"; do
     -goarch="$goarch" \
     -repo-root=. \
     -verify-obj \
+    "${extra_args[@]}" \
     -format=json \
     -out="$tmp_root/$goarch.json"
 done
@@ -118,9 +123,14 @@ for report_path in report_paths:
         )
     if not report.get("object_compiled_verified"):
         raise SystemExit(f"{version}/{arch}: -verify-obj did not run")
+    llvm_ver = report.get("object_compile_llvm_version", "")
+    if not (llvm_ver.startswith("22.") or llvm_ver == "22"):
+        raise SystemExit(
+            f"{version}/{arch}: -verify-obj must use LLVM 22, got {llvm_ver!r}"
+        )
     if report.get("object_compile_failed_forms", 0) != 0 or report.get("object_compiled_forms", 0) != report["supported_forms"]:
         raise SystemExit(
-            f"{version}/{arch}: LLVM llc object compilation mismatch: "
+            f"{version}/{arch}: LLVM {llvm_ver} llc -filetype=obj object emission mismatch: "
             f"object_compiled={report.get('object_compiled_forms', 0)}, "
             f"ir_generated={report['supported_forms']}, "
             f"failed={report.get('object_compile_failed_forms', 0)}"
@@ -135,13 +145,17 @@ for report_path in report_paths:
         field for field in fields
         if report.get(field) != expected.get(field)
     ]
+    diff_summary = (
+        f"diff_verified={report.get('diff_verified_forms', 0)} hw_pending={report.get('hw_pending_forms', 0)}"
+        if report.get("diff_report_loaded")
+        else f"diff_verified=not-run manifest_execute={report.get('manifest_execute_forms', report['runtime_verified_forms'])} manifest_hw_gated={report.get('manifest_hw_gated_forms', 0)}"
+    )
     print(
         f"{version}/{arch}: official={report['official_opcodes']} "
         f"ops={report['unique_ops']} forms={report['unique_forms']} "
         f"ir_generated={report.get('ir_generated_forms', report['supported_forms'])} "
-        f"object_compiled={report.get('object_compiled_forms', 0)} "
-        f"diff_verified={report.get('diff_verified_forms', report['runtime_verified_forms'])} "
-        f"hw_pending={report.get('hw_pending_forms', 0)} "
+        f"object_compiled={report.get('object_compiled_forms', 0)}(llvm-{llvm_ver}) "
+        f"{diff_summary} "
         f"context={report['context_forms']} "
         f"unsupported={report['unsupported_forms']} "
         f"compile_only={report.get('compile_only_forms', 0)} "

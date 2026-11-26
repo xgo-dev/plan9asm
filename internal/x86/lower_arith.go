@@ -77,7 +77,9 @@ func (c *amd64Ctx) x86FlagSlots() []x86FlagSlot {
 }
 
 func (c *amd64Ctx) packX86Flags() string {
-	packed := "2" // architectural bit 1 is always set
+	// Architectural reserved bit 1 (0x002) and ring-3 user-mode IF bit 9 (0x200)
+	// are always set in RFLAGS/EFLAGS/FLAGS.
+	packed := "514" // 0x202
 	for _, flag := range c.x86FlagSlots() {
 		v := c.loadFlag(flag.slot)
 		ext := c.newTmp()

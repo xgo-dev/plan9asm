@@ -326,9 +326,13 @@ union is intentional: operand-class names and generated SVE encoders evolve
 between releases, so using only the newest tree would lose forms that existed
 in earlier supported releases.
 
-The Go 1.27 `go-asm` snapshot reports three separated verification metrics per architecture (`ir_generated`, `object_compiled` via `-verify-obj`, and `diff_verified` via executable conformance), alongside explicit `unsupported` and hardware-feature-gated (`hw_pending`) counts:
+The Go 1.27 `go-asm` snapshot reports three separated verification metrics per architecture:
 
-| GOARCH | official names | encoder forms | observed ops | observed forms | IR generated | object compiled (`llc`) | diff verified | hw pending | context | unsupported | parse failures |
+1. **`ir_generated_forms`**: concrete forms that lower to LLVM IR without error.
+2. **`object_compiled_forms`** (`-verify-obj`): forms whose emitted IR is compiled by **LLVM 22 `llc -filetype=obj -o <tmp.o>`** into a real non-empty object file (`0` object-emission failures).
+3. **`diff_verified_forms` & `hw_pending_forms`** (`-diff-report <file>`): populated **strictly from an actual differential gate execution report** (never copied from the static manifest). Without `-diff-report`, `diff_report_loaded` is `false` and `diff_verified_forms` is `0`, while the static manifest counts remain visible separately under `manifest_execute_forms` and `manifest_hw_gated_forms`.
+
+| GOARCH | official names | encoder forms | observed ops | observed forms | IR generated | object compiled (`llc-22 -filetype=obj`) | manifest execute | manifest hw-gated | context | unsupported | parse failures |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 50 | 50 | 0 | 0 | 6 | 4 | 0 |
 | amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 6423 | 6423 | 168 | 14 | 6 | 313 | 0 |
@@ -343,23 +347,26 @@ use plan9asm's concrete shape classification and can outnumber encoder rows
 because generated testdata varies registers, address shapes, and concrete
 encodings.
 
-Important scope notes (IR generation and `llc` object compilation are tracked
-separately from semantic differential execution):
+Important scope notes (IR generation, LLVM 22 `-filetype=obj` object emission,
+static manifest declarations, and live differential execution are tracked
+separately):
 
 - **amd64**: 6,423 observed Go 1.27 assembler corpus forms lower to LLVM IR and
-  compile through LLVM 22 `llc` (`object_compiled = 6423`, `0` compile failures),
-  while 313 unmodeled forms are explicitly rejected with queryable reasons in
-  `unsupported_catalog` (217 unmodeled AVX-512 special FP ops `VRCP14/28*`,
-  `VRSQRT14/28*`, `VEXP2*`, `VGETEXP*`, `VGETMANT*`, `VRNDSCALE*`, `VREDUCE*`,
-  `VSCALEF*`, `VRANGE*`, `VFIXUPIMM*`; 16 non-`0x0c` `PCMP*STR*` forms; 79
+  emit real target object files via LLVM 22 `llc -filetype=obj`
+  (`object_compiled = 6423`, `0` compile failures), while 313 unmodeled forms
+  are explicitly rejected with queryable reasons in `unsupported_catalog` (217
+  unmodeled AVX-512 special FP ops `VRCP14/28*`, `VRSQRT14/28*`, `VEXP2*`,
+  `VGETEXP*`, `VGETMANT*`, `VRNDSCALE*`, `VREDUCE*`, `VSCALEF*`, `VRANGE*`,
+  `VFIXUPIMM*`; 16 non-`0x0c` `PCMP*STR*` forms; 79
   privileged/system/segment/RTM/extended-state/far-return/wait stubs; 1
-  unmodeled `FPATAN`). In addition, `168` concrete forms are semantically
-  differentially verified via the mandatory `amd64-diff-gate` CI job
-  (`PLAN9ASM_REQUIRE_AMD64_DIFF=1`, comparing Go's native amd64 assembler
-  against `TranslateGoModule -> LLVM 22 -O2 -> llc` on identical `.s` sources
-  and input vectors), of which `14` depend on optional CPU ISA features
-  (`adx`, `ssse3`/`sse4.1`/`sse4.2`, `sha-ni`) tracked in `hw_pending_by_form`.
-- **386**: 50 observed corpus forms lower and compile through LLVM 22 `llc`;
+  unmodeled `FPATAN`). In the mandatory `amd64-diff-gate` CI job
+  (`PLAN9ASM_REQUIRE_AMD64_DIFF=1`, `PLAN9ASM_DIFF_REPORT_OUT`), the live
+  execution report traces every executed case back to its exact manifest forms
+  and records actual `diff_verified_forms` vs `hw_pending_forms` on the runner
+  CPU (e.g., on an `amd64` runner with ADX/SSE4.2/SHA-NI, `diff_verified = 168`
+  and `hw_pending = 0`; on a CPU lacking SHA-NI, the 7 SHA-NI forms report as
+  `hw_pending` with `missing_hw_features: ["sha-ni"]`).
+- **386**: 50 observed corpus forms lower and emit real objects via LLVM 22 `llc -filetype=obj`;
   4 privileged/segment/control-register forms (`MOVL CR*`, `POPL SS`, `PUSHL CS/DS/ES/FS/GS/SS`) are explicitly rejected.
 - **arm64**: all non-SVE scalar, FP, and NEON forms in the Go 1.27 corpus have
   0 unsupported forms (privileged `AT`/`IC` and raw-word `DWORD` are explicitly
@@ -370,23 +377,23 @@ separately from semantic differential execution):
   with placeholder IR.
 - **wasm**: `ProbeInstructionWith` invokes the real WebAssembly lowerer under
   `WASMABIGo`. On the Go 1.27 `go-asm` stdlib corpus this yields 68 IR-generated
-  and `llc`-compiled forms, 52 context-required forms, and 0 unsupported; on the
-  full 462-op Wasm encoder scan it yields 440 IR-generated, 13 context-required,
-  and 9 explicitly unsupported (`DataDrop`, `ElemDrop`, `MemoryInit`,
-  `ResumePoint`, `TableCopy`, `TableFill`, `TableGrow`, `TableInit`,
-  `TableSize`).
+  and `llc -filetype=obj`-compiled forms, 52 context-required forms, and 0
+  unsupported; on the full 462-op Wasm encoder scan it yields 440 IR-generated,
+  13 context-required, and 9 explicitly unsupported (`DataDrop`, `ElemDrop`,
+  `MemoryInit`, `ResumePoint`, `TableCopy`, `TableFill`, `TableGrow`,
+  `TableInit`, `TableSize`).
 
-Query the explicit unsupported catalog and hardware-feature-gated forms directly
-from JSON output:
+Run the mandatory amd64 machine-code differential gate and produce an
+execution-traceable coverage report (fails loudly on amd64 if LLVM 22 is
+missing or zero cases execute):
+
+    PLAN9ASM_REQUIRE_AMD64_DIFF=1 PLAN9ASM_DIFF_REPORT_OUT=/tmp/amd64-diff.json \
+      go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate)$' .
 
     go run ./cmd/plan9asmscan \
       -corpus go-asm -goroot "$(go env GOROOT)" -goos linux -goarch amd64 \
-      -repo-root . -verify-obj -format json | jq '{ir: .ir_generated_forms, obj: .object_compiled_forms, diff: .diff_verified_forms, hw_pending: .hw_pending_forms, unsupported: .unsupported_catalog}'
-
-Run the mandatory amd64 machine-code differential gate (fails loudly on amd64
-if LLVM 22 is missing or zero cases execute):
-
-    PLAN9ASM_REQUIRE_AMD64_DIFF=1 go test -v -count=1 -run '^TestAMD64MachineCodeDifferentialGate$' .
+      -repo-root . -verify-obj -diff-report /tmp/amd64-diff.json -format json \
+      | jq '{llvm: .object_compile_llvm_version, ir: .ir_generated_forms, obj: .object_compiled_forms, diff_loaded: .diff_report_loaded, diff: .diff_verified_forms, hw_pending: .hw_pending_forms, manifest_execute: .manifest_execute_forms, unsupported: .unsupported_catalog}'
 
 The machine-readable cross-version snapshots are in
 `testdata/coverage/go-asm-baseline.json`. On Go 1.27, a CI fingerprint mismatch

@@ -314,6 +314,7 @@ int main(void) {
 }
 `
 	compileAndRunRuntimeTestForTarget(t, llc, clang, "amd64_conformance", triple, ll, mainC, runPrefix)
+	recordAMD64ConformanceManifestCases(t, "amd64/conformance_amd64.s", runtime.GOARCH == "amd64" || crossRosetta)
 }
 
 func rosettaAvailable() bool {
