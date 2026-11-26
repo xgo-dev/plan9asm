@@ -1305,9 +1305,27 @@ int main(void) {
 	}
 
 	// Step 3: Native Go amd64 vs LLVM 22 X87Hardware machine-code differential comparison!
-	if runtime.GOARCH != "amd64" {
+	if runtime.GOARCH != "amd64" || hostTriple == "" {
 		t.Logf("portable X87Software execution + X87Hardware llc verification PASSED; native amd64 Go-asm x87 diff runs on amd64 runners")
 		return
+	}
+
+	hwLinkObjPath := hwObjPath
+	if hostTriple != "x86_64-unknown-linux-gnu" {
+		hwOptBytes, err := os.ReadFile(hwOptPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hwHostIR := strings.Replace(string(hwOptBytes), `target triple = "x86_64-unknown-linux-gnu"`, `target triple = "`+hostTriple+`"`, 1)
+		hwHostPath := filepath.Join(tmp, "x87_hw_host.ll")
+		hwHostObjPath := filepath.Join(tmp, "x87_hw_host.o")
+		if err := os.WriteFile(hwHostPath, []byte(hwHostIR), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(llcTool, "-mtriple="+hostTriple, "-filetype=obj", hwHostPath, "-o", hwHostObjPath).CombinedOutput(); err != nil {
+			t.Fatalf("llc host (%s, X87Hardware) failed: %v\n%s", hostTriple, err, out)
+		}
+		hwLinkObjPath = hwHostObjPath
 	}
 
 	harnessPath := filepath.Join(tmp, "x87_hw_harness.c")
@@ -1318,7 +1336,11 @@ int main(void) {
 	if runtime.GOOS == "windows" {
 		hwBin += ".exe"
 	}
-	if out, err := exec.Command(clangTool, "-O2", harnessPath, hwObjPath, "-lm", "-o", hwBin).CombinedOutput(); err != nil {
+	linkArgs := []string{"-O2", harnessPath, hwLinkObjPath, "-o", hwBin}
+	if runtime.GOOS != "windows" {
+		linkArgs = append(linkArgs, "-lm")
+	}
+	if out, err := exec.Command(clangTool, linkArgs...).CombinedOutput(); err != nil {
 		t.Fatalf("clang link X87Hardware harness failed: %v\n%s", err, out)
 	}
 	hwOut, err := exec.Command(hwBin).CombinedOutput()
