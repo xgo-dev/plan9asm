@@ -557,6 +557,30 @@ done:
 				sig:  sig,
 				ok:   false,
 			},
+			{
+				name: "LOCK CMPXCHGL sets ZF for SETEQ result (internal/runtime/atomic Cas idiom)",
+				src:  "TEXT ·Cas(SB),NOSPLIT,$0-17\nMOVQ ptr+0(FP), BX\nMOVL old+8(FP), AX\nMOVL new+12(FP), CX\nLOCK\nCMPXCHGL CX, 0(BX)\nSETEQ ret+16(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name: "example.Cas",
+					Args: []asm.LLVMType{asm.Ptr, asm.I32, asm.I32},
+					Ret:  asm.I8,
+					Frame: asm.FrameLayout{
+						Params: []asm.FrameSlot{
+							{Offset: 0, Type: asm.Ptr, Index: 0, Field: -1},
+							{Offset: 8, Type: asm.I32, Index: 1, Field: -1},
+							{Offset: 12, Type: asm.I32, Index: 2, Field: -1},
+						},
+						Results: []asm.FrameSlot{{Offset: 16, Type: asm.I8, Index: 0, Field: -1}},
+					},
+				},
+				ok: true,
+			},
+			{
+				name: "KMOVW k, r32 zero-extends to 64-bit GP (internal/runtime/gc/scan FilterNilAVX512 idiom)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nKMOVW K1, R15\nPOPCNTL R15, R15\nMOVQ R15, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {

@@ -1079,6 +1079,28 @@ func x86ABI0OpWidths(op asm.Op, spec asm.OpSpec, args []asm.Operand, goarch stri
 		return 2, 8
 	case "MOVLQZX", "MOVLQSX":
 		return 4, 8
+	case "KMOVB":
+		// KMOVB k, r32 zero-extends to 32/64 bits on GP destination.
+		if len(args) == 2 && args[1].Kind == asm.OpReg && !isAMD64KReg(args[1].Reg) {
+			return 1, 4
+		}
+		return 1, 1
+	case "KMOVW":
+		// KMOVW k, r32 zero-extends to 32/64 bits on GP destination.
+		if len(args) == 2 && args[1].Kind == asm.OpReg && !isAMD64KReg(args[1].Reg) {
+			return 2, 4
+		}
+		return 2, 2
+	case "PMOVMSKB", "VPMOVMSKB", "MOVMSKPS", "VMOVMSKPS", "MOVMSKPD", "VMOVMSKPD":
+		return 16, 4
+	case "PEXTRB", "VPEXTRB", "PEXTRW", "VPEXTRW", "PEXTRD", "VPEXTRD":
+		if len(args) >= 2 && args[len(args)-1].Kind == asm.OpReg {
+			return 16, 4
+		}
+	case "PEXTRQ", "VPEXTRQ":
+		if len(args) >= 2 && args[len(args)-1].Kind == asm.OpReg {
+			return 16, 8
+		}
 	case "CVTSI2SSL", "CVTSI2SDL", "CVTSS2SIL", "CVTSD2SIL", "CVTTSS2SIL", "CVTTSD2SIL",
 		"VCVTSI2SSL", "VCVTSI2SDL", "VCVTSS2SIL", "VCVTSD2SIL", "VCVTTSS2SIL", "VCVTTSD2SIL":
 		return 4, 4
@@ -1431,17 +1453,33 @@ func isX86GPFlagWriter(op asm.Op) bool {
 		"INCB", "INCW", "INCL", "INCQ",
 		"DECB", "DECW", "DECL", "DECQ",
 		"NEGB", "NEGW", "NEGL", "NEGQ",
+		"MULB", "MULW", "MULL", "MULQ",
+		"IMULB", "IMULW", "IMULL", "IMULQ",
+		"CMPXCHGB", "CMPXCHGW", "CMPXCHGL", "CMPXCHGQ", "CMPXCHG8B", "CMPXCHG16B",
+		"XADDB", "XADDW", "XADDL", "XADDQ",
 		"BTB", "BTW", "BTL", "BTQ",
 		"BTSW", "BTSL", "BTSQ", "BTRW", "BTRL", "BTRQ", "BTCW", "BTCL", "BTCQ",
 		"SHLB", "SHLW", "SHLL", "SHLQ", "SALB", "SALW", "SALL", "SALQ",
 		"SHRB", "SHRW", "SHRL", "SHRQ", "SARB", "SARW", "SARL", "SARQ",
 		"ROLB", "ROLW", "ROLL", "ROLQ", "RORB", "RORW", "RORL", "RORQ",
 		"RCLB", "RCLW", "RCLL", "RCLQ", "RCRB", "RCRW", "RCRL", "RCRQ",
+		"SHLDW", "SHLDL", "SHLDQ", "SHRDW", "SHRDL", "SHRDQ",
+		"ANDNL", "ANDNQ", "BLSIL", "BLSIQ", "BLSMSKL", "BLSMSKQ", "BLSRL", "BLSRQ",
+		"BEXTRL", "BEXTRQ", "BZHIL", "BZHIQ",
 		"BSFW", "BSFL", "BSFQ", "BSRW", "BSRL", "BSRQ",
 		"TZCNTW", "TZCNTL", "TZCNTQ", "LZCNTW", "LZCNTL", "LZCNTQ",
 		"POPCNTW", "POPCNTL", "POPCNTQ",
+		"CMPSB", "CMPSW", "CMPSL", "CMPSQ", "SCASB", "SCASW", "SCASL", "SCASQ",
+		"PCMPESTRI", "PCMPESTRM", "PCMPISTRI", "PCMPISTRM",
+		"VPCMPESTRI", "VPCMPESTRM", "VPCMPISTRI", "VPCMPISTRM",
+		"RDRAND", "RDRANDW", "RDRANDL", "RDRANDQ",
+		"RDSEED", "RDSEEDW", "RDSEEDL", "RDSEEDQ",
+		"KORTESTB", "KORTESTW", "KORTESTD", "KORTESTQ",
+		"KTESTB", "KTESTW", "KTESTD", "KTESTQ",
 		"COMISS", "COMISD", "UCOMISS", "UCOMISD", "PTEST",
-		"VCOMISS", "VCOMISD", "VUCOMISS", "VUCOMISD", "VPTEST":
+		"VCOMISS", "VCOMISD", "VUCOMISS", "VUCOMISD", "VPTEST",
+		"FCOMI", "FCOMIP", "FUCOMI", "FUCOMIP",
+		"SAHF", "POPFL", "POPFQ", "CMC", "XTEST":
 		return true
 	}
 	return false
