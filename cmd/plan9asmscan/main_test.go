@@ -362,13 +362,30 @@ GLOBL foo(SB), RODATA, $8
 	if len(rep.ClusterStats) == 0 || len(rep.FamilyStats) == 0 {
 		t.Fatalf("buildReport() expected cluster/family stats")
 	}
-	if rep.RuntimeVerifiedForms != 1 {
-		t.Fatalf("RuntimeVerifiedForms = %d, want 1", rep.RuntimeVerifiedForms)
+	if rep.RuntimeVerifiedForms != 1 || rep.DiffVerifiedForms != 1 || rep.IRGeneratedForms != rep.SupportedForms {
+		t.Fatalf("metrics mismatch: runtime=%d diff=%d ir=%d supported=%d",
+			rep.RuntimeVerifiedForms, rep.DiffVerifiedForms, rep.IRGeneratedForms, rep.SupportedForms)
+	}
+	attachHWPendingCatalog(&rep, map[string][]string{"amd64\x00MOVQ immediate,gpr64": {"sse4.2"}})
+	if rep.HWPendingForms != 1 || len(rep.HWPendingByForm) != 1 {
+		t.Fatalf("HWPendingForms = %d (%#v), want 1", rep.HWPendingForms, rep.HWPendingByForm)
+	}
+	attachObjectCompilation(&rep, map[string]bool{"MOVQ immediate,gpr64": true}, nil)
+	if !rep.ObjectCompiledVerified || rep.ObjectCompiledForms != 1 {
+		t.Fatalf("object compilation metrics = (%v, %d), want (true, 1)", rep.ObjectCompiledVerified, rep.ObjectCompiledForms)
+	}
+	if got := normalizeUnsupportedReason(`plan9asm.probe: "FXSAVE (BX)": amd64: unsupported instruction FXSAVE (x87/SSE/XSAVE state save/restore is not modeled): "FXSAVE (BX)"`); got != "x87/SSE/XSAVE state save/restore is not modeled" {
+		t.Fatalf("normalizeUnsupportedReason = %q", got)
 	}
 
 	md := string(renderMarkdown(rep))
 	for _, want := range []string{
 		"# Plan9 Asm Scan Report (linux/amd64)",
+		"metric 1 — IR generated",
+		"metric 2 — object compiled",
+		"metric 3 — semantically differentially verified",
+		"## Explicit Unsupported Catalog (grouped by reason)",
+		"## Hardware-Feature-Gated Forms (optional ISA)",
 		"## Cluster Summary",
 		"## Unsupported Ops (vs current lowerers)",
 		"good.s",

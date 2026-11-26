@@ -193,10 +193,10 @@ func (c *amd64Ctx) lowerM3Tail(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		return false, false, nil
 	}
 	switch spec.LLVMOp {
-	case "vrcp", "vrsqrt", "vexp2", "vgetexp", "vgetmant", "vrndscale", "vreduce", "round":
+	case "round":
 		return true, false, c.lowerX86M3FPUnary(spec, zeroMask, bcst, ins)
-	case "vscalef", "vrange", "vfixupimm":
-		return true, false, c.lowerX86M3FPBinary(spec, zeroMask, bcst, ins)
+	case "vrcp", "vrsqrt", "vexp2", "vgetexp", "vgetmant", "vrndscale", "vreduce", "vscalef", "vrange", "vfixupimm":
+		return true, false, fmt.Errorf("amd64: unsupported instruction %s (AVX-512 special FP semantics are not yet accurately modeled): %q", ins.Op, ins.Raw)
 	case "vfpclass":
 		return true, false, c.lowerX86VFPClass(spec, bcst, ins)
 	case "addsub", "fhaddsub":
@@ -208,7 +208,7 @@ func (c *amd64Ctx) lowerM3Tail(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 	case "cmps", "lods", "scas", "movs", "stos":
 		return true, false, c.lowerX86M3String(spec, ins)
 	case "sys_mem", "sys_rm":
-		return true, false, c.lowerX86M3Sys(spec, ins)
+		return true, false, fmt.Errorf("amd64: unsupported instruction %s (privileged/system descriptor or wait instruction is not modeled): %q", ins.Op, ins.Raw)
 	}
 	return false, false, nil
 }
@@ -226,103 +226,20 @@ func x86RoundIntrinsic(imm int64) string {
 	}
 }
 
-func (c *amd64Ctx) emitX86FPUnaryCore(opName string, imm int64, lanes, laneBits int, fpTy, mangle, x string) string {
-	one := "1.0"
-	if lanes > 1 {
-		elems := make([]string, lanes)
-		elem := "double 1.0"
-		if laneBits == 32 {
-			elem = "float 1.0"
-		}
-		for i := range elems {
-			elems[i] = elem
-		}
-		one = "<" + strings.Join(elems, ", ") + ">"
-	}
-	switch opName {
-	case "vrcp":
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fdiv %s %s, %s\n", t, fpTy, one, x)
-		return "%" + t
-	case "vrsqrt":
-		sq, d := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.sqrt.%s(%s %s)\n", sq, fpTy, mangle, fpTy, x)
-		fmt.Fprintf(c.b, "  %%%s = fdiv %s %s, %%%s\n", d, fpTy, one, sq)
-		return "%" + d
-	case "vexp2":
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.exp2.%s(%s %s)\n", t, fpTy, mangle, fpTy, x)
-		return "%" + t
-	case "round", "vrndscale":
-		fn := x86RoundIntrinsic(imm)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %s)\n", t, fpTy, fn, mangle, fpTy, x)
-		return "%" + t
-	case "vreduce":
-		fn := x86RoundIntrinsic(imm)
-		r, sub := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %s)\n", r, fpTy, fn, mangle, fpTy, x)
-		fmt.Fprintf(c.b, "  %%%s = fsub %s %s, %%%s\n", sub, fpTy, x, r)
-		return "%" + sub
-	case "vgetexp":
-		// Extract unbiased IEEE-754 exponent as floating-point value.
-		intTy := fmt.Sprintf("i%d", laneBits)
-		if lanes > 1 {
-			intTy = fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-		}
-		shiftAmt, maskVal, biasVal := int64(52), int64(0x7ff), int64(1023)
-		if laneBits == 32 {
-			shiftAmt, maskVal, biasVal = 23, 0xff, 127
-		}
-		shiftOp := fmt.Sprintf("%d", shiftAmt)
-		maskOp := fmt.Sprintf("%d", maskVal)
-		biasOp := fmt.Sprintf("%d", biasVal)
-		if lanes > 1 {
-			shiftOp = x86IntSplat(lanes, laneBits, shiftAmt)
-			maskOp = x86IntSplat(lanes, laneBits, maskVal)
-			biasOp = x86IntSplat(lanes, laneBits, biasVal)
-		}
-		bi, sh, an, sub, fp := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bi, fpTy, x, intTy)
-		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %s\n", sh, intTy, bi, shiftOp)
-		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", an, intTy, sh, maskOp)
-		fmt.Fprintf(c.b, "  %%%s = sub %s %%%s, %s\n", sub, intTy, an, biasOp)
-		fmt.Fprintf(c.b, "  %%%s = sitofp %s %%%s to %s\n", fp, intTy, sub, fpTy)
-		return "%" + fp
-	default: // vgetmant
-		intTy := fmt.Sprintf("i%d", laneBits)
-		if lanes > 1 {
-			intTy = fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-		}
-		mantMask, expOne := int64(0x000fffffffffffff), int64(0x3ff0000000000000)
-		if laneBits == 32 {
-			mantMask, expOne = 0x007fffff, 0x3f800000
-		}
-		mmOp, eoOp := fmt.Sprintf("%d", mantMask), fmt.Sprintf("%d", expOne)
-		if lanes > 1 {
-			mmOp = x86IntSplat(lanes, laneBits, mantMask)
-			eoOp = x86IntSplat(lanes, laneBits, expOne)
-		}
-		bi, an, orv, fp := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bi, fpTy, x, intTy)
-		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", an, intTy, bi, mmOp)
-		fmt.Fprintf(c.b, "  %%%s = or %s %%%s, %s\n", orv, intTy, an, eoOp)
-		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to %s\n", fp, intTy, orv, fpTy)
-		return "%" + fp
-	}
+func (c *amd64Ctx) emitX86FPUnaryCore(opName string, imm int64, fpTy, mangle, x string) string {
+	fn := x86RoundIntrinsic(imm)
+	t := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %s)\n", t, fpTy, fn, mangle, fpTy, x)
+	return "%" + t
 }
 
 func (c *amd64Ctx) lowerX86M3FPUnary(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Instr) error {
 	args, kreg, hasMask := x86StripEVEXMask(ins.Args)
-	hasImm := spec.LLVMOp == "vgetmant" || spec.LLVMOp == "vrndscale" || spec.LLVMOp == "vreduce" || spec.LLVMOp == "round"
-	var imm int64
-	if hasImm {
-		if len(args) < 3 || args[0].Kind != asm.OpImm {
-			return fmt.Errorf("amd64 %s expects $imm, ...: %q", spec.Op, ins.Raw)
-		}
-		imm = args[0].Imm
-		args = args[1:]
+	if len(args) < 3 || args[0].Kind != asm.OpImm {
+		return fmt.Errorf("amd64 %s expects $imm, ...: %q", spec.Op, ins.Raw)
 	}
+	imm := args[0].Imm
+	args = args[1:]
 	laneBits := int(spec.LaneBits)
 	isScalar := spec.SubOp == 1
 	if isScalar {
@@ -362,7 +279,7 @@ func (c *amd64Ctx) lowerX86M3FPUnary(spec asm.OpSpec, zeroMask, bcst bool, ins a
 		if err != nil {
 			return err
 		}
-		res := c.emitX86FPUnaryCore(spec.LLVMOp, imm, 1, laneBits, fpTy, mangle, xv)
+		res := c.emitX86FPUnaryCore(spec.LLVMOp, imm, fpTy, mangle, xv)
 		if hasMask {
 			res, err = c.x86ApplyScalarMask(kreg, zeroMask, fpTy, res, oldv)
 			if err != nil {
@@ -395,7 +312,7 @@ func (c *amd64Ctx) lowerX86M3FPUnary(spec asm.OpSpec, zeroMask, bcst bool, ins a
 	}
 	bc := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bc, vi.byteVecTy, raw, fpVecTy)
-	res := c.emitX86FPUnaryCore(spec.LLVMOp, imm, lanes, laneBits, fpVecTy, mangle, "%"+bc)
+	res := c.emitX86FPUnaryCore(spec.LLVMOp, imm, fpVecTy, mangle, "%"+bc)
 	if hasMask {
 		oldB, err := vi.loadReg(args[1].Reg)
 		if err != nil {
@@ -411,148 +328,6 @@ func (c *amd64Ctx) lowerX86M3FPUnary(spec asm.OpSpec, zeroMask, bcst bool, ins a
 	out := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", out, fpVecTy, res, vi.byteVecTy)
 	return vi.storeVec(args[1].Reg, "%"+out)
-}
-
-func (c *amd64Ctx) emitX86FPBinaryCore(opName string, imm int64, lanes int, fpTy, mangle, a, b, dstVal string) string {
-	switch opName {
-	case "vscalef":
-		fl, ex, mul := c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.floor.%s(%s %s)\n", fl, fpTy, mangle, fpTy, b)
-		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.exp2.%s(%s %%%s)\n", ex, fpTy, mangle, fpTy, fl)
-		fmt.Fprintf(c.b, "  %%%s = fmul %s %s, %%%s\n", mul, fpTy, a, ex)
-		return "%" + mul
-	case "vrange":
-		// imm[1:0]: 0=min, 1=max, 2=min_abs, 3=max_abs
-		va, vb := a, b
-		if (imm & 2) != 0 {
-			fa, fb := c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = call %s @llvm.fabs.%s(%s %s)\n", fa, fpTy, mangle, fpTy, a)
-			fmt.Fprintf(c.b, "  %%%s = call %s @llvm.fabs.%s(%s %s)\n", fb, fpTy, mangle, fpTy, b)
-			va, vb = "%"+fa, "%"+fb
-		}
-		pred := "olt"
-		if (imm & 1) != 0 {
-			pred = "ogt"
-		}
-		cmp, sel := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fcmp %s %s %s, %s\n", cmp, pred, fpTy, va, vb)
-		condTy := "i1"
-		if lanes > 1 {
-			condTy = fmt.Sprintf("<%d x i1>", lanes)
-		}
-		fmt.Fprintf(c.b, "  %%%s = select %s %%%s, %s %s, %s %s\n", sel, condTy, cmp, fpTy, a, fpTy, b)
-		return "%" + sel
-	default: // vfixupimm: preserve normal finite source values (table-controlled special cases)
-		isFin, sel := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fcmp ord %s %s, %s\n", isFin, fpTy, a, a)
-		condTy := "i1"
-		if lanes > 1 {
-			condTy = fmt.Sprintf("<%d x i1>", lanes)
-		}
-		fmt.Fprintf(c.b, "  %%%s = select %s %%%s, %s %s, %s %s\n", sel, condTy, isFin, fpTy, a, fpTy, dstVal)
-		return "%" + sel
-	}
-}
-
-func (c *amd64Ctx) lowerX86M3FPBinary(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Instr) error {
-	args, kreg, hasMask := x86StripEVEXMask(ins.Args)
-	hasImm := spec.LLVMOp == "vrange" || spec.LLVMOp == "vfixupimm"
-	var imm int64
-	if hasImm {
-		if len(args) != 4 || args[0].Kind != asm.OpImm {
-			return fmt.Errorf("amd64 %s expects $imm, src2, src1, [K,] dst: %q", spec.Op, ins.Raw)
-		}
-		imm = args[0].Imm
-		args = args[1:]
-	} else if len(args) != 3 {
-		return fmt.Errorf("amd64 %s expects src2, src1, [K,] dst: %q", spec.Op, ins.Raw)
-	}
-	if args[2].Kind != asm.OpReg {
-		return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
-	}
-	laneBits := int(spec.LaneBits)
-	isScalar := spec.SubOp == 1
-	if isScalar {
-		if !isAMD64XReg(args[2].Reg) {
-			return fmt.Errorf("amd64 %s expects X dst: %q", spec.Op, ins.Raw)
-		}
-		fpTy, mangle := "double", "f64"
-		if laneBits == 32 {
-			fpTy, mangle = "float", "f32"
-		}
-		var a, b, oldv string
-		var err error
-		b, err = c.x86EvalScalarFPMasked(args[0], laneBits, kreg, hasMask)
-		if err == nil {
-			a, err = c.x86EvalScalarFPMasked(args[1], laneBits, kreg, hasMask)
-		}
-		if err == nil {
-			if laneBits == 32 {
-				oldv, err = c.loadXLowF32(args[2].Reg)
-			} else {
-				oldv, err = c.loadXLowF64(args[2].Reg)
-			}
-		}
-		if err != nil {
-			return err
-		}
-		// Copy upper lanes from src1.
-		up, err := c.loadXVecOperand(args[1])
-		if err != nil {
-			return err
-		}
-		if err := c.storeX(args[2].Reg, up); err != nil {
-			return err
-		}
-		res := c.emitX86FPBinaryCore(spec.LLVMOp, imm, 1, fpTy, mangle, a, b, oldv)
-		if hasMask {
-			res, err = c.x86ApplyScalarMask(kreg, zeroMask, fpTy, res, oldv)
-			if err != nil {
-				return err
-			}
-		}
-		if laneBits == 32 {
-			return c.storeXLowF32(args[2].Reg, res)
-		}
-		return c.storeXLowF64(args[2].Reg, res)
-	}
-
-	vi, ok := c.x86VecInfoForReg(args[2].Reg)
-	if !ok {
-		return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
-	}
-	lanes := vi.totalBits / laneBits
-	elemTy, mangle := "double", fmt.Sprintf("v%df64", lanes)
-	if laneBits == 32 {
-		elemTy, mangle = "float", fmt.Sprintf("v%df32", lanes)
-	}
-	fpVecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
-	bRaw, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
-	if err != nil {
-		return err
-	}
-	aRaw, err := c.x86LoadVecMasked(vi, args[1], false, laneBits, kreg, hasMask)
-	if err != nil {
-		return err
-	}
-	oldB, err := vi.loadReg(args[2].Reg)
-	if err != nil {
-		return err
-	}
-	ab, bb, ob := c.newTmp(), c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", ab, vi.byteVecTy, aRaw, fpVecTy)
-	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bb, vi.byteVecTy, bRaw, fpVecTy)
-	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", ob, vi.byteVecTy, oldB, fpVecTy)
-	res := c.emitX86FPBinaryCore(spec.LLVMOp, imm, lanes, fpVecTy, mangle, "%"+ab, "%"+bb, "%"+ob)
-	if hasMask {
-		res, err = c.x86ApplyMask(kreg, zeroMask, lanes, fpVecTy, res, "%"+ob)
-		if err != nil {
-			return err
-		}
-	}
-	out := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", out, fpVecTy, res, vi.byteVecTy)
-	return vi.storeVec(args[2].Reg, "%"+out)
 }
 
 func (c *amd64Ctx) lowerX86VFPClass(spec asm.OpSpec, bcst bool, ins asm.Instr) error {
@@ -1166,37 +941,53 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 		return c.storeRegSized(asm.DX, asm.I16, "%"+as)
 
 	case "lahf":
-		// AH bits: SF(7), ZF(6), AF(4)=0, PF(2), 1(1), CF(0)
+		if len(ins.Args) != 0 {
+			return fmt.Errorf("amd64 LAHF takes no operands: %q", ins.Raw)
+		}
+		// Architectural AH layout: SF(7), ZF(6), 0(5), AF(4), 0(3), PF(2), 1(1), CF(0)
 		sf := c.loadFlag(c.flagsSltSlot)
 		zf := c.loadFlag(c.flagsZSlot)
+		af := "false"
+		if c.flagsAFSlot != "" {
+			af = c.loadFlag(c.flagsAFSlot)
+		}
 		pf := c.loadFlag(c.flagsPFSlot)
 		cf := c.loadFlag(c.flagsCFSlot)
-		s8, z8, p8, c8 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-		sSh, zSh, pSh, o1, o2, o3, res := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		s8, z8, a8, p8, c8 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		sSh, zSh, aSh, pSh, o1, o2, o3, o4, res := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", s8, sf)
 		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", z8, zf)
+		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", a8, af)
 		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", p8, pf)
 		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", c8, cf)
 		fmt.Fprintf(c.b, "  %%%s = shl i8 %%%s, 7\n", sSh, s8)
 		fmt.Fprintf(c.b, "  %%%s = shl i8 %%%s, 6\n", zSh, z8)
+		fmt.Fprintf(c.b, "  %%%s = shl i8 %%%s, 4\n", aSh, a8)
 		fmt.Fprintf(c.b, "  %%%s = shl i8 %%%s, 2\n", pSh, p8)
 		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o1, sSh, zSh)
-		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o2, o1, pSh)
-		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o3, o2, c8)
-		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, 2\n", res, o3)
+		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o2, o1, aSh)
+		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o3, o2, pSh)
+		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o4, o3, c8)
+		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, 2\n", res, o4)
 		return c.storeRegSized(asm.AH, asm.I8, "%"+res)
 
 	case "sahf":
+		if len(ins.Args) != 0 {
+			return fmt.Errorf("amd64 SAHF takes no operands: %q", ins.Raw)
+		}
 		ah64, err := c.loadReg(asm.AH)
 		if err != nil {
 			return err
 		}
-		cfB, cf, pfSh, pfB, pf, zfSh, zfB, zf, sfSh, sfB, sf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		cfB, cf, pfSh, pfB, pf, afSh, afB, af, zfSh, zfB, zf, sfSh, sfB, sf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 1\n", cfB, ah64)
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, cfB)
 		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 2\n", pfSh, ah64)
 		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", pfB, pfSh)
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", pf, pfB)
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 4\n", afSh, ah64)
+		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", afB, afSh)
+		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", af, afB)
 		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 6\n", zfSh, ah64)
 		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", zfB, zfSh)
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", zf, zfB)
@@ -1205,13 +996,21 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", sf, sfB)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", pf, c.flagsPFSlot)
+		if c.flagsAFSlot != "" {
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", af, c.flagsAFSlot)
+		}
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
 		return nil
 
 	case "pushw", "pushfw":
-		val := "0"
-		if spec.LLVMOp == "pushw" {
+		var val string
+		if spec.LLVMOp == "pushfw" {
+			if len(ins.Args) != 0 {
+				return fmt.Errorf("amd64 PUSHFW takes no operands: %q", ins.Raw)
+			}
+			val = c.truncI64(c.packX86Flags(), asm.I16)
+		} else {
 			if len(ins.Args) != 1 {
 				return fmt.Errorf("amd64 PUSHW expects 1 operand: %q", ins.Raw)
 			}
@@ -1221,52 +1020,42 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 				return err
 			}
 		}
-		sp, err := c.loadReg(asm.SP)
-		if err != nil {
-			return err
-		}
-		nsp, ptr := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = sub i64 %s, 2\n", nsp, sp)
-		if err := c.storeRegUnchecked(asm.SP, "%"+nsp); err != nil {
-			return err
-		}
-		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %%%s to ptr\n", ptr, nsp)
-		fmt.Fprintf(c.b, "  store i16 %s, ptr %%%s, align 1\n", val, ptr)
-		return nil
+		return c.pushI16(val)
 
 	case "popw", "popfw":
-		sp, err := c.loadReg(asm.SP)
-		if err != nil {
-			return err
-		}
-		ptr, ld, nsp := c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, sp)
-		fmt.Fprintf(c.b, "  %%%s = load i16, ptr %%%s, align 1\n", ld, ptr)
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, 2\n", nsp, sp)
-		if err := c.storeRegUnchecked(asm.SP, "%"+nsp); err != nil {
-			return err
-		}
 		if spec.LLVMOp == "popfw" {
+			if len(ins.Args) != 0 {
+				return fmt.Errorf("amd64 POPFW takes no operands: %q", ins.Raw)
+			}
+			flags16, err := c.popI16()
+			if err != nil {
+				return err
+			}
+			flags64 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i16 %s to i64\n", flags64, flags16)
+			c.unpackX86Flags("%"+flags64, 16)
 			return nil
 		}
 		if len(ins.Args) != 1 {
 			return fmt.Errorf("amd64 POPW expects 1 operand: %q", ins.Raw)
 		}
-		if ins.Args[0].Kind == asm.OpReg {
-			if isX86SystemOrSegIdent(string(ins.Args[0].Reg)) {
-				return nil
-			}
-			return c.storeRegSized(ins.Args[0].Reg, asm.I16, "%"+ld)
+		if (ins.Args[0].Kind == asm.OpReg && isX86SystemOrSegIdent(string(ins.Args[0].Reg))) ||
+			(ins.Args[0].Kind == asm.OpIdent && isX86SystemOrSegIdent(ins.Args[0].Ident)) {
+			return fmt.Errorf("amd64: unsupported POPW into segment/system register: %q", ins.Raw)
 		}
-		if ins.Args[0].Kind == asm.OpIdent && isX86SystemOrSegIdent(ins.Args[0].Ident) {
-			return nil
+		ld, err := c.popI16()
+		if err != nil {
+			return err
+		}
+		if ins.Args[0].Kind == asm.OpReg {
+			return c.storeRegSized(ins.Args[0].Reg, asm.I16, ld)
 		}
 		if isX86MemOp(ins.Args[0]) {
 			p, pty, err := c.resolveMemPtr(ins.Args[0])
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(c.b, "  store i16 %%%s, %s %s, align 1\n", ld, pty, p)
+			fmt.Fprintf(c.b, "  store i16 %s, %s %s, align 1\n", ld, pty, p)
 			return nil
 		}
 		return fmt.Errorf("amd64 POPW unsupported dst: %q", ins.Raw)
@@ -1434,36 +1223,4 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 		}
 		return c.advanceStringReg(asm.DI, di, step)
 	}
-}
-
-func (c *amd64Ctx) lowerX86M3Sys(spec asm.OpSpec, ins asm.Instr) error {
-	if len(ins.Args) != 1 {
-		return fmt.Errorf("amd64 %s expects 1 operand: %q", spec.Op, ins.Raw)
-	}
-	if spec.LLVMOp == "sys_mem" {
-		if ins.Args[0].Kind != asm.OpMem && ins.Args[0].Kind != asm.OpSym {
-			return fmt.Errorf("amd64 %s expects memory operand: %q", spec.Op, ins.Raw)
-		}
-		if spec.SubOp == 1 {
-			// SGDT / SIDT: zero-write 10-byte descriptor slot
-			var p, pty string
-			var err error
-			if ins.Args[0].Kind == asm.OpMem {
-				p, pty, err = c.ptrFromMem(ins.Args[0].Mem)
-			} else {
-				p, err = c.ptrFromSB(ins.Args[0].Sym)
-				pty = "ptr"
-			}
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(c.b, "  store i64 0, %s %s, align 1\n", pty, p)
-		}
-		return nil
-	}
-	// LLDT / LMSW / LTR / TPAUSE / UMWAIT
-	if ins.Args[0].Kind != asm.OpReg && ins.Args[0].Kind != asm.OpMem && ins.Args[0].Kind != asm.OpSym {
-		return fmt.Errorf("amd64 %s expects reg/mem operand: %q", spec.Op, ins.Raw)
-	}
-	return nil
 }

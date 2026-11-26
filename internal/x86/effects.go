@@ -28,8 +28,10 @@ type abi0State struct {
 	// fpBytesInit records initialized byte offsets in the FP frame
 	// (pre-populated with declared parameter slot bytes plus written result bytes).
 	fpBytesInit map[int64]bool
-	// spBytesInit records initialized byte offsets in the private SP stack frame.
+	// spBytesInit records initialized byte offsets in the private SP stack frame
+	// (relative to initial SP at function entry; indexed by spOffset + mem.Off).
 	spBytesInit map[int64]bool
+	spOffset    int64
 	// Architectural status flag definedness tracked independently:
 	//   - cfInit: Carry Flag (CF)
 	//   - ofInit: Overflow Flag (OF)
@@ -51,6 +53,7 @@ func (s *abi0State) clone() *abi0State {
 		vecFromRaw:   make(map[int]bool, len(s.vecFromRaw)),
 		fpBytesInit:  make(map[int64]bool, len(s.fpBytesInit)),
 		spBytesInit:  make(map[int64]bool, len(s.spBytesInit)),
+		spOffset:     s.spOffset,
 		cfInit:       s.cfInit,
 		ofInit:       s.ofInit,
 		zfInit:       s.zfInit,
@@ -113,10 +116,17 @@ func (s *abi0State) merge(other *abi0State) bool {
 			changed = true
 		}
 	}
-	for k := range s.spBytesInit {
-		if !other.spBytesInit[k] {
-			delete(s.spBytesInit, k)
+	if s.spOffset != other.spOffset {
+		if len(s.spBytesInit) > 0 {
+			s.spBytesInit = make(map[int64]bool)
 			changed = true
+		}
+	} else {
+		for k := range s.spBytesInit {
+			if !other.spBytesInit[k] {
+				delete(s.spBytesInit, k)
+				changed = true
+			}
 		}
 	}
 	if s.cfInit && !other.cfInit {
@@ -379,7 +389,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					nBytes = ptrBytes
 				}
 				for off := op.Mem.Off; off < op.Mem.Off+nBytes; off++ {
-					if !st.spBytesInit[off] {
+					if !st.spBytesInit[st.spOffset+off] {
 						return 0, false, fmt.Errorf("%w: %s reads uninitialized stack byte %d(SP) (read %d(SP) width %d)",
 							asm.ErrProbeNeedsContext, raw, off, op.Mem.Off, nBytes)
 					}
@@ -534,7 +544,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					return nil
 				}
 				for b := int64(0); b < nBytes; b++ {
-					off := op.Mem.Off + b
+					off := st.spOffset + op.Mem.Off + b
 					if b < 64 && (valMask&(uint64(1)<<uint(b))) != 0 {
 						st.spBytesInit[off] = true
 					} else {
@@ -586,9 +596,128 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			continue
 		}
 
-		if op == "UD2" || op == "HLT" {
+		if op == "UD2" || op == "HLT" || op == "UNDEF" {
 			// Trap/halt terminates the path without reaching RET.
 			continue
+		}
+
+		// Model stack-pointer displacement and pushed-slot initialization for
+		// PUSH*/POP*/ADD/SUB on SP so sequences like PUSHFQ; MOVQ 0(SP), AX; ADDQ $8, SP
+		// verify accurately.
+		switch op {
+		case "PUSHFQ":
+			st.spOffset -= 8
+			for b := int64(0); b < 8; b++ {
+				st.spBytesInit[st.spOffset+b] = true
+			}
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "POPFQ":
+			st.spOffset += 8
+			st.cfInit = true
+			st.ofInit = true
+			st.zfInit = true
+			st.sfInit = true
+			st.pfInit = true
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "PUSHFW":
+			st.spOffset -= 2
+			for b := int64(0); b < 2; b++ {
+				st.spBytesInit[st.spOffset+b] = true
+			}
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "POPFW":
+			st.spOffset += 2
+			st.cfInit = true
+			st.ofInit = true
+			st.zfInit = true
+			st.sfInit = true
+			st.pfInit = true
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "PUSHQ", "PUSHW":
+			w := int64(8)
+			if op == "PUSHW" {
+				w = 2
+			}
+			var pushMask uint64 = abi0ByteMaskN(w)
+			if len(ins.Args) == 1 {
+				m, _, err := evalOperand(st, ins.Args[0], w, false, op, ins.Raw)
+				if err != nil {
+					return nil, err
+				}
+				pushMask = m
+			}
+			st.spOffset -= w
+			for b := int64(0); b < w; b++ {
+				if (pushMask & (uint64(1) << uint(b))) != 0 {
+					st.spBytesInit[st.spOffset+b] = true
+				} else {
+					delete(st.spBytesInit, st.spOffset+b)
+				}
+			}
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "POPQ", "POPW":
+			w := int64(8)
+			if op == "POPW" {
+				w = 2
+			}
+			valMask := abi0ByteMaskN(w)
+			if len(ins.Args) == 1 {
+				specPop := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectWriteOnly}
+				if err := writeDstMask(st, ins.Args[0], w, valMask, op, specPop, false, false, false, false); err != nil {
+					return nil, err
+				}
+			}
+			st.spOffset += w
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "ADDQ", "SUBQ":
+			if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg && ins.Args[1].Reg == asm.SP {
+				if op == "ADDQ" {
+					st.spOffset += ins.Args[0].Imm
+				} else {
+					st.spOffset -= ins.Args[0].Imm
+				}
+				st.cfInit = true
+				st.ofInit = true
+				st.zfInit = true
+				st.sfInit = true
+				st.pfInit = true
+				if pc+1 < len(instrs) {
+					enqueue(pc+1, st, false)
+				} else {
+					finalState = st
+				}
+				continue
+			}
 		}
 
 		if op == "JMP" {
@@ -651,7 +780,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						for _, ps := range csig.Frame.Params {
 							sz := x86ABI0SlotBytes(ps.Type, goarch)
 							for off := ps.Offset; off < ps.Offset+sz; off++ {
-								if !st.spBytesInit[off] {
+								if !st.spBytesInit[st.spOffset+off] {
 									return nil, fmt.Errorf("%w: %s reads uninitialized outgoing ABI0 arg byte %d(SP)", asm.ErrProbeNeedsContext, ins.Raw, off)
 								}
 							}
@@ -678,7 +807,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						for _, rs := range csig.Frame.Results {
 							sz := x86ABI0SlotBytes(rs.Type, goarch)
 							for off := rs.Offset; off < rs.Offset+sz; off++ {
-								st.spBytesInit[off] = true
+								st.spBytesInit[st.spOffset+off] = true
 							}
 						}
 					} else if csig.Ret != "" && csig.Ret != asm.Void {
@@ -1380,6 +1509,8 @@ func implicitRegByteEffects(op asm.Op, spec asm.OpSpec, repeated bool, wordMask 
 		return nil, []regMaskEffect{part(asm.AX, 0x02, false)}
 	case "SAHF":
 		return []regMaskEffect{part(asm.AX, 0x02, false)}, nil
+	case "PCMPESTRI":
+		return []regMaskEffect{part(asm.AX, 0x0f, false), part(asm.DX, 0x0f, false)}, []regMaskEffect{part(asm.CX, 0x0f, true)}
 	case "XLAT":
 		return []regMaskEffect{part(asm.AX, 0x01, false), full(asm.BX)}, []regMaskEffect{part(asm.AX, 0x01, false)}
 	case "CMPXCHGB":
@@ -1570,9 +1701,9 @@ func isX86GPFlagWriter(op asm.Op) bool {
 		"KORTESTB", "KORTESTW", "KORTESTD", "KORTESTQ",
 		"KTESTB", "KTESTW", "KTESTD", "KTESTQ",
 		"COMISS", "COMISD", "UCOMISS", "UCOMISD", "PTEST",
-		"VCOMISS", "VCOMISD", "VUCOMISS", "VUCOMISD", "VPTEST",
+		"VCOMISS", "VCOMISD", "VUCOMISS", "VUCOMISD", "VPTEST", "VTESTPS", "VTESTPD",
 		"FCOMI", "FCOMIP", "FUCOMI", "FUCOMIP",
-		"SAHF", "POPFL", "POPFQ", "CMC", "XTEST":
+		"SAHF", "POPFL", "POPFQ", "POPFW", "CMC":
 		return true
 	}
 	return false
@@ -1663,6 +1794,16 @@ func updateX86FlagsAfter(st *abi0State, op asm.Op, args []asm.Operand, allInputs
 		if eff, isImm := x86ShiftEffectiveImmCount(op, args); isImm {
 			if eff == 0 {
 				// Intel SDM: effective shift count 0 leaves all flags unaffected.
+				return
+			}
+			isDouble16 := (op == "SHLDW" || op == "SHRDW") || ((op == "SHLW" || op == "SHRW") && len(args) == 3)
+			if isDouble16 && eff > 16 {
+				// Intel SDM: 16-bit SHLD/SHRD with effective count > 16 leaves result and flags undefined.
+				st.cfInit = false
+				st.ofInit = false
+				st.zfInit = false
+				st.sfInit = false
+				st.pfInit = false
 				return
 			}
 			st.cfInit = allInputsInit
@@ -1756,7 +1897,7 @@ func updateX86FlagsAfter(st *abi0State, op asm.Op, args []asm.Operand, allInputs
 		st.sfInit = true
 		st.pfInit = allInputsInit
 		return
-	case "PTEST", "VPTEST",
+	case "PTEST", "VPTEST", "VTESTPS", "VTESTPD",
 		"KORTESTB", "KORTESTW", "KORTESTD", "KORTESTQ",
 		"KTESTB", "KTESTW", "KTESTD", "KTESTQ":
 		// Intel SDM: sets ZF/CF and clears OF/SF/AF/PF to 0.

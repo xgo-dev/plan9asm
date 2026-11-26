@@ -55,7 +55,7 @@ func (c *amd64Ctx) evalI64(op asm.Operand) (string, error) {
 		return "%" + t, nil
 	case asm.OpIdent:
 		if isX86SystemOrSegIdent(op.Ident) {
-			return "0", nil
+			return "", fmt.Errorf("amd64: unsupported system/segment register operand %s (hardware descriptor/control/segment register reads are not modeled)", op.Ident)
 		}
 		return "", fmt.Errorf("amd64: unsupported i64 operand: %s", op.String())
 	default:
@@ -154,6 +154,12 @@ func (c *amd64Ctx) resolveMemAddrI64(op asm.Operand) (string, error) {
 func (c *amd64Ctx) hasSPMem() bool {
 	for _, blk := range c.blocks {
 		for _, ins := range blk.instrs {
+			switch strings.ToUpper(string(ins.Op)) {
+			case "PUSHQ", "POPQ", "PUSHFQ", "POPFQ",
+				"PUSHW", "POPW", "PUSHFW", "POPFW",
+				"LEAVEQ", "LEAVEL", "LEAVEW", "ADJSP":
+				return true
+			}
 			for _, arg := range ins.Args {
 				if arg.Kind == asm.OpMem && arg.Mem.Base == asm.SP {
 					return true

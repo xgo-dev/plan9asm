@@ -37,6 +37,7 @@ for goarch in "${required_arches[@]}"; do
     -goos="$goos" \
     -goarch="$goarch" \
     -repo-root=. \
+    -verify-obj \
     -format=json \
     -out="$tmp_root/$goarch.json"
 done
@@ -115,6 +116,15 @@ for report_path in report_paths:
             f"{version}/{arch}: official assembler corpus has "
             f"{report['parse_err_count']} unclassified parse errors"
         )
+    if not report.get("object_compiled_verified"):
+        raise SystemExit(f"{version}/{arch}: -verify-obj did not run")
+    if report.get("object_compile_failed_forms", 0) != 0 or report.get("object_compiled_forms", 0) != report["supported_forms"]:
+        raise SystemExit(
+            f"{version}/{arch}: LLVM llc object compilation mismatch: "
+            f"object_compiled={report.get('object_compiled_forms', 0)}, "
+            f"ir_generated={report['supported_forms']}, "
+            f"failed={report.get('object_compile_failed_forms', 0)}"
+        )
     expected = baseline.get("versions", {}).get(version, {}).get(arch)
     if expected is None:
         raise SystemExit(
@@ -128,10 +138,12 @@ for report_path in report_paths:
     print(
         f"{version}/{arch}: official={report['official_opcodes']} "
         f"ops={report['unique_ops']} forms={report['unique_forms']} "
-        f"supported={report['supported_forms']} "
+        f"ir_generated={report.get('ir_generated_forms', report['supported_forms'])} "
+        f"object_compiled={report.get('object_compiled_forms', 0)} "
+        f"diff_verified={report.get('diff_verified_forms', report['runtime_verified_forms'])} "
+        f"hw_pending={report.get('hw_pending_forms', 0)} "
         f"context={report['context_forms']} "
         f"unsupported={report['unsupported_forms']} "
-        f"runtime_verified={report['runtime_verified_forms']} "
         f"compile_only={report.get('compile_only_forms', 0)} "
         f"encoder_ops={report['encoder_opcodes']} "
         f"encoder_forms={report['encoder_forms']} "

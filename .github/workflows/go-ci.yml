@@ -249,6 +249,35 @@ jobs:
           PLAN9ASM_CROSS_EXEC: '1'
         run: go test . -run '^(TestCrossLinuxRuntimeMatrix|TestARM64Conformance)' -count=1 -v
 
+  amd64-diff-gate:
+    name: amd64-diff-gate (Linux, LLVM 22)
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install LLVM 22
+        run: |
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev
+          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.x'
+          cache: true
+
+      - name: Mandatory amd64 machine-code differential gate
+        env:
+          PLAN9ASM_REQUIRE_AMD64_DIFF: '1'
+        run: |
+          go test -v -count=1 -run '^(TestAMD64MachineCodeDifferentialGate|TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestStep1ExplicitUnsupportedAuditRegistry)$' .
+          go test -v -count=1 ./testdata/conformance/amd64
+
   test:
     name: test (${{ matrix.os }}, ${{ matrix.go-version }}, ${{ matrix.nested_modules }})
     permissions:

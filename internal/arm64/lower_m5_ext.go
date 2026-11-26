@@ -91,11 +91,11 @@ var arm64M5ExtSpecs = []asm.OpSpec{
 	{Op: "ST4", Family: asm.FamilyMove, SubOp: 4, Effect: asm.EffectReadOnly, LLVMOp: "stn_lane"},
 
 	// System / cache / directive ops
-	{Op: "AT", Family: asm.FamilySystem, Effect: asm.EffectNone, LLVMOp: "sys_nop"},
-	{Op: "IC", Family: asm.FamilySystem, Effect: asm.EffectNone, LLVMOp: "sys_nop"},
+	{Op: "AT", Family: asm.FamilySystem, Effect: asm.EffectNone, LLVMOp: "unsupported_sys"},
+	{Op: "IC", Family: asm.FamilySystem, Effect: asm.EffectNone, LLVMOp: "unsupported_sys"},
 	{Op: "PRFUM", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "sys_nop"},
 	{Op: "PCALIGNMAX", Family: asm.FamilyNOP, Effect: asm.EffectNone},
-	{Op: "DWORD", Family: asm.FamilyNOP, Effect: asm.EffectNone},
+	{Op: "DWORD", Family: asm.FamilySystem, Effect: asm.EffectNone, LLVMOp: "unsupported_dword"},
 }
 
 var arm64M5ExtTable = asm.NewOpTable(arm64M5ExtSpecs)
@@ -108,6 +108,10 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 	switch spec.LLVMOp {
 	case "", "sys_nop":
 		return true, false, nil
+	case "unsupported_sys":
+		return true, false, fmt.Errorf("arm64: unsupported instruction %s (privileged cache/address-translation instruction is not modeled): %q", op, ins.Raw)
+	case "unsupported_dword":
+		return true, false, fmt.Errorf("arm64: unsupported instruction DWORD (raw 64-bit data/instruction directive is not modeled): %q", ins.Raw)
 
 	case "srem", "urem":
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {

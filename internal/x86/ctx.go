@@ -62,7 +62,8 @@ type amd64Ctx struct {
 	flagsCFSlot    string // Carry Flag (CF) — bit 0 of RFLAGS
 	flagsOFSlot    string // Overflow Flag (OF) — bit 11 of RFLAGS
 	flagsPFSlot    string // Parity Flag (PF) — bit 2 of RFLAGS
-	flagsIDSlot    string // CPUID availability bit preserved by PUSHFL/POPFL
+	flagsAFSlot    string // Auxiliary Carry Flag (AF) — bit 4 of RFLAGS
+	flagsIDSlot    string // CPUID availability bit preserved by PUSHFL/POPFL/PUSHFQ/POPFQ
 	flagsWritten   bool
 	allowSPWrite   bool   // current instruction has an explicitly modeled 386 SP destination
 	directionSlot  string // x86 DF, used by MOVS/STOS/SCAS instructions
@@ -269,7 +270,15 @@ func (c *amd64Ctx) scanUsedRegs() {
 			}
 			if c.goarch == "386" {
 				switch op {
-				case "PUSHL", "POPL", "PUSHFL", "POPFL", "PUSHAL", "POPAL", "ADJSP":
+				case "PUSHL", "POPL", "PUSHFL", "POPFL", "PUSHAL", "POPAL",
+					"PUSHW", "POPW", "PUSHFW", "POPFW", "LEAVEL", "LEAVEW", "ADJSP":
+					markReg(asm.SP)
+				}
+			} else {
+				switch op {
+				case "PUSHQ", "POPQ", "PUSHFQ", "POPFQ",
+					"PUSHW", "POPW", "PUSHFW", "POPFW",
+					"LEAVEQ", "LEAVEL", "LEAVEW", "ADJSP":
 					markReg(asm.SP)
 				}
 			}
@@ -312,6 +321,7 @@ func (c *amd64Ctx) usesStringOrDir() bool {
 		for _, ins := range blk.instrs {
 			switch strings.ToUpper(string(ins.Op)) {
 			case "CLD", "STD", "REP", "REPN",
+				"PUSHFQ", "POPFQ", "PUSHFW", "POPFW",
 				"MOVSB", "MOVSW", "MOVSL", "MOVSQ",
 				"STOSB", "STOSW", "STOSL", "STOSQ",
 				"SCASB", "SCASW", "SCASL", "SCASQ",
@@ -357,6 +367,11 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		}
 		c.localStackSlot = "%local_stack"
 		fmt.Fprintf(c.b, "  %s = alloca [%d x i8]\n", c.localStackSlot, size)
+		if size <= 4096 {
+			fmt.Fprintf(c.b, "  store [%d x i8] zeroinitializer, ptr %s\n", size, c.localStackSlot)
+		} else {
+			fmt.Fprintf(c.b, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)\n", c.localStackSlot, size)
+		}
 		base := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = getelementptr inbounds [%d x i8], ptr %s, i32 0, i64 %d\n", base, size, c.localStackSlot, bias)
 		addr := c.newTmp()
@@ -443,6 +458,7 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 	c.flagsCFSlot = "%flags_cf"
 	c.flagsOFSlot = "%flags_of"
 	c.flagsPFSlot = "%flags_pf"
+	c.flagsAFSlot = "%flags_af"
 	if c.goarch == "386" {
 		c.directionSlot = "%direction_backward"
 		c.flagsIDSlot = "%flags_id"
@@ -459,6 +475,8 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsPFSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsAFSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsAFSlot)
 	if c.flagsIDSlot != "" {
 		fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsIDSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsIDSlot)
@@ -698,7 +716,15 @@ func (c *amd64Ctx) stackMovementBudget() (int64, error) {
 	for _, block := range c.blocks {
 		for _, ins := range block.instrs {
 			switch strings.ToUpper(string(ins.Op)) {
-			case "PUSHL", "POPL", "PUSHFL", "POPFL":
+			case "PUSHQ", "POPQ", "PUSHFQ", "POPFQ", "LEAVEQ":
+				if err := add(8, ins); err != nil {
+					return 0, err
+				}
+			case "PUSHW", "POPW", "PUSHFW", "POPFW", "LEAVEW":
+				if err := add(2, ins); err != nil {
+					return 0, err
+				}
+			case "PUSHL", "POPL", "PUSHFL", "POPFL", "LEAVEL":
 				if err := add(4, ins); err != nil {
 					return 0, err
 				}
@@ -712,7 +738,7 @@ func (c *amd64Ctx) stackMovementBudget() (int64, error) {
 						return 0, err
 					}
 				}
-			case "ADDL", "SUBL":
+			case "ADDL", "SUBL", "ADDQ", "SUBQ":
 				if is386SPDestination(ins) && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm {
 					if err := add(abs386StackAdjustment(int64(ins.Args[0].Imm)), ins); err != nil {
 						return 0, err
@@ -724,7 +750,7 @@ func (c *amd64Ctx) stackMovementBudget() (int64, error) {
 						return 0, err
 					}
 				}
-			case "LEAL":
+			case "LEAL", "LEAQ":
 				if is386SPDestination(ins) && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpMem &&
 					ins.Args[0].Mem.Base == asm.SP && ins.Args[0].Mem.Index == "" {
 					if err := add(abs386StackAdjustment(ins.Args[0].Mem.Off), ins); err != nil {
@@ -781,6 +807,17 @@ func models386SPWrite(ins asm.Instr) bool {
 }
 
 func (c *amd64Ctx) pushI64(v string) {
+	if c.localStackSlot != "" {
+		sp, err := c.loadReg(asm.SP)
+		if err == nil {
+			next := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = sub i64 %s, 8\n", next, sp)
+			_ = c.storeRegUnchecked(asm.SP, "%"+next)
+			p := c.ptrFromAddrI64("%" + next)
+			fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
+			return
+		}
+	}
 	sp := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", sp, c.vspSlot)
 	full := c.newTmp()
@@ -798,6 +835,18 @@ func (c *amd64Ctx) pushI64(v string) {
 }
 
 func (c *amd64Ctx) popI64() string {
+	if c.localStackSlot != "" {
+		sp, err := c.loadReg(asm.SP)
+		if err == nil {
+			p := c.ptrFromAddrI64(sp)
+			val := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", val, p)
+			next := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i64 %s, 8\n", next, sp)
+			_ = c.storeRegUnchecked(asm.SP, "%"+next)
+			return "%" + val
+		}
+	}
 	sp := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", sp, c.vspSlot)
 	empty := c.newTmp()
@@ -812,6 +861,37 @@ func (c *amd64Ctx) popI64() string {
 	val := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %%%s\n", val, ptr)
 	return "%" + val
+}
+
+func (c *amd64Ctx) pushI16(v string) error {
+	sp, err := c.loadReg(asm.SP)
+	if err != nil {
+		return err
+	}
+	next := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = sub i64 %s, 2\n", next, sp)
+	if err := c.storeRegUnchecked(asm.SP, "%"+next); err != nil {
+		return err
+	}
+	p := c.ptrFromAddrI64("%" + next)
+	fmt.Fprintf(c.b, "  store i16 %s, ptr %s, align 1\n", v, p)
+	return nil
+}
+
+func (c *amd64Ctx) popI16() (string, error) {
+	sp, err := c.loadReg(asm.SP)
+	if err != nil {
+		return "", err
+	}
+	p := c.ptrFromAddrI64(sp)
+	v := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load i16, ptr %s, align 1\n", v, p)
+	next := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = add i64 %s, 2\n", next, sp)
+	if err := c.storeRegUnchecked(asm.SP, "%"+next); err != nil {
+		return "", err
+	}
+	return "%" + v, nil
 }
 
 func (c *amd64Ctx) pushI32(v string) error {

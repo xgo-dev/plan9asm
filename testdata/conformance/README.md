@@ -21,7 +21,11 @@ tables or semantic oracle.
 Every manifest case must set `validation` to `execute` or `compile-only`.
 Compile-only is reserved for privileged, trapping, or environment-dependent
 forms and requires a non-empty `reason`. Runnable forms may not use
-compile-only merely because they are inconvenient to test.
+compile-only merely because they are inconvenient to test. Cases whose native
+hardware execution requires optional CPU ISA extensions (such as `adx`,
+`sse4.2`, or `sha-ni`) record them in `hw_features` so `cmd/plan9asmscan`
+tracks them explicitly in `hw_pending_by_form` while their target-independent
+LLVM IR is still verified against Go reference outputs on every host.
 
 One assembly routine may exercise several related forms. Setup instructions
 used only to feed the instruction under test do not need to be claimed. Tests

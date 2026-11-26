@@ -71,7 +71,29 @@ func (c *amd64Ctx) setLogicFlagsSized(ty asm.LLVMType, res string) {
 	c.setZSPFlagsSized(ty, res)
 }
 
-// setAddFlagsSized sets architectural CF, OF, ZF, SF, PF for res = dst + src.
+// setAuxCarryFlagSized computes and stores the architectural x86 Auxiliary
+// Carry Flag (AF, bit 4 of RFLAGS): carry/borrow between bit 3 and bit 4.
+// For ADD, ADC, SUB, SBB, CMP, INC, DEC, NEG, XADD, CMPXCHG, CMPS, and SCAS,
+// bit 4 of (a ^ b ^ res) is mathematically identical to carry/borrow into bit 4.
+func (c *amd64Ctx) setAuxCarryFlagSized(ty asm.LLVMType, a, b, res string) {
+	if c.flagsAFSlot == "" {
+		return
+	}
+	x1, x2, m, af := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", x1, ty, a, b)
+	fmt.Fprintf(c.b, "  %%%s = xor %s %%%s, %s\n", x2, ty, x1, res)
+	fmt.Fprintf(c.b, "  %%%s = and %s %%%s, 16\n", m, ty, x2)
+	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, 0\n", af, ty, m)
+	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", af, c.flagsAFSlot)
+}
+
+func (c *amd64Ctx) clearAuxCarryFlag() {
+	if c.flagsAFSlot != "" {
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsAFSlot)
+	}
+}
+
+// setAddFlagsSized sets architectural CF, OF, AF, ZF, SF, PF for res = dst + src.
 func (c *amd64Ctx) setAddFlagsSized(ty asm.LLVMType, dst, src, res string) {
 	cf := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp ult %s %s, %s\n", cf, ty, res, dst)
@@ -84,10 +106,11 @@ func (c *amd64Ctx) setAddFlagsSized(ty asm.LLVMType, dst, src, res string) {
 	fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %%%s\n", ovAnd, ty, sameSign, xdr)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", of, ty, ovAnd)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
+	c.setAuxCarryFlagSized(ty, dst, src, res)
 	c.setZSPFlagsSized(ty, res)
 }
 
-// setSubFlagsSized sets architectural CF, OF, ZF, SF, PF for diff = a - b.
+// setSubFlagsSized sets architectural CF, OF, AF, ZF, SF, PF for diff = a - b.
 func (c *amd64Ctx) setSubFlagsSized(ty asm.LLVMType, a, b, diff string) {
 	cf := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp ult %s %s, %s\n", cf, ty, a, b)
@@ -99,10 +122,11 @@ func (c *amd64Ctx) setSubFlagsSized(ty asm.LLVMType, a, b, diff string) {
 	fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %%%s\n", ovAnd, ty, xab, xad)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", of, ty, ovAnd)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
+	c.setAuxCarryFlagSized(ty, a, b, diff)
 	c.setZSPFlagsSized(ty, diff)
 }
 
-// setAddCarryFlagsSized sets architectural CF, OF, ZF, SF, PF for res = dst + src + carryIn.
+// setAddCarryFlagsSized sets architectural CF, OF, AF, ZF, SF, PF for res = dst + src + carryIn.
 func (c *amd64Ctx) setAddCarryFlagsSized(ty asm.LLVMType, dst, src, carryIn, res string) {
 	wTy, maxU := x86WideIntType(ty)
 	du, su, cu, u1, u2, cf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
@@ -123,10 +147,11 @@ func (c *amd64Ctx) setAddCarryFlagsSized(ty asm.LLVMType, dst, src, carryIn, res
 	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, %%%s\n", of, wTy, rs, s2)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
 
+	c.setAuxCarryFlagSized(ty, dst, src, res)
 	c.setZSPFlagsSized(ty, res)
 }
 
-// setSubBorrowFlagsSized sets architectural CF, OF, ZF, SF, PF for res = dst - src - borrowIn.
+// setSubBorrowFlagsSized sets architectural CF, OF, AF, ZF, SF, PF for res = dst - src - borrowIn.
 func (c *amd64Ctx) setSubBorrowFlagsSized(ty asm.LLVMType, dst, src, borrowIn, res string) {
 	wTy, _ := x86WideIntType(ty)
 	du, su, cu, subtr, cf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
@@ -146,10 +171,11 @@ func (c *amd64Ctx) setSubBorrowFlagsSized(ty asm.LLVMType, dst, src, borrowIn, r
 	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, %%%s\n", of, wTy, rs, s2)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
 
+	c.setAuxCarryFlagSized(ty, dst, src, res)
 	c.setZSPFlagsSized(ty, res)
 }
 
-// setIncDecFlagsSized sets architectural OF, ZF, SF, PF for INC/DEC (preserving CF).
+// setIncDecFlagsSized sets architectural OF, AF, ZF, SF, PF for INC/DEC (preserving CF).
 func (c *amd64Ctx) setIncDecFlagsSized(ty asm.LLVMType, oldVal, res string, isDec bool) {
 	of := c.newTmp()
 	minLit := x86MinSignedLiteral(ty)
@@ -159,16 +185,18 @@ func (c *amd64Ctx) setIncDecFlagsSized(ty asm.LLVMType, oldVal, res string, isDe
 		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", of, ty, res, minLit)
 	}
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
+	c.setAuxCarryFlagSized(ty, oldVal, "1", res)
 	c.setZSPFlagsSized(ty, res)
 }
 
-// setNegFlagsSized sets architectural CF, OF, ZF, SF, PF for res = -oldVal.
+// setNegFlagsSized sets architectural CF, OF, AF, ZF, SF, PF for res = -oldVal.
 func (c *amd64Ctx) setNegFlagsSized(ty asm.LLVMType, oldVal, res string) {
 	cf, of := c.newTmp(), c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %s, 0\n", cf, ty, oldVal)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
 	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", of, ty, oldVal, x86MinSignedLiteral(ty))
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
+	c.setAuxCarryFlagSized(ty, "0", oldVal, res)
 	c.setZSPFlagsSized(ty, res)
 }
 

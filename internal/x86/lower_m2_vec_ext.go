@@ -507,9 +507,21 @@ func (c *amd64Ctx) lowerX86PMAddDP(spec asm.OpSpec, zeroMask, bcst bool, ins asm
 		if err != nil {
 			return err
 		}
-		ld := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load <4 x i32>, %s %s, align 1\n", ld, pty, p)
 		lanes := vi.totalBits / 32
+		var ld string
+		if hasMask {
+			m1, err := c.x86EmitMaskedAnyActiveI1Vec(kreg, lanes)
+			if err != nil {
+				return err
+			}
+			m4 := c.newTmp()
+			ld = c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <1 x i1> %s, <1 x i1> poison, <4 x i32> zeroinitializer\n", m4, m1)
+			fmt.Fprintf(c.b, "  %%%s = call <4 x i32> @llvm.masked.load.v4i32.p0(%s %s, i32 1, <4 x i1> %%%s, <4 x i32> zeroinitializer)\n", ld, pty, p, m4)
+		} else {
+			ld = c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load <4 x i32>, %s %s, align 1\n", ld, pty, p)
+		}
 		vecTy := fmt.Sprintf("<%d x i32>", lanes)
 		oldB, err := vi.loadReg(args[2].Reg)
 		if err != nil {
@@ -1213,6 +1225,7 @@ func (c *amd64Ctx) lowerX86PTEST(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+		c.clearAuxCarryFlag()
 		return nil
 	}
 	intTy := fmt.Sprintf("i%d", vi.totalBits)
@@ -1229,6 +1242,7 @@ func (c *amd64Ctx) lowerX86PTEST(spec asm.OpSpec, ins asm.Instr) error {
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+	c.clearAuxCarryFlag()
 	return nil
 }
 
@@ -1874,6 +1888,7 @@ func (c *amd64Ctx) lowerX86KTestUnpck(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+		c.clearAuxCarryFlag()
 		return nil
 	}
 	// KTEST: ZF = (b&a) == 0, CF = (~b&a) == 0
@@ -1888,6 +1903,7 @@ func (c *amd64Ctx) lowerX86KTestUnpck(spec asm.OpSpec, ins asm.Instr) error {
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+	c.clearAuxCarryFlag()
 	return nil
 }
 

@@ -1159,6 +1159,7 @@ func (c *amd64Ctx) lowerX86ScalarFPDeclarative(spec asm.OpSpec, zeroMask bool, i
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", pf, c.flagsPFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		c.clearAuxCarryFlag()
 		return nil
 
 	case "i2f":
@@ -3119,47 +3120,7 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		return c.storeX(args[1].Reg, "%"+out)
 
 	case "pcmpstr":
-		if len(args) != 3 || args[0].Kind != asm.OpImm {
-			return fmt.Errorf("amd64 %s expects $imm, src, Xreg: %q", spec.Op, ins.Raw)
-		}
-		imm := args[0].Imm & 255
-		src1, err := c.loadXVecOperand(args[2])
-		if err != nil {
-			return err
-		}
-		src2, err := c.loadXVecOperand(args[1])
-		if err != nil {
-			return err
-		}
-		name := strings.TrimPrefix(strings.ToLower(string(spec.Op)), "v")
-		isExplicit := strings.Contains(name, "estr")
-		isMask := strings.HasSuffix(name, "m")
-		if isExplicit {
-			eax, err := c.evalIntSized(asm.Operand{Kind: asm.OpReg, Reg: asm.AX}, asm.I32)
-			if err != nil {
-				return err
-			}
-			edx, err := c.evalIntSized(asm.Operand{Kind: asm.OpReg, Reg: asm.DX}, asm.I32)
-			if err != nil {
-				return err
-			}
-			if isMask {
-				t := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = call <16 x i8> @llvm.x86.sse42.pcmpestrm128(<16 x i8> %s, i32 %s, <16 x i8> %s, i32 %s, i8 %d)\n", t, src1, eax, src2, edx, imm)
-				return c.storeX(asm.Reg("X0"), "%"+t)
-			}
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse42.pcmpestri128(<16 x i8> %s, i32 %s, <16 x i8> %s, i32 %s, i8 %d)\n", t, src1, eax, src2, edx, imm)
-			return c.storeRegSized(asm.CX, asm.I32, "%"+t)
-		}
-		if isMask {
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = call <16 x i8> @llvm.x86.sse42.pcmpistrm128(<16 x i8> %s, <16 x i8> %s, i8 %d)\n", t, src1, src2, imm)
-			return c.storeX(asm.Reg("X0"), "%"+t)
-		}
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse42.pcmpistri128(<16 x i8> %s, <16 x i8> %s, i8 %d)\n", t, src1, src2, imm)
-		return c.storeRegSized(asm.CX, asm.I32, "%"+t)
+		return fmt.Errorf("amd64: unsupported instruction %s (SSE4.2 PCMP*STR* flag semantics are currently modeled only for PCMPESTRI $0x0c): %q", spec.Op, ins.Raw)
 
 	case "vpternlog":
 		if len(args) != 4 || args[0].Kind != asm.OpImm || args[3].Kind != asm.OpReg {

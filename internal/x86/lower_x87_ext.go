@@ -309,6 +309,7 @@ func (c *amd64Ctx) lowerX87ExtCmp(op asm.Op, spec x87CmpSpec, ins asm.Instr) err
 		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", uno, c.flagsPFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		c.clearAuxCarryFlag()
 	} else {
 		c3 := c.x87IR("or i1 %s, %s", eq, uno)
 		c0 := c.x87IR("or i1 %s, %s", lt, uno)
@@ -675,33 +676,7 @@ func (c *amd64Ctx) lowerX87ExtMath(op asm.Op, ins asm.Instr) error {
 		c.popX87Value()
 		return nil
 	case "FPATAN":
-		// Target-independent atan2(y=st1, x=st0) rational approximation in pure LLVM FP IR.
-		st1, err := c.x87ValueToF64(c.loadX87Value(1))
-		if err != nil {
-			return err
-		}
-		ax := c.x87IR("call double @llvm.fabs.f64(double %s)", st0)
-		ay := c.x87IR("call double @llvm.fabs.f64(double %s)", st1)
-		swap := c.x87IR("fcmp ogt double %s, %s", ay, ax)
-		num := c.x87IR("select i1 %s, double %s, double %s", swap, ax, ay)
-		den := c.x87IR("select i1 %s, double %s, double %s", swap, ay, ax)
-		denSafe := c.x87IR("select i1 %s, double 1.0, double %s", c.x87IR("fcmp oeq double %s, 0.0", den), den)
-		z := c.x87IR("fdiv double %s, %s", num, denSafe)
-		z2 := c.x87IR("fmul double %s, %s", z, z)
-		// z / (1 + 0.28125 * z^2) accurately approximates atan(z) on [0, 1] without libm.
-		poly := c.x87IR("fdiv double %s, %s", z, c.x87IR("fadd double 1.0, %s", c.x87IR("fmul double 0x3FD2000000000000, %s", z2)))
-		halfPi := "0x3FF921FB54442D18"
-		pi := "0x400921FB54442D18"
-		ang := c.x87IR("select i1 %s, double %s, double %s", swap, c.x87IR("fsub double %s, %s", halfPi, poly), poly)
-		xNeg := c.x87IR("fcmp olt double %s, 0.0", st0)
-		ang = c.x87IR("select i1 %s, double %s, double %s", xNeg, c.x87IR("fsub double %s, %s", pi, ang), ang)
-		yNeg := c.x87IR("fcmp olt double %s, 0.0", st1)
-		ang = c.x87IR("select i1 %s, double %s, double %s", yNeg, c.x87IR("fneg double %s", ang), ang)
-		if err := storeF64(1, ang); err != nil {
-			return err
-		}
-		c.popX87Value()
-		return nil
+		return fmt.Errorf("%s: unsupported instruction FPATAN (exact x87 atan2 semantics are not yet modeled): %q", c.goarch, ins.Raw)
 	case "FPREM", "FPREM1":
 		st1, err := c.x87ValueToF64(c.loadX87Value(1))
 		if err != nil {

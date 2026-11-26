@@ -326,15 +326,15 @@ union is intentional: operand-class names and generated SVE encoders evolve
 between releases, so using only the newest tree would lose forms that existed
 in earlier supported releases.
 
-The Go 1.27 `go-asm` snapshot currently reports:
+The Go 1.27 `go-asm` snapshot reports three separated verification metrics per architecture (`ir_generated`, `object_compiled` via `-verify-obj`, and `diff_verified` via executable conformance), alongside explicit `unsupported` and hardware-feature-gated (`hw_pending`) counts:
 
-| GOARCH | official names | encoder forms | observed ops | observed forms | supported | context | unsupported | runtime verified | parse failures |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 54 | 6 | 0 | 0 | 0 |
-| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 6736 | 6 | 0 | 35 | 0 |
-| arm | 181 | 528 | 135 | 500 | 459 | 41 | 0 | 0 | 0 |
-| arm64 | 1417 including SVE | 2964 | 1281 | 2063 | 1339 | 53 | 671 | 64 | 0 |
-| wasm | 463 | 463 opcode-only rows | 71 | 120 | 68 | 52 | 0 | 0 | 0 |
+| GOARCH | official names | encoder forms | observed ops | observed forms | IR generated | object compiled (`llc`) | diff verified | hw pending | context | unsupported | parse failures |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 50 | 50 | 0 | 0 | 6 | 4 | 0 |
+| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 6423 | 6423 | 168 | 14 | 6 | 313 | 0 |
+| arm | 181 | 528 | 135 | 500 | 459 | 459 | 0 | 0 | 41 | 0 | 0 |
+| arm64 | 1417 including SVE | 2964 | 1281 | 2063 | 1339 | 1339 | 64 | 0 | 53 | 671 | 0 |
+| wasm | 463 | 463 opcode-only rows | 71 | 120 | 68 | 68 | 0 | 0 | 52 | 0 | 0 |
 
 Encoder forms use Go's internal operand classes and are a complete machine-
 readable inventory of the encoder rows; the wasm count is deliberately an
@@ -343,25 +343,50 @@ use plan9asm's concrete shape classification and can outnumber encoder rows
 because generated testdata varies registers, address shapes, and concrete
 encodings.
 
-Important scope notes (these numbers measure lowering-probe status, not full
-runtime semantic conformance):
+Important scope notes (IR generation and `llc` object compilation are tracked
+separately from semantic differential execution):
 
-- **amd64**: all 6,742 observed Go 1.27 assembler corpus forms parse and lower
-  with 0 unsupported forms (including x87 instructions such as `FADDD` and
-  `FSQRT` in both `X87Hardware` and `X87Software` modes).
+- **amd64**: 6,423 observed Go 1.27 assembler corpus forms lower to LLVM IR and
+  compile through LLVM 22 `llc` (`object_compiled = 6423`, `0` compile failures),
+  while 313 unmodeled forms are explicitly rejected with queryable reasons in
+  `unsupported_catalog` (217 unmodeled AVX-512 special FP ops `VRCP14/28*`,
+  `VRSQRT14/28*`, `VEXP2*`, `VGETEXP*`, `VGETMANT*`, `VRNDSCALE*`, `VREDUCE*`,
+  `VSCALEF*`, `VRANGE*`, `VFIXUPIMM*`; 16 non-`0x0c` `PCMP*STR*` forms; 79
+  privileged/system/segment/RTM/extended-state/far-return/wait stubs; 1
+  unmodeled `FPATAN`). In addition, `168` concrete forms are semantically
+  differentially verified via the mandatory `amd64-diff-gate` CI job
+  (`PLAN9ASM_REQUIRE_AMD64_DIFF=1`, comparing Go's native amd64 assembler
+  against `TranslateGoModule -> LLVM 22 -O2 -> llc` on identical `.s` sources
+  and input vectors), of which `14` depend on optional CPU ISA features
+  (`adx`, `ssse3`/`sse4.1`/`sse4.2`, `sha-ni`) tracked in `hw_pending_by_form`.
+- **386**: 50 observed corpus forms lower and compile through LLVM 22 `llc`;
+  4 privileged/segment/control-register forms (`MOVL CR*`, `POPL SS`, `PUSHL CS/DS/ES/FS/GS/SS`) are explicitly rejected.
 - **arm64**: all non-SVE scalar, FP, and NEON forms in the Go 1.27 corpus have
-  0 unsupported forms. Modeled SVE core instructions lower to runtime-scalable
-  LLVM IR (`@llvm.vscale.i64()`, `<vscale x N x T>`, `@llvm.aarch64.sve.*`),
-  while the 671 remaining unsupported forms are unmodeled SVE2/SME instructions
-  that are intentionally rejected rather than lowered with placeholder IR.
-- **wasm**: `ProbeInstructionWith` now invokes the real WebAssembly lowerer
-  under `WASMABIGo` rather than marking all Wasm ops context-required. On the
-  Go 1.27 `go-asm` stdlib corpus this yields 68 supported, 52 context-required
-  (control-flow / frame / symbolic forms), and 0 unsupported; on the full 462-op
-  Wasm encoder scan it yields 440 supported, 13 context-required, and 9
-  unsupported (`DataDrop`, `ElemDrop`, `MemoryInit`, `ResumePoint`,
-  `TableCopy`, `TableFill`, `TableGrow`, `TableInit`, `TableSize`), which fail
-  explicitly until passive segments and tables are modeled.
+  0 unsupported forms (privileged `AT`/`IC` and raw-word `DWORD` are explicitly
+  rejected in the encoder/format matrix). Modeled SVE core instructions lower to
+  runtime-scalable LLVM IR (`@llvm.vscale.i64()`, `<vscale x N x T>`,
+  `@llvm.aarch64.sve.*`), while the 671 remaining unsupported forms are
+  unmodeled SVE2/SME instructions intentionally rejected rather than lowered
+  with placeholder IR.
+- **wasm**: `ProbeInstructionWith` invokes the real WebAssembly lowerer under
+  `WASMABIGo`. On the Go 1.27 `go-asm` stdlib corpus this yields 68 IR-generated
+  and `llc`-compiled forms, 52 context-required forms, and 0 unsupported; on the
+  full 462-op Wasm encoder scan it yields 440 IR-generated, 13 context-required,
+  and 9 explicitly unsupported (`DataDrop`, `ElemDrop`, `MemoryInit`,
+  `ResumePoint`, `TableCopy`, `TableFill`, `TableGrow`, `TableInit`,
+  `TableSize`).
+
+Query the explicit unsupported catalog and hardware-feature-gated forms directly
+from JSON output:
+
+    go run ./cmd/plan9asmscan \
+      -corpus go-asm -goroot "$(go env GOROOT)" -goos linux -goarch amd64 \
+      -repo-root . -verify-obj -format json | jq '{ir: .ir_generated_forms, obj: .object_compiled_forms, diff: .diff_verified_forms, hw_pending: .hw_pending_forms, unsupported: .unsupported_catalog}'
+
+Run the mandatory amd64 machine-code differential gate (fails loudly on amd64
+if LLVM 22 is missing or zero cases execute):
+
+    PLAN9ASM_REQUIRE_AMD64_DIFF=1 go test -v -count=1 -run '^TestAMD64MachineCodeDifferentialGate$' .
 
 The machine-readable cross-version snapshots are in
 `testdata/coverage/go-asm-baseline.json`. On Go 1.27, a CI fingerprint mismatch

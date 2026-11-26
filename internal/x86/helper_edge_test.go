@@ -580,7 +580,9 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("PUSHFQ", asm.Instr{Raw: "PUSHFQ"})
 	mustLower("POPFQ", asm.Instr{Raw: "POPFQ"})
 	mustLower("LFENCE", asm.Instr{Raw: "LFENCE"})
-	mustLower("UNDEF", asm.Instr{Raw: "UNDEF"})
+	if ok, term, err := c.lowerArith("UNDEF", asm.Instr{Raw: "UNDEF"}); !ok || !term || err != nil {
+		t.Fatalf("lowerArith(UNDEF) = (%v, %v, %v), want (true, true, nil)", ok, term, err)
+	}
 	mustLower("RDTSC", asm.Instr{Raw: "RDTSC"})
 	mustLower(asm.OpCPUID, asm.Instr{Raw: "CPUID"})
 	mustLower(asm.OpXGETBV, asm.Instr{Raw: "XGETBV"})
@@ -1997,7 +1999,7 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		{"VMOVNTDQ", asm.Instr{Raw: "VMOVNTDQ Y0, AX", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("Y0")}, {Kind: asm.OpReg, Reg: asm.AX}}}, "bad dst", true},
 		{"AESKEYGENASSIST", asm.Instr{Raw: "AESKEYGENASSIST X0, X1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("X0")}, {Kind: asm.OpReg, Reg: asm.Reg("X1")}}}, "missing imm", true},
 		{"VPTEST", asm.Instr{Raw: "VPTEST X0, Y0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("X0")}, {Kind: asm.OpReg, Reg: asm.Reg("Y0")}}}, "wrong src class", false},
-		{"PCMPESTRI", asm.Instr{Raw: "PCMPESTRI $1, 8(BX), X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpMem, Mem: asm.MemRef{Base: asm.BX, Off: 8}}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "delegate non-0x0c imm", false},
+		{"PCMPESTRI", asm.Instr{Raw: "PCMPESTRI $1, 8(BX), X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpMem, Mem: asm.MemRef{Base: asm.BX, Off: 8}}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "unsupported non-0x0c imm", true},
 		{"PCMPESTRI", asm.Instr{Raw: "PCMPESTRI $0x0c, AX, X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0x0c}, {Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "bad mem operand", true},
 		{"VPBLENDD", asm.Instr{Raw: "VPBLENDD $1, Y0, Y1, X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpReg, Reg: asm.Reg("Y0")}, {Kind: asm.OpReg, Reg: asm.Reg("Y1")}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "wrong dst", false},
 		{"VPBROADCASTB", asm.Instr{Raw: "VPBROADCASTB Y0, Y1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.Reg("Y0")}, {Kind: asm.OpReg, Reg: asm.Reg("Y1")}}}, "wrong src", false},

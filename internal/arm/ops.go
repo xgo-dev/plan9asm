@@ -43,8 +43,6 @@ var armScalarSpecs = []asm.OpSpec{
 	{Op: "RFE", Family: asm.FamilyBranch, Effect: asm.EffectReadOnly, LLVMOp: "rfe"},
 	{Op: "BX", Family: asm.FamilyBranch, Effect: asm.EffectReadOnly, LLVMOp: "bx"},
 	{Op: "BXRET", Family: asm.FamilyBranch, Effect: asm.EffectReadOnly, LLVMOp: "bx"},
-	{Op: "DUFFZERO", Family: asm.FamilyNOP, Effect: asm.EffectNone},
-	{Op: "DUFFCOPY", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "END", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 }
 

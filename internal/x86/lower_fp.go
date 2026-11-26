@@ -187,6 +187,7 @@ func (c *amd64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", pf, c.flagsPFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		c.clearAuxCarryFlag()
 		return true, false, nil
 
 	case "CMPSD", "CMPSS", "CMPPS", "CMPPD":

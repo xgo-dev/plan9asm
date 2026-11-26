@@ -1035,12 +1035,10 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		fmt.Fprintf(c.b, "  %%%s = shufflevector <32 x i8> %s, <32 x i8> zeroinitializer, <16 x i32> %s\n", lo2, src2, llvmI32RangeMask(0, 16))
 		hi2 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = shufflevector <32 x i8> %s, <32 x i8> zeroinitializer, <16 x i32> %s\n", hi2, src2, llvmI32RangeMask(16, 16))
-		outLo := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %%%s, <16 x i8> %%%s, <16 x i32> %s\n", outLo, lo2, lo1, llvmAlignRightBytesMask(n))
-		outHi := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %%%s, <16 x i8> %%%s, <16 x i32> %s\n", outHi, hi2, hi1, llvmAlignRightBytesMask(n))
+		outLo := c.emitAlignRight16("%"+lo1, "%"+lo2, n)
+		outHi := c.emitAlignRight16("%"+hi1, "%"+hi2, n)
 		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %%%s, <16 x i8> %%%s, <32 x i32> %s\n", out, outLo, outHi, llvmI32RangeMask(0, 32))
+		fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> %s, <32 x i32> %s\n", out, outLo, outHi, llvmI32RangeMask(0, 32))
 		return true, false, c.storeY(ins.Args[3].Reg, "%"+out)
 
 	case "VPERM2I128":
@@ -1308,83 +1306,87 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+		c.clearAuxCarryFlag()
 		return true, false, nil
 
 	case "PCMPESTRI":
-		// PCMPESTRI $imm, mem, Xsrc (implicit lengths; result index in ECX).
-		//
-		// LLVM 19 has backend issues selecting the native X86ISD::PCMPESTR node
-		// for the corresponding intrinsic in some environments. For now we
-		// emulate the subset used by the Go stdlib:
-		//   imm=0x0c: unsigned byte compare, equal ordered, first match.
-		//
-		// We compute the first offset i in [0..15] where:
-		// - bytes(mem[i:]) has a prefix that matches Xsrc[0:lenA]
-		// - or a partial match at the end of the 16-byte block (to drive the
-		//   stdlib's "partial match" control flow).
-		// If no match/partial match exists, return 16.
+		// PCMPESTRI $imm, src2(X/mem), src1(X): explicit lengths in EAX (src1) and
+		// EDX (src2); result index in ECX (zero-extended into RCX) plus exact Intel
+		// SDM flags (CF, ZF, SF, OF, AF=0, PF=0).
+		// Currently modeled bit-for-bit for imm == 0x0c (unsigned byte, equal ordered,
+		// positive polarity, least-significant index); other control immediates return
+		// an explicit unsupported error instead of emitting stale-flag IR.
 		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpImm || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 PCMPESTRI expects $imm, mem, Xsrc: %q", ins.Raw)
+			return true, false, fmt.Errorf("amd64 PCMPESTRI expects $imm, src, Xsrc: %q", ins.Raw)
 		}
 		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
+			return true, false, fmt.Errorf("amd64 PCMPESTRI expects Xsrc: %q", ins.Raw)
 		}
 		imm := int64(ins.Args[0].Imm) & 0xff
-		if imm != 0x0c || (ins.Args[1].Kind == asm.OpReg && isAMD64XReg(ins.Args[1].Reg)) {
-			return false, false, nil
+		if imm != 0x0c {
+			return true, false, fmt.Errorf("amd64: unsupported instruction PCMPESTRI with imm=0x%02x (SSE4.2 PCMP*STR* semantics are currently modeled only for imm=0x0c): %q", imm, ins.Raw)
 		}
 
-		// A: needle bytes.
+		// A: needle bytes (length |EAX| clamped to 16).
 		a, err := c.loadX(ins.Args[2].Reg)
 		if err != nil {
 			return true, false, err
 		}
-		// B: 16-byte haystack chunk.
-		var bvec string
-		switch ins.Args[1].Kind {
-		case asm.OpMem:
-			addr, err := c.addrFromMem(ins.Args[1].Mem)
-			if err != nil {
-				return true, false, err
-			}
-			p := c.ptrFromAddrI64(addr)
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
-			bvec = "%" + ld
-		case asm.OpSym:
-			p, err := c.ptrFromSB(ins.Args[1].Sym)
-			if err != nil {
-				return true, false, err
-			}
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
-			bvec = "%" + ld
-		default:
-			return true, false, fmt.Errorf("amd64 PCMPESTRI unsupported mem operand: %q", ins.Raw)
-		}
-
-		ax, err := c.loadReg(asm.AX)
+		// B: haystack chunk (length |EDX| clamped to 16).
+		bvec, err := c.loadXVecOperand(ins.Args[1])
 		if err != nil {
 			return true, false, err
 		}
-		la := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", la, ax)
 
-		allOnes := llvmAllOnesI8Vec(16)
-		idx := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i32 0, 16\n", idx)
-		prev := "%" + idx
+		clampLen := func(reg asm.Reg) (string, error) {
+			v64, err := c.loadReg(reg)
+			if err != nil {
+				return "", err
+			}
+			v32, isNeg, neg32, abs32, gt16, clamped := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", v32, v64)
+			fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", isNeg, v32)
+			fmt.Fprintf(c.b, "  %%%s = sub i32 0, %%%s\n", neg32, v32)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 %%%s, i32 %%%s\n", abs32, isNeg, neg32, v32)
+			// Note: unsigned comparison also clamps MinInt32 (abs = 0x80000000 > 16) to 16.
+			fmt.Fprintf(c.b, "  %%%s = icmp ugt i32 %%%s, 16\n", gt16, abs32)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 16, i32 %%%s\n", clamped, gt16, abs32)
+			return "%" + clamped, nil
+		}
+		la, err := clampLen(asm.AX)
+		if err != nil {
+			return true, false, err
+		}
+		lb, err := clampLen(asm.DX)
+		if err != nil {
+			return true, false, err
+		}
 
-		// Build first-match index using a select chain.
+		laIsZero := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", laIsZero, la)
+		prev := "16"
+
+		// Equal-ordered (imm=0x0c): bit i of IntRes1 is 1 iff for all j in 0..lenA-1:
+		//   (i + j >= lenB) || (A[j] == B[i + j])
+		// Wait: per Intel SDM equal-ordered table:
+		//   - valid A[j], valid B[i+j]: requires A[j] == B[i+j]
+		//   - valid A[j], invalid B[i+j]: match = 0 if i >= lenB, else 1 (partial match at end of B)
+		//   - invalid A[j] (j >= lenA): match = 1
+		//   - when lenA == 0: every i < 16 matches (or for lenB == 0 and lenA == 0: IntRes1 = 0xFFFF)!
+		// Actually check SDM equal-ordered: for i in 0..15, bit i is 1 iff:
+		//   for all j in 0..min(lenA, 16-i)-1: if (i+j < lenB) then A[j]==B[i+j] else (j==0? false : true).
+		// Wait: check SDM Vol 2B PCMPESTRI Equal Ordered explicitly:
+		//   A[j] invalid => 1
+		//   A[j] valid, B[i+j] invalid => 0 (if i+j < 16 and B[i+j] invalid!), EXCEPT when i+j >= 16 (past chunk end) => 1!
+		// That means for each i in 0..15:
+		//   - for k in 0..min(lenA, 16-i)-1: MUST have (i+k < lenB) AND (A[k] == B[i+k])!
 		for i := 0; i < 16; i++ {
-			// Shuffle B so that element 0 is B[i], padding beyond 16 with 0.
 			maskElts := make([]string, 0, 16)
 			for k := 0; k < 16; k++ {
 				j := i + k
 				if j < 16 {
 					maskElts = append(maskElts, fmt.Sprintf("i32 %d", j))
 				} else {
-					// 16 selects element 0 of the second (zero) vector.
 					maskElts = append(maskElts, "i32 16")
 				}
 			}
@@ -1394,34 +1396,54 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> zeroinitializer, %s\n", sh, bvec, mask)
 			cmp := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = icmp eq <16 x i8> %%%s, %s\n", cmp, sh, a)
-			sel := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = select <16 x i1> %%%s, <16 x i8> %s, <16 x i8> zeroinitializer\n", sel, cmp, allOnes)
-			pm := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.x86.sse2.pmovmskb.128(<16 x i8> %%%s)\n", pm, sel)
+			pm16, pm := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i1> %%%s to i16\n", pm16, cmp)
+			fmt.Fprintf(c.b, "  %%%s = zext i16 %%%s to i32\n", pm, pm16)
 
-			// minLen = min(lenA, 16-i)
-			cap := 16 - i
-			lt := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %%%s, %d\n", lt, la, cap)
-			min := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 %%%s, i32 %d\n", min, lt, la, cap)
-			sh1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = shl i32 1, %%%s\n", sh1, min)
-			req := c.newTmp()
+			// Need k in [0, min(lenA, 16-i)) to satisfy both (i+k < lenB) and (A[k] == B[i+k]).
+			capChunk := 16 - i
+			ltChunk := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, %d\n", ltChunk, la, capChunk)
+			needLen := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 %s, i32 %d\n", needLen, ltChunk, la, capChunk)
+			// Check i + needLen <= lenB (so every compared B[i+k] is valid in B).
+			endPos, inB := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i32 %%%s, %d\n", endPos, needLen, i)
+			fmt.Fprintf(c.b, "  %%%s = icmp ule i32 %%%s, %s\n", inB, endPos, lb)
+			sh1, req, have, eqBytes, matchI := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shl i32 1, %%%s\n", sh1, needLen)
 			fmt.Fprintf(c.b, "  %%%s = sub i32 %%%s, 1\n", req, sh1)
-			have := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", have, pm, req)
+			fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %%%s, %%%s\n", eqBytes, have, req)
+			fmt.Fprintf(c.b, "  %%%s = and i1 %%%s, %%%s\n", matchI, eqBytes, inB)
+			// When lenA == 0, every index i is valid-match in equal-ordered mode.
 			okt := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %%%s, %%%s\n", okt, have, req)
+			fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", okt, matchI, laIsZero)
 
-			unset := c.newTmp()
+			unset, take, next := c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 16\n", unset, prev)
-			take := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = and i1 %%%s, %%%s\n", take, okt, unset)
-			next := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 %d, i32 %s\n", next, take, i, prev)
 			prev = "%" + next
 		}
+
+		// Architectural flags for PCMPESTRI (positive polarity):
+		//   CF = (IntRes2 != 0) <=> (ECX < 16)
+		//   ZF = (lenB < 16)
+		//   SF = (lenA < 16)
+		//   OF = IntRes2[0] <=> (ECX == 0)
+		//   AF = 0, PF = 0
+		cf, zf, sf, of := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, 16\n", cf, prev)
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, 16\n", zf, lb)
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, 16\n", sf, la)
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", of, prev)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+		c.clearAuxCarryFlag()
 
 		z := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", z, prev)
@@ -1903,109 +1925,20 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i16> %%%s to <16 x i8>\n", out, sh)
 		return true, false, c.storeX(ins.Args[2].Reg, "%"+out)
 
-	case "SHA256MSG1", "SHA256MSG2":
-		// Approximate scheduling helpers as per-lane adds to keep SSA flow.
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects Xsrc, Xdst: %q", op, ins.Raw)
-		}
-		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
-			return false, false, nil
-		}
-		src, err := c.loadXVecOperand(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		dstv, err := c.loadX(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		s32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", s32, src)
-		d32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", d32, dstv)
-		add := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, %%%s\n", add, d32, s32)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, add)
-		return true, false, c.storeX(ins.Args[1].Reg, "%"+out)
-
-	case "SHA1NEXTE", "SHA1MSG1", "SHA1MSG2":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects Xsrc, Xdst: %q", op, ins.Raw)
-		}
-		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
-			return false, false, nil
-		}
-		src, err := c.loadXVecOperand(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		dstv, err := c.loadX(ins.Args[1].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		s32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", s32, src)
-		d32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", d32, dstv)
-		add := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, %%%s\n", add, d32, s32)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, add)
-		return true, false, c.storeX(ins.Args[1].Reg, "%"+out)
-
-	case "SHA1RNDS4":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpImm || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 SHA1RNDS4 expects $imm, Xsrc, Xdst: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
-		}
-		src, err := c.loadXVecOperand(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		dstv, err := c.loadX(ins.Args[2].Reg)
-		if err != nil {
-			return true, false, err
-		}
-		s32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", s32, src)
-		d32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", d32, dstv)
-		add := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, %%%s\n", add, d32, s32)
-		immv := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, <i32 %d, i32 %d, i32 %d, i32 %d>\n", immv, add, ins.Args[0].Imm, ins.Args[0].Imm, ins.Args[0].Imm, ins.Args[0].Imm)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, immv)
-		return true, false, c.storeX(ins.Args[2].Reg, "%"+out)
-
+	case "SHA256MSG1":
+		return true, false, c.lowerSHA256Msg1(ins)
+	case "SHA256MSG2":
+		return true, false, c.lowerSHA256Msg2(ins)
 	case "SHA256RNDS2":
-		// SHA256RNDS2 Xsrc, Xstate, Xdst
-		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 SHA256RNDS2 expects Xsrc, Xstate, Xdst: %q", ins.Raw)
-		}
-		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
-			return false, false, nil
-		}
-		a, err := c.loadXVecOperand(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		b, err := c.loadXVecOperand(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		a32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", a32, a)
-		b32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", b32, b)
-		add := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, %%%s\n", add, a32, b32)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, add)
-		return true, false, c.storeX(ins.Args[2].Reg, "%"+out)
+		return true, false, c.lowerSHA256Rnds2(ins)
+	case "SHA1NEXTE":
+		return true, false, c.lowerSHA1NextE(ins)
+	case "SHA1MSG1":
+		return true, false, c.lowerSHA1Msg1(ins)
+	case "SHA1MSG2":
+		return true, false, c.lowerSHA1Msg2(ins)
+	case "SHA1RNDS4":
+		return true, false, c.lowerSHA1Rnds4(ins)
 
 	case "VMOVDQU64":
 		if len(ins.Args) != 2 {
@@ -3068,9 +3001,8 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if err != nil {
 			return true, false, err
 		}
-		sh := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> %s, <16 x i32> %s\n", sh, dst, src, llvmAlignRightBytesMask(n))
-		return true, false, c.storeX(ins.Args[2].Reg, "%"+sh)
+		res := c.emitAlignRight16(src, dst, n)
+		return true, false, c.storeX(ins.Args[2].Reg, res)
 
 	case "PSRLDQ":
 		// PSRLDQ $imm, Xdst
@@ -3256,6 +3188,28 @@ func llvmShiftLeftBytesMask(n int64) string {
 	}
 	sb.WriteString(">")
 	return sb.String()
+}
+
+func (c *amd64Ctx) emitAlignRight16(lo16, hi16 string, n int64) string {
+	// Intel SDM PALIGNR/VPALIGNR per 128-bit lane:
+	//   temp[255:0] = (hi16 << 128) | lo16
+	//   result      = (temp >> (n * 8))[127:0] (zero-filled when n+i >= 32)
+	if n >= 32 {
+		return "zeroinitializer"
+	}
+	cat := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> %s, <32 x i32> %s\n", cat, lo16, hi16, llvmI32RangeMask(0, 32))
+	mask := make([]string, 16)
+	for i := int64(0); i < 16; i++ {
+		if n+i < 32 {
+			mask[i] = fmt.Sprintf("i32 %d", n+i)
+		} else {
+			mask[i] = "i32 32"
+		}
+	}
+	out := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = shufflevector <32 x i8> %%%s, <32 x i8> zeroinitializer, <16 x i32> <%s>\n", out, cat, strings.Join(mask, ", "))
+	return "%" + out
 }
 
 func llvmAlignRightBytesMask(n int64) string {

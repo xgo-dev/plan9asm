@@ -10,11 +10,11 @@ import (
 
 func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 	goroot := runtime.GOROOT()
-	arm64MaxUnsup := 2
+	arm64MaxUnsup := 6
 	if ver := runtime.Version(); strings.HasPrefix(ver, "go1.20") || strings.HasPrefix(ver, "go1.21") {
 		// Go 1.20-1.21 cmd/internal/obj/arm64 optab omits the status regTo2 slot
 		// on 16 STXR*/STLXR*/CASP*/DUFF* rows.
-		arm64MaxUnsup = 20
+		arm64MaxUnsup = 24
 	}
 	cases := []struct {
 		goarch         string
@@ -23,12 +23,17 @@ func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 		maxNonSVEUnsup int
 		minForms       int
 	}{
-		{goarch: "386", arch: plan9asm.ArchAMD64, maxUnsup: 10, minForms: 10000},
-		{goarch: "amd64", arch: plan9asm.ArchAMD64, maxUnsup: 275, minForms: 10000},
-		{goarch: "arm", arch: plan9asm.ArchARM, maxUnsup: 0, minForms: 400},
-		// ARM64 keeps strict <= arm64MaxUnsup on all non-SVE/NEON/scalar forms,
-		// while honestly rejecting unmodeled SVE2/SME forms rather than emitting
-		// placeholder IR.
+		// x86 intentionally rejects unmodeled AVX-512 special FP ops (VRCP14/28, VRSQRT14/28,
+		// VEXP2, VGETEXP, VGETMANT, VRNDSCALE, VREDUCE, VSCALEF, VRANGE, VFIXUPIMM),
+		// non-0x0c PCMP*STR*, privileged/system/segment/RTM/legacy-trap stubs, FPATAN,
+		// and 64-bit-invalid BCD ops rather than emitting approximate or placeholder IR.
+		{goarch: "386", arch: plan9asm.ArchAMD64, maxUnsup: 980, minForms: 10000},
+		{goarch: "amd64", arch: plan9asm.ArchAMD64, maxUnsup: 1000, minForms: 10000},
+		// ARM intentionally rejects unmodeled runtime pseudo-ops DUFFZERO/DUFFCOPY.
+		{goarch: "arm", arch: plan9asm.ArchARM, maxUnsup: 2, minForms: 400},
+		// ARM64 keeps strict <= arm64MaxUnsup on non-SVE forms (explicitly rejecting
+		// privileged AT/IC and raw-word DWORD), while honestly rejecting unmodeled
+		// SVE2/SME forms rather than emitting placeholder IR.
 		{goarch: "arm64", arch: plan9asm.ArchARM64, maxUnsup: 900, maxNonSVEUnsup: arm64MaxUnsup, minForms: 900},
 		// Wasm honestly rejects the 9 unmodeled segment/table/pseudo ops
 		// (DataDrop, ElemDrop, MemoryInit, ResumePoint, TableCopy/Fill/Grow/Init/Size).

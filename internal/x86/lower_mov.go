@@ -131,8 +131,7 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			small = fmt.Sprintf("%d", src.Imm)
 		case asm.OpReg:
 			if op == "MOVW" && isX86SystemOrSegIdent(string(src.Reg)) {
-				small = "0"
-				break
+				return true, false, fmt.Errorf("%s: unsupported %s reading segment/system register %s: %q", c.goarch, op, src.Reg, ins.Raw)
 			}
 			v64, err := c.loadReg(src.Reg)
 			if err != nil {
@@ -167,17 +166,20 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			small = "%" + ld
 		case asm.OpIdent:
 			if op == "MOVW" && isX86SystemOrSegIdent(src.Ident) {
-				small = "0"
-			} else {
-				return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
+				return true, false, fmt.Errorf("%s: unsupported %s reading segment/system register %s: %q", c.goarch, op, src.Ident, ins.Raw)
 			}
+			return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
 		default:
 			return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
 		}
 		switch dst.Kind {
 		case asm.OpReg:
 			if op == "MOVW" && isX86SystemOrSegIdent(string(dst.Reg)) {
-				return true, false, nil
+				if c.goarch == "386" && strings.EqualFold(string(dst.Reg), "GS") {
+					fmt.Fprintf(c.b, "  call void asm sideeffect \"movw $0, %%gs\", \"r,~{memory}\"(i16 %s)\n", small)
+					return true, false, nil
+				}
+				return true, false, fmt.Errorf("%s: unsupported %s writing segment/system register %s: %q", c.goarch, op, dst.Reg, ins.Raw)
 			}
 			if zeroExtendSmallDst {
 				z := c.newTmp()
@@ -206,7 +208,11 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			return true, false, nil
 		case asm.OpIdent:
 			if op == "MOVW" && isX86SystemOrSegIdent(dst.Ident) {
-				return true, false, nil
+				if c.goarch == "386" && strings.EqualFold(dst.Ident, "GS") {
+					fmt.Fprintf(c.b, "  call void asm sideeffect \"movw $0, %%gs\", \"r,~{memory}\"(i16 %s)\n", small)
+					return true, false, nil
+				}
+				return true, false, fmt.Errorf("%s: unsupported %s writing segment/system register %s: %q", c.goarch, op, dst.Ident, ins.Raw)
 			}
 			return true, false, fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
 		default:
@@ -263,17 +269,13 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			return true, false, c.storeFPResult(dst.FPOffset, asm.I64, v)
 		case asm.OpMem:
 			// Store i64 to memory (common for writing return values via a pointer).
-			var v string
-			var err error
-			if src.Kind == asm.OpIdent && isX86SystemOrSegIdent(src.Ident) {
-				v = "0"
-			} else if src.Kind == asm.OpReg && isX86SystemOrSegIdent(string(src.Reg)) {
-				v = "0"
-			} else {
-				v, err = c.evalI64(src)
-				if err != nil {
-					return true, false, err
-				}
+			if (src.Kind == asm.OpIdent && isX86SystemOrSegIdent(src.Ident)) ||
+				(src.Kind == asm.OpReg && isX86SystemOrSegIdent(string(src.Reg))) {
+				return true, false, fmt.Errorf("%s: unsupported MOVQ reading segment/system register: %q", c.goarch, ins.Raw)
+			}
+			v, err := c.evalI64(src)
+			if err != nil {
+				return true, false, err
 			}
 			p, ptrType, err := c.ptrFromMem(dst.Mem)
 			if err != nil {
@@ -297,10 +299,7 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			return true, false, nil
 		case asm.OpIdent:
 			if isX86SystemOrSegIdent(dst.Ident) {
-				if _, err := c.evalI64(src); err != nil {
-					return true, false, err
-				}
-				return true, false, nil
+				return true, false, fmt.Errorf("%s: unsupported MOVQ writing segment/system register %s: %q", c.goarch, dst.Ident, ins.Raw)
 			}
 			return true, false, fmt.Errorf("amd64 MOVQ unsupported dst: %q", ins.Raw)
 		default:
@@ -323,15 +322,13 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 
 		i32v, err := c.evalIntSized(src, asm.I32)
 		if err != nil {
-			// Preserve MOVL's existing treatment of unresolved constants from
-			// assembly include files and descriptor/segment regs.
 			if (src.Kind == asm.OpIdent && isX86SystemOrSegIdent(src.Ident)) || (src.Kind == asm.OpReg && isX86SystemOrSegIdent(string(src.Reg))) {
-				i32v = "0"
-			} else if src.Kind != asm.OpSym || strings.Contains(src.Sym, "(SB)") {
-				return true, false, err
-			} else {
-				i32v = "0"
+				return true, false, fmt.Errorf("%s: unsupported MOVL reading segment/system register: %q", c.goarch, ins.Raw)
 			}
+			if src.Kind != asm.OpSym || strings.Contains(src.Sym, "(SB)") {
+				return true, false, err
+			}
+			i32v = "0"
 		}
 		switch dst.Kind {
 		case asm.OpReg:
@@ -367,7 +364,7 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			return true, false, nil
 		case asm.OpIdent:
 			if isX86SystemOrSegIdent(dst.Ident) {
-				return true, false, nil
+				return true, false, fmt.Errorf("%s: unsupported MOVL writing segment/system register %s: %q", c.goarch, dst.Ident, ins.Raw)
 			}
 			return true, false, fmt.Errorf("amd64 MOVL unsupported dst: %q", ins.Raw)
 		default:

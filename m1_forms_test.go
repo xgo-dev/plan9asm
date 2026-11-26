@@ -23,15 +23,6 @@ func TestM1_386MissingForms(t *testing.T) {
 	src := `
 GLOBL gvar<>(SB), NOPTR, $16
 TEXT ·f386(SB),NOSPLIT,$0-0
-	MOVL AX, CR0
-	MOVL CR0, BX
-	MOVL AX, DR0
-	MOVL DR0, BX
-	MOVL AX, TR6
-	MOVL TR6, BX
-	MOVW AX, DS
-	MOVW DS, BX
-	POPL SS
 	SHLW $1, AX
 	SHLW $1, 8(BX)
 	SHLW $1, AX, DX
@@ -69,8 +60,6 @@ func TestM1_AMD64ScalarAndMMXForms(t *testing.T) {
 	src := `
 GLOBL gsym<>(SB), NOPTR, $64
 TEXT ·scalarMmx(SB),NOSPLIT,$0-0
-	MOVQ DX, CR2
-	MOVQ CR2, AX
 	CMOVQLT 8(BX), AX
 	CMOVQLT gsym<>(SB), AX
 	POPQ 8(BX)
@@ -273,6 +262,17 @@ func TestM1_ErrorPaths(t *testing.T) {
 		body   string
 	}{
 		{"386", "POPL $1"},
+		{"386", "MOVL AX, CR0"},
+		{"386", "MOVL CR0, BX"},
+		{"386", "MOVL AX, DR0"},
+		{"386", "MOVL DR0, BX"},
+		{"386", "MOVL AX, TR6"},
+		{"386", "MOVL TR6, BX"},
+		{"386", "MOVW AX, DS"},
+		{"386", "MOVW DS, BX"},
+		{"386", "POPL SS"},
+		{"amd64", "MOVQ DX, CR2"},
+		{"amd64", "MOVQ CR2, AX"},
 		{"amd64", "POPQ"},
 		{"amd64", "POPQ $1"},
 		{"amd64", "TZCNTQ AX"},

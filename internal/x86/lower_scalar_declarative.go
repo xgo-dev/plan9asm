@@ -111,46 +111,44 @@ var x86ExtraScalarSpecs = []asm.OpSpec{
 	{Op: "CDQE", Family: asm.FamilySystem, Width: 64, Implicit: asm.ImplicitAX, LLVMOp: "cdqe"},
 	{Op: "CDQ", Family: asm.FamilySystem, Width: 32, Implicit: asm.ImplicitAX | asm.ImplicitDX, LLVMOp: "cdq"},
 	{Op: "CQO", Family: asm.FamilySystem, Width: 64, Implicit: asm.ImplicitAX | asm.ImplicitDX, LLVMOp: "cqo"},
-	{Op: "LEAVEQ", Family: asm.FamilySystem, Width: 64, Implicit: asm.ImplicitSP, LLVMOp: "leaveq"},
-	{Op: "LEAVEL", Family: asm.FamilySystem, Width: 32, Implicit: asm.ImplicitSP, LLVMOp: "leaveq"},
-	{Op: "LEAVEW", Family: asm.FamilySystem, Width: 16, Implicit: asm.ImplicitSP, LLVMOp: "leaveq"},
-	{Op: "ENTER", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "PUSHFL", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "POPFL", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "RETFW", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "RETFQ", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "INB", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "INW", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "INL", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "OUTB", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "OUTW", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
-	{Op: "OUTL", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
+	{Op: "LEAVEQ", Family: asm.FamilySystem, Width: 64, Implicit: asm.ImplicitSP, LLVMOp: "leave"},
+	{Op: "LEAVEL", Family: asm.FamilySystem, Width: 32, Implicit: asm.ImplicitSP, LLVMOp: "leave"},
+	{Op: "LEAVEW", Family: asm.FamilySystem, Width: 16, Implicit: asm.ImplicitSP, LLVMOp: "leave"},
+	{Op: "ENTER", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_far_frame"},
+	{Op: "RETFW", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_far_frame"},
+	{Op: "RETFQ", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_far_frame"},
+	{Op: "INB", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_port_io"},
+	{Op: "INW", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_port_io"},
+	{Op: "INL", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_port_io"},
+	{Op: "OUTB", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_port_io"},
+	{Op: "OUTW", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_port_io"},
+	{Op: "OUTL", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_port_io"},
 	{Op: "XACQUIRE", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "XRELEASE", Family: asm.FamilyNOP, Effect: asm.EffectNone},
-	{Op: "XBEGIN", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
+	{Op: "XBEGIN", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_rtm"},
 	{Op: "WAIT", Family: asm.FamilyNOP, Effect: asm.EffectNone},
-	{Op: "INTO", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "any_nop"},
+	{Op: "INTO", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_trap_legacy"},
 	{Op: "AAA", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsReadWrite, LLVMOp: "bcd_adj"},
 	{Op: "AAS", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsReadWrite, LLVMOp: "bcd_adj"},
 	{Op: "AAM", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsWrite, LLVMOp: "bcd_adj"},
 	{Op: "AAD", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsWrite, LLVMOp: "bcd_adj"},
 	{Op: "DAA", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsReadWrite, LLVMOp: "bcd_adj"},
 	{Op: "DAS", Family: asm.FamilySystem, Width: 8, Implicit: asm.ImplicitAX, Flags: asm.FlagsReadWrite, LLVMOp: "bcd_adj"},
-	{Op: "ARPL", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "arpl"},
-	{Op: "BOUNDW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectReadOnly, LLVMOp: "bound"},
-	{Op: "BOUNDL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectReadOnly, LLVMOp: "bound"},
-	{Op: "PUSHAW", Family: asm.FamilySystem, Width: 16, Implicit: asm.ImplicitSP, LLVMOp: "pushaw"},
-	{Op: "POPAW", Family: asm.FamilySystem, Width: 16, Implicit: asm.ImplicitSP, LLVMOp: "popaw"},
-	{Op: "DUFFZERO", Family: asm.FamilyNOP, Effect: asm.EffectNone},
-	{Op: "DUFFCOPY", Family: asm.FamilyNOP, Effect: asm.EffectNone},
+	{Op: "ARPL", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
+	{Op: "BOUNDW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_trap_legacy"},
+	{Op: "BOUNDL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_trap_legacy"},
+	{Op: "PUSHAW", Family: asm.FamilySystem, Width: 16, Implicit: asm.ImplicitSP, LLVMOp: "unsupported_stack16"},
+	{Op: "POPAW", Family: asm.FamilySystem, Width: 16, Implicit: asm.ImplicitSP, LLVMOp: "unsupported_stack16"},
+	{Op: "DUFFZERO", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_duff"},
+	{Op: "DUFFCOPY", Family: asm.FamilySystem, Effect: asm.EffectImplicit, LLVMOp: "unsupported_duff"},
 	{Op: "NOPL", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "NOPW", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "ENDBR64", Family: asm.FamilyNOP, Effect: asm.EffectNone},
 	{Op: "ENDBR32", Family: asm.FamilyNOP, Effect: asm.EffectNone},
-	{Op: "CLDEMOTE", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "CLFLUSH", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "CLFLUSHOPT", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "CLWB", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
+	{Op: "CLDEMOTE", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "cache_hint"},
+	{Op: "CLFLUSH", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "cache_hint"},
+	{Op: "CLFLUSHOPT", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "cache_hint"},
+	{Op: "CLWB", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "cache_hint"},
 	{Op: "RDPID", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "rdpid"},
 	{Op: "RDRANDW", Family: asm.FamilyCrypto, Width: 16, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "rdrand"},
 	{Op: "RDRANDL", Family: asm.FamilyCrypto, Width: 32, Effect: asm.EffectWriteZeroUpper, Flags: asm.FlagsWrite, LLVMOp: "rdrand"},
@@ -178,8 +176,8 @@ var x86ExtraScalarSpecs = []asm.OpSpec{
 	{Op: "INVD", Family: asm.FamilySystem, InlineAsm: "invd"},
 	{Op: "WBINVD", Family: asm.FamilySystem, InlineAsm: "wbinvd"},
 	{Op: "WBNOINVD", Family: asm.FamilySystem, InlineAsm: ".byte 0xf3, 0x0f, 0x09"},
-	{Op: "INVLPG", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "INVPCID", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "any_nop"},
+	{Op: "INVLPG", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_tlb"},
+	{Op: "INVPCID", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_tlb"},
 	{Op: "IRETW", Family: asm.FamilySystem, InlineAsm: "iretw"},
 	{Op: "IRETL", Family: asm.FamilySystem, InlineAsm: "iretl"},
 	{Op: "IRETQ", Family: asm.FamilySystem, InlineAsm: "iretq"},
@@ -201,65 +199,65 @@ var x86ExtraScalarSpecs = []asm.OpSpec{
 	{Op: "RSM", Family: asm.FamilySystem, InlineAsm: "rsm"},
 	{Op: "UD1", Family: asm.FamilySystem, InlineAsm: "ud2"},
 	{Op: "UD2", Family: asm.FamilySystem, InlineAsm: "ud2"},
-	{Op: "XABORT", Family: asm.FamilySystem, LLVMOp: "any_nop"},
+	{Op: "XABORT", Family: asm.FamilySystem, LLVMOp: "unsupported_rtm"},
 	{Op: "XEND", Family: asm.FamilySystem, InlineAsm: "xend"},
-	{Op: "XTEST", Family: asm.FamilySystem, Flags: asm.FlagsWrite, LLVMOp: "xtest"},
+	{Op: "XTEST", Family: asm.FamilySystem, Flags: asm.FlagsWrite, LLVMOp: "unsupported_rtm"},
 	{Op: "XSETBV", Family: asm.FamilySystem, InlineAsm: "xsetbv"},
-	{Op: "LDMXCSR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
+	{Op: "LDMXCSR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "ldmxcsr"},
 	{Op: "STMXCSR", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "stmxcsr"},
-	{Op: "VLDMXCSR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
+	{Op: "VLDMXCSR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "ldmxcsr"},
 	{Op: "VSTMXCSR", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "stmxcsr"},
-	{Op: "FXSAVE", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "FXSAVE64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "FXRSTOR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "FXRSTOR64", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "XSAVE", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "XSAVE64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "XSAVEC", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "XSAVEC64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "XSAVEOPT", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "XSAVEOPT64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "XSAVES", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "XSAVES64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "mem_nop"},
-	{Op: "XRSTOR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "XRSTOR64", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "XRSTORS", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "XRSTORS64", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "mem_nop"},
-	{Op: "LFSW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "load_seg"},
-	{Op: "LFSL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "load_seg"},
-	{Op: "LFSQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "load_seg"},
-	{Op: "LGSW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "load_seg"},
-	{Op: "LGSL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "load_seg"},
-	{Op: "LGSQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "load_seg"},
-	{Op: "LSSW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "load_seg"},
-	{Op: "LSSL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "load_seg"},
-	{Op: "LSSQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "load_seg"},
-	{Op: "SLDT", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
-	{Op: "SLDTW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
-	{Op: "SLDTL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "store_zero"},
-	{Op: "SLDTQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
-	{Op: "SMSW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
-	{Op: "SMSWW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
-	{Op: "SMSWL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "store_zero"},
-	{Op: "SMSWQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
-	{Op: "STR", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
-	{Op: "STRW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
-	{Op: "STRL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "store_zero"},
-	{Op: "STRQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "store_zero"},
+	{Op: "FXSAVE", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "FXSAVE64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "FXRSTOR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "FXRSTOR64", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XSAVE", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XSAVE64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XSAVEC", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XSAVEC64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XSAVEOPT", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XSAVEOPT64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XSAVES", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XSAVES64", Family: asm.FamilySystem, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XRSTOR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XRSTOR64", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XRSTORS", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "XRSTORS64", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_ext_state"},
+	{Op: "LFSW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_far_ptr"},
+	{Op: "LFSL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unsupported_far_ptr"},
+	{Op: "LFSQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_far_ptr"},
+	{Op: "LGSW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_far_ptr"},
+	{Op: "LGSL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unsupported_far_ptr"},
+	{Op: "LGSQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_far_ptr"},
+	{Op: "LSSW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_far_ptr"},
+	{Op: "LSSL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unsupported_far_ptr"},
+	{Op: "LSSQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_far_ptr"},
+	{Op: "SLDT", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "SLDTW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "SLDTL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "SLDTQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "SMSW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "SMSWW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "SMSWL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "SMSWQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "STR", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "STRW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "STRL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, LLVMOp: "unsupported_sysreg_read"},
+	{Op: "STRQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "unsupported_sysreg_read"},
 	{Op: "RDPMC", Family: asm.FamilySystem, InlineAsm: "rdpmc"},
-	{Op: "RETFL", Family: asm.FamilySystem, LLVMOp: "any_nop"},
+	{Op: "RETFL", Family: asm.FamilySystem, LLVMOp: "unsupported_far_frame"},
 	{Op: "SYSENTER", Family: asm.FamilySystem, InlineAsm: "sysenter"},
 	{Op: "SYSENTER64", Family: asm.FamilySystem, InlineAsm: "sysenter"},
 	{Op: "SYSEXIT64", Family: asm.FamilySystem, InlineAsm: "sysexit"},
-	{Op: "UMONITOR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "any_nop"},
-	{Op: "VERR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, Flags: asm.FlagsWrite, LLVMOp: "any_nop"},
-	{Op: "VERW", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, Flags: asm.FlagsWrite, LLVMOp: "any_nop"},
-	{Op: "LARW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "any_nop"},
-	{Op: "LARL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, Flags: asm.FlagsWrite, LLVMOp: "any_nop"},
-	{Op: "LARQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "any_nop"},
-	{Op: "LSLW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "any_nop"},
-	{Op: "LSLL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, Flags: asm.FlagsWrite, LLVMOp: "any_nop"},
-	{Op: "LSLQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "any_nop"},
+	{Op: "UMONITOR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "unsupported_user_wait"},
+	{Op: "VERR", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
+	{Op: "VERW", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
+	{Op: "LARW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
+	{Op: "LARL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
+	{Op: "LARQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
+	{Op: "LSLW", Family: asm.FamilySystem, Width: 16, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
+	{Op: "LSLL", Family: asm.FamilySystem, Width: 32, Effect: asm.EffectWriteZeroUpper, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
+	{Op: "LSLQ", Family: asm.FamilySystem, Width: 64, Effect: asm.EffectWriteOnly, Flags: asm.FlagsWrite, LLVMOp: "unsupported_segment_desc"},
 }
 
 var x86ExtraScalarTable = asm.NewOpTable(x86ExtraScalarSpecs)
@@ -974,6 +972,7 @@ func (c *amd64Ctx) lowerX86ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+			c.clearAuxCarryFlag()
 			return nil
 		}
 		zf, cf := c.newTmp(), c.newTmp()
@@ -1127,13 +1126,35 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		return nil
 	}
 	switch spec.LLVMOp {
-	case "any_nop":
-		return nil
-	case "mem_nop":
+	case "cache_hint":
 		if len(ins.Args) < 1 {
 			return fmt.Errorf("amd64 %s expects memory operand: %q", spec.Op, ins.Raw)
 		}
 		return nil
+	case "unsupported_far_frame":
+		return fmt.Errorf("%s: unsupported instruction %s (far return / nested frame semantics are not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_port_io":
+		return fmt.Errorf("%s: unsupported instruction %s (port I/O is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_rtm":
+		return fmt.Errorf("%s: unsupported instruction %s (RTM transactional memory is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_trap_legacy":
+		return fmt.Errorf("%s: unsupported instruction %s (legacy bounds/overflow trap is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_tlb":
+		return fmt.Errorf("%s: unsupported instruction %s (privileged TLB invalidation is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_user_wait":
+		return fmt.Errorf("%s: unsupported instruction %s (user-wait monitor is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_segment_desc":
+		return fmt.Errorf("%s: unsupported instruction %s (segment descriptor inspection is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_ext_state":
+		return fmt.Errorf("%s: unsupported instruction %s (extended FPU/AVX state save/restore is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_far_ptr":
+		return fmt.Errorf("%s: unsupported instruction %s (far pointer segment load is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_sysreg_read":
+		return fmt.Errorf("%s: unsupported instruction %s (system descriptor/status register read is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_stack16":
+		return fmt.Errorf("%s: unsupported instruction %s (16-bit push-all/pop-all is not modeled): %q", c.goarch, spec.Op, ins.Raw)
+	case "unsupported_duff":
+		return fmt.Errorf("%s: unsupported instruction %s (Go compiler memory pseudo-op is not modeled): %q", c.goarch, spec.Op, ins.Raw)
 	case "clc":
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
 		return nil
@@ -1186,7 +1207,7 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		sh := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = ashr i64 %s, 63\n", sh, ax)
 		return c.storeReg(asm.DX, "%"+sh)
-	case "leaveq":
+	case "leave":
 		bp, err := c.loadReg(asm.BP)
 		if err != nil {
 			return err
@@ -1194,8 +1215,26 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		if err := c.storeRegUnchecked(asm.SP, bp); err != nil {
 			return err
 		}
-		return c.storeReg(asm.BP, c.popI64())
+		switch spec.Width {
+		case 16:
+			v16, err := c.popI16()
+			if err != nil {
+				return err
+			}
+			return c.storeRegSized(asm.BP, asm.I16, v16)
+		case 32:
+			v32, err := c.popI32()
+			if err != nil {
+				return err
+			}
+			return c.storeRegSized(asm.BP, asm.I32, v32)
+		default:
+			return c.storeReg(asm.BP, c.popI64())
+		}
 	case "bcd_adj":
+		if c.goarch != "386" {
+			return fmt.Errorf("amd64: unsupported instruction %s (legacy 32-bit BCD instruction is invalid in 64-bit mode): %q", spec.Op, ins.Raw)
+		}
 		ax, err := c.loadReg(asm.AX)
 		if err != nil {
 			return err
@@ -1205,149 +1244,97 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		ahSh, ah := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 8\n", ahSh, ax)
 		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i8\n", ah, ahSh)
+		afOld := "false"
+		if c.flagsAFSlot != "" {
+			afOld = c.loadFlag(c.flagsAFSlot)
+		}
 		switch spec.Op {
 		case "AAA", "AAS":
-			low, gt9 := c.newTmp(), c.newTmp()
+			low, gt9, cond := c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, 15\n", low, al)
 			fmt.Fprintf(c.b, "  %%%s = icmp ugt i8 %%%s, 9\n", gt9, low)
-			opAL, opAH := "add", "add"
+			fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %s\n", cond, gt9, afOld)
+			opAX := "add"
 			if spec.Op == "AAS" {
-				opAL, opAH = "sub", "sub"
+				opAX = "sub"
 			}
-			adjAL, adjAH, nAL, nAH := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = %s i8 %%%s, 6\n", adjAL, opAL, al)
-			fmt.Fprintf(c.b, "  %%%s = %s i8 %%%s, 1\n", adjAH, opAH, ah)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", nAL, gt9, adjAL, al)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", nAH, gt9, adjAH, ah)
-			lo4, zAL, zAH, shAH, ax16 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, 15\n", lo4, nAL)
-			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", zAL, lo4)
-			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", zAH, nAH)
-			fmt.Fprintf(c.b, "  %%%s = shl i16 %%%s, 8\n", shAH, zAH)
-			fmt.Fprintf(c.b, "  %%%s = or i16 %%%s, %%%s\n", ax16, shAH, zAL)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", gt9, c.flagsCFSlot)
-			return c.storeRegSized(asm.AX, asm.I16, "%"+ax16)
+			ax16In, adjAX, nAX, nLo, nHi, outAX := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", ax16In, ax)
+			fmt.Fprintf(c.b, "  %%%s = %s i16 %%%s, 262\n", adjAX, opAX, ax16In) // 0x0106
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i16 %%%s, i16 %%%s\n", nAX, cond, adjAX, ax16In)
+			fmt.Fprintf(c.b, "  %%%s = and i16 %%%s, 15\n", nLo, nAX)
+			fmt.Fprintf(c.b, "  %%%s = and i16 %%%s, -256\n", nHi, nAX)
+			fmt.Fprintf(c.b, "  %%%s = or i16 %%%s, %%%s\n", outAX, nHi, nLo)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cond, c.flagsCFSlot)
+			if c.flagsAFSlot != "" {
+				fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cond, c.flagsAFSlot)
+			}
+			return c.storeRegSized(asm.AX, asm.I16, "%"+outAX)
 		case "AAM":
 			base := int64(10)
 			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].Imm != 0 {
 				base = ins.Args[0].Imm & 0xff
 			}
-			q, r, zQ, zR, shQ, ax16, zf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			q, r, zQ, zR, shQ, ax16 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = udiv i8 %%%s, %d\n", q, al, base)
 			fmt.Fprintf(c.b, "  %%%s = urem i8 %%%s, %d\n", r, al, base)
 			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", zQ, q)
 			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", zR, r)
 			fmt.Fprintf(c.b, "  %%%s = shl i16 %%%s, 8\n", shQ, zQ)
 			fmt.Fprintf(c.b, "  %%%s = or i16 %%%s, %%%s\n", ax16, shQ, zR)
-			fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, r)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			c.setZSPFlagsSized(asm.I8, "%"+r)
 			return c.storeRegSized(asm.AX, asm.I16, "%"+ax16)
 		case "AAD":
 			base := int64(10)
 			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm {
 				base = ins.Args[0].Imm & 0xff
 			}
-			mul, sum, ax16, zf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			mul, sum, ax16 := c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = mul i8 %%%s, %d\n", mul, ah, base)
 			fmt.Fprintf(c.b, "  %%%s = add i8 %%%s, %%%s\n", sum, mul, al)
 			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i16\n", ax16, sum)
-			fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, sum)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			c.setZSPFlagsSized(asm.I8, "%"+sum)
 			return c.storeRegSized(asm.AX, asm.I16, "%"+ax16)
 		default: // DAA, DAS
 			opStr := "add"
 			if spec.Op == "DAS" {
 				opStr = "sub"
 			}
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCFSlot)
-			lo4, gt9, adj1, al1 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			cfOld := c.loadFlag(c.flagsCFSlot)
+			lo4, gt9, needLo, adj1, al1 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, 15\n", lo4, al)
 			fmt.Fprintf(c.b, "  %%%s = icmp ugt i8 %%%s, 9\n", gt9, lo4)
+			fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %s\n", needLo, gt9, afOld)
 			fmt.Fprintf(c.b, "  %%%s = %s i8 %%%s, 6\n", adj1, opStr, al)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", al1, gt9, adj1, al)
-			gt99, needHi, adj2, al2, zf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", al1, needLo, adj1, al)
+			// Carry/borrow from low adjust can also set CF.
+			var loCarry string
+			if spec.Op == "DAA" {
+				lc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = icmp ult i8 %%%s, %%%s\n", lc, adj1, al)
+				loCarry = "%" + lc
+			} else {
+				lc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = icmp ult i8 %%%s, 6\n", lc, al)
+				loCarry = "%" + lc
+			}
+			loCarryMasked, cfMid := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i1 %%%s, %s\n", loCarryMasked, needLo, loCarry)
+			fmt.Fprintf(c.b, "  %%%s = or i1 %s, %%%s\n", cfMid, cfOld, loCarryMasked)
+			gt99, needHi, adj2, al2 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = icmp ugt i8 %%%s, 153\n", gt99, al)
-			fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", needHi, gt99, cf)
+			fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %s\n", needHi, gt99, cfOld)
 			fmt.Fprintf(c.b, "  %%%s = %s i8 %%%s, 96\n", adj2, opStr, al1)
 			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", al2, needHi, adj2, al1)
-			fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, al2)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", needHi, c.flagsCFSlot)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			newCF := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", newCF, cfMid, needHi)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newCF, c.flagsCFSlot)
+			if c.flagsAFSlot != "" {
+				fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", needLo, c.flagsAFSlot)
+			}
+			c.setZSPFlagsSized(asm.I8, "%"+al2)
 			return c.storeRegSized(asm.AL, asm.I8, "%"+al2)
 		}
-	case "arpl":
-		if len(ins.Args) != 2 {
-			return fmt.Errorf("amd64 ARPL expects src, dst: %q", ins.Raw)
-		}
-		src, err := c.evalIntSized(ins.Args[0], asm.I16)
-		if err != nil {
-			return err
-		}
-		dst, err := c.evalIntSized(ins.Args[1], asm.I16)
-		if err != nil {
-			return err
-		}
-		sRpl, dRpl, lt, hi, repl, out := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i16 %s, 3\n", sRpl, src)
-		fmt.Fprintf(c.b, "  %%%s = and i16 %s, 3\n", dRpl, dst)
-		fmt.Fprintf(c.b, "  %%%s = icmp ult i16 %%%s, %%%s\n", lt, dRpl, sRpl)
-		fmt.Fprintf(c.b, "  %%%s = and i16 %s, -4\n", hi, dst)
-		fmt.Fprintf(c.b, "  %%%s = or i16 %%%s, %%%s\n", repl, hi, sRpl)
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i16 %%%s, i16 %s\n", out, lt, repl, dst)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", lt, c.flagsZSlot)
-		if ins.Args[1].Kind == asm.OpReg {
-			return c.storeRegSized(ins.Args[1].Reg, asm.I16, "%"+out)
-		}
-		p, pty, err := c.ptrFromMem(ins.Args[1].Mem)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(c.b, "  store i16 %%%s, %s %s, align 1\n", out, pty, p)
-		return nil
-	case "bound":
-		if len(ins.Args) != 2 || !isX86MemOp(ins.Args[1]) {
-			return fmt.Errorf("amd64 %s expects reg, mem: %q", spec.Op, ins.Raw)
-		}
-		ty := x86LLVMIntType(spec.Width)
-		if _, err := c.evalIntSized(ins.Args[0], ty); err != nil {
-			return err
-		}
-		p, pty, err := c.resolveMemPtr(ins.Args[1])
-		if err != nil {
-			return err
-		}
-		lo := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", lo, ty, pty, p)
-		return nil
-	case "pushaw":
-		if len(ins.Args) != 0 {
-			return fmt.Errorf("amd64 PUSHAW takes no operands: %q", ins.Raw)
-		}
-		for _, r := range []asm.Reg{asm.AX, asm.CX, asm.DX, asm.BX, asm.SP, asm.BP, asm.SI, asm.DI} {
-			v, err := c.loadReg(r)
-			if err != nil {
-				return err
-			}
-			c.pushI64(v)
-		}
-		return nil
-	case "popaw":
-		if len(ins.Args) != 0 {
-			return fmt.Errorf("amd64 POPAW takes no operands: %q", ins.Raw)
-		}
-		for _, r := range []asm.Reg{asm.DI, asm.SI, asm.BP, asm.SP, asm.BX, asm.DX, asm.CX, asm.AX} {
-			v := c.popI64()
-			if r == asm.SP {
-				continue
-			}
-			tr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", tr, v)
-			if err := c.storeRegSized(r, asm.I16, "%"+tr); err != nil {
-				return err
-			}
-		}
-		return nil
 	case "rdpid":
 		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpReg {
 			return fmt.Errorf("amd64 RDPID expects dstReg: %q", ins.Raw)
@@ -1372,6 +1359,7 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+		c.clearAuxCarryFlag()
 		return c.storeRegSized(ins.Args[0].Reg, ty, "%"+val)
 	case "rdfsbase", "rdgsbase":
 		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpReg {
@@ -1392,43 +1380,26 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		}
 		fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(%s %s)\n", spec.LLVMOp+" $0", "r,~{memory}", ty, v)
 		return nil
-	case "xtest":
-		fmt.Fprintf(c.b, "  store i1 true, ptr %s\n", c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
-		return nil
 	case "stmxcsr":
 		if len(ins.Args) != 1 || !isX86MemOp(ins.Args[0]) {
 			return fmt.Errorf("amd64 %s expects mem: %q", spec.Op, ins.Raw)
 		}
-		p, ptrType, err := c.resolveMemPtr(ins.Args[0])
+		p, _, err := c.resolveMemPtr(ins.Args[0])
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(c.b, "  store i32 8064, %s %s, align 1\n", ptrType, p)
+		fmt.Fprintf(c.b, "  call void @llvm.x86.sse.stmxcsr(ptr %s)\n", p)
 		return nil
-	case "load_seg":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return fmt.Errorf("amd64 %s expects mem, dstReg: %q", spec.Op, ins.Raw)
+	case "ldmxcsr":
+		if len(ins.Args) != 1 || !isX86MemOp(ins.Args[0]) {
+			return fmt.Errorf("amd64 %s expects mem: %q", spec.Op, ins.Raw)
 		}
-		ty := x86LLVMIntType(spec.Width)
-		v, err := c.evalIntSized(ins.Args[0], ty)
+		p, _, err := c.resolveMemPtr(ins.Args[0])
 		if err != nil {
 			return err
 		}
-		return c.storeRegSized(ins.Args[1].Reg, ty, v)
-	case "store_zero":
-		if len(ins.Args) != 1 {
-			return fmt.Errorf("amd64 %s expects 1 dst operand: %q", spec.Op, ins.Raw)
-		}
-		ty := x86LLVMIntType(spec.Width)
-		_, storeDst, err := c.loadIntDestination(ins.Args[0], ty)
-		if err != nil {
-			return err
-		}
-		return storeDst("0")
+		fmt.Fprintf(c.b, "  call void @llvm.x86.sse.ldmxcsr(ptr %s)\n", p)
+		return nil
 	}
 	return fmt.Errorf("amd64: unhandled system op %s", spec.Op)
 }

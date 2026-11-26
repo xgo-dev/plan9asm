@@ -35,6 +35,18 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op asm.Op, ins asm.Instr, emitBr 
 			}
 			return true, false, nil
 		case asm.OpSym:
+			s := strings.TrimSpace(ins.Args[0].Sym)
+			if strings.HasPrefix(s, "*") {
+				reg := asm.Reg(strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(s, "*"))))
+				addr, err := c.loadReg(reg)
+				if err != nil {
+					return true, false, err
+				}
+				if err := c.callIndirectAddr(addr); err != nil {
+					return true, false, err
+				}
+				return true, false, nil
+			}
 			if err := c.callSym(ins.Args[0]); err != nil {
 				return true, false, err
 			}
@@ -88,6 +100,17 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op asm.Op, ins asm.Instr, emitBr 
 		return true, false, fmt.Errorf("amd64 %s invalid register target: %q", op, ins.Raw)
 	case asm.OpSym:
 		s := strings.TrimSpace(ins.Args[0].Sym)
+		if op == "JMP" && strings.HasPrefix(s, "*") {
+			reg := asm.Reg(strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(s, "*"))))
+			addr, err := c.loadReg(reg)
+			if err != nil {
+				return true, false, err
+			}
+			if err := c.tailCallIndirectAddrAndRet(addr); err != nil {
+				return true, false, err
+			}
+			return true, true, nil
+		}
 		// Treat JMP foo(SB) as a tailcall to another TEXT (common in stdlib asm).
 		if op == "JMP" && strings.HasSuffix(s, "(SB)") {
 			if err := c.tailCallAndRet(ins.Args[0]); err != nil {

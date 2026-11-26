@@ -478,7 +478,6 @@ TEXT ·x86M6Full387(SB),NOSPLIT,$0-4
 	FPTAN
 	FYL2X
 	FYL2XP1
-	FPATAN
 	FPREM
 	FPREM1
 	FSCALE
@@ -490,17 +489,8 @@ TEXT ·x86M6Full387(SB),NOSPLIT,$0-4
 	AAD
 	DAA
 	DAS
-	ARPL AX, BX
-	ARPL AX, 0(BX)
-	BOUNDW AX, 0(BX)
-	BOUNDL AX, 0(BX)
-	INTO
-	PUSHAW
-	POPAW
 	LEAVEL
 	LEAVEW
-	MOVW AX, TASK
-	MOVW TASK, BX
 	RET
 `
 	f386, err := Parse(ArchAMD64, src386)
@@ -537,71 +527,20 @@ TEXT ·amd64M6Exec(SB),NOSPLIT,$0-16
 	MOVQ out+0(FP), DI
 	MOVQ in+8(FP), SI
 
-	// [0] AAA: 0x0f -> 0x0105
-	MOVQ $0x0f, AX
-	AAA
-	MOVWQZX AX, AX
-	MOVQ AX, 0(DI)
-
-	// [1] AAM: 37 -> AH=3, AL=7 => 0x0307
-	MOVQ $37, AX
-	AAM
-	MOVWQZX AX, AX
-	MOVQ AX, 8(DI)
-
-	// [2] AAD: 0x0307 -> 37
-	AAD
-	MOVWQZX AX, AX
-	MOVQ AX, 16(DI)
-
-	// [3] AAS: 0x020f -> 0x0109
-	MOVQ $0x020f, AX
-	AAS
-	MOVWQZX AX, AX
-	MOVQ AX, 24(DI)
-
-	// [4] DAA: 0x1a (CF=0) -> 0x20
-	CLC
-	MOVQ $0x1a, AX
-	DAA
-	MOVBQZX AL, AX
-	MOVQ AX, 32(DI)
-
-	// [5] DAS: 0x2a (CF=0) -> 0x24
-	CLC
-	MOVQ $0x2a, AX
-	DAS
-	MOVBQZX AL, AX
-	MOVQ AX, 40(DI)
-
-	// [6] ARPL: src=3, dst=0x10 -> 0x13
-	MOVQ $3, AX
-	MOVQ $0x10, BX
-	ARPL AX, BX
-	MOVWQZX BX, BX
-	MOVQ BX, 48(DI)
-
-	// [7] Unsuffixed AVX-512 aliases: VCVTUSI2SD / VCVTSD2USI / VFPCLASSPD / VFPCLASSPS
+	// [0..2] Unsuffixed AVX-512 aliases: VCVTUSI2SD / VCVTSD2USI / VFPCLASSPD / VFPCLASSPS
 	MOVQ $42, CX
 	VCVTUSI2SD CX, X0, X1
 	VCVTSD2USI X1, DX
-	MOVQ DX, 56(DI)
+	MOVQ DX, 0(DI)
 	VCVTTSD2USI X1, R8
-	MOVQ R8, 64(DI)
+	MOVQ R8, 8(DI)
 	VCVTUSI2SS CX, X0, X2
 	VCVTSS2USI X2, R9
 	VCVTTSS2USI X2, R10
-	MOVQ R10, 72(DI)
+	MOVQ R10, 16(DI)
 	VFPCLASSPD $0x02, X1, K1
 	VFPCLASSPS $0x02, X2, K2
-	MOVW AX, TASK
-	MOVW TASK, R11
 	WAIT
-	INTO
-	BOUNDW AX, 0(SI)
-	BOUNDL AX, 0(SI)
-	PUSHAW
-	POPAW
 	RET
 `
 	f64, err := Parse(ArchAMD64, srcAMD64)
@@ -647,8 +586,8 @@ int main(void) {
     uint64_t in[2] = {0, 0};
     uint64_t out[12] = {0};
     amd64M6Exec(out, in);
-    uint64_t want[10] = {0x0105, 0x0307, 37, 0x0109, 0x20, 0x24, 0x13, 42, 42, 42};
-    for (int i = 0; i < 10; i++) {
+    uint64_t want[3] = {42, 42, 42};
+    for (int i = 0; i < 3; i++) {
         if (out[i] != want[i]) {
             fprintf(stderr, "mismatch at [%d]: got=0x%llx want=0x%llx\n", i, (unsigned long long)out[i], (unsigned long long)want[i]);
             return i + 1;
