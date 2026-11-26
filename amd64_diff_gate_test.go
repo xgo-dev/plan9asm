@@ -1182,23 +1182,24 @@ TEXT ·f(SB), $0-8
 	RET
 `, false)
 	optTool := findLLVM22Tool("opt")
-	if optTool != "" {
-		tmp := t.TempDir()
-		inPath := filepath.Join(tmp, "raw_if.ll")
-		outPath := filepath.Join(tmp, "raw_if_opt.ll")
-		if err := os.WriteFile(inPath, []byte(rawIFIR), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
-			t.Fatalf("LLVM 22 opt -O2 failed: %v\n%s", err, out)
-		}
-		optBytes, err := os.ReadFile(outPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(optBytes), "ret i64 512") {
-			t.Fatalf("expected PUSHFQ; POPQ AX; ANDQ $0x200, AX to fold to ret i64 512 under LLVM 22 -O2:\n%s", string(optBytes))
-		}
+	if optTool == "" {
+		t.Fatal("LLVM 22 opt is required for TestTranslateGoModuleAMD64PopAndPushfqInitPropagation (check LLVM_CONFIG / PATH)")
+	}
+	tmp := t.TempDir()
+	inPath := filepath.Join(tmp, "raw_if.ll")
+	outPath := filepath.Join(tmp, "raw_if_opt.ll")
+	if err := os.WriteFile(inPath, []byte(rawIFIR), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
+		t.Fatalf("LLVM 22 opt -O2 failed: %v\n%s", err, out)
+	}
+	optBytes, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(optBytes), "ret i64 512") {
+		t.Fatalf("expected PUSHFQ; POPQ AX; ANDQ $0x200, AX to fold to ret i64 512 under LLVM 22 -O2:\n%s", string(optBytes))
 	}
 }
 
@@ -1393,6 +1394,9 @@ TEXT ·f(SB), $0-1
 //   - stc-one:     STC sets CF=1         -> MUST PASS and LLVM 22 -O2 preserves 1
 func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
 	optTool := findLLVM22Tool("opt")
+	if optTool == "" {
+		t.Fatal("LLVM 22 opt is required for TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix (check LLVM_CONFIG / PATH)")
+	}
 	translateAndOpt := func(t *testing.T, name, goSrc, asmSrc string, wantErr bool) string {
 		t.Helper()
 		fset := token.NewFileSet()
@@ -1425,9 +1429,6 @@ func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
 		}
 		rawIR := res.Module.String()
 		res.Module.Dispose()
-		if optTool == "" {
-			return rawIR
-		}
 		tmp := t.TempDir()
 		inPath := filepath.Join(tmp, "in.ll")
 		outPath := filepath.Join(tmp, "opt.ll")
@@ -1697,7 +1698,7 @@ func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
 			t.Run(label, func(t *testing.T) {
 				asmSrc := p.asmPrefix + "\n" + p.header + "\n" + m.setup + p.body
 				optIR := translateAndOpt(t, label, p.goSrc, asmSrc, m.undef)
-				if m.undef || optTool == "" {
+				if m.undef {
 					return
 				}
 				want := p.wantZero
@@ -1714,6 +1715,498 @@ func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
 					t.Fatalf("%s: expected LLVM 22 -O2 IR for @f to contain %q, got:\n%s", label, want, optIR)
 				}
 			})
+		}
+	}
+}
+
+// TestTranslateGoModuleAMD64VecLaneSelectPrecision verifies Round 10 P1 #2 and
+// sibling lane-select/insert/half-move ops: extracting a defined lane succeeds
+// and folds to the exact constant under LLVM 22 -O2 even when an unselected
+// lane holds entry-undefined CF (or SP taint), while extracting the undefined
+// or SP-tainted lane is still rejected.
+func TestTranslateGoModuleAMD64VecLaneSelectPrecision(t *testing.T) {
+	optTool := findLLVM22Tool("opt")
+	if optTool == "" {
+		t.Fatal("LLVM 22 opt is required for TestTranslateGoModuleAMD64VecLaneSelectPrecision (check LLVM_CONFIG / PATH)")
+	}
+	goSrc := "package p\nfunc f() int64\n"
+
+	runCase := func(t *testing.T, name, asmSrc string, wantErr bool, wantO2 string) {
+		t.Helper()
+		fset := token.NewFileSet()
+		astFile, err := parser.ParseFile(fset, "p.go", goSrc, 0)
+		if err != nil {
+			t.Fatalf("%s: parse go: %v", name, err)
+		}
+		cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+		pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
+		if err != nil {
+			t.Fatalf("%s: typecheck go: %v", name, err)
+		}
+		res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(asmSrc), GoModuleOptions{
+			FileName:     "p_amd64.s",
+			GOOS:         "linux",
+			GOARCH:       "amd64",
+			TargetTriple: "x86_64-unknown-linux-gnu",
+			ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		})
+		if wantErr {
+			if err == nil {
+				ir := res.Module.String()
+				res.Module.Dispose()
+				t.Fatalf("%s: expected error, got success:\n%s", name, ir)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		rawIR := res.Module.String()
+		res.Module.Dispose()
+		tmp := t.TempDir()
+		inPath := filepath.Join(tmp, "in.ll")
+		outPath := filepath.Join(tmp, "opt.ll")
+		if err := os.WriteFile(inPath, []byte(rawIR), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
+			t.Fatalf("%s: LLVM 22 opt -O2 failed: %v\n%s", name, err, out)
+		}
+		optBytes, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(optBytes), wantO2) {
+			t.Fatalf("%s: expected LLVM 22 -O2 IR to contain %q, got:\n%s", name, wantO2, string(optBytes))
+		}
+	}
+
+	cases := []struct {
+		name    string
+		asm     string
+		wantErr bool
+		wantO2  string
+	}{
+		{
+			name: "pextrq-lane0-defined-while-lane1-undef-via-movou",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $41, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRQ $0, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 41",
+		},
+		{
+			name: "pextrq-lane1-undef-via-movou-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $41, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRQ $1, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "pextrq-lane0-defined-while-lane1-undef-via-pinsrq",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $41, AX
+	MOVQ AX, X0
+	PUSHFQ
+	POPQ BX
+	ANDQ $1, BX
+	PINSRQ $1, BX, X0
+	PEXTRQ $0, X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 41",
+		},
+		{
+			name: "pextrq-lane1-undef-via-pinsrq-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $41, AX
+	MOVQ AX, X0
+	PUSHFQ
+	POPQ BX
+	ANDQ $1, BX
+	PINSRQ $1, BX, X0
+	PEXTRQ $1, X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		// Swapped orientation: low lane holds entry-undef CF, high lane is fixed 41.
+		{
+			name: "pextrq-lane1-defined-while-lane0-undef-via-movou",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, 0(SP)
+	MOVQ $41, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRQ $1, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 41",
+		},
+		{
+			name: "pextrq-lane0-undef-while-lane1-defined-via-movou-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, 0(SP)
+	MOVQ $41, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRQ $0, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "pextrq-lane1-defined-while-lane0-undef-via-pinsrq",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ BX
+	ANDQ $1, BX
+	MOVQ BX, X0
+	MOVQ $41, AX
+	PINSRQ $1, AX, X0
+	PEXTRQ $1, X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 41",
+		},
+		{
+			name: "pextrq-lane0-undef-while-lane1-defined-via-pinsrq-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ BX
+	ANDQ $1, BX
+	MOVQ BX, X0
+	MOVQ $41, AX
+	PINSRQ $1, AX, X0
+	PEXTRQ $0, X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "pextrq-lane0-clc-zero-while-lane1-41",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	CLC
+	PUSHFQ
+	POPQ BX
+	ANDQ $1, BX
+	MOVQ BX, X0
+	MOVQ $41, AX
+	PINSRQ $1, AX, X0
+	PEXTRQ $0, X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "pextrq-lane0-stc-one-while-lane1-41",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	STC
+	PUSHFQ
+	POPQ BX
+	ANDQ $1, BX
+	MOVQ BX, X0
+	MOVQ $41, AX
+	PINSRQ $1, AX, X0
+	PEXTRQ $0, X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 1",
+		},
+		{
+			name: "pextrd-lane0-defined-while-lane2-undef",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $41, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRD $0, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 41",
+		},
+		{
+			name: "pextrd-lane2-undef-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $41, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRD $2, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "pextrb-byte0-defined-while-byte8-undef",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $41, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRB $0, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 41",
+		},
+		{
+			name: "pextrb-byte8-undef-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $41, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRB $8, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "psrldq-8-shifts-high-undef-lane-into-low-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $41, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PSRLDQ $8, X0
+	MOVQ X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "psrldq-8-shifts-defined-high-lane-into-low-ok",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSRLDQ $8, X0
+	MOVQ X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 41",
+		},
+		{
+			name: "pextrq-lane0-clean-while-lane1-sp-tainted",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $41, AX
+	MOVQ AX, X0
+	PUSHQ SP
+	POPQ BX
+	PINSRQ $1, BX, X0
+	PEXTRQ $0, X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 41",
+		},
+		{
+			name: "pextrq-lane1-sp-tainted-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $41, AX
+	MOVQ AX, X0
+	PUSHQ SP
+	POPQ BX
+	PINSRQ $1, BX, X0
+	PEXTRQ $1, X0, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runCase(t, tc.name, tc.asm, tc.wantErr, tc.wantO2)
+		})
+	}
+}
+
+// TestTranslateGoModuleAMD64PerBitEntryFlagDifferential verifies Acceptance
+// Criterion #3:
+//  1. Per-bit entry-flag flipping across all 6 entry-undefined RFLAGS bits
+//     (CF:0, PF:2, AF:4, ZF:6, SF:7, OF:11) — not only all-0 vs all-1 — catches
+//     XOR dependencies such as CF^OF that evaluate identically under all-0 and all-1.
+//  2. On amd64 hosts, runs the zero-prologue-clobber native Go adapter
+//     (TestAMD64EntryFlagsPerBitOracle) proving RFLAGS bits set via POPFQ reach
+//     the target's first instruction untouched.
+func TestTranslateGoModuleAMD64PerBitEntryFlagDifferential(t *testing.T) {
+	optTool := findLLVM22Tool("opt")
+	if optTool == "" {
+		t.Fatal("LLVM 22 opt is required for TestTranslateGoModuleAMD64PerBitEntryFlagDifferential (check LLVM_CONFIG / PATH)")
+	}
+	goSrc := "package p\nfunc f() int64\n"
+
+	translateCheck := func(t *testing.T, name, asmSrc string, wantErr bool, wantO2 string) {
+		t.Helper()
+		fset := token.NewFileSet()
+		astFile, err := parser.ParseFile(fset, "p.go", goSrc, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+		pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(asmSrc), GoModuleOptions{
+			FileName:     "p_amd64.s",
+			GOOS:         "linux",
+			GOARCH:       "amd64",
+			TargetTriple: "x86_64-unknown-linux-gnu",
+			ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		})
+		if wantErr {
+			if err == nil {
+				ir := res.Module.String()
+				res.Module.Dispose()
+				t.Fatalf("%s: expected error on entry-undefined flag bit, got success:\n%s", name, ir)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		rawIR := res.Module.String()
+		res.Module.Dispose()
+		tmp := t.TempDir()
+		inPath := filepath.Join(tmp, "in.ll")
+		outPath := filepath.Join(tmp, "opt.ll")
+		if err := os.WriteFile(inPath, []byte(rawIR), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
+			t.Fatalf("%s: LLVM 22 opt -O2 failed: %v\n%s", name, err, out)
+		}
+		optBytes, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(optBytes), wantO2) {
+			t.Fatalf("%s: expected LLVM 22 -O2 IR to contain %q, got:\n%s", name, wantO2, string(optBytes))
+		}
+	}
+
+	// 1. CF ^ OF: identical (0) under all-0 and all-1, but 1 under single-bit CF or OF flip.
+	cfXorOFBody := `
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, BX
+	SHRQ $11, BX
+	XORQ BX, AX
+	ANDQ $1, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`
+	t.Run("cf-xor-of/entry-undef", func(t *testing.T) {
+		translateCheck(t, "cf-xor-of/entry-undef", "TEXT ·f(SB), NOSPLIT, $0-8\n"+cfXorOFBody, true, "")
+	})
+	for _, combo := range []struct {
+		name  string
+		flags uint64
+		want  string
+	}{
+		{"cf0-of0", 0x202, "ret i64 0"},
+		{"cf1-of0", 0x203, "ret i64 1"},
+		{"cf0-of1", 0xa02, "ret i64 1"},
+		{"cf1-of1", 0xa03, "ret i64 0"},
+	} {
+		t.Run("cf-xor-of/"+combo.name, func(t *testing.T) {
+			setup := fmt.Sprintf("\tMOVQ $0x%x, CX\n\tPUSHQ CX\n\tPOPFQ\n", combo.flags)
+			translateCheck(t, combo.name, "TEXT ·f(SB), NOSPLIT, $0-8\n"+setup+cfXorOFBody, false, combo.want)
+		})
+	}
+
+	// 2. Per-bit entry-undef rejection + single-bit 0/1 verification for ALL 6 status flags.
+	flagBits := []struct {
+		name  string
+		shift int
+		mask  uint64
+	}{
+		{"CF", 0, 0x001},
+		{"PF", 2, 0x004},
+		{"AF", 4, 0x010},
+		{"ZF", 6, 0x040},
+		{"SF", 7, 0x080},
+		{"OF", 11, 0x800},
+	}
+	for _, fb := range flagBits {
+		body := fmt.Sprintf("\tPUSHFQ\n\tPOPQ AX\n\tSHRQ $%d, AX\n\tANDQ $1, AX\n\tMOVQ AX, ret+0(FP)\n\tRET\n", fb.shift)
+		t.Run("bit-"+fb.name+"/entry-undef", func(t *testing.T) {
+			translateCheck(t, fb.name+"/undef", "TEXT ·f(SB), NOSPLIT, $0-8\n"+body, true, "")
+		})
+		t.Run("bit-"+fb.name+"/zero", func(t *testing.T) {
+			setup := "\tMOVQ $0x202, CX\n\tPUSHQ CX\n\tPOPFQ\n"
+			translateCheck(t, fb.name+"/zero", "TEXT ·f(SB), NOSPLIT, $0-8\n"+setup+body, false, "ret i64 0")
+		})
+		t.Run("bit-"+fb.name+"/one", func(t *testing.T) {
+			setup := fmt.Sprintf("\tMOVQ $0x%x, CX\n\tPUSHQ CX\n\tPOPFQ\n", 0x202|fb.mask)
+			translateCheck(t, fb.name+"/one", "TEXT ·f(SB), NOSPLIT, $0-8\n"+setup+body, false, "ret i64 1")
+		})
+	}
+
+	// 3. On amd64 hosts, run the zero-prologue-clobber native Go entry-flag oracle!
+	if runtime.GOARCH == "amd64" {
+		cmd := exec.Command("go", "test", "-v", "-count=1", "./testdata/conformance/amd64", "-run", "^TestAMD64EntryFlagsPerBitOracle$")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("native amd64 zero-prologue entry-flag oracle failed: %v\n%s", err, out)
 		}
 	}
 }
@@ -1787,8 +2280,41 @@ func TestStep1ExplicitUnsupportedAuditRegistry(t *testing.T) {
 		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "AAD"},
 		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "DUFFZERO $0"},
 		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "DUFFCOPY $0"},
-		// 386 unmodeled FPATAN & system/segment stubs
+		// 386 & amd64 unmodeled approximate x87 transcendentals/remainders/env/tag-word & system/segment stubs
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FXAM"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FLDENV 0(BX)"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FSTENV 0(BX)"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FSAVE 0(BX)"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FRSTOR 0(BX)"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "F2XM1"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FYL2X"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FYL2XP1"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FSIN"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FCOS"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FSINCOS"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FPTAN"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FPATAN"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FPREM"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FPREM1"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FSCALE"},
+		{ArchAMD64, "amd64", "x86_64-unknown-linux-gnu", "FXTRACT"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FXAM"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FLDENV 0(BX)"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FSTENV 0(BX)"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FSAVE 0(BX)"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FRSTOR 0(BX)"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "F2XM1"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FYL2X"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FYL2XP1"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FSIN"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FCOS"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FSINCOS"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FPTAN"},
 		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FPATAN"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FPREM"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FPREM1"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FSCALE"},
+		{ArchAMD64, "386", "i386-unknown-linux-gnu", "FXTRACT"},
 		{ArchAMD64, "386", "i386-unknown-linux-gnu", "MOVL AX, CR0"},
 		{ArchAMD64, "386", "i386-unknown-linux-gnu", "POPL SS"},
 		// arm64 & arm & wasm unmodeled stubs

@@ -29,10 +29,11 @@ func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 	}{
 		// x86 intentionally rejects unmodeled AVX-512 special FP ops (VRCP14/28, VRSQRT14/28,
 		// VEXP2, VGETEXP, VGETMANT, VRNDSCALE, VREDUCE, VSCALEF, VRANGE, VFIXUPIMM),
-		// non-0x0c PCMP*STR*, privileged/system/segment/RTM/legacy-trap stubs, FPATAN,
+		// non-0x0c PCMP*STR*, privileged/system/segment/RTM/legacy-trap stubs,
+		// unmodeled approximate x87 transcendentals/remainders/env/FXAM ops,
 		// and 64-bit-invalid BCD ops rather than emitting approximate or placeholder IR.
-		{goarch: "386", arch: plan9asm.ArchAMD64, maxUnsup: 980, minForms: 10000},
-		{goarch: "amd64", arch: plan9asm.ArchAMD64, maxUnsup: 1000, minForms: 10000},
+		{goarch: "386", arch: plan9asm.ArchAMD64, maxUnsup: 1020, minForms: 10000},
+		{goarch: "amd64", arch: plan9asm.ArchAMD64, maxUnsup: 1020, minForms: 10000},
 		// ARM intentionally rejects unmodeled runtime pseudo-ops DUFFZERO/DUFFCOPY.
 		{goarch: "arm", arch: plan9asm.ArchARM, maxUnsup: 2, minForms: 400},
 		// ARM64 keeps strict <= arm64MaxUnsup on non-SVE forms (explicitly rejecting

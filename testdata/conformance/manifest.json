@@ -368,6 +368,28 @@
       ]
     },
     {
+      "id": "amd64-diff-gate-x87",
+      "goarch": "amd64",
+      "asm": "amd64/x87_diff_amd64.s",
+      "validation": "execute",
+      "references": [
+        "https://github.com/xgo-dev/plan9asm/pull/61"
+      ],
+      "forms": [
+        "FADDDP x87,x87",
+        "FBLD memory.gpr64-base",
+        "FBSTP memory.gpr64-base",
+        "FCOMI x87,x87",
+        "FCOMIP x87,x87",
+        "FDIVD x87,x87",
+        "FLD1 ",
+        "FLDL2E ",
+        "FLDL2T ",
+        "FLDLG2 ",
+        "FLDPI "
+      ]
+    },
+    {
       "id": "arm64-go-assembler-scalar-families",
       "goarch": "arm64",
       "asm": "arm64/conformance_arm64.s",

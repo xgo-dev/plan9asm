@@ -3,9 +3,16 @@
 package plan9asm
 
 import (
+	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
 	"go/token"
 	"go/types"
+	"math"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -997,4 +1004,365 @@ func TestTranslateGoModuleAMD64FlagProducerConsumerMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTranslateGoModuleAMD64X87StackAndConstants verifies Round 10 P1 #1 and P2 #3
+// plus full x87 family closure:
+//  1. All 7 FLD* constants (FLD1, FLDZ, FLDPI, FLDL2E, FLDL2T, FLDLG2, FLDLN2)
+//     translate via public TranslateGoModule with exact 64-bit and 80-bit values.
+//  2. FMOVD / FMOVDP across multiple stack depths and register aliases (including
+//     the exact FLDZ; FLD1; FMOVD F1, F0 regression popping all 3 slots), 10-byte
+//     FMOVB/FMOVBP BCD read/write, 80-bit arithmetic, and FUCOMI/FCOMI flags
+//     (including OF/SF/AF clearing).
+//  3. Portable X87Software execution verified on every host AND native X87Hardware
+//     machine-code differential comparison against Go's native amd64 assembler on
+//     amd64 hosts (mandatory when PLAN9ASM_REQUIRE_AMD64_DIFF=1), writing real
+//     native-diff counts into PLAN9ASM_DIFF_REPORT_OUT.
+func TestTranslateGoModuleAMD64X87StackAndConstants(t *testing.T) {
+	requireDiff := os.Getenv("PLAN9ASM_REQUIRE_AMD64_DIFF") == "1"
+	optTool := findLLVM22Tool("opt")
+	if optTool == "" {
+		t.Fatal("LLVM 22 opt is required for TestTranslateGoModuleAMD64X87StackAndConstants (check LLVM_CONFIG / PATH)")
+	}
+	llcTool, clangTool, haveTools := findLlcAndClang(t)
+	if !haveTools {
+		if requireDiff {
+			t.Fatalf("PLAN9ASM_REQUIRE_AMD64_DIFF=1 requires LLVM 22 llc/clang (llc=%q clang=%q)", llcTool, clangTool)
+		}
+		t.Skipf("LLVM 22 llc/clang unavailable (llc=%q clang=%q)", llcTool, clangTool)
+	}
+
+	// Part A (Round 10 P2 #3): Every one of the 7 FLD* constants must translate
+	// cleanly via public TranslateGoModule (matching shared x87ConstSpecs).
+	constGoSrc := "package p\nfunc f() float64\n"
+	for _, op := range []string{"FLD1", "FLDZ", "FLDPI", "FLDL2E", "FLDL2T", "FLDLG2", "FLDLN2"} {
+		t.Run("const/"+op, func(t *testing.T) {
+			fset := token.NewFileSet()
+			astFile, err := parser.ParseFile(fset, "p.go", constGoSrc, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+			pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			asmSrc := "TEXT ·f(SB), NOSPLIT, $0-8\n\t" + op + "\n\tFMOVDP F0, ret+0(FP)\n\tRET\n"
+			res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(asmSrc), GoModuleOptions{
+				FileName:     "p_amd64.s",
+				GOOS:         "linux",
+				GOARCH:       "amd64",
+				TargetTriple: "x86_64-unknown-linux-gnu",
+				ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+			})
+			if err != nil {
+				t.Fatalf("TranslateGoModule(%s) failed: %v", op, err)
+			}
+			rawIR := res.Module.String()
+			res.Module.Dispose()
+			tmp := t.TempDir()
+			inPath := filepath.Join(tmp, "in.ll")
+			outPath := filepath.Join(tmp, "opt.ll")
+			if err := os.WriteFile(inPath, []byte(rawIR), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
+				t.Fatalf("%s: LLVM 22 opt -O2 failed: %v\n%s", op, err, out)
+			}
+			objPath := filepath.Join(tmp, "out.o")
+			if out, err := exec.Command(llcTool, "-mtriple=x86_64-unknown-linux-gnu", "-filetype=obj", outPath, "-o", objPath).CombinedOutput(); err != nil {
+				t.Fatalf("%s: llc failed: %v\n%s", op, err, out)
+			}
+		})
+	}
+
+	// Part B: Load shared testdata/conformance/amd64/x87_diff_amd64.s + x87_diff.go.
+	goPath := filepath.Join("testdata", "conformance", "amd64", "x87_diff.go")
+	asmPath := filepath.Join("testdata", "conformance", "amd64", "x87_diff_amd64.s")
+	goSrcBytes, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", goPath, err)
+	}
+	asmSrc, err := os.ReadFile(asmPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", asmPath, err)
+	}
+	fset := token.NewFileSet()
+	astFile, err := parser.ParseFile(fset, goPath, goSrcBytes, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", goPath, err)
+	}
+	cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+	pkg, err := cfg.Check("amd64conformance", fset, []*ast.File{astFile}, nil)
+	if err != nil {
+		t.Fatalf("typecheck %s: %v", goPath, err)
+	}
+	gp := GoPackage{Path: "amd64conformance", Types: pkg, Syntax: []*ast.File{astFile}}
+	resolve := func(sym string) string {
+		sym = strings.TrimSuffix(sym, "<>")
+		sym = strings.TrimPrefix(sym, "·")
+		return sym
+	}
+
+	harnessC := `
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#ifdef __MINGW32__
+int _fltused = 0;
+#endif
+
+extern void diffX87FmovdStackDepths(uint64_t *out);
+extern void diffX87Constants(uint64_t *outF64, uint8_t *outRaw80);
+extern void diffX87BCD(uint8_t *inBCD, uint8_t *outBCD, uint64_t *outF64);
+extern void diffX87Arith80(double a, double b, uint64_t *out);
+extern void diffX87FUCOMI(double a, double b, uint64_t *out);
+
+static void print_u64s(const uint64_t *v, int n) {
+    for (int i = 0; i < n; i++) {
+        if (i > 0) putchar(',');
+        printf("%016llx", (unsigned long long)v[i]);
+    }
+}
+
+static void print_hex(const uint8_t *p, int n) {
+    for (int i = 0; i < n; i++) printf("%02x", p[i]);
+}
+
+int main(void) {
+    uint64_t stackOut[16] = {0};
+    diffX87FmovdStackDepths(stackOut);
+    printf("x87_stack="); print_u64s(stackOut, 16); putchar('\n');
+
+    uint64_t constF64[7] = {0};
+    uint8_t constRaw80[70] = {0};
+    diffX87Constants(constF64, constRaw80);
+    printf("x87_consts="); print_u64s(constF64, 7); putchar('|'); print_hex(constRaw80, 70); putchar('\n');
+
+    const uint8_t bcds[8][10] = {
+        {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
+        {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
+        {0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {0x99, 0x99, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
+        {0x78, 0x56, 0x34, 0x12, 0x90, 0x78, 0x56, 0x34, 0x12, 0x00},
+        {0x32, 0x54, 0x76, 0x98, 0x10, 0x32, 0x54, 0x76, 0x98, 0x80},
+    };
+    for (int i = 0; i < 8; i++) {
+        uint8_t inB[10], outB[10] = {0};
+        uint64_t outF = 0;
+        memcpy(inB, bcds[i], 10);
+        diffX87BCD(inB, outB, &outF);
+        printf("x87_bcd[%d]=", i); print_hex(outB, 10); printf("|%016llx\n", (unsigned long long)outF);
+    }
+
+    const double apairs[3][2] = {{10.0, 3.0}, {-7.5, 2.25}, {1.0, 3.0}};
+    for (int i = 0; i < 3; i++) {
+        uint64_t out10[10] = {0};
+        diffX87Arith80(apairs[i][0], apairs[i][1], out10);
+        printf("x87_arith[%d]=", i); print_u64s(out10, 10); putchar('\n');
+    }
+
+    uint64_t nanBits = 0x7ff8000000000001ULL;
+    double nanVal;
+    memcpy(&nanVal, &nanBits, sizeof(nanVal));
+    const double cpairs[6][2] = {
+        {1.0, 2.0},
+        {2.0, 2.0},
+        {3.0, 2.0},
+        {-0.0, 0.0},
+        {nanVal, 1.0},
+        {1.0, nanVal},
+    };
+    for (int i = 0; i < 6; i++) {
+        uint64_t out6[6] = {0};
+        diffX87FUCOMI(cpairs[i][0], cpairs[i][1], out6);
+        printf("x87_fucomi[%d]=", i); print_u64s(out6, 6); putchar('\n');
+    }
+    return 0;
+}
+`
+
+	// Step 1: Translate in default X87Hardware mode via public TranslateGoModule,
+	// run LLVM 22 opt -O2, and verify x86_64 llc -filetype=obj compilation.
+	hwRes, err := TranslateGoModule(gp, asmSrc, GoModuleOptions{
+		FileName:     "x87_diff_amd64.s",
+		GOOS:         "linux",
+		GOARCH:       "amd64",
+		TargetTriple: "x86_64-unknown-linux-gnu",
+		ResolveSym:   resolve,
+	})
+	if err != nil {
+		t.Fatalf("TranslateGoModule(x87_diff_amd64.s, X87Hardware) failed: %v", err)
+	}
+	hwRawIR := hwRes.Module.String()
+	hwRes.Module.Dispose()
+
+	tmp := t.TempDir()
+	hwInPath := filepath.Join(tmp, "x87_hw_raw.ll")
+	hwOptPath := filepath.Join(tmp, "x87_hw_opt.ll")
+	hwObjPath := filepath.Join(tmp, "x87_hw.o")
+	if err := os.WriteFile(hwInPath, []byte(hwRawIR), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", hwInPath, "-o", hwOptPath).CombinedOutput(); err != nil {
+		t.Fatalf("LLVM 22 opt -O2 (X87Hardware) failed: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(llcTool, "-mtriple=x86_64-unknown-linux-gnu", "-filetype=obj", hwOptPath, "-o", hwObjPath).CombinedOutput(); err != nil {
+		t.Fatalf("llc x86_64 (X87Hardware) failed: %v\n%s", err, out)
+	}
+
+	// Step 2: Portable X87Software execution on EVERY host (including arm64).
+	hostTriple := hostLLVMTriple()
+	if hostTriple != "" {
+		swRes, err := TranslateGoModule(gp, asmSrc, GoModuleOptions{
+			FileName:     "x87_diff_amd64.s",
+			GOOS:         "linux",
+			GOARCH:       "amd64",
+			TargetTriple: "x86_64-unknown-linux-gnu",
+			X87Mode:      X87Software,
+			ResolveSym:   resolve,
+		})
+		if err != nil {
+			t.Fatalf("TranslateGoModule(x87_diff_amd64.s, X87Software) failed: %v", err)
+		}
+		swRawIR := swRes.Module.String()
+		swRes.Module.Dispose()
+		swInPath := filepath.Join(tmp, "x87_sw_raw.ll")
+		swOptPath := filepath.Join(tmp, "x87_sw_opt.ll")
+		swHostPath := filepath.Join(tmp, "x87_sw_host.ll")
+		swObjPath := filepath.Join(tmp, "x87_sw_host.o")
+		if err := os.WriteFile(swInPath, []byte(swRawIR), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", swInPath, "-o", swOptPath).CombinedOutput(); err != nil {
+			t.Fatalf("LLVM 22 opt -O2 (X87Software) failed: %v\n%s", err, out)
+		}
+		swOptBytes, err := os.ReadFile(swOptPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		swHostIR := strings.Replace(string(swOptBytes), `target triple = "x86_64-unknown-linux-gnu"`, `target triple = "`+hostTriple+`"`, 1)
+		if err := os.WriteFile(swHostPath, []byte(swHostIR), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(llcTool, "-mtriple="+hostTriple, "-filetype=obj", swHostPath, "-o", swObjPath).CombinedOutput(); err != nil {
+			t.Fatalf("llc host (%s, X87Software) failed: %v\n%s", hostTriple, err, out)
+		}
+		harnessPath := filepath.Join(tmp, "x87_harness.c")
+		if err := os.WriteFile(harnessPath, []byte(harnessC), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		swBin := filepath.Join(tmp, "x87_sw_bin")
+		if runtime.GOOS == "windows" {
+			swBin += ".exe"
+		}
+		if out, err := exec.Command(clangTool, "-O2", harnessPath, swObjPath, "-lm", "-o", swBin).CombinedOutput(); err != nil {
+			t.Fatalf("clang link X87Software harness failed: %v\n%s", err, out)
+		}
+		swOut, err := exec.Command(swBin).CombinedOutput()
+		if err != nil {
+			t.Fatalf("run X87Software harness failed: %v\n%s", err, swOut)
+		}
+		swMap, _ := parseDiffTranscript(t, string(swOut))
+
+		// Verify golden invariants on portable X87Software run:
+		wantStackVals := []float64{0, 1, 0, 10, 30, 20, 10, 7, 7, 5, 9, 2, 9, 22, 33, 55}
+		wantStackHex := make([]string, len(wantStackVals))
+		for i, v := range wantStackVals {
+			wantStackHex[i] = fmt.Sprintf("%016x", math.Float64bits(v))
+		}
+		if got, want := swMap["x87_stack"], strings.Join(wantStackHex, ","); got != want {
+			t.Fatalf("X87Software x87_stack:\n  got:  %s\n  want: %s", got, want)
+		}
+		wantConstF64 := []float64{1.0, 0.0, math.Pi, math.Log2E, math.Log2(10), math.Log10(2), math.Ln2}
+		wantConstHex := make([]string, len(wantConstF64))
+		for i, v := range wantConstF64 {
+			wantConstHex[i] = fmt.Sprintf("%016x", math.Float64bits(v))
+		}
+		wantRaw80 := "0000000000000080ff3f" + // FLD1
+			"00000000000000000000" + // FLDZ
+			"35c26821a2da0fc90040" + // FLDPI
+			"bcf0175c293baab8ff3f" + // FLDL2E
+			"fe8a1bcd4b789ad40040" + // FLDL2T
+			"99f7cffb849a209afd3f" + // FLDLG2
+			"ac79cfd1f71772b1fe3f" // FLDLN2
+		if got, want := swMap["x87_consts"], strings.Join(wantConstHex, ",")+"|"+wantRaw80; got != want {
+			t.Fatalf("X87Software x87_consts:\n  got:  %s\n  want: %s", got, want)
+		}
+		// Verify FUCOMI(1.0, 2.0) clears OF/SF/AF and sets CF=1, ZF=0, PF=0 (0x03 = bit1|CF).
+		fu0 := strings.Split(swMap["x87_fucomi[0]"], ",")
+		if len(fu0) != 6 || fu0[0] != "0000000000000003" || fu0[1] != "0000000000000003" || fu0[3] != "0000000000000003" || fu0[4] != "0000000000000003" {
+			t.Fatalf("X87Software x87_fucomi[0] (1.0 vs 2.0) = %v, want flags=0x03 (OF=SF=AF=0, CF=1)", fu0)
+		}
+		// Verify BCD -0 preserves negative zero sign bit.
+		if got := swMap["x87_bcd[1]"]; got != "00000000000000000080|8000000000000000" {
+			t.Fatalf("X87Software x87_bcd[1] (-0) = %s, want 00000000000000000080|8000000000000000", got)
+		}
+	}
+
+	// Step 3: Native Go amd64 vs LLVM 22 X87Hardware machine-code differential comparison!
+	if runtime.GOARCH != "amd64" {
+		t.Logf("portable X87Software execution + X87Hardware llc verification PASSED; native amd64 Go-asm x87 diff runs on amd64 runners")
+		return
+	}
+
+	harnessPath := filepath.Join(tmp, "x87_hw_harness.c")
+	if err := os.WriteFile(harnessPath, []byte(harnessC), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hwBin := filepath.Join(tmp, "x87_hw_bin")
+	if runtime.GOOS == "windows" {
+		hwBin += ".exe"
+	}
+	if out, err := exec.Command(clangTool, "-O2", harnessPath, hwObjPath, "-lm", "-o", hwBin).CombinedOutput(); err != nil {
+		t.Fatalf("clang link X87Hardware harness failed: %v\n%s", err, out)
+	}
+	hwOut, err := exec.Command(hwBin).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run X87Hardware harness failed: %v\n%s", err, hwOut)
+	}
+	llvmMap, _ := parseDiffTranscript(t, string(hwOut))
+
+	oraclePath := filepath.Join(tmp, "x87_go_oracle.txt")
+	oracleCmd := exec.Command("go", "test", "./testdata/conformance/amd64", "-run", "^TestAMD64X87DiffDumpOracle$", "-count=1")
+	oracleCmd.Env = append(os.Environ(), "PLAN9ASM_X87_DIFF_ORACLE_OUT="+oraclePath)
+	if out, err := oracleCmd.CombinedOutput(); err != nil {
+		t.Fatalf("native Go amd64 x87 oracle execution failed: %v\n%s", err, out)
+	}
+	oracleBytes, err := os.ReadFile(oraclePath)
+	if err != nil {
+		t.Fatalf("read x87 oracle transcript %s: %v", oraclePath, err)
+	}
+	oracleMap, _ := parseDiffTranscript(t, string(oracleBytes))
+	if len(oracleMap) < 19 {
+		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 19", len(oracleMap))
+	}
+
+	compared := 0
+	var mismatches []string
+	failedKeys := map[string]bool{}
+	for k, want := range oracleMap {
+		got, ok := llvmMap[k]
+		if !ok {
+			mismatches = append(mismatches, fmt.Sprintf("%s: missing from LLVM x87 transcript (oracle=%s)", k, want))
+			failedKeys[k] = true
+			continue
+		}
+		compared++
+		if got != want {
+			mismatches = append(mismatches, fmt.Sprintf("%s:\n  go-asm:   %s\n  plan9asm: %s", k, want, got))
+			failedKeys[k] = true
+		}
+	}
+	writeAMD64ManifestDiffExecutionReport(t, "amd64/x87_diff_amd64.s", llcTool, true, map[string][]string{
+		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi["},
+	}, llvmMap, oracleMap, failedKeys, "")
+	if len(mismatches) > 0 {
+		t.Fatalf("AMD64 x87 machine-code differential mismatch (%d/%d failed):\n%s", len(mismatches), compared, strings.Join(mismatches, "\n"))
+	}
+	t.Logf("AMD64 x87 native machine-code differential gate PASSED: compared=%d (X87Hardware vs Go native amd64 asm)", compared)
 }

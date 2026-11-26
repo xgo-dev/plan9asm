@@ -44,13 +44,15 @@ type abi0State struct {
 	// vecByteBitDef tracks exact per-bit definedness for ALL 64 bytes of each
 	// XMM/YMM/ZMM register so moving undefined bits through any lane cannot
 	// forge defined bits.
-	vecByteBitDef map[int][64]uint8
-	vecTaintedSP  map[int]bool
-	vecFromRaw    map[int]bool
-	// x87StackInit/Def/Taint track the 8-deep x87 FP stack (ST(0)..ST(7) = F0..F7).
+	vecByteBitDef     map[int][64]uint8
+	vecBytesTaintedSP map[int]uint64
+	vecFromRaw        map[int]bool
+	// x87StackInit/Def/Taint track the 8-deep x87 FP stack (ST(0)..ST(7) = F0..F7)
+	// and x87SWDef tracks whether the x87 status word condition codes are defined.
 	x87StackInit  [8]bool
 	x87StackDef   [8]bool
 	x87StackTaint [8]bool
+	x87SWDef      bool
 	// fpBytesInit records initialized byte offsets in the FP frame
 	// (pre-populated with declared parameter slot bytes plus written result bytes).
 	fpBytesInit      map[int64]bool
@@ -156,11 +158,12 @@ func (s *abi0State) clearCallerSaved() {
 	s.kBytesTaintedSP = map[int]uint8{}
 	s.vecBytesInit = map[int]uint64{}
 	s.vecByteBitDef = map[int][64]uint8{}
-	s.vecTaintedSP = map[int]bool{}
+	s.vecBytesTaintedSP = map[int]uint64{}
 	s.vecFromRaw = map[int]bool{}
 	s.x87StackInit = [8]bool{}
 	s.x87StackDef = [8]bool{}
 	s.x87StackTaint = [8]bool{}
+	s.x87SWDef = true
 	s.cfInit = false
 	s.pfInit = false
 	s.afInit = false
@@ -208,11 +211,12 @@ func (s *abi0State) clone() *abi0State {
 		kBytesTaintedSP:   make(map[int]uint8, len(s.kBytesTaintedSP)),
 		vecBytesInit:      make(map[int]uint64, len(s.vecBytesInit)),
 		vecByteBitDef:     make(map[int][64]uint8, len(s.vecByteBitDef)),
-		vecTaintedSP:      make(map[int]bool, len(s.vecTaintedSP)),
+		vecBytesTaintedSP: make(map[int]uint64, len(s.vecBytesTaintedSP)),
 		vecFromRaw:        make(map[int]bool, len(s.vecFromRaw)),
 		x87StackInit:      s.x87StackInit,
 		x87StackDef:       s.x87StackDef,
 		x87StackTaint:     s.x87StackTaint,
+		x87SWDef:          s.x87SWDef,
 		fpBytesInit:       make(map[int64]bool, len(s.fpBytesInit)),
 		fpByteBitDef:      make(map[int64]uint8, len(s.fpByteBitDef)),
 		fpBytesTaintedSP:  make(map[int64]bool, len(s.fpBytesTaintedSP)),
@@ -262,8 +266,8 @@ func (s *abi0State) clone() *abi0State {
 	for k, v := range s.vecByteBitDef {
 		out.vecByteBitDef[k] = v
 	}
-	for k, v := range s.vecTaintedSP {
-		out.vecTaintedSP[k] = v
+	for k, v := range s.vecBytesTaintedSP {
+		out.vecBytesTaintedSP[k] = v
 	}
 	for k, v := range s.vecFromRaw {
 		out.vecFromRaw[k] = v
@@ -412,6 +416,10 @@ func (s *abi0State) merge(other *abi0State) bool {
 			changed = true
 		}
 	}
+	if s.x87SWDef && !other.x87SWDef {
+		s.x87SWDef = false
+		changed = true
+	}
 	for k := range s.fpBytesInit {
 		if !other.fpBytesInit[k] {
 			delete(s.fpBytesInit, k)
@@ -510,9 +518,10 @@ func (s *abi0State) merge(other *abi0State) bool {
 			changed = true
 		}
 	}
-	for k, v := range other.vecTaintedSP {
-		if v && !s.vecTaintedSP[k] {
-			s.vecTaintedSP[k] = true
+	for k, v := range other.vecBytesTaintedSP {
+		merged := s.vecBytesTaintedSP[k] | v
+		if merged != s.vecBytesTaintedSP[k] {
+			s.vecBytesTaintedSP[k] = merged
 			changed = true
 		}
 	}
@@ -671,8 +680,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		kBytesTaintedSP:   map[int]uint8{},
 		vecBytesInit:      map[int]uint64{},
 		vecByteBitDef:     map[int][64]uint8{},
-		vecTaintedSP:      map[int]bool{},
+		vecBytesTaintedSP: map[int]uint64{},
 		vecFromRaw:        map[int]bool{},
+		x87SWDef:          true,
 		fpBytesInit:       map[int64]bool{},
 		fpByteBitDef:      map[int64]uint8{},
 		fpBytesTaintedSP:  map[int64]bool{},
@@ -1050,19 +1060,19 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 	}
 
 	// evalOperandTaintSP returns per-byte private SP-frame address taint for op
-	// (bit b of mask corresponds to byte b aligned to bit 0, plus anyTaint).
-	evalOperandTaintSP := func(st *abi0State, op asm.Operand, readBytes int64, isLEA bool) (mask uint8, anyTaint bool) {
+	// (bit b of mask corresponds to byte b aligned to bit 0 across up to 64 bytes, plus anyTaint).
+	evalOperandTaintSP := func(st *abi0State, op asm.Operand, readBytes int64, isLEA bool, opName asm.Op) (mask uint64, anyTaint bool) {
 		switch op.Kind {
 		case asm.OpReg:
 			if op.Reg == asm.SP {
-				return wordMask, true
+				return uint64(wordMask), true
 			}
 			if idx, ok := amd64ParseMReg(op.Reg); ok {
 				n := readBytes
 				if n <= 0 || n > 8 {
 					n = 8
 				}
-				raw := st.mmxBytesTaintedSP[idx] & uint8(abi0ByteMaskN(n))
+				raw := uint64(st.mmxBytesTaintedSP[idx]) & abi0ByteMaskN(n)
 				return raw, raw != 0
 			}
 			if idx, ok := amd64ParseKReg(op.Reg); ok {
@@ -1070,7 +1080,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				if n <= 0 || n > 8 {
 					n = 8
 				}
-				raw := st.kBytesTaintedSP[idx] & uint8(abi0ByteMaskN(n))
+				raw := uint64(st.kBytesTaintedSP[idx]) & abi0ByteMaskN(n)
 				return raw, raw != 0
 			}
 			if idx, ok := amd64ParseX87Reg(op.Reg); ok {
@@ -1079,31 +1089,26 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					if n <= 0 || n > 8 {
 						n = 8
 					}
-					return uint8(abi0ByteMaskN(n)), true
+					return abi0ByteMaskN(n), true
 				}
 				return 0, false
 			}
 			if idx, ok := anyVecRegIndex(op.Reg); ok {
-				if st.vecTaintedSP[idx] {
-					n := readBytes
-					if n <= 0 || n > 8 {
-						n = 8
-					}
-					return uint8(abi0ByteMaskN(n)), true
-				}
-				return 0, false
+				req := vecRegReadByteMask(op.Reg, opName, readBytes)
+				raw := st.vecBytesTaintedSP[idx] & req
+				return raw, raw != 0
 			}
 			req := gpRegReadByteMask(op.Reg, readBytes, wordMask)
 			raw := st.gpBytesTaintedSP[canonicalGP(op.Reg)] & req
 			if req == 0x02 {
 				raw = (raw >> 1) & 0x01
 			}
-			return raw, raw != 0
+			return uint64(raw), raw != 0
 
 		case asm.OpMem:
 			if op.Mem.Base == asm.SP {
 				if isLEA {
-					return wordMask, true
+					return uint64(wordMask), true
 				}
 				nBytes := readBytes
 				if nBytes <= 0 {
@@ -1112,18 +1117,18 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				if op.Mem.Index != "" {
 					if len(st.spBytesTaintedSP) > 0 {
 						n := nBytes
-						if n > 8 {
-							n = 8
+						if n > 64 {
+							n = 64
 						}
-						return uint8(abi0ByteMaskN(n)), true
+						return abi0ByteMaskN(n), true
 					}
 					return 0, false
 				}
 				for b := int64(0); b < nBytes; b++ {
 					if st.spBytesTaintedSP[st.spOffset+op.Mem.Off+b] {
 						anyTaint = true
-						if b < 8 {
-							mask |= 1 << uint(b)
+						if b < 64 {
+							mask |= uint64(1) << uint(b)
 						}
 					}
 				}
@@ -1131,10 +1136,10 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 			if isLEA {
 				if op.Mem.Base != "" && op.Mem.Base != asm.PC && st.gpBytesTaintedSP[canonicalGP(op.Mem.Base)] != 0 {
-					return wordMask, true
+					return uint64(wordMask), true
 				}
 				if op.Mem.Index != "" && st.gpBytesTaintedSP[canonicalGP(op.Mem.Index)] != 0 {
-					return wordMask, true
+					return uint64(wordMask), true
 				}
 			}
 			return 0, false
@@ -1150,8 +1155,8 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			for b := int64(0); b < nBytes; b++ {
 				if st.fpBytesTaintedSP[op.FPOffset+b] {
 					anyTaint = true
-					if b < 8 {
-						mask |= 1 << uint(b)
+					if b < 64 {
+						mask |= uint64(1) << uint(b)
 					}
 				}
 			}
@@ -1160,7 +1165,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		return 0, false
 	}
 
-	writeDstMask := func(st *abi0State, op asm.Operand, writeBytes int64, valMask uint64, valBitDef uint64, fullBitDef [64]uint8, opName asm.Op, spec asm.OpSpec, pureCopy bool, fromRaw bool, taintMask uint8, anyTaint bool, srcIsReg bool) error {
+	writeDstMask := func(st *abi0State, op asm.Operand, writeBytes int64, valMask uint64, valBitDef uint64, fullBitDef [64]uint8, opName asm.Op, spec asm.OpSpec, pureCopy bool, fromRaw bool, taintMask uint64, anyTaint bool, srcIsReg bool) error {
 		switch op.Kind {
 		case asm.OpReg:
 			if op.Reg == asm.SP {
@@ -1175,7 +1180,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				wBitMask := abi0ByteMaskToBitMask(wMask)
 				placed := uint8(valMask) & wMask
 				placedBits := valBitDef & wBitMask & abi0ByteMaskToBitMask(placed)
-				placedTaint := taintMask & wMask
+				placedTaint := uint8(taintMask) & wMask
 				// MOVD/MOVL into M0..M7 zero-extends upper 4 bytes (known 0 = defined).
 				upperZero := uint8(0xff) &^ wMask
 				upperZeroBits := ^wBitMask
@@ -1197,7 +1202,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				wBitMask := abi0ByteMaskToBitMask(wMask)
 				placed := uint8(valMask) & wMask
 				placedBits := valBitDef & wBitMask & abi0ByteMaskToBitMask(placed)
-				placedTaint := taintMask & wMask
+				placedTaint := uint8(taintMask) & wMask
 				// Writes to K0..K7 zero-extend upper bytes up to 64 bits (known 0 = defined).
 				upperZero := uint8(0xff) &^ wMask
 				upperZeroBits := ^wBitMask
@@ -1350,10 +1355,35 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						st.vecByteBitDef[idx] = curBD
 					}
 				}
-				if anyTaint {
-					st.vecTaintedSP[idx] = true
-				} else if zeroUpper || wMask == vecRegFullByteMask(op.Reg) {
-					delete(st.vecTaintedSP, idx)
+				var newVecTaint uint64
+				if pureCopy {
+					lowWidth := vecCopyWidth(op.Reg, name, writeBytes)
+					lowMask := abi0ByteMaskN(lowWidth)
+					placedTaint := taintMask & lowMask
+					if zeroUpper {
+						newVecTaint = placedTaint
+					} else if (name == "MOVSS" || name == "MOVSD") && srcIsReg {
+						newVecTaint = (st.vecBytesTaintedSP[idx] &^ lowMask) | placedTaint
+					} else {
+						newVecTaint = (st.vecBytesTaintedSP[idx] &^ uint64(0xffff)) | placedTaint
+					}
+				} else if anyTaint {
+					if zeroUpper {
+						newVecTaint = vecRegFullByteMask(op.Reg)
+					} else {
+						newVecTaint = st.vecBytesTaintedSP[idx] | wMask
+					}
+				} else {
+					if zeroUpper {
+						newVecTaint = 0
+					} else {
+						newVecTaint = st.vecBytesTaintedSP[idx] &^ wMask
+					}
+				}
+				if newVecTaint != 0 {
+					st.vecBytesTaintedSP[idx] = newVecTaint
+				} else {
+					delete(st.vecBytesTaintedSP, idx)
 				}
 				st.vecFromRaw[idx] = fromRaw
 				return nil
@@ -1367,11 +1397,11 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			if wMask == 0x02 {
 				placed = uint8((valMask & 0x01) << 1)
 				placedBits = (valBitDef & 0xff) << 8
-				placedTaint = (taintMask & 0x01) << 1
+				placedTaint = uint8((taintMask & 0x01) << 1)
 			} else {
 				placed = uint8(valMask) & wMask
 				placedBits = valBitDef & wBitMask
-				placedTaint = taintMask & wMask
+				placedTaint = uint8(taintMask) & wMask
 			}
 			// Keep invariant: uninitialized bytes have bit-definedness 0.
 			placedBits &= abi0ByteMaskToBitMask(placed)
@@ -1426,8 +1456,8 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					delete(st.fpByteBitDef, off)
 				}
 				byteTainted := false
-				if pureCopy && b < 8 {
-					byteTainted = (taintMask & (1 << uint(b))) != 0
+				if pureCopy && b < 64 {
+					byteTainted = (taintMask & (uint64(1) << uint(b))) != 0
 				} else {
 					byteTainted = anyTaint
 				}
@@ -1552,161 +1582,280 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			continue
 		}
 
-		// Model stack-pointer displacement, exact per-byte stack-slot
-		// initialization, per-bit flag definedness, per-byte SP taint, and x87
-		// stack pushes/pops for PUSH*/POP*/PUSHF*/POPF*/XCHG*/FMOV*/FLD*/FXCHD.
-		switch op {
-		case "FLD1", "FLDZ":
-			st.pushX87(true, true, false)
+		// Model all x87 instructions via the shared x87_spec.go metadata so the
+		// checker and LLVM lowerers share one exact stack/push/pop/constant model.
+		if cat := classifyX87Op(op); cat != x87CatUnknown {
+			checkMemAddr := func(opnd asm.Operand) error {
+				if opnd.Kind != asm.OpMem {
+					return nil
+				}
+				if opnd.Mem.Base != "" && opnd.Mem.Base != asm.SP && opnd.Mem.Base != asm.PC {
+					if err := checkGPRead(st, opnd.Mem.Base, wordMask, ins.Raw); err != nil {
+						return err
+					}
+				}
+				if opnd.Mem.Index != "" {
+					if err := checkGPRead(st, opnd.Mem.Index, wordMask, ins.Raw); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			writeX87ToDst := func(dst asm.Operand, w int64, initVal, defVal, taintVal bool) error {
+				if err := checkMemAddr(dst); err != nil {
+					return err
+				}
+				var vm, bd uint64
+				var full [64]uint8
+				if initVal {
+					vm = abi0ByteMaskN(w)
+					if defVal {
+						bd = abi0BitMaskN(w)
+						full = fullBitDefUniform(w, 0xff)
+					}
+				}
+				var tm uint64
+				if taintVal {
+					tm = abi0ByteMaskN(w)
+				}
+				specF := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectWriteOnly}
+				return writeDstMask(st, dst, w, vm, bd, full, op, specF, false, false, tm, taintVal, true)
+			}
+
+			switch cat {
+			case x87CatConst:
+				// All 7 constants in x87ConstSpecs (FLD1, FLDZ, FLDPI, FLDL2E, FLDL2T, FLDLG2, FLDLN2).
+				st.pushX87(true, true, false)
+			case x87CatMove:
+				plan := classifyX87Move(op, ins.Args)
+				switch plan.Kind {
+				case x87MovePushReg:
+					st.pushX87(st.x87StackInit[plan.SrcIdx], st.x87StackDef[plan.SrcIdx], st.x87StackTaint[plan.SrcIdx])
+				case x87MoveStoreReg:
+					st.x87StackInit[plan.DstIdx] = st.x87StackInit[plan.SrcIdx]
+					st.x87StackDef[plan.DstIdx] = st.x87StackDef[plan.SrcIdx]
+					st.x87StackTaint[plan.DstIdx] = st.x87StackTaint[plan.SrcIdx]
+				case x87MoveStorePopReg:
+					// FSTP ST(dstIdx): write ST(dstIdx) = ST(srcIdx) BEFORE popping ST(0).
+					st.x87StackInit[plan.DstIdx] = st.x87StackInit[plan.SrcIdx]
+					st.x87StackDef[plan.DstIdx] = st.x87StackDef[plan.SrcIdx]
+					st.x87StackTaint[plan.DstIdx] = st.x87StackTaint[plan.SrcIdx]
+					_, _, _ = st.popX87()
+				case x87MovePushMem, x87MoveLoadMemToReg:
+					ev, err := evalOperand(st, ins.Args[plan.MemArg], plan.MemBytes, false, op, ins.Raw)
+					if err != nil {
+						return nil, err
+					}
+					_, anyT := evalOperandTaintSP(st, ins.Args[plan.MemArg], plan.MemBytes, false, op)
+					if plan.Kind == x87MovePushMem {
+						st.pushX87(ev.allBytesInit, ev.allBitsDef, anyT)
+					} else {
+						st.x87StackInit[plan.DstIdx] = ev.allBytesInit
+						st.x87StackDef[plan.DstIdx] = ev.allBytesInit && ev.allBitsDef
+						st.x87StackTaint[plan.DstIdx] = anyT
+					}
+				case x87MoveStoreMem, x87MoveStorePopMem:
+					init0 := st.x87StackInit[plan.SrcIdx]
+					def0 := st.x87StackDef[plan.SrcIdx]
+					taint0 := st.x87StackTaint[plan.SrcIdx]
+					if plan.Pop {
+						_, _, _ = st.popX87()
+					}
+					if err := writeX87ToDst(ins.Args[plan.MemArg], plan.MemBytes, init0, def0, taint0); err != nil {
+						return nil, err
+					}
+				case x87MoveMemToMem:
+					if len(ins.Args) == 2 {
+						ev, err := evalOperand(st, ins.Args[0], plan.MemBytes, false, op, ins.Raw)
+						if err != nil {
+							return nil, err
+						}
+						_, anyT := evalOperandTaintSP(st, ins.Args[0], plan.MemBytes, false, op)
+						if plan.Pop {
+							_, _, _ = st.popX87()
+						}
+						if err := writeX87ToDst(ins.Args[1], plan.MemBytes, ev.allBytesInit, ev.allBitsDef, anyT); err != nil {
+							return nil, err
+						}
+					}
+				}
+			case x87CatSwap:
+				if len(ins.Args) == 2 {
+					i0, ok0 := x87OperandReg(ins.Args[0])
+					i1, ok1 := x87OperandReg(ins.Args[1])
+					if ok0 && ok1 {
+						st.x87StackInit[i0], st.x87StackInit[i1] = st.x87StackInit[i1], st.x87StackInit[i0]
+						st.x87StackDef[i0], st.x87StackDef[i1] = st.x87StackDef[i1], st.x87StackDef[i0]
+						st.x87StackTaint[i0], st.x87StackTaint[i1] = st.x87StackTaint[i1], st.x87StackTaint[i0]
+					}
+				}
+			case x87CatArith:
+				aspec := x87ArithSpecs[op]
+				if len(ins.Args) == 2 {
+					ev0, err := evalOperand(st, ins.Args[0], aspec.memBytes, false, op, ins.Raw)
+					if err != nil {
+						return nil, err
+					}
+					_, anyT0 := evalOperandTaintSP(st, ins.Args[0], aspec.memBytes, false, op)
+					ev1, err := evalOperand(st, ins.Args[1], 8, false, op, ins.Raw)
+					if err != nil {
+						return nil, err
+					}
+					_, anyT1 := evalOperandTaintSP(st, ins.Args[1], 8, false, op)
+					initRes := ev0.allBytesInit && ev1.allBytesInit
+					defRes := initRes && ev0.allBitsDef && ev1.allBitsDef
+					taintRes := anyT0 || anyT1
+					if dstIdx, ok := x87OperandReg(ins.Args[1]); ok {
+						st.x87StackInit[dstIdx] = initRes
+						st.x87StackDef[dstIdx] = defRes
+						st.x87StackTaint[dstIdx] = taintRes
+					} else {
+						if err := writeX87ToDst(ins.Args[1], 8, initRes, defRes, taintRes); err != nil {
+							return nil, err
+						}
+					}
+					if aspec.pop {
+						_, _, _ = st.popX87()
+					}
+				}
+			case x87CatCmp:
+				cspec := x87CmpSpecs[op]
+				var lhsOp, rhsOp asm.Operand
+				switch len(ins.Args) {
+				case 0:
+					lhsOp = asm.Operand{Kind: asm.OpReg, Reg: "F0"}
+					rhsOp = asm.Operand{Kind: asm.OpReg, Reg: "F1"}
+				case 1:
+					lhsOp = asm.Operand{Kind: asm.OpReg, Reg: "F0"}
+					rhsOp = ins.Args[0]
+				case 2:
+					if idx, ok := x87OperandReg(ins.Args[1]); ok && idx == 0 {
+						lhsOp, rhsOp = ins.Args[1], ins.Args[0]
+					} else {
+						lhsOp, rhsOp = ins.Args[0], ins.Args[1]
+					}
+				}
+				bothDef := true
+				if lhsOp.Kind != 0 {
+					evL, err := evalOperand(st, lhsOp, cspec.memBytes, false, op, ins.Raw)
+					if err != nil {
+						return nil, err
+					}
+					if !evL.allBytesInit || !evL.allBitsDef {
+						bothDef = false
+					}
+				}
+				if rhsOp.Kind != 0 {
+					evR, err := evalOperand(st, rhsOp, cspec.memBytes, false, op, ins.Raw)
+					if err != nil {
+						return nil, err
+					}
+					if !evR.allBytesInit || !evR.allBitsDef {
+						bothDef = false
+					}
+				}
+				if cspec.eflags {
+					st.cfInit = bothDef
+					st.pfInit = bothDef
+					st.zfInit = bothDef
+					st.ofInit = true
+					st.sfInit = true
+					st.afInit = true
+				} else {
+					st.x87SWDef = bothDef
+				}
+				for i := 0; i < cspec.pops; i++ {
+					_, _, _ = st.popX87()
+				}
+			case x87CatFCMOV:
+				if len(ins.Args) == 2 {
+					srcIdx, okS := x87OperandReg(ins.Args[0])
+					dstIdx, okD := x87OperandReg(ins.Args[1])
+					if okS && okD {
+						condOK := true
+						switch op {
+						case "FCMOVB", "FCMOVCS", "FCMOVNB", "FCMOVCC":
+							condOK = st.cfInit
+						case "FCMOVE", "FCMOVEQ", "FCMOVNE":
+							condOK = st.zfInit
+						case "FCMOVBE", "FCMOVLS", "FCMOVNBE", "FCMOVHI":
+							condOK = st.cfInit && st.zfInit
+						case "FCMOVU", "FCMOVUN", "FCMOVNU":
+							condOK = st.pfInit
+						}
+						initRes := st.x87StackInit[srcIdx] && st.x87StackInit[dstIdx] && condOK
+						defRes := initRes && st.x87StackDef[srcIdx] && st.x87StackDef[dstIdx]
+						taintRes := st.x87StackTaint[srcIdx] || st.x87StackTaint[dstIdx]
+						st.x87StackInit[dstIdx] = initRes
+						st.x87StackDef[dstIdx] = defRes
+						st.x87StackTaint[dstIdx] = taintRes
+					}
+				}
+			case x87CatUnaryInPlace:
+				// Preserves F0 init/def/taint in place.
+				st.x87StackDef[0] = st.x87StackInit[0] && st.x87StackDef[0]
+			case x87CatStatusTest:
+				st.x87SWDef = st.x87StackInit[0] && st.x87StackDef[0]
+			case x87CatFree:
+				if len(ins.Args) == 1 {
+					if idx, ok := x87OperandReg(ins.Args[0]); ok {
+						st.x87StackInit[idx] = false
+						st.x87StackDef[idx] = false
+						st.x87StackTaint[idx] = false
+					}
+				}
+			case x87CatRotateUp:
+				i0, d0, t0 := st.x87StackInit[0], st.x87StackDef[0], st.x87StackTaint[0]
+				for i := 0; i < 7; i++ {
+					st.x87StackInit[i] = st.x87StackInit[i+1]
+					st.x87StackDef[i] = st.x87StackDef[i+1]
+					st.x87StackTaint[i] = st.x87StackTaint[i+1]
+				}
+				st.x87StackInit[7], st.x87StackDef[7], st.x87StackTaint[7] = i0, d0, t0
+			case x87CatRotateDown:
+				i7, d7, t7 := st.x87StackInit[7], st.x87StackDef[7], st.x87StackTaint[7]
+				for i := 7; i > 0; i-- {
+					st.x87StackInit[i] = st.x87StackInit[i-1]
+					st.x87StackDef[i] = st.x87StackDef[i-1]
+					st.x87StackTaint[i] = st.x87StackTaint[i-1]
+				}
+				st.x87StackInit[0], st.x87StackDef[0], st.x87StackTaint[0] = i7, d7, t7
+			case x87CatInit:
+				st.x87StackInit = [8]bool{}
+				st.x87StackDef = [8]bool{}
+				st.x87StackTaint = [8]bool{}
+				st.x87SWDef = true
+			case x87CatNop, x87CatUnsupported:
+				// FCLEX/FNOP leave stack untouched; unsupported x87 ops fail during lowering.
+			case x87CatControlLoad:
+				if len(ins.Args) == 1 {
+					if _, err := evalOperand(st, ins.Args[0], 2, false, op, ins.Raw); err != nil {
+						return nil, err
+					}
+				}
+			case x87CatControlStore:
+				if len(ins.Args) == 1 {
+					defVal := true
+					if op == "FSTSW" {
+						defVal = st.x87SWDef
+					}
+					if err := writeX87ToDst(ins.Args[0], 2, true, defVal, false); err != nil {
+						return nil, err
+					}
+				}
+			}
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
 			} else {
 				finalState = st
 			}
 			continue
-		case "FXCHD":
-			if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpReg {
-				i0, ok0 := amd64ParseX87Reg(ins.Args[0].Reg)
-				i1, ok1 := amd64ParseX87Reg(ins.Args[1].Reg)
-				if ok0 && ok1 {
-					st.x87StackInit[i0], st.x87StackInit[i1] = st.x87StackInit[i1], st.x87StackInit[i0]
-					st.x87StackDef[i0], st.x87StackDef[i1] = st.x87StackDef[i1], st.x87StackDef[i0]
-					st.x87StackTaint[i0], st.x87StackTaint[i1] = st.x87StackTaint[i1], st.x87StackTaint[i0]
-					if pc+1 < len(instrs) {
-						enqueue(pc+1, st, false)
-					} else {
-						finalState = st
-					}
-					continue
-				}
-			}
-		case "FMOVD", "FMOVF", "FMOVV", "FMOVL", "FMOVW", "FMOVB":
-			if len(ins.Args) == 2 {
-				w := x86ABI0WriteBytes(op, asm.OpSpec{Op: op}, ins.Args)
-				if w <= 0 {
-					w = 8
-				}
-				if ins.Args[1].Kind == asm.OpReg && ins.Args[1].Reg == "F0" {
-					ev, err := evalOperand(st, ins.Args[0], w, false, op, ins.Raw)
-					if err != nil {
-						return nil, err
-					}
-					_, anyT := evalOperandTaintSP(st, ins.Args[0], w, false)
-					st.pushX87(ev.allBytesInit, ev.allBitsDef, anyT)
-					if pc+1 < len(instrs) {
-						enqueue(pc+1, st, false)
-					} else {
-						finalState = st
-					}
-					continue
-				}
-				if ins.Args[0].Kind == asm.OpReg && ins.Args[0].Reg == "F0" {
-					if ins.Args[1].Kind == asm.OpMem {
-						dstMem := ins.Args[1].Mem
-						if dstMem.Base != "" && dstMem.Base != asm.SP && dstMem.Base != asm.PC {
-							if err := checkGPRead(st, dstMem.Base, wordMask, ins.Raw); err != nil {
-								return nil, err
-							}
-						}
-						if dstMem.Index != "" {
-							if err := checkGPRead(st, dstMem.Index, wordMask, ins.Raw); err != nil {
-								return nil, err
-							}
-						}
-					}
-					var vm, bd uint64
-					var full [64]uint8
-					if st.x87StackInit[0] {
-						vm = abi0ByteMaskN(w)
-						if st.x87StackDef[0] {
-							bd = abi0BitMaskN(w)
-							full = fullBitDefUniform(w, 0xff)
-						}
-					}
-					var tm uint8
-					if st.x87StackTaint[0] {
-						tm = uint8(abi0ByteMaskN(w))
-					}
-					specF := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectWriteOnly}
-					if err := writeDstMask(st, ins.Args[1], w, vm, bd, full, op, specF, false, false, tm, st.x87StackTaint[0], true); err != nil {
-						return nil, err
-					}
-					if pc+1 < len(instrs) {
-						enqueue(pc+1, st, false)
-					} else {
-						finalState = st
-					}
-					continue
-				}
-			}
-		case "FMOVDP", "FMOVFP", "FMOVVP", "FMOVLP", "FMOVWP", "FMOVBP":
-			if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpReg && ins.Args[0].Reg == "F0" {
-				w := x86ABI0WriteBytes(op, asm.OpSpec{Op: op}, ins.Args)
-				if w <= 0 {
-					w = 8
-				}
-				if ins.Args[1].Kind == asm.OpMem {
-					dstMem := ins.Args[1].Mem
-					if dstMem.Base != "" && dstMem.Base != asm.SP && dstMem.Base != asm.PC {
-						if err := checkGPRead(st, dstMem.Base, wordMask, ins.Raw); err != nil {
-							return nil, err
-						}
-					}
-					if dstMem.Index != "" {
-						if err := checkGPRead(st, dstMem.Index, wordMask, ins.Raw); err != nil {
-							return nil, err
-						}
-					}
-				}
-				init0, def0, taint0 := st.popX87()
-				var vm, bd uint64
-				var full [64]uint8
-				if init0 {
-					vm = abi0ByteMaskN(w)
-					if def0 {
-						bd = abi0BitMaskN(w)
-						full = fullBitDefUniform(w, 0xff)
-					}
-				}
-				var tm uint8
-				if taint0 {
-					tm = uint8(abi0ByteMaskN(w))
-				}
-				specF := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectWriteOnly}
-				if err := writeDstMask(st, ins.Args[1], w, vm, bd, full, op, specF, false, false, tm, taint0, true); err != nil {
-					return nil, err
-				}
-				if pc+1 < len(instrs) {
-					enqueue(pc+1, st, false)
-				} else {
-					finalState = st
-				}
-				continue
-			}
-		case "FADDDP", "FMULDP", "FSUBDP", "FSUBRDP", "FDIVDP", "FDIVRDP":
-			if len(ins.Args) == 2 && ins.Args[1].Kind == asm.OpReg {
-				if dstIdx, ok := amd64ParseX87Reg(ins.Args[1].Reg); ok {
-					srcIdx := 0
-					if ins.Args[0].Kind == asm.OpReg {
-						if si, ok := amd64ParseX87Reg(ins.Args[0].Reg); ok {
-							srcIdx = si
-						}
-					}
-					initRes := st.x87StackInit[srcIdx] && st.x87StackInit[dstIdx]
-					defRes := initRes && st.x87StackDef[srcIdx] && st.x87StackDef[dstIdx]
-					taintRes := st.x87StackTaint[srcIdx] || st.x87StackTaint[dstIdx]
-					st.x87StackInit[dstIdx] = initRes
-					st.x87StackDef[dstIdx] = defRes
-					st.x87StackTaint[dstIdx] = taintRes
-					_, _, _ = st.popX87()
-					if pc+1 < len(instrs) {
-						enqueue(pc+1, st, false)
-					} else {
-						finalState = st
-					}
-					continue
-				}
-			}
+		}
+
+		// Model stack-pointer displacement, exact per-byte stack-slot
+		// initialization, per-bit flag definedness, and per-byte SP taint for
+		// PUSH*/POP*/PUSHF*/POPF*/XCHG*.
+		switch op {
 		case "PUSHFQ", "PUSHFL", "PUSHFW":
 			w := int64(8)
 			if op == "PUSHFL" {
@@ -1775,7 +1924,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 			pushMask := abi0ByteMaskN(w)
 			pushBitDef := abi0BitMaskN(w)
-			var pushTaintMask uint8
+			var pushTaintMask uint64
 			if len(ins.Args) == 1 {
 				arg := ins.Args[0]
 				ev, err := evalOperand(st, arg, w, false, op, ins.Raw)
@@ -1783,7 +1932,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					return nil, err
 				}
 				pushMask, pushBitDef = ev.byteMask, ev.bitDef
-				pushTaintMask, _ = evalOperandTaintSP(st, arg, w, false)
+				pushTaintMask, _ = evalOperandTaintSP(st, arg, w, false, op)
 			}
 			st.spOffset -= w
 			for b := int64(0); b < w; b++ {
@@ -1795,7 +1944,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					delete(st.spBytesInit, slot)
 					delete(st.spByteBitDef, slot)
 				}
-				if (pushTaintMask & (uint8(1) << uint(b))) != 0 {
+				if (pushTaintMask & (uint64(1) << uint(b))) != 0 {
 					st.spBytesTaintedSP[slot] = true
 				} else {
 					delete(st.spBytesTaintedSP, slot)
@@ -1817,7 +1966,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			var valMask uint64
 			var valBitDef uint64
 			var fullBD [64]uint8
-			var popTaintMask uint8
+			var popTaintMask uint64
 			var popAnyTaint bool
 			for b := int64(0); b < w; b++ {
 				slot := st.spOffset + b
@@ -1829,7 +1978,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				}
 				if st.spBytesTaintedSP[slot] {
 					popAnyTaint = true
-					popTaintMask |= uint8(1) << uint(b)
+					popTaintMask |= uint64(1) << uint(b)
 				}
 				delete(st.spBytesInit, slot)
 				delete(st.spByteBitDef, slot)
@@ -1881,8 +2030,8 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				if err != nil {
 					return nil, err
 				}
-				tm0, any0 := evalOperandTaintSP(st, ins.Args[0], w, false)
-				tm1, any1 := evalOperandTaintSP(st, ins.Args[1], w, false)
+				tm0, any0 := evalOperandTaintSP(st, ins.Args[0], w, false, op)
+				tm1, any1 := evalOperandTaintSP(st, ins.Args[1], w, false, op)
 				specXchg := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectReadWrite}
 				if err := writeDstMask(st, ins.Args[0], w, ev1.byteMask, ev1.bitDef, ev1.fullBitDef, op, specXchg, true, false, tm1, any1, ins.Args[1].Kind == asm.OpReg); err != nil {
 					return nil, err
@@ -2100,6 +2249,21 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			continue
 		}
 
+		// Lane-accurate vector element/subvector extract, insert, half-register
+		// move, and byte-shift instructions preserve exact per-byte init,
+		// per-bit definedness, and per-byte SP-taint on only the selected slice
+		// so unselected lanes containing undefined bits do not poison valid extracts.
+		if handled, err := handleX86VecLaneOp(st, op, ins, goarch, wordMask, wordBitMask, checkGPRead, evalOperand, evalOperandTaintSP, writeDstMask); err != nil {
+			return nil, err
+		} else if handled {
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		}
+
 		if spec.Family == asm.FamilyString && !st.dfInit {
 			return nil, fmt.Errorf("%w: %s reads undefined flag DF", asm.ErrProbeNeedsContext, ins.Raw)
 		}
@@ -2182,7 +2346,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		var copyMask uint64
 		var copyBitDef uint64
 		var copyFullBitDef [64]uint8
-		var copyTaintMask uint8
+		var copyTaintMask uint64
 		var arg0BitDef uint64
 		var dstInBitDef uint64
 
@@ -2212,7 +2376,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			if err != nil {
 				return nil, err
 			}
-			tm, anyT := evalOperandTaintSP(st, a, argReadBytes, isLEA)
+			tm, anyT := evalOperandTaintSP(st, a, argReadBytes, isLEA, op)
 			if anyT {
 				srcAnyTaint = true
 			}
@@ -2244,7 +2408,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		var dstValMask uint64
 		var dstValBitDef uint64
 		var dstFullBitDef [64]uint8
-		var dstTaintMask uint8
+		var dstTaintMask uint64
 		if pureCopy {
 			dstValMask = copyMask
 			dstValBitDef = copyBitDef
@@ -2262,10 +2426,10 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 			if srcAnyTaint {
 				w := writeBytes
-				if w <= 0 || w > 8 {
-					w = 8
+				if w <= 0 || w > 64 {
+					w = 64
 				}
-				dstTaintMask = uint8(abi0ByteMaskN(w))
+				dstTaintMask = abi0ByteMaskN(w)
 			}
 		}
 
@@ -2677,7 +2841,7 @@ func x86ABI0WriteBytes(op asm.Op, spec asm.OpSpec, args []asm.Operand) int64 {
 	switch name {
 	case "MOVB", "ADDB", "SUBB", "ANDB", "ORB", "XORB", "ADCB", "SBBB", "CMPB", "TESTB",
 		"INCB", "DECB", "NEGB", "NOTB", "XCHGB", "XADDB", "CMPXCHGB",
-		"SHLB", "SHRB", "SARB", "ROLB", "RORB", "RCLB", "RCRB", "SALB", "FMOVB", "FMOVBP", "KMOVB":
+		"SHLB", "SHRB", "SARB", "ROLB", "RORB", "RCLB", "RCRB", "SALB", "KMOVB":
 		return 1
 	case "MOVW", "ADDW", "SUBW", "ANDW", "ORW", "XORW", "ADCW", "SBBW", "CMPW", "TESTW",
 		"INCW", "DECW", "NEGW", "NOTW", "XCHGW", "XADDW", "CMPXCHGW", "IMULW", "MULW",

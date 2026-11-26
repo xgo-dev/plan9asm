@@ -17,14 +17,7 @@ const (
 )
 
 func isX87Op(op asm.Op) bool {
-	switch op {
-	case "FMOVD", "FMOVDP", "FMOVV", "FMOVVP", "FXCHD", "FADDDP",
-		"FDIVD", "FMULD", "FMULDP", "FSTCW", "FLDCW", "FRNDINT",
-		"FABS", "FCHS", "FUCOMI", "FTST", "FSTSW", "FLD1", "FLDZ",
-		"FSQRT", "FINIT", "FCLEX", "FNOP":
-		return true
-	}
-	return isX87ExtOp(op)
+	return classifyX87Op(op) != x87CatUnknown
 }
 
 func (c *amd64Ctx) requireX87SoftwareControlInit(op asm.Op) error {
@@ -82,45 +75,55 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("386 FMOVD expects src, dst: %q", ins.Raw)
 		}
-		if srcIdx, srcIsF := x87OperandReg(ins.Args[0]); srcIsF {
-			if dstIdx, dstIsF := x87OperandReg(ins.Args[1]); dstIsF {
-				c.storeX87Value(dstIdx, c.loadX87Value(srcIdx))
-				return true, false, nil
-			}
-			v, err := c.x87ValueToF64(c.loadX87Value(srcIdx))
+		plan := classifyX87Move(op, ins.Args)
+		switch plan.Kind {
+		case x87MovePushReg:
+			// Go encodes `FMOVD Fi, F0` (including F0, F0) as D9 C0+i (`FLD ST(i)`),
+			// pushing a copy of ST(i) onto the x87 stack.
+			return true, false, c.pushX87Value(c.loadX87Value(plan.SrcIdx))
+		case x87MoveStoreReg:
+			c.storeX87Value(plan.DstIdx, c.loadX87Value(plan.SrcIdx))
+			return true, false, nil
+		case x87MoveStoreMem:
+			v, err := c.x87ValueToF64(c.loadX87Value(plan.SrcIdx))
 			if err != nil {
 				return true, false, err
 			}
 			return true, false, c.storeX87F64(ins.Args[1], v)
-		}
-		f64, err := c.evalF64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		if dstIdx, dstIsF := x87OperandReg(ins.Args[1]); dstIsF {
+		case x87MovePushMem, x87MoveLoadMemToReg:
+			f64, err := c.evalF64(ins.Args[0])
+			if err != nil {
+				return true, false, err
+			}
 			v, err := c.f64ToX87Value(f64)
 			if err != nil {
 				return true, false, err
 			}
-			if dstIdx == 0 {
+			if plan.Kind == x87MovePushMem {
 				return true, false, c.pushX87Value(v)
 			}
-			c.storeX87Value(dstIdx, v)
+			c.storeX87Value(plan.DstIdx, v)
 			return true, false, nil
+		default:
+			f64, err := c.evalF64(ins.Args[0])
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeX87F64(ins.Args[1], f64)
 		}
-		return true, false, c.storeX87F64(ins.Args[1], f64)
 
 	case "FMOVDP":
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("386 FMOVDP expects src, dst: %q", ins.Raw)
 		}
-		if srcIdx, srcIsF := x87OperandReg(ins.Args[0]); srcIsF {
-			if dstIdx, dstIsF := x87OperandReg(ins.Args[1]); dstIsF {
-				c.storeX87Value(dstIdx, c.loadX87Value(srcIdx))
-				c.popX87Value()
-				return true, false, nil
-			}
-			v, err := c.x87ValueToF64(c.loadX87Value(srcIdx))
+		plan := classifyX87Move(op, ins.Args)
+		switch plan.Kind {
+		case x87MoveStorePopReg:
+			c.storeX87Value(plan.DstIdx, c.loadX87Value(plan.SrcIdx))
+			c.popX87Value()
+			return true, false, nil
+		case x87MoveStorePopMem:
+			v, err := c.x87ValueToF64(c.loadX87Value(plan.SrcIdx))
 			if err != nil {
 				return true, false, err
 			}
@@ -129,16 +132,17 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			}
 			c.popX87Value()
 			return true, false, nil
+		default:
+			f64, err := c.evalF64(ins.Args[0])
+			if err != nil {
+				return true, false, err
+			}
+			if err := c.storeX87F64(ins.Args[1], f64); err != nil {
+				return true, false, err
+			}
+			c.popX87Value()
+			return true, false, nil
 		}
-		f64, err := c.evalF64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		if err := c.storeX87F64(ins.Args[1], f64); err != nil {
-			return true, false, err
-		}
-		c.popX87Value()
-		return true, false, nil
 
 	case "FMOVV":
 		if len(ins.Args) != 2 {
@@ -197,50 +201,6 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		b := c.loadX87Value(bv)
 		c.storeX87Value(a, b)
 		c.storeX87Value(bv, av)
-		return true, false, nil
-
-	case "FDIVD", "FMULD":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("386 %s expects src, dst: %q", op, ins.Raw)
-		}
-		src, err := c.evalX87F64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		dst, err := c.evalX87F64(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		out := c.newTmp()
-		if op == "FDIVD" {
-			fmt.Fprintf(c.b, "  %%%s = fdiv double %s, %s\n", out, dst, src)
-		} else {
-			fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", out, dst, src)
-		}
-		return true, false, c.storeX87F64(ins.Args[1], "%"+out)
-
-	case "FADDDP", "FMULDP":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("386 %s expects src, dst: %q", op, ins.Raw)
-		}
-		src, err := c.evalX87F64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		dst, err := c.evalX87F64(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		out := c.newTmp()
-		if op == "FADDDP" {
-			fmt.Fprintf(c.b, "  %%%s = fadd double %s, %s\n", out, dst, src)
-		} else {
-			fmt.Fprintf(c.b, "  %%%s = fmul double %s, %s\n", out, dst, src)
-		}
-		if err := c.storeX87F64(ins.Args[1], "%"+out); err != nil {
-			return true, false, err
-		}
-		c.popX87Value()
 		return true, false, nil
 
 	case "FSTCW":
@@ -348,6 +308,7 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", uno, c.flagsPFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		c.clearAuxCarryFlag()
 		return true, false, nil
 
 	case "FTST":
@@ -372,18 +333,6 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		status := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load i16, ptr %s\n", status, c.x87StatusSlot)
 		return true, false, c.storeX87I16(ins.Args[0], "%"+status)
-
-	case "FLD1":
-		if len(ins.Args) != 0 {
-			return true, false, fmt.Errorf("386 FLD1 takes no operands: %q", ins.Raw)
-		}
-		return true, false, c.pushX87Value(c.packX87("9223372036854775808", "16383"))
-
-	case "FLDZ":
-		if len(ins.Args) != 0 {
-			return true, false, fmt.Errorf("386 FLDZ takes no operands: %q", ins.Raw)
-		}
-		return true, false, c.pushX87Value(x87ZeroValue)
 	}
 	return c.lowerX87Ext(op, ins)
 }
