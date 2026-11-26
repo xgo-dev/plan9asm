@@ -165,12 +165,21 @@ func ParseReg(s string) (Reg, bool) {
 			i++
 		}
 		if i > 1 {
-			// Accept optional suffix for arm64 vector lanes: .B16, .D[0], etc.
+			// Accept optional suffix for arm64 vector lanes: .B16, .D[0], etc.,
+			// but do not swallow index-extension (.UXTW/.SXTW/...) or shift (<<N)
+			// modifiers so ParseRegExtend and ParseMem preserve them accurately.
 			rest := ss[i:]
 			if rest == "" {
 				return Reg(ss), true
 			}
-			if strings.HasPrefix(rest, ".") {
+			if strings.HasPrefix(rest, ".") && !strings.Contains(rest, "<<") {
+				if dot := strings.LastIndexByte(rest, '.'); dot >= 0 {
+					switch ExtendOp(rest[dot+1:]) {
+					case ExtendUXTB, ExtendUXTH, ExtendUXTW, ExtendUXTX,
+						ExtendSXTB, ExtendSXTH, ExtendSXTW, ExtendSXTX:
+						return "", false
+					}
+				}
 				return Reg(ss), true
 			}
 		}
@@ -1107,16 +1116,32 @@ func ParseMem(s string) (MemRef, bool) {
 
 	base, ok := ParseReg(baseStr)
 	if !ok {
+		// Plan 9 ARM64/SVE indexed memory syntax places the shifted/extended
+		// index in the first parens and the base register in the second parens:
+		//   (R6<<1)(R14)
+		//   (Z4.S.UXTW<<1)(R3)
+		//   (Z6.D<<3)(RSP)
+		if offPart == "" && strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")") {
+			base2 := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(rest, "("), ")"))
+			if br, ok := ParseReg(base2); ok {
+				if idx, ext, scale, idxOK := parseIndexScale(baseStr); idxOK {
+					return MemRef{Base: br, Index: idx, IndexExt: ext, Scale: scale}, true
+				}
+			}
+		}
 		// Newer/legacy Plan 9 forms may encode displacement expression in the
 		// first parens and then provide base/index groups, e.g.:
 		//   (0*8)(R8)(BX*8)
+		//   (-VL*2)(R1)
 		if offPart == "" && strings.HasPrefix(rest, "(") {
 			j2 := strings.IndexByte(rest, ')')
 			if j2 > 1 {
 				base2 := strings.TrimSpace(rest[1:j2])
 				if br, ok := ParseReg(base2); ok {
 					mem := MemRef{Base: br, Off: 0}
-					if u, ok := ParseImmExpr(baseStr); ok {
+					if strings.Contains(strings.ToUpper(baseStr), "VL") {
+						mem.OffRaw = baseStr
+					} else if u, ok := ParseImmExpr(baseStr); ok {
 						mem.Off = int64(u)
 					}
 					rem := strings.TrimSpace(rest[j2+1:])
@@ -1141,6 +1166,9 @@ func ParseMem(s string) (MemRef, bool) {
 		if offPart == "" && strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")") {
 			base2 := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(rest, "("), ")"))
 			if br, ok := ParseReg(base2); ok {
+				if strings.Contains(strings.ToUpper(baseStr), "VL") {
+					return MemRef{Base: br, OffRaw: baseStr}, true
+				}
 				if u, ok := ParseImmExpr(baseStr); ok {
 					return MemRef{Base: br, Off: int64(u)}, true
 				}

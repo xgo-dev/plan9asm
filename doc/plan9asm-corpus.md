@@ -333,7 +333,7 @@ The Go 1.27 `go-asm` snapshot currently reports:
 | 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 54 | 6 | 0 | 0 | 0 |
 | amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 6736 | 6 | 0 | 35 | 0 |
 | arm | 181 | 528 | 135 | 500 | 459 | 41 | 0 | 0 | 0 |
-| arm64 | 1417 including SVE | 2964 | 1281 | 1980 | 1308 | 53 | 619 | 64 | 0 |
+| arm64 | 1417 including SVE | 2964 | 1281 | 2063 | 1339 | 53 | 671 | 64 | 0 |
 | wasm | 463 | 463 opcode-only rows | 71 | 120 | 68 | 52 | 0 | 0 | 0 |
 
 Encoder forms use Go's internal operand classes and are a complete machine-
@@ -352,7 +352,7 @@ runtime semantic conformance):
 - **arm64**: all non-SVE scalar, FP, and NEON forms in the Go 1.27 corpus have
   0 unsupported forms. Modeled SVE core instructions lower to runtime-scalable
   LLVM IR (`@llvm.vscale.i64()`, `<vscale x N x T>`, `@llvm.aarch64.sve.*`),
-  while the 619 remaining unsupported forms are unmodeled SVE2/SME instructions
+  while the 671 remaining unsupported forms are unmodeled SVE2/SME instructions
   that are intentionally rejected rather than lowered with placeholder IR.
 - **wasm**: `ProbeInstructionWith` now invokes the real WebAssembly lowerer
   under `WASMABIGo` rather than marking all Wasm ops context-required. On the

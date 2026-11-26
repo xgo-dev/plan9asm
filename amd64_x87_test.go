@@ -92,10 +92,10 @@ int main(void) {
 	compileAndRunRuntimeTestWithCompiler(t, llc, []string{clang}, "amd64_x87_sw", triple, swIR, mainC, nil)
 }
 
-// TestTranslateGoModuleAMD64RejectsUnreachableResultInit ensures the Go module
-// integration boundary rejects functions whose result slot write is skipped by
-// control flow (e.g. JMP over MOVQ $1, ret+0(FP)) or only partially initializes
-// a multi-byte result slot.
+// TestTranslateGoModuleAMD64RejectsUnreachableResultInit ensures BOTH the
+// public ABI0 checker and TranslateGoModule enforce CFG + byte-level register,
+// stack-slot, and FP initialization on BOTH ordinary ($0-8, no SP access) and
+// physical-frame ($16-8) amd64 ABI0 functions.
 func TestTranslateGoModuleAMD64RejectsUnreachableResultInit(t *testing.T) {
 	pkg := types.NewPackage("example.com/abi0cfg", "abi0cfg")
 	res := types.NewTuple(types.NewVar(token.NoPos, pkg, "ret", types.Typ[types.Int64]))
@@ -104,10 +104,18 @@ func TestTranslateGoModuleAMD64RejectsUnreachableResultInit(t *testing.T) {
 	pkg.MarkComplete()
 
 	gp := GoPackage{Path: pkg.Path(), Types: pkg}
+	sig := FuncSig{
+		Name:  "example.com/abi0cfg.f",
+		Ret:   I64,
+		Frame: FrameLayout{Results: []FrameSlot{{Offset: 0, Type: I64, Index: 0, Field: -1}}},
+	}
+
 	cases := []struct {
-		name string
-		body string
-		ok   bool
+		name         string
+		body         string
+		ordinaryOnly bool
+		physicalOnly bool
+		ok           bool
 	}{
 		{
 			name: "jmp skips result write",
@@ -120,47 +128,75 @@ func TestTranslateGoModuleAMD64RejectsUnreachableResultInit(t *testing.T) {
 			ok:   false,
 		},
 		{
+			name: "MOVB AL then MOVQ AX read",
+			body: "MOVB $1, AL\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name:         "MOVB 0(SP) then MOVQ 0(SP) read",
+			body:         "MOVB $1, 0(SP)\nMOVQ 0(SP), AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			physicalOnly: true,
+			ok:           false,
+		},
+		{
+			name: "MOVB ret+0(FP) then MOVQ ret+0(FP) read",
+			body: "MOVB $1, ret+0(FP)\nMOVQ ret+0(FP), AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
 			name: "diamond initializes all bytes on both paths",
 			body: "MOVQ $0, AX\nTESTQ AX, AX\nJE zero\nMOVQ $1, ret+0(FP)\nJMP done\nzero:\nMOVQ $2, ret+0(FP)\ndone:\nRET\n",
 			ok:   true,
 		},
+		{
+			name: "MOVL zero-extends to 64-bit AX",
+			body: "MOVL $42, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
 	}
+
+	checkBoth := func(t *testing.T, label, header, body string, wantOK bool) {
+		t.Helper()
+		fullSrc := header + "\n" + body
+		file, err := Parse(ArchAMD64, fullSrc)
+		if err != nil {
+			t.Fatalf("%s: Parse failed: %v", label, err)
+		}
+		err = CheckX86ABI0ResultInitialization(file.Funcs[0], sig, "amd64")
+		if wantOK && err != nil {
+			t.Fatalf("%s: CheckX86ABI0ResultInitialization expected success, got: %v", label, err)
+		}
+		if !wantOK && err == nil {
+			t.Fatalf("%s: CheckX86ABI0ResultInitialization expected error, got nil", label)
+		}
+
+		tr, err := TranslateGoModule(gp, []byte(fullSrc), GoModuleOptions{
+			GOOS:         "linux",
+			GOARCH:       "amd64",
+			TargetTriple: "x86_64-unknown-linux-gnu",
+		})
+		if tr != nil {
+			tr.Module.Dispose()
+		}
+		if wantOK && err != nil {
+			t.Fatalf("%s: TranslateGoModule expected success, got: %v", label, err)
+		}
+		if !wantOK && err == nil {
+			t.Fatalf("%s: TranslateGoModule expected error, got nil", label)
+		}
+	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// 1. Direct ABI0 result-initialization prover (non-physical $0-8 frame).
-			directSrc := "TEXT ·f(SB),NOSPLIT,$0-8\n" + tc.body
-			file, err := Parse(ArchAMD64, directSrc)
-			if err != nil {
-				t.Fatalf("Parse failed: %v", err)
+			if !tc.physicalOnly {
+				checkBoth(t, "ordinary-$0-8", "TEXT ·f(SB),NOSPLIT,$0-8", tc.body, tc.ok)
 			}
-			sig := FuncSig{
-				Name:  "example.com/abi0cfg.f",
-				Ret:   I64,
-				Frame: FrameLayout{Results: []FrameSlot{{Offset: 0, Type: I64, Index: 0}}},
-			}
-			err = CheckX86ABI0ResultInitialization(file.Funcs[0], sig, "amd64")
-			if tc.ok && err != nil {
-				t.Fatalf("CheckX86ABI0ResultInitialization expected success, got: %v", err)
-			}
-			if !tc.ok && err == nil {
-				t.Fatalf("CheckX86ABI0ResultInitialization expected error for %s, got nil", tc.name)
-			}
-
-			// 2. End-to-end TranslateGoModule boundary on physical-frame ($16-8) function.
-			physSrc := []byte("TEXT ·f(SB),NOSPLIT,$16-8\nMOVQ $0, 0(SP)\n" + tc.body)
-			tr, err := TranslateGoModule(gp, physSrc, GoModuleOptions{
-				GOOS:         "linux",
-				GOARCH:       "amd64",
-				TargetTriple: "x86_64-unknown-linux-gnu",
-			})
-			if tr != nil {
-				tr.Module.Dispose()
-			}
-			if tc.ok && err != nil {
-				t.Fatalf("TranslateGoModule expected success, got: %v", err)
-			}
-			if !tc.ok && err == nil {
-				t.Fatalf("TranslateGoModule expected error for %s, got nil", tc.name)
+			if !tc.ordinaryOnly {
+				body := tc.body
+				if !strings.Contains(body, "(SP)") {
+					body = "MOVQ $0, 8(SP)\n" + body
+				}
+				checkBoth(t, "physical-$16-8", "TEXT ·f(SB),NOSPLIT,$16-8", body, tc.ok)
 			}
 		})
 	}

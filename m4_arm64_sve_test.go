@@ -196,7 +196,7 @@ next:
 	ZLD1H (R6<<1)(R1), P1/Z, Z4.H
 	ZLD1W 16(R1)(Z2.S.UXTW), P1/Z, Z4.S
 	ZST1D Z4.D, P1, (R1)(R2<<3)
-	ZLD1W 8(Z1.D), P1/Z, Z4.S
+	ZLD1W 8(Z1.D), P1/Z, Z4.D
 	ZFADD Z1.H, P1/M, Z2.H, Z2.H
 	ZFADD Z1.D, P1/M, Z2.D, Z2.D
 	RET
@@ -291,6 +291,10 @@ func TestM4_ARM64SVEErrorPaths(t *testing.T) {
 		"ZLDFF1B (R1), P0.Z, [Z0.B]",
 		"ZLDNF1B (R1), P0.Z, [Z0.B]",
 		"ZMATCH Z0.B, Z1.B, P0.Z, P1.B",
+		// Invalid gather/scatter width or shift scaling must be rejected.
+		"ZLD1W 8(Z1.D), P1/Z, Z4.S",
+		"ZLD1H (Z4.S.UXTW<<2)(R3), P3.Z, [Z4.S]",
+		"ZLD1B (Z4.S.UXTW<<1)(R3), P3.Z, [Z4.S]",
 	}
 	for _, body := range bad {
 		src := "TEXT ·bad(SB),NOSPLIT,$0-0\n" + body + "\nRET\n"
@@ -308,4 +312,86 @@ func TestM4_ARM64SVEErrorPaths(t *testing.T) {
 			t.Errorf("expected error for: %s", body)
 		}
 	}
+}
+
+// TestM4_ARM64SVEGatherScalingAndBroadcastFaultSafety verifies:
+//  1. SVE gather/scatter preserves index extension (UXTW/SXTW) and shift scaling
+//     (e.g. ZLD1H (Z4.S.UXTW<<1)(R3) computes base + 2*zext(index), not base+index).
+//  2. SVE broadcast loads (ZLD1RB/H/W/D/RSB/RSH/RSW) guard memory access with
+//     @llvm.aarch64.sve.ptest.any + @llvm.masked.load.v1i* so an all-false
+//     predicate (e.g. PPFALSE P4.B) performs NO memory load.
+func TestM4_ARM64SVEGatherScalingAndBroadcastFaultSafety(t *testing.T) {
+	t.Run("gather and scatter preserve extension and scaling", func(t *testing.T) {
+		src := `
+TEXT ·gatherScaled(SB),NOSPLIT,$0-0
+	ZLD1H (Z4.S.UXTW<<1)(R3), P3.Z, [Z4.S]
+	ZLD1W (Z4.S.SXTW<<2)(R3), P3.Z, [Z5.S]
+	ZST1D [Z8.D], P3, (Z6.D<<3)(RSP)
+	ZLD1H (R6<<1)(R14), P4.Z, [Z2.H]
+	RET
+`
+		file, err := Parse(ArchARM64, src)
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		ir, err := Translate(file, Options{
+			TargetTriple: "aarch64-unknown-linux-gnu",
+			Goarch:       "arm64",
+			ResolveSym:   func(s string) string { return "m4." + strings.TrimPrefix(s, "·") },
+			Sigs:         map[string]FuncSig{"m4.gatherScaled": {Name: "m4.gatherScaled", Ret: Void}},
+		})
+		if err != nil {
+			t.Fatalf("Translate failed: %v", err)
+		}
+		for _, want := range []string{
+			"zext <vscale x 4 x i32>",
+			"sext <vscale x 4 x i32>",
+			"shl <vscale x 4 x i64>",
+			"shl <vscale x 2 x i64>",
+			"shl i64",
+			"@llvm.masked.gather.nxv4i16.nxv4p0",
+			"@llvm.masked.gather.nxv4i32.nxv4p0",
+			"@llvm.masked.scatter.nxv2i64.nxv2p0",
+		} {
+			if !strings.Contains(ir, want) {
+				t.Errorf("missing %q in gather/scatter IR:\n%s", want, ir)
+			}
+		}
+		verifyARM64LLVMAndLLC(t, ir)
+	})
+
+	t.Run("broadcast load suppresses memory access when predicate is all-false", func(t *testing.T) {
+		src := `
+TEXT ·bcastAllFalse(SB),NOSPLIT,$0-0
+	PPFALSE P4.B
+	ZLD1RB 6(R14), P4.Z, [Z3.B]
+	ZLD1RSB 6(R14), P4.Z, [Z4.S]
+	RET
+`
+		file, err := Parse(ArchARM64, src)
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		ir, err := Translate(file, Options{
+			TargetTriple: "aarch64-unknown-linux-gnu",
+			Goarch:       "arm64",
+			ResolveSym:   func(s string) string { return "m4." + strings.TrimPrefix(s, "·") },
+			Sigs:         map[string]FuncSig{"m4.bcastAllFalse": {Name: "m4.bcastAllFalse", Ret: Void}},
+		})
+		if err != nil {
+			t.Fatalf("Translate failed: %v", err)
+		}
+		for _, want := range []string{
+			"@llvm.aarch64.sve.ptest.any",
+			"@llvm.masked.load.v1i8.p0(",
+		} {
+			if !strings.Contains(ir, want) {
+				t.Errorf("missing %q in broadcast load IR:\n%s", want, ir)
+			}
+		}
+		if strings.Contains(ir, " = load i8, ptr ") {
+			t.Errorf("broadcast load emitted unconditional scalar load i8:\n%s", ir)
+		}
+		verifyARM64LLVMAndLLC(t, ir)
+	})
 }

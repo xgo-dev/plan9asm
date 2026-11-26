@@ -371,16 +371,104 @@ func (c *arm64Ctx) sveEvalRegName(name string) (string, error) {
 	return v, nil
 }
 
-// sveEvalMemPtr evaluates a scalar or runtime-scalable VL-scaled SVE memory
-// operand into an LLVM `ptr`. Handles `(-VL*k)(Rn)`, `(VL*k)(RSP)`, `(R6<<1)(R14)`,
-// `8(R14)`, etc., returning hasZ=true if the operand uses a Z vector base/index.
-func (c *arm64Ctx) sveEvalMemPtr(op asm.Operand, baseScaleBytes int64) (ptr string, hasZ bool, zIdx int, zLaneBits int, baseAddr string, err error) {
+// arm64ParseZRegMod parses an SVE vector register together with any optional
+// extension (.UXTW/.SXTW) and scale shift (<<0..<<3) attached in text form.
+func arm64ParseZRegMod(s string) (idx int, laneBits int, ext asm.ExtendOp, shift uint, ok bool) {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	if len(s) < 2 || s[0] != 'Z' || s[1] < '0' || s[1] > '9' {
+		return 0, 0, "", 0, false
+	}
+	if sh := strings.Index(s, "<<"); sh >= 0 {
+		n, err := strconv.ParseUint(strings.TrimSpace(s[sh+2:]), 10, 64)
+		if err != nil || n > 3 {
+			return 0, 0, "", 0, false
+		}
+		shift = uint(n)
+		s = strings.TrimSpace(s[:sh])
+	}
+	if br := strings.IndexByte(s, '['); br >= 0 {
+		return 0, 0, "", 0, false
+	}
+	parts := strings.Split(s, ".")
+	n, err := strconv.Atoi(parts[0][1:])
+	if err != nil || n < 0 || n > 31 {
+		return 0, 0, "", 0, false
+	}
+	if len(parts) >= 2 {
+		laneBits = sveLaneBitsFromSuffix(parts[1])
+		if laneBits == 0 {
+			return 0, 0, "", 0, false
+		}
+	}
+	if len(parts) == 3 {
+		switch asm.ExtendOp(parts[2]) {
+		case asm.ExtendUXTW, asm.ExtendSXTW:
+			ext = asm.ExtendOp(parts[2])
+		default:
+			return 0, 0, "", 0, false
+		}
+	} else if len(parts) > 3 {
+		return 0, 0, "", 0, false
+	}
+	return n, laneBits, ext, shift, true
+}
+
+func sveScaleToShift(scale int64) (uint, bool) {
+	switch scale {
+	case 0, 1:
+		return 0, true
+	case 2:
+		return 1, true
+	case 4:
+		return 2, true
+	case 8:
+		return 3, true
+	default:
+		return 0, false
+	}
+}
+
+func sveParseVLMult(s string) (int64, bool) {
+	up := strings.ToUpper(strings.Trim(strings.TrimSpace(s), " ()"))
+	if !strings.Contains(up, "VL") {
+		return 0, false
+	}
+	mult := int64(1)
+	if strings.HasPrefix(up, "-") {
+		mult = -1
+		up = strings.TrimPrefix(up, "-")
+	}
+	if star := strings.IndexByte(up, '*'); star >= 0 {
+		k, err := strconv.ParseInt(strings.TrimSpace(up[star+1:]), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		mult *= k
+	}
+	return mult, true
+}
+
+type sveMemEval struct {
+	ptr           string
+	hasZ          bool
+	zIsVectorBase bool // true for (Zn.S/D) + imm, false for (baseGPR)(Zm.S/D[.ext][<<sh])
+	zIdx          int
+	zLaneBits     int
+	zExt          asm.ExtendOp
+	zShift        uint
+	baseAddr      string
+}
+
+// sveEvalMemPtr evaluates a scalar, runtime-scalable VL-scaled, or SVE
+// gather/scatter memory operand. Preserves index extension (UXTW/SXTW) and
+// scale/shift (<<1/<<2/<<3) on both GPR and Z vector indices.
+func (c *arm64Ctx) sveEvalMemPtr(op asm.Operand, baseScaleBytes int64) (sveMemEval, error) {
 	switch op.Kind {
 	case asm.OpSym:
 		s := strings.TrimSpace(op.Sym)
 		if strings.HasSuffix(s, "(SB)") {
 			p, e := c.ptrFromSB(s)
-			return p, false, 0, 0, "", e
+			return sveMemEval{ptr: p}, e
 		}
 		off := int64(0)
 		vlMult := int64(0)
@@ -389,20 +477,9 @@ func (c *arm64Ctx) sveEvalMemPtr(op asm.Operand, baseScaleBytes int64) (ptr stri
 		if lp := strings.LastIndexByte(s, '('); lp >= 0 && strings.HasSuffix(s, ")") {
 			regName = s[lp+1 : len(s)-1]
 			prefix := strings.Trim(s[:lp], " ()")
-			up := strings.ToUpper(prefix)
-			if strings.Contains(up, "VL") {
+			if m, ok := sveParseVLMult(prefix); ok {
 				hasVL = true
-				mult := int64(1)
-				if strings.HasPrefix(up, "-") {
-					mult = -1
-					up = strings.TrimPrefix(up, "-")
-				}
-				if star := strings.IndexByte(up, '*'); star >= 0 {
-					if k, e := strconv.ParseInt(strings.TrimSpace(up[star+1:]), 10, 64); e == nil {
-						mult *= k
-					}
-				}
-				vlMult = mult
+				vlMult = m
 			} else if k, e := strconv.ParseInt(prefix, 10, 64); e == nil {
 				off = k
 			}
@@ -422,13 +499,15 @@ func (c *arm64Ctx) sveEvalMemPtr(op asm.Operand, baseScaleBytes int64) (ptr stri
 		}
 		p := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p, addr)
-		return "%" + p, false, 0, 0, addr, nil
+		return sveMemEval{ptr: "%" + p, baseAddr: addr}, nil
 
 	case asm.OpMem:
 		mem := op.Mem
-		if zi, zlb, _, ok := arm64ParseZReg(string(mem.Base)); ok {
+		if zi, zlb, zext, zshift, ok := arm64ParseZRegMod(string(mem.Base)); ok {
 			bVal := "0"
+			isVecBase := true
 			if mem.Index != "" {
+				isVecBase = false
 				bVal, _ = c.sveEvalRegName(string(mem.Index))
 			}
 			if mem.Off != 0 {
@@ -436,9 +515,29 @@ func (c *arm64Ctx) sveEvalMemPtr(op asm.Operand, baseScaleBytes int64) (ptr stri
 				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ad, bVal, mem.Off)
 				bVal = "%" + ad
 			}
-			return "", true, zi, zlb, bVal, nil
+			if mem.Scale > 1 {
+				sh, shOK := sveScaleToShift(mem.Scale)
+				if !shOK {
+					return sveMemEval{}, fmt.Errorf("arm64 SVE unsupported gather/scatter scale %d", mem.Scale)
+				}
+				if zshift == 0 {
+					zshift = sh
+				}
+			}
+			if zext == "" && mem.IndexExt != "" {
+				zext = mem.IndexExt
+			}
+			return sveMemEval{
+				hasZ:          true,
+				zIsVectorBase: isVecBase,
+				zIdx:          zi,
+				zLaneBits:     zlb,
+				zExt:          zext,
+				zShift:        zshift,
+				baseAddr:      bVal,
+			}, nil
 		}
-		if zi, zlb, _, ok := arm64ParseZReg(string(mem.Index)); ok {
+		if zi, zlb, zext, zshift, ok := arm64ParseZRegMod(string(mem.Index)); ok {
 			bVal := "0"
 			if mem.Base != "" {
 				bVal, _ = c.sveEvalRegName(string(mem.Base))
@@ -448,23 +547,30 @@ func (c *arm64Ctx) sveEvalMemPtr(op asm.Operand, baseScaleBytes int64) (ptr stri
 				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ad, bVal, mem.Off)
 				bVal = "%" + ad
 			}
-			return "", true, zi, zlb, bVal, nil
+			sh, shOK := sveScaleToShift(mem.Scale)
+			if !shOK {
+				return sveMemEval{}, fmt.Errorf("arm64 SVE unsupported gather/scatter scale %d", mem.Scale)
+			}
+			if zshift == 0 {
+				zshift = sh
+			}
+			if zext == "" {
+				zext = mem.IndexExt
+			}
+			return sveMemEval{
+				hasZ:          true,
+				zIsVectorBase: false,
+				zIdx:          zi,
+				zLaneBits:     zlb,
+				zExt:          zext,
+				zShift:        zshift,
+				baseAddr:      bVal,
+			}, nil
 		}
 		baseStr := string(mem.Base)
 		idxStr := string(mem.Index)
 		addr := "0"
-		if strings.Contains(strings.ToUpper(baseStr), "VL") {
-			mult := int64(1)
-			up := strings.ToUpper(strings.Trim(baseStr, " ()"))
-			if strings.HasPrefix(up, "-") {
-				mult = -1
-				up = strings.TrimPrefix(up, "-")
-			}
-			if star := strings.IndexByte(up, '*'); star >= 0 {
-				if k, e := strconv.ParseInt(strings.TrimSpace(up[star+1:]), 10, 64); e == nil {
-					mult *= k
-				}
-			}
+		if mult, ok := sveParseVLMult(baseStr); ok {
 			baseVal := "0"
 			if idxStr != "" {
 				baseVal, _ = c.sveEvalRegName(idxStr)
@@ -476,33 +582,55 @@ func (c *arm64Ctx) sveEvalMemPtr(op asm.Operand, baseScaleBytes int64) (ptr stri
 				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", ad, addr, scaled)
 				addr = "%" + ad
 			}
-			if mem.Off != 0 {
-				ad := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ad, addr, mem.Off)
-				addr = "%" + ad
-			}
 		} else {
 			if baseStr != "" {
 				addr, _ = c.sveEvalRegName(baseStr)
 			}
 			if idxStr != "" {
 				iv, _ := c.sveEvalRegName(idxStr)
+				switch mem.IndexExt {
+				case asm.ExtendUXTW:
+					t32, z64 := c.newTmp(), c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t32, iv)
+					fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z64, t32)
+					iv = "%" + z64
+				case asm.ExtendSXTW:
+					t32, s64 := c.newTmp(), c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t32, iv)
+					fmt.Fprintf(c.b, "  %%%s = sext i32 %%%s to i64\n", s64, t32)
+					iv = "%" + s64
+				}
+				if mem.Scale > 1 {
+					sh, shOK := sveScaleToShift(mem.Scale)
+					if !shOK {
+						return sveMemEval{}, fmt.Errorf("arm64 SVE unsupported index scale %d", mem.Scale)
+					}
+					sc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = shl i64 %s, %d\n", sc, iv, sh)
+					iv = "%" + sc
+				}
 				ad := c.newTmp()
 				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", ad, addr, iv)
 				addr = "%" + ad
 			}
-			if mem.Off != 0 {
-				ad := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ad, addr, mem.Off)
-				addr = "%" + ad
-			}
+		}
+		if mult, ok := sveParseVLMult(mem.OffRaw); ok && mult != 0 {
+			scaled := c.sveScaledVLBytes(mult, baseScaleBytes)
+			ad := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", ad, addr, scaled)
+			addr = "%" + ad
+		}
+		if mem.Off != 0 {
+			ad := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", ad, addr, mem.Off)
+			addr = "%" + ad
 		}
 		p := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p, addr)
-		return "%" + p, false, 0, 0, addr, nil
+		return sveMemEval{ptr: "%" + p, baseAddr: addr}, nil
 
 	default:
-		return "", false, 0, 0, "", fmt.Errorf("arm64 SVE unsupported memory operand %s", op.String())
+		return sveMemEval{}, fmt.Errorf("arm64 SVE unsupported memory operand %s", op.String())
 	}
 }
 
@@ -523,7 +651,6 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 			return fmt.Errorf("arm64 PLDR expects P dst: %q", ins.Raw)
 		}
 		var ptr string
-		var err error
 		if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpImm {
 			base, e := c.loadReg(ins.Args[0].Reg)
 			if e != nil {
@@ -540,10 +667,11 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, addr)
 			ptr = "%" + pt
 		} else {
-			ptr, _, _, _, _, err = c.sveEvalMemPtr(ins.Args[0], 2)
-			if err != nil {
-				return err
+			me, e := c.sveEvalMemPtr(ins.Args[0], 2)
+			if e != nil {
+				return e
 			}
+			ptr = me.ptr
 		}
 		ld := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load <vscale x 16 x i1>, ptr %s, align 1\n", ld, ptr)
@@ -559,7 +687,6 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 			return fmt.Errorf("arm64 PSTR expects P src: %q", ins.Raw)
 		}
 		var ptr string
-		var err error
 		if len(ins.Args) == 3 && ins.Args[1].Kind == asm.OpReg && ins.Args[2].Kind == asm.OpImm {
 			base, e := c.loadReg(ins.Args[1].Reg)
 			if e != nil {
@@ -576,10 +703,11 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, addr)
 			ptr = "%" + pt
 		} else {
-			ptr, _, _, _, _, err = c.sveEvalMemPtr(ins.Args[1], 2)
-			if err != nil {
-				return err
+			me, e := c.sveEvalMemPtr(ins.Args[1], 2)
+			if e != nil {
+				return e
 			}
+			ptr = me.ptr
 		}
 		fmt.Fprintf(c.b, "  store <vscale x 16 x i1> %s, ptr %s, align 1\n", c.loadPIdx(pi), ptr)
 		return nil
@@ -1100,10 +1228,11 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 	if name != "ZLDR" && name != "ZSTR" && pIdx < 0 {
 		return fmt.Errorf("arm64 %s requires predicate register P0..P15: %q", name, ins.Raw)
 	}
-	ptr, hasZMem, zMemIdx, zMemLB, baseAddr, err := c.sveEvalMemPtr(memOp, 16)
+	me, err := c.sveEvalMemPtr(memOp, 16)
 	if err != nil {
 		return err
 	}
+	ptr := me.ptr
 	if name == "ZLDR" || name == "ZSTR" {
 		if isStore {
 			srcB, _ := c.loadZIdx(zRegs[0])
@@ -1147,27 +1276,69 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 		return "%" + tr
 	}
 
-	if hasZMem {
-		// Scalable Gather / Scatter using Z vector index register!
-		if zMemLB == 0 || zMemLB == 128 {
+	if me.hasZ {
+		// Scalable Gather / Scatter using Z vector base or index register.
+		// Validate and preserve index extension (UXTW/SXTW) and element shift (<<1/<<2/<<3).
+		zMemLB := me.zLaneBits
+		if zMemLB == 0 {
 			zMemLB = laneBits
 		}
-		zMemRaw, _ := c.loadZIdx(zMemIdx)
-		idxFullTy := fmt.Sprintf("<vscale x %d x i%d>", baseLanes, zMemLB)
+		if zMemLB != 32 && zMemLB != 64 {
+			return fmt.Errorf("arm64 %s unsupported SVE gather/scatter index width %d: %q", name, zMemLB, ins.Raw)
+		}
 		if zMemLB != laneBits {
-			zMemLB = laneBits
-			idxFullTy = fmt.Sprintf("<vscale x %d x i%d>", baseLanes, zMemLB)
+			return fmt.Errorf("arm64 %s gather/scatter index width %d must match data lane width %d: %q", name, zMemLB, laneBits, ins.Raw)
 		}
+		var maxShift uint
+		switch memBits {
+		case 8:
+			maxShift = 0
+		case 16:
+			maxShift = 1
+		case 32:
+			maxShift = 2
+		case 64:
+			maxShift = 3
+		}
+		if me.zShift != 0 && me.zShift != maxShift {
+			return fmt.Errorf("arm64 %s invalid gather/scatter shift <<%d for %d-bit memory element: %q", name, me.zShift, memBits, ins.Raw)
+		}
+		if me.zExt != "" && me.zExt != asm.ExtendUXTW && me.zExt != asm.ExtendSXTW {
+			return fmt.Errorf("arm64 %s unsupported gather/scatter extension %s: %q", name, me.zExt, ins.Raw)
+		}
+		zMemRaw, _ := c.loadZIdx(me.zIdx)
+		idxFullTy := fmt.Sprintf("<vscale x %d x i%d>", baseLanes, zMemLB)
 		ib := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = bitcast <vscale x 16 x i8> %s to %s\n", ib, zMemRaw, idxFullTy)
 		qTy := fmt.Sprintf("<vscale x %d x i64>", baseLanes)
 		i64v := "%" + ib
-		if zMemLB < 64 {
-			zx := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to %s\n", zx, idxFullTy, ib, qTy)
-			i64v = "%" + zx
+		if zMemLB == 32 {
+			extOp := "zext"
+			if me.zExt == asm.ExtendSXTW {
+				extOp = "sext"
+			}
+			ex := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = %s %s %%%s to %s\n", ex, extOp, idxFullTy, ib, qTy)
+			i64v = "%" + ex
+		} else if me.zExt == asm.ExtendUXTW || me.zExt == asm.ExtendSXTW {
+			// 64-bit container with 32-bit word extension (.UXTW/.SXTW): truncate to i32 then extend.
+			wTy := fmt.Sprintf("<vscale x %d x i32>", baseLanes)
+			tr, ex := c.newTmp(), c.newTmp()
+			extOp := "zext"
+			if me.zExt == asm.ExtendSXTW {
+				extOp = "sext"
+			}
+			fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", tr, idxFullTy, ib, wTy)
+			fmt.Fprintf(c.b, "  %%%s = %s %s %%%s to %s\n", ex, extOp, wTy, tr, qTy)
+			i64v = "%" + ex
 		}
-		bSplat := c.sveSplatVal(baseLanes, "i64", baseAddr)
+		if me.zShift > 0 {
+			shAmt := c.sveSplatVal(baseLanes, "i64", fmt.Sprintf("%d", me.zShift))
+			sc := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shl %s %s, %s\n", sc, qTy, i64v, shAmt)
+			i64v = "%" + sc
+		}
+		bSplat := c.sveSplatVal(baseLanes, "i64", me.baseAddr)
 		addr, ptrs := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = add %s %s, %s\n", addr, qTy, bSplat, i64v)
 		fmt.Fprintf(c.b, "  %%%s = inttoptr %s %%%s to <vscale x %d x ptr>\n", ptrs, qTy, addr, baseLanes)
@@ -1190,12 +1361,21 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 		return c.storeZIdx(zRegs[0], "%"+out)
 	}
 
-	// Broadcast loads (ZLD1RB/H/W/D/SB/SH/SW)
+	// Broadcast loads (ZLD1RB/H/W/D/RSB/RSH/RSW): per ARM SVE specification,
+	// if no active element exists in the governing predicate, NO memory access
+	// occurs and the destination vector is zeroed.
 	if isBcast {
 		memElemTy := fmt.Sprintf("i%d", memBits)
 		elemTy := fmt.Sprintf("i%d", laneBits)
-		ld := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", ld, memElemTy, ptr)
+		all16 := c.sveAllTruePred(16)
+		elemPred16 := c.sveI1VecToPred(mvec, baseLanes)
+		anyActive, m1, ldv, ld := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i1 @llvm.aarch64.sve.ptest.any(<vscale x 16 x i1> %s, <vscale x 16 x i1> %s)\n",
+			anyActive, all16, elemPred16)
+		fmt.Fprintf(c.b, "  %%%s = insertelement <1 x i1> poison, i1 %%%s, i64 0\n", m1, anyActive)
+		fmt.Fprintf(c.b, "  %%%s = call <1 x %s> @llvm.masked.load.v1i%d.p0(ptr %s, i32 1, <1 x i1> %%%s, <1 x %s> zeroinitializer)\n",
+			ldv, memElemTy, memBits, ptr, m1, memElemTy)
+		fmt.Fprintf(c.b, "  %%%s = extractelement <1 x %s> %%%s, i64 0\n", ld, memElemTy, ldv)
 		val := "%" + ld
 		if memBits < laneBits {
 			extOp := "zext"

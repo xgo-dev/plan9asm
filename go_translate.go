@@ -590,12 +590,22 @@ func DeriveGoFuncABI0Signature(name string, fn *types.Func, goarch string, sz ty
 
 func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, sigs map[string]FuncSig) error {
 	checkedLeases := make(map[uintptr]bool)
+	resolveCallee := func(s string) string { return resolve(goStripABISuffix(s)) }
 	for _, fn := range file.Funcs {
-		if !funcUsesPhysicalAMD64SP(fn) {
-			continue
-		}
 		name := resolve(goTextSymbolForResolution(fn.Sym))
 		sig, ok := sigs[name]
+		if !funcUsesPhysicalAMD64SP(fn) {
+			// Ordinary ABI0 functions (non-physical SP) with declared Go result
+			// slots still require CFG + byte-exact result/register/FP/SP
+			// initialization verification before translation.
+			if ok && len(sig.ArgRegs) == 0 && len(sig.Frame.Results) > 0 &&
+				!strings.Contains(strings.TrimSuffix(fn.Sym, "<>"), "<") {
+				if _, err := x86.CheckABI0ResultInitWithSigs(fn, sig, "amd64", resolveCallee, sigs); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		if !ok {
 			return fmt.Errorf("%w: missing signature for physical AMD64 frame %q", ErrProbeNeedsContext, name)
 		}
@@ -626,9 +636,7 @@ func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, s
 				}
 			}
 		}
-		if _, err := x86.CheckABI0ResultInitWithSigs(fn, sig, "amd64", func(s string) string {
-			return resolve(goStripABISuffix(s))
-		}, sigs); err != nil {
+		if _, err := x86.CheckABI0ResultInitWithSigs(fn, sig, "amd64", resolveCallee, sigs); err != nil {
 			return err
 		}
 	}

@@ -392,6 +392,105 @@ done:
 			t.Fatalf("EffectPreserveUpper uninit dst err = %v, want ErrProbeNeedsContext", err)
 		}
 	})
+
+	t.Run("byte-level GP, SP, and FP read/write width tracking", func(t *testing.T) {
+		cases := []struct {
+			name string
+			src  string
+			sig  asm.FuncSig
+			ok   bool
+		}{
+			{
+				name: "MOVB AL then MOVQ AX rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVB $1, AL\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "MOVB AL + MOVB AH then MOVL AX rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVB $1, AL\nMOVB $2, AH\nMOVL AX, ret+8(FP)\nMOVL $0, ret+12(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "MOVB AL + MOVB AH then MOVW AX accepted for uint16 result",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-2\nMOVB $1, AL\nMOVB $2, AH\nMOVW AX, ret+0(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name:  "example.u16",
+					Ret:   asm.I16,
+					Frame: asm.FrameLayout{Results: []asm.FrameSlot{{Offset: 0, Type: asm.I16, Index: 0, Field: -1}}},
+				},
+				ok: true,
+			},
+			{
+				name: "MOVL zero-extends to 64-bit AX on amd64",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVL $1, AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "MOVB 0(SP) then MOVQ 0(SP) rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$16-16\nMOVB $1, 0(SP)\nMOVQ 0(SP), AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "MOVL 0(SP) + MOVL 4(SP) then MOVQ 0(SP) accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$16-16\nMOVL $1, 0(SP)\nMOVL $2, 4(SP)\nMOVQ 0(SP), AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "MOVB ret+8(FP) then MOVQ ret+8(FP) rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVB $1, ret+8(FP)\nMOVQ ret+8(FP), AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "MOVQ read of 1-byte param rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name: "example.u8in",
+					Args: []asm.LLVMType{asm.I8},
+					Ret:  asm.I64,
+					Frame: asm.FrameLayout{
+						Params:  []asm.FrameSlot{{Offset: 0, Type: asm.I8, Index: 0, Field: -1}},
+						Results: []asm.FrameSlot{{Offset: 8, Type: asm.I64, Index: 0, Field: -1}},
+					},
+				},
+				ok: false,
+			},
+			{
+				name: "MOVBQZX read of 1-byte param accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVBQZX a+0(FP), AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name: "example.u8in",
+					Args: []asm.LLVMType{asm.I8},
+					Ret:  asm.I64,
+					Frame: asm.FrameLayout{
+						Params:  []asm.FrameSlot{{Offset: 0, Type: asm.I8, Index: 0, Field: -1}},
+						Results: []asm.FrameSlot{{Offset: 8, Type: asm.I64, Index: 0, Field: -1}},
+					},
+				},
+				ok: true,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				file, err := asm.Parse(asm.ArchAMD64, tc.src)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = CheckABI0ResultInit(file.Funcs[0], tc.sig, "amd64")
+				if tc.ok && err != nil {
+					t.Fatalf("expected accept, got %v", err)
+				}
+				if !tc.ok && !errors.Is(err, asm.ErrProbeNeedsContext) {
+					t.Fatalf("expected ErrProbeNeedsContext, got %v", err)
+				}
+			})
+		}
+	})
 }
 
 func TestRawVEX3ByteVZEROUPPERAndVZEROALL(t *testing.T) {
@@ -454,11 +553,11 @@ func TestLinuxAMD64HardwareSyscallLowering(t *testing.T) {
 }
 
 func TestImplicitRegEffectsAndCanonicalGP(t *testing.T) {
-	_, writes := implicitRegEffects("SYNTH", asm.OpSpec{
+	_, writes := implicitRegByteEffects("SYNTH", asm.OpSpec{
 		Implicit: asm.ImplicitAX | asm.ImplicitBX | asm.ImplicitCX | asm.ImplicitDX | asm.ImplicitSI | asm.ImplicitDI,
-	}, false)
+	}, false, 0xff)
 	if len(writes) != 6 {
-		t.Fatalf("implicitRegEffects fallback writes = %v, want 6 regs", writes)
+		t.Fatalf("implicitRegByteEffects fallback writes = %v, want 6 regs", writes)
 	}
 	if got := canonicalGP("r15b"); got != "R15" {
 		t.Fatalf("canonicalGP(r15b) = %q, want R15", got)
