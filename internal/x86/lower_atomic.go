@@ -164,7 +164,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			if err := c.storeRegSized(asm.AX, ty, "%"+nextAX); err != nil {
 				return true, false, err
 			}
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
+			c.setCmpFlagsSized(ty, exp, cur)
 			return true, false, nil
 		}
 		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[1])
@@ -174,13 +174,11 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		cx := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = cmpxchg ptr %s, %s %s, %s %s seq_cst seq_cst, align %d\n", cx, ptr, ty, exp, ty, newv, align)
 		old := c.newTmp()
-		okv := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = extractvalue {%s, i1} %%%s, 0\n", old, ty, cx)
-		fmt.Fprintf(c.b, "  %%%s = extractvalue {%s, i1} %%%s, 1\n", okv, ty, cx)
 		if err := c.storeRegSized(asm.AX, ty, "%"+old); err != nil {
 			return true, false, err
 		}
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", okv, c.flagsZSlot)
+		c.setCmpFlagsSized(ty, exp, "%"+old)
 		return true, false, nil
 
 	case "XADDB", "XADDW", "XADDL", "XADDQ":
@@ -211,7 +209,11 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			if err := c.storeRegSized(srcReg.Reg, ty, dst); err != nil {
 				return true, false, err
 			}
-			return true, false, c.storeRegSized(ins.Args[1].Reg, ty, "%"+sum)
+			if err := c.storeRegSized(ins.Args[1].Reg, ty, "%"+sum); err != nil {
+				return true, false, err
+			}
+			c.setAddFlagsSized(ty, dst, src, "%"+sum)
+			return true, false, nil
 		}
 		ptr, err := c.amd64AtomicPtrFromOp(ins.Args[1])
 		if err != nil {
@@ -219,7 +221,13 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		}
 		old := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = atomicrmw add ptr %s, %s %s seq_cst\n", old, ptr, ty, src)
-		return true, false, c.storeRegSized(srcReg.Reg, ty, "%"+old)
+		if err := c.storeRegSized(srcReg.Reg, ty, "%"+old); err != nil {
+			return true, false, err
+		}
+		sum := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %s\n", sum, ty, old, src)
+		c.setAddFlagsSized(ty, "%"+old, src, "%"+sum)
+		return true, false, nil
 
 	case "XCHGB", "XCHGW", "XCHGL", "XCHGQ":
 		if len(ins.Args) != 2 {
@@ -314,14 +322,7 @@ func (c *amd64Ctx) lowerAtomic(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		// flags from the new value. LOCK does not alter that flag behavior.
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s, %s\n", out, rmw, ty, tmp, src)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		zf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, ty, out)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
-		sf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", sf, ty, out)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		c.setLogicFlagsSized(ty, "%"+out)
 		return true, false, nil
 	}
 	return false, false, nil
@@ -370,14 +371,6 @@ func (c *amd64Ctx) lowerLockedRMW(op asm.Op, ins asm.Instr) (ok bool, terminated
 	}
 	stem := s[:len(s)-1]
 
-	setZS := func(val string) {
-		zf, sf := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zf, ty, val)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", sf, ty, val)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
-	}
-
 	switch stem {
 	case "ADD", "SUB", "XOR":
 		if len(ins.Args) != 2 || (!isX86MemOp(ins.Args[1]) && ins.Args[1].Kind != asm.OpFP) {
@@ -400,19 +393,13 @@ func (c *amd64Ctx) lowerLockedRMW(op asm.Op, ins asm.Instr) (ok bool, terminated
 		old, out := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = atomicrmw %s ptr %s, %s %s seq_cst\n", old, rmw, ptr, ty, rhs)
 		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s, %s\n", out, rmw, ty, old, rhs)
-		setZS("%" + out)
 		switch stem {
 		case "ADD":
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %%%s\n", cf, ty, out, old)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			c.setAddFlagsSized(ty, "%"+old, rhs, "%"+out)
 		case "SUB":
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %s\n", cf, ty, old, rhs)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			c.setSubFlagsSized(ty, "%"+old, rhs, "%"+out)
 		default:
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+			c.setLogicFlagsSized(ty, "%"+out)
 		}
 		return true, false, nil
 
@@ -431,7 +418,7 @@ func (c *amd64Ctx) lowerLockedRMW(op asm.Op, ins asm.Instr) (ok bool, terminated
 		old, out := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = atomicrmw %s ptr %s, %s 1 seq_cst\n", old, rmw, ptr, ty)
 		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s, 1\n", out, rmw, ty, old)
-		setZS("%" + out)
+		c.setIncDecFlagsSized(ty, "%"+old, "%"+out, stem == "DEC")
 		return true, false, nil
 
 	case "BTS", "BTR", "BTC":
@@ -508,11 +495,11 @@ func (c *amd64Ctx) lowerLockedRMW(op asm.Op, ins asm.Instr) (ok bool, terminated
 		if err != nil {
 			return true, false, err
 		}
-		var carryVal string
+		var carryVal, carryFlag string
 		if stem == "ADC" || stem == "SBB" {
-			cf := c.loadFlag(c.flagsCFSlot)
+			carryFlag = c.loadFlag(c.flagsCFSlot)
 			cz := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext i1 %s to %s\n", cz, cf, ty)
+			fmt.Fprintf(c.b, "  %%%s = zext i1 %s to %s\n", cz, carryFlag, ty)
 			carryVal = "%" + cz
 		}
 		loopLbl := "lock_cas_" + c.newTmp()
@@ -521,7 +508,6 @@ func (c *amd64Ctx) lowerLockedRMW(op asm.Op, ins asm.Instr) (ok bool, terminated
 		cur := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load atomic %s, ptr %s seq_cst, align %d\n", cur, ty, ptr, align)
 		next := c.newTmp()
-		var midTmp string
 		switch stem {
 		case "NEG":
 			fmt.Fprintf(c.b, "  %%%s = sub %s 0, %%%s\n", next, ty, cur)
@@ -529,40 +515,25 @@ func (c *amd64Ctx) lowerLockedRMW(op asm.Op, ins asm.Instr) (ok bool, terminated
 			fmt.Fprintf(c.b, "  %%%s = xor %s %%%s, -1\n", next, ty, cur)
 		case "ADC":
 			s1 := c.newTmp()
-			midTmp = s1
 			fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %s\n", s1, ty, cur, rhs)
 			fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %s\n", next, ty, s1, carryVal)
 		case "SBB":
 			s1 := c.newTmp()
-			midTmp = s1
 			fmt.Fprintf(c.b, "  %%%s = sub %s %%%s, %s\n", s1, ty, cur, rhs)
 			fmt.Fprintf(c.b, "  %%%s = sub %s %%%s, %s\n", next, ty, s1, carryVal)
 		}
 		cx, okv := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = cmpxchg ptr %s, %s %%%s, %s %%%s seq_cst seq_cst, align %d\n", cx, ptr, ty, cur, ty, next, align)
 		fmt.Fprintf(c.b, "  %%%s = extractvalue { %s, i1 } %%%s, 1\n", okv, ty, cx)
-		// loopLbl is the sole predecessor of doneLbl, so %cur/%next/%midTmp dominate doneLbl directly.
+		// loopLbl is the sole predecessor of doneLbl, so %cur/%next dominate doneLbl directly.
 		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n%s:\n", okv, doneLbl, loopLbl, doneLbl)
-		if stem != "NOT" {
-			setZS("%" + next)
-			switch stem {
-			case "NEG":
-				cf := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, 0\n", cf, ty, cur)
-				fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-			case "ADC":
-				c1, c2, cf := c.newTmp(), c.newTmp(), c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %%%s\n", c1, ty, midTmp, cur)
-				fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %%%s\n", c2, ty, next, midTmp)
-				fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", cf, c1, c2)
-				fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-			case "SBB":
-				b1, b2, cf := c.newTmp(), c.newTmp(), c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %s\n", b1, ty, cur, rhs)
-				fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %s\n", b2, ty, midTmp, carryVal)
-				fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", cf, b1, b2)
-				fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-			}
+		switch stem {
+		case "NEG":
+			c.setNegFlagsSized(ty, "%"+cur, "%"+next)
+		case "ADC":
+			c.setAddCarryFlagsSized(ty, "%"+cur, rhs, carryFlag, "%"+next)
+		case "SBB":
+			c.setSubBorrowFlagsSized(ty, "%"+cur, rhs, carryFlag, "%"+next)
 		}
 		return true, false, nil
 	}

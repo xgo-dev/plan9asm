@@ -167,37 +167,17 @@ func (c *amd64Ctx) lowerCmpBt(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 
 func (c *amd64Ctx) setCmpFlagsSized(ty asm.LLVMType, a, b string) {
 	// Unlike most Plan 9 x86 instructions, CMP spells its operands in
-	// comparison order: CMP a,b sets flags for a-b.
-	zt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", zt, ty, a, b)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zt, c.flagsZSlot)
-	slt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, %s\n", slt, ty, a, b)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", slt, c.flagsSltSlot)
-	ult := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp ult %s %s, %s\n", ult, ty, a, b)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", ult, c.flagsCFSlot)
-	diff, xab, xad, ovAnd, of := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+	// comparison order: CMP a,b sets architectural flags for a - b.
+	diff := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = sub %s %s, %s\n", diff, ty, a, b)
-	fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", xab, ty, a, b)
-	fmt.Fprintf(c.b, "  %%%s = xor %s %s, %%%s\n", xad, ty, a, diff)
-	fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %%%s\n", ovAnd, ty, xab, xad)
-	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", of, ty, ovAnd)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
+	c.setSubFlagsSized(ty, a, b, "%"+diff)
 }
 
 func (c *amd64Ctx) setTestFlagsSized(ty asm.LLVMType, a, b string) {
-	// Z from (a&b)==0, signed-lt from (a&b)<0, CF and OF cleared.
+	// TEST sets CF=0, OF=0, and ZF/SF/PF from (a & b).
 	and := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", and, ty, a, b)
-	zt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zt, ty, and)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zt, c.flagsZSlot)
-	slt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", slt, ty, and)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", slt, c.flagsSltSlot)
-	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
-	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+	c.setLogicFlagsSized(ty, "%"+and)
 }
 
 func (c *amd64Ctx) evalIntSized(op asm.Operand, ty asm.LLVMType) (string, error) {

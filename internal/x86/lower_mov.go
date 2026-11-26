@@ -106,7 +106,7 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if dst.Kind != asm.OpReg {
 			return true, false, fmt.Errorf("amd64 CMOVQLT expects src, reg: %q", ins.Raw)
 		}
-		cond := c.loadFlag(c.flagsSltSlot)
+		cond, _ := c.x86CondValue("LT")
 		sv, err := c.evalI64(src)
 		if err != nil {
 			return true, false, err

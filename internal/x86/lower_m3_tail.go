@@ -1166,14 +1166,24 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 		return c.storeRegSized(asm.DX, asm.I16, "%"+as)
 
 	case "lahf":
+		// AH bits: SF(7), ZF(6), AF(4)=0, PF(2), 1(1), CF(0)
+		sf := c.loadFlag(c.flagsSltSlot)
 		zf := c.loadFlag(c.flagsZSlot)
+		pf := c.loadFlag(c.flagsPFSlot)
 		cf := c.loadFlag(c.flagsCFSlot)
-		z8, c8, zSh, flags, res := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		s8, z8, p8, c8 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		sSh, zSh, pSh, o1, o2, o3, res := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", s8, sf)
 		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", z8, zf)
+		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", p8, pf)
 		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", c8, cf)
+		fmt.Fprintf(c.b, "  %%%s = shl i8 %%%s, 7\n", sSh, s8)
 		fmt.Fprintf(c.b, "  %%%s = shl i8 %%%s, 6\n", zSh, z8)
-		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", flags, zSh, c8)
-		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, 2\n", res, flags)
+		fmt.Fprintf(c.b, "  %%%s = shl i8 %%%s, 2\n", pSh, p8)
+		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o1, sSh, zSh)
+		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o2, o1, pSh)
+		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %%%s\n", o3, o2, c8)
+		fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, 2\n", res, o3)
 		return c.storeRegSized(asm.AH, asm.I8, "%"+res)
 
 	case "sahf":
@@ -1181,14 +1191,22 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
-		cfB, cf, zfSh, zfB, zf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		cfB, cf, pfSh, pfB, pf, zfSh, zfB, zf, sfSh, sfB, sf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 1\n", cfB, ah64)
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, cfB)
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 2\n", pfSh, ah64)
+		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", pfB, pfSh)
+		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", pf, pfB)
 		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 6\n", zfSh, ah64)
 		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", zfB, zfSh)
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", zf, zfB)
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 7\n", sfSh, ah64)
+		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", sfB, sfSh)
+		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", sf, sfB)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", pf, c.flagsPFSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
 		return nil
 
 	case "pushw", "pushfw":
@@ -1391,13 +1409,10 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, ax, ty)
 			v = "%" + tr
 		}
-		pd, ld, eq, ult := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		pd, ld := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pd, di)
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", ld, ty, pd)
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %%%s\n", eq, ty, v, ld)
-		fmt.Fprintf(c.b, "  %%%s = icmp ult %s %s, %%%s\n", ult, ty, v, ld)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", ult, c.flagsCFSlot)
+		c.setCmpFlagsSized(ty, v, "%"+ld)
 		return c.advanceStringReg(asm.DI, di, step)
 	default: // cmps
 		si, err := c.loadReg(asm.SI)
@@ -1408,15 +1423,12 @@ func (c *amd64Ctx) lowerX86M3StringStep(spec asm.OpSpec) error {
 		if err != nil {
 			return err
 		}
-		ps, pd, ls, ld, eq, ult := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		ps, pd, ls, ld := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ps, si)
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pd, di)
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", ls, ty, ps)
 		fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", ld, ty, pd)
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, %%%s\n", eq, ty, ls, ld)
-		fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %%%s\n", ult, ty, ls, ld)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", ult, c.flagsCFSlot)
+		c.setCmpFlagsSized(ty, "%"+ls, "%"+ld)
 		if err := c.advanceStringReg(asm.SI, si, step); err != nil {
 			return err
 		}

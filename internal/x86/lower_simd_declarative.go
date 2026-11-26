@@ -1150,13 +1150,15 @@ func (c *amd64Ctx) lowerX86ScalarFPDeclarative(spec asm.OpSpec, zeroMask bool, i
 		if err != nil {
 			return err
 		}
-		z, cf, lt := c.newTmp(), c.newTmp(), c.newTmp()
+		z, cf, pf := c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = fcmp ueq %s %s, %s\n", z, ty, dst, src)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", z, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  %%%s = fcmp ult %s %s, %s\n", cf, ty, dst, src)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  %%%s = fcmp olt %s %s, %s\n", lt, ty, dst, src)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", lt, c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  %%%s = fcmp uno %s %s, %s\n", pf, ty, dst, src)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", pf, c.flagsPFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 		return nil
 
 	case "i2f":

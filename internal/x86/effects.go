@@ -1645,6 +1645,10 @@ func updateX86FlagsAfter(st *abi0State, op asm.Op, args []asm.Operand, allInputs
 		st.sfInit = allInputsInit
 		st.pfInit = allInputsInit
 		return
+	case "CMPXCHG8B", "CMPXCHG16B":
+		// Intel SDM: CMPXCHG8B/16B modify ZF only.
+		st.zfInit = allInputsInit
+		return
 	case "BTB", "BTW", "BTL", "BTQ",
 		"BTSW", "BTSL", "BTSQ", "BTRW", "BTRL", "BTRQ", "BTCW", "BTCL", "BTCQ":
 		// Intel SDM: BT/BTS/BTR/BTC set CF from bit, preserve ZF, and leave OF/SF/AF/PF undefined.

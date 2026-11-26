@@ -1293,25 +1293,21 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		}
 		nQ := vi.totalBits / 64
 		qTy := fmt.Sprintf("<%d x i64>", nQ)
-		and, bc := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", and, vi.byteVecTy, a, b)
-		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to %s\n", bc, vi.byteVecTy, and, qTy)
-		acc := ""
-		for i := 0; i < nQ; i++ {
-			el := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement %s %%%s, i32 %d\n", el, qTy, bc, i)
-			if acc == "" {
-				acc = "%" + el
-			} else {
-				o := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = or i64 %s, %%%s\n", o, acc, el)
-				acc = "%" + o
-			}
-		}
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", z, acc)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", z, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+		intTy := fmt.Sprintf("i%d", vi.totalBits)
+		ai, bi, and1, notb, and2, zf, cf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		_ = qTy
+		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", ai, vi.byteVecTy, a, intTy)
+		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bi, vi.byteVecTy, b, intTy)
+		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %%%s\n", and1, intTy, bi, ai)
+		fmt.Fprintf(c.b, "  %%%s = xor %s %%%s, -1\n", notb, intTy, bi)
+		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %%%s\n", and2, intTy, notb, ai)
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, intTy, and1)
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", cf, intTy, and2)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
 		return true, false, nil
 
 	case "PCMPESTRI":

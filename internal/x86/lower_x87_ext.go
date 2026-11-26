@@ -306,6 +306,8 @@ func (c *amd64Ctx) lowerX87ExtCmp(op asm.Op, spec x87CmpSpec, ins asm.Instr) err
 		cf := c.x87IR("or i1 %s, %s", lt, uno)
 		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", z, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", uno, c.flagsPFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 	} else {
 		c3 := c.x87IR("or i1 %s, %s", eq, uno)
@@ -333,6 +335,7 @@ func (c *amd64Ctx) lowerX87ExtFCMOV(op asm.Op, ins asm.Instr) error {
 	}
 	cf := c.x87IR("load i1, ptr %s", c.flagsCFSlot)
 	zf := c.x87IR("load i1, ptr %s", c.flagsZSlot)
+	pf := c.x87IR("load i1, ptr %s", c.flagsPFSlot)
 	var cond string
 	switch op {
 	case "FCMOVB", "FCMOVCS":
@@ -348,9 +351,9 @@ func (c *amd64Ctx) lowerX87ExtFCMOV(op asm.Op, ins asm.Instr) error {
 	case "FCMOVNBE", "FCMOVHI":
 		cond = c.x87IR("xor i1 %s, true", c.x87IR("or i1 %s, %s", cf, zf))
 	case "FCMOVU", "FCMOVUN":
-		cond = c.x87IR("and i1 %s, %s", cf, zf)
+		cond = pf
 	default: // FCMOVNU
-		cond = c.x87IR("xor i1 %s, true", c.x87IR("and i1 %s, %s", cf, zf))
+		cond = c.x87IR("xor i1 %s, true", pf)
 	}
 	sv := c.loadX87Value(srcIdx)
 	dv := c.loadX87Value(dstIdx)

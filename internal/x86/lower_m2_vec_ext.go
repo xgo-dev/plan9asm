@@ -1210,6 +1210,9 @@ func (c *amd64Ctx) lowerX86PTEST(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", cf, intTy, i2)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
 		return nil
 	}
 	intTy := fmt.Sprintf("i%d", vi.totalBits)
@@ -1223,6 +1226,9 @@ func (c *amd64Ctx) lowerX86PTEST(spec asm.OpSpec, ins asm.Instr) error {
 	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", cf, intTy, and2)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
 	return nil
 }
 
@@ -1865,6 +1871,9 @@ func (c *amd64Ctx) lowerX86KTestUnpck(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, -1\n", cf, ty, orv)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
 		return nil
 	}
 	// KTEST: ZF = (b&a) == 0, CF = (~b&a) == 0
@@ -1876,6 +1885,9 @@ func (c *amd64Ctx) lowerX86KTestUnpck(spec asm.OpSpec, ins asm.Instr) error {
 	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", cf, ty, and2)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
 	return nil
 }
 

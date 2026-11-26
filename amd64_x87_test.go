@@ -644,3 +644,357 @@ taken:
 		})
 	}
 }
+
+// TestTranslateGoModuleAMD64FlagProducerConsumerMatrix verifies end-to-end
+// architectural RFLAGS values (CF, OF, ZF, SF, PF) across flag-producing
+// instructions and Jcc/SETcc/CMOVcc consumers under LLVM 22 -O2.
+// Every case is verified against the architectural x86-64 result so any mismatch
+// between static flag-init approval and lowered LLVM IR fails immediately.
+func TestTranslateGoModuleAMD64FlagProducerConsumerMatrix(t *testing.T) {
+	pkg := types.NewPackage("example.com/flagmatrix", "flagmatrix")
+	i64 := types.Typ[types.Int64]
+	resI64 := types.NewTuple(types.NewVar(token.NoPos, pkg, "ret", i64))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "f", types.NewSignatureType(nil, nil, nil, nil, resI64, false)))
+	pkg.MarkComplete()
+	gp := GoPackage{Path: pkg.Path(), Types: pkg}
+
+	opt := findLLVM22Tool("opt")
+	if opt == "" {
+		t.Fatal("LLVM 22 opt not found")
+	}
+
+	type consumerExpect struct {
+		cc   string // Plan 9 condition suffix (e.g. PS, PC, MI, PL, LT, GE, LE, GT, CS, CC, OS, OC, EQ, NE)
+		want int64  // 1 if condition holds, 0 otherwise
+	}
+
+	cases := []struct {
+		name   string
+		setup  string
+		checks []consumerExpect
+	}{
+		// --- Five exact Round-5 review counterexamples ---
+		{
+			name:  "TESTQ AX=3 even parity (PF=1)",
+			setup: "MOVQ $3, AX\nTESTQ AX, AX",
+			checks: []consumerExpect{
+				{"PS", 1}, {"PC", 0}, {"EQ", 0}, {"MI", 0}, {"LT", 0}, {"CS", 0}, {"OS", 0},
+			},
+		},
+		{
+			name:  "TESTQ AX=1 odd parity (PF=0)",
+			setup: "MOVQ $1, AX\nTESTQ AX, AX",
+			checks: []consumerExpect{
+				{"PS", 0}, {"PC", 1}, {"EQ", 0}, {"MI", 0},
+			},
+		},
+		{
+			name:  "CMPQ MinInt64, 1 signed overflow (SF=0, OF=1 -> JMI=0, JLT=1)",
+			setup: "MOVQ $-9223372036854775808, AX\nMOVQ $1, BX\nCMPQ AX, BX",
+			checks: []consumerExpect{
+				{"MI", 0}, {"PL", 1}, {"LT", 1}, {"GE", 0}, {"LE", 1}, {"GT", 0}, {"OS", 1}, {"OC", 0}, {"CS", 0}, {"PS", 1},
+			},
+		},
+		{
+			name:  "SHLQ $1 (1<<62) signed overflow (SF=1, OF=1, CF=0 -> JMI=1, JLT=0)",
+			setup: "MOVQ $4611686018427387904, AX\nSHLQ $1, AX",
+			checks: []consumerExpect{
+				{"LT", 0}, {"GE", 1}, {"MI", 1}, {"PL", 0}, {"OS", 1}, {"CS", 0}, {"EQ", 0}, {"PS", 1},
+			},
+		},
+		{
+			name:  "CLC then ROLQ $1 MinInt64 sets CF=1 and OF=1",
+			setup: "CLC\nMOVQ $-9223372036854775808, AX\nROLQ $1, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"CC", 0}, {"OS", 1},
+			},
+		},
+		{
+			name:  "CLC then SHLW $1 0x8000 sets CF=1, OF=1, ZF=1, PF=1, SF=0",
+			setup: "CLC\nMOVQ $0x8000, AX\nSHLW $1, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"CC", 0}, {"EQ", 1}, {"OS", 1}, {"MI", 0}, {"LT", 1}, {"PS", 1},
+			},
+		},
+		// --- Adjacent arithmetic / overflow / parity producers ---
+		{
+			name:  "ADDQ MaxInt64 + 1 sets OF=1, SF=1, CF=0, PF=1 -> JMI=1, JLT=0",
+			setup: "MOVQ $9223372036854775807, AX\nADDQ $1, AX",
+			checks: []consumerExpect{
+				{"MI", 1}, {"LT", 0}, {"GE", 1}, {"OS", 1}, {"CS", 0}, {"PS", 1},
+			},
+		},
+		{
+			name:  "SUBQ MinInt64 - 1 sets OF=1, SF=0, CF=0, PF=1 -> JMI=0, JLT=1",
+			setup: "MOVQ $-9223372036854775808, AX\nSUBQ $1, AX",
+			checks: []consumerExpect{
+				{"MI", 0}, {"LT", 1}, {"GE", 0}, {"OS", 1}, {"CS", 0}, {"PS", 1},
+			},
+		},
+		{
+			name:  "ADDL 0x7fffffff + 1 sets OF=1, SF=1 -> JLT=0, JMI=1",
+			setup: "MOVL $0x7fffffff, AX\nADDL $1, AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 1}, {"LT", 0}, {"CS", 0},
+			},
+		},
+		{
+			name:  "ADDW 0x7fff + 1 sets OF=1, SF=1 -> JLT=0, JMI=1",
+			setup: "MOVQ $0x7fff, AX\nADDW $1, AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 1}, {"LT", 0}, {"CS", 0},
+			},
+		},
+		{
+			name:  "ADDB 0x7f + 1 sets OF=1, SF=1, PF=0 -> JLT=0, JMI=1",
+			setup: "MOVQ $0x7f, AX\nADDB $1, AL",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 1}, {"LT", 0}, {"PS", 0}, {"CS", 0},
+			},
+		},
+		{
+			name:  "ADCQ with STC on MaxInt64 + 0 sets OF=1, SF=1, CF=0 -> JLT=0",
+			setup: "STC\nMOVQ $9223372036854775807, AX\nADCQ $0, AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 1}, {"LT", 0}, {"CS", 0},
+			},
+		},
+		{
+			name:  "SBBQ with STC on MinInt64 - 0 sets OF=1, SF=0, CF=0 -> JLT=1",
+			setup: "STC\nMOVQ $-9223372036854775808, AX\nSBBQ $0, AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 0}, {"LT", 1}, {"CS", 0},
+			},
+		},
+		{
+			name:  "INCQ MaxInt64 sets OF=1, SF=1 and preserves CF=1",
+			setup: "STC\nMOVQ $9223372036854775807, AX\nINCQ AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 1}, {"LT", 0}, {"CS", 1},
+			},
+		},
+		{
+			name:  "DECQ MinInt64 sets OF=1, SF=0 and preserves CF=0",
+			setup: "CLC\nMOVQ $-9223372036854775808, AX\nDECQ AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 0}, {"LT", 1}, {"CS", 0},
+			},
+		},
+		{
+			name:  "NEGQ MinInt64 sets OF=1, CF=1, SF=1 -> JLT=0",
+			setup: "MOVQ $-9223372036854775808, AX\nNEGQ AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"CS", 1}, {"MI", 1}, {"LT", 0},
+			},
+		},
+		// --- Shifts, double shifts, and rotates across widths ---
+		{
+			name:  "SHLB $1 0x80 sets CF=1, ZF=1, OF=1, PF=1",
+			setup: "CLC\nMOVQ $0x80, AX\nSHLB $1, AL",
+			checks: []consumerExpect{
+				{"CS", 1}, {"EQ", 1}, {"OS", 1}, {"PS", 1},
+			},
+		},
+		{
+			name:  "SHRB $1 0x81 sets CF=1, OF=1, SF=0, PF=0",
+			setup: "CLC\nMOVQ $0x81, AX\nSHRB $1, AL",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1}, {"MI", 0}, {"LT", 1}, {"PS", 0},
+			},
+		},
+		{
+			name:  "SARB $1 0x81 sets CF=1, OF=0, SF=1, PF=1",
+			setup: "CLC\nMOVQ $0x81, AX\nSARB $1, AL",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 0}, {"MI", 1}, {"LT", 1}, {"PS", 1},
+			},
+		},
+		{
+			name:  "SHLL $1 (1<<30) sets SF=1, OF=1, CF=0 -> JLT=0",
+			setup: "MOVL $0x40000000, AX\nSHLL $1, AX",
+			checks: []consumerExpect{
+				{"MI", 1}, {"OS", 1}, {"LT", 0}, {"CS", 0},
+			},
+		},
+		{
+			name:  "ROLB/ROLW/ROLL $1 MSB=1 set CF=1",
+			setup: "CLC\nMOVL $0x80000000, AX\nROLL $1, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1},
+			},
+		},
+		{
+			name:  "RORQ $1 LSB=1 sets CF=1, OF=1",
+			setup: "CLC\nMOVQ $1, AX\nRORQ $1, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1},
+			},
+		},
+		{
+			name:  "RORW $1 LSB=1 sets CF=1, OF=1",
+			setup: "CLC\nMOVQ $1, AX\nRORW $1, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1},
+			},
+		},
+		{
+			name:  "SHLQ 3-op (SHLDQ) $1 MinInt64 sets CF=1, OF=1, ZF=1",
+			setup: "CLC\nMOVQ $-9223372036854775808, AX\nMOVQ $0, BX\nSHLQ $1, BX, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1}, {"EQ", 1}, {"MI", 0}, {"LT", 1},
+			},
+		},
+		{
+			name:  "SHLW 3-op (SHLDW) $1 0x8000 sets CF=1, OF=1, ZF=1",
+			setup: "CLC\nMOVQ $0x8000, AX\nMOVQ $0, BX\nSHLW $1, BX, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1}, {"EQ", 1},
+			},
+		},
+		{
+			name:  "Dynamic CL=0 on SHLW preserves prior CF=1",
+			setup: "STC\nMOVQ $0, CX\nMOVQ $0, AX\nSHLW CL, AX",
+			checks: []consumerExpect{
+				{"CS", 1},
+			},
+		},
+		{
+			name:  "Dynamic CL=1 on ROLQ MinInt64 sets CF=1",
+			setup: "CLC\nMOVQ $1, CX\nMOVQ $-9223372036854775808, AX\nROLQ CL, AX",
+			checks: []consumerExpect{
+				{"CS", 1},
+			},
+		},
+		{
+			name:  "Dynamic CL=1 on SHRQ 3-op (SHRDQ) sets CF=1 and SF=1",
+			setup: "MOVQ $1, AX\nTESTQ AX, AX\nMOVQ $1, CX\nMOVQ $1, BX\nSHRQ CL, BX, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"MI", 1}, {"EQ", 0}, {"PS", 1},
+			},
+		},
+		{
+			name:  "SHRQ 3-op (SHRDQ) $1 sets CF=1, OF=1, SF=1 -> JLT=0",
+			setup: "CLC\nMOVQ $1, AX\nMOVQ $1, BX\nSHRQ $1, BX, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1}, {"MI", 1}, {"LT", 0},
+			},
+		},
+		{
+			name:  "ROLQ $0 and SHRQ $0 preserve prior CF=1",
+			setup: "STC\nMOVQ $0, AX\nROLQ $0, AX\nSHRQ $0, AX",
+			checks: []consumerExpect{
+				{"CS", 1},
+			},
+		},
+		{
+			name:  "ADCW with STC on 0x7fff + 0 sets OF=1, SF=1, CF=0",
+			setup: "STC\nMOVQ $0x7fff, AX\nADCW $0, AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 1}, {"LT", 0}, {"CS", 0},
+			},
+		},
+		{
+			name:  "INCW 0x7fff and INCB 0x7f set OF=1, SF=1",
+			setup: "MOVQ $0x7fff, AX\nINCW AX",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 1}, {"LT", 0},
+			},
+		},
+		{
+			name:  "INCB 0x7f sets OF=1, SF=1, PF=0",
+			setup: "MOVQ $0x7f, AX\nINCB AL",
+			checks: []consumerExpect{
+				{"OS", 1}, {"MI", 1}, {"LT", 0}, {"PS", 0},
+			},
+		},
+		// --- MUL / IMUL / POPCNT / BMI1 / UCOMISD / LAHF+SAHF ---
+		{
+			name:  "MULQ overflow sets CF=1 and OF=1",
+			setup: "MOVQ $4294967296, AX\nMOVQ $4294967296, BX\nMULQ BX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1},
+			},
+		},
+		{
+			name:  "IMULQ signed overflow sets CF=1 and OF=1",
+			setup: "MOVQ $9223372036854775807, AX\nMOVQ $2, BX\nIMULQ BX, AX",
+			checks: []consumerExpect{
+				{"CS", 1}, {"OS", 1},
+			},
+		},
+		{
+			name:  "POPCNTQ nonzero clears CF/OF/SF/PF and ZF=0",
+			setup: "STC\nMOVQ $3, AX\nPOPCNTQ AX, BX",
+			checks: []consumerExpect{
+				{"EQ", 0}, {"CS", 0}, {"OS", 0}, {"MI", 0}, {"PS", 0},
+			},
+		},
+		{
+			name:  "UCOMISD NaN sets PF=1, ZF=1, CF=1, OF=0, SF=0",
+			setup: "MOVQ $0x7ff8000000000000, AX\nMOVQ AX, X0\nUCOMISD X0, X0",
+			checks: []consumerExpect{
+				{"PS", 1}, {"PC", 0}, {"EQ", 1}, {"CS", 1}, {"OS", 0}, {"MI", 0},
+			},
+		},
+		{
+			name:  "LAHF and SAHF preserve PF=1 and SF=1 across TESTQ",
+			setup: "MOVQ $-2, AX\nTESTQ AX, AX\nLAHF\nMOVQ $1, BX\nTESTQ BX, BX\nSAHF",
+			checks: []consumerExpect{
+				// -2 low byte is 0xfe (7 ones -> PF=0), SF=1, ZF=0, CF=0
+				{"MI", 1}, {"PS", 0}, {"EQ", 0}, {"CS", 0},
+			},
+		},
+	}
+
+	runAndCheck := func(t *testing.T, label, src string, want int64, verifyLLC bool) {
+		t.Helper()
+		tr, err := TranslateGoModule(gp, []byte(src), GoModuleOptions{
+			GOOS:         "linux",
+			GOARCH:       "amd64",
+			TargetTriple: "x86_64-unknown-linux-gnu",
+		})
+		if err != nil {
+			t.Fatalf("%s: TranslateGoModule failed: %v\nsrc:\n%s", label, err, src)
+		}
+		ir := tr.Module.String()
+		tr.Module.Dispose()
+		if verifyLLC {
+			verifyLLVMWithTargetLLC(t, ir, "x86_64-unknown-linux-gnu")
+		}
+		cmd := exec.Command(opt, "-passes=default<O2>", "-S", "-")
+		cmd.Stdin = strings.NewReader(ir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: opt -O2 failed: %v\n%s", label, err, out)
+		}
+		optIR := string(out)
+		wantRet := "ret i64 0"
+		if want != 0 {
+			wantRet = "ret i64 1"
+		}
+		if strings.Contains(optIR, " undef") || strings.Contains(optIR, " poison") {
+			t.Fatalf("%s: optimized IR contains undef/poison:\n%s", label, optIR)
+		}
+		if !strings.Contains(optIR, wantRet) {
+			t.Fatalf("%s: optimized IR missing %q:\n%s", label, wantRet, optIR)
+		}
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for ci, chk := range tc.checks {
+				// 1. Jcc consumer
+				jccSrc := "TEXT ·f(SB),NOSPLIT,$0-8\n" + tc.setup + "\nJ" + chk.cc + " taken\nMOVQ $0, ret+0(FP)\nRET\ntaken:\nMOVQ $1, ret+0(FP)\nRET\n"
+				runAndCheck(t, "J"+chk.cc, jccSrc, chk.want, ci == 0)
+
+				// 2. SETcc consumer
+				setSrc := "TEXT ·f(SB),NOSPLIT,$0-8\n" + tc.setup + "\nSET" + chk.cc + " AL\nMOVBQZX AL, AX\nMOVQ AX, ret+0(FP)\nRET\n"
+				runAndCheck(t, "SET"+chk.cc, setSrc, chk.want, false)
+
+				// 3. CMOVQcc consumer
+				cmovSrc := "TEXT ·f(SB),NOSPLIT,$0-8\n" + tc.setup + "\nMOVQ $0, R8\nMOVQ $1, R9\nCMOVQ" + chk.cc + " R9, R8\nMOVQ R8, ret+0(FP)\nRET\n"
+				runAndCheck(t, "CMOVQ"+chk.cc, cmovSrc, chk.want, false)
+			}
+		})
+	}
+}

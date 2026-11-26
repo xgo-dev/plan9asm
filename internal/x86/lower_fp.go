@@ -178,15 +178,15 @@ func (c *amd64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		if err != nil {
 			return true, false, err
 		}
-		z := c.newTmp()
+		z, cf, pf := c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = fcmp ueq double %s, %s\n", z, dst, src)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", z, c.flagsZSlot)
-		cf := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = fcmp ult double %s, %s\n", cf, dst, src)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		lt := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fcmp olt double %s, %s\n", lt, dst, src)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", lt, c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  %%%s = fcmp uno double %s, %s\n", pf, dst, src)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", pf, c.flagsPFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 		return true, false, nil
 
 	case "CMPSD", "CMPSS", "CMPPS", "CMPPD":

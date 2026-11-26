@@ -58,9 +58,10 @@ type amd64Ctx struct {
 	x87Mode          asm.X87Mode
 
 	flagsZSlot     string
-	flagsSltSlot   string // signed negative-style bit for J{L,LE,G,GE}-like checks
-	flagsCFSlot    string // carry/borrow style bit for J{B,BE,A,AE,NC,C}-like checks
-	flagsOFSlot    string // overflow-style bit used by ADOX carry chain modeling
+	flagsSltSlot   string // Sign Flag (SF) — bit 7 of RFLAGS (kept %flags_slt slot name for test compatibility)
+	flagsCFSlot    string // Carry Flag (CF) — bit 0 of RFLAGS
+	flagsOFSlot    string // Overflow Flag (OF) — bit 11 of RFLAGS
+	flagsPFSlot    string // Parity Flag (PF) — bit 2 of RFLAGS
 	flagsIDSlot    string // CPUID availability bit preserved by PUSHFL/POPFL
 	flagsWritten   bool
 	allowSPWrite   bool   // current instruction has an explicitly modeled 386 SP destination
@@ -441,6 +442,7 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 	c.flagsSltSlot = "%flags_slt"
 	c.flagsCFSlot = "%flags_cf"
 	c.flagsOFSlot = "%flags_of"
+	c.flagsPFSlot = "%flags_pf"
 	if c.goarch == "386" {
 		c.directionSlot = "%direction_backward"
 		c.flagsIDSlot = "%flags_id"
@@ -455,6 +457,8 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsOFSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsPFSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
 	if c.flagsIDSlot != "" {
 		fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsIDSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsIDSlot)
@@ -1201,35 +1205,15 @@ func (c *amd64Ctx) setZFlagFromI64(v string) {
 }
 
 func (c *amd64Ctx) setZSFlagsFromI64(v string) {
-	z := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", z, v)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", z, c.flagsZSlot)
-	slt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %s, 0\n", slt, v)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", slt, c.flagsSltSlot)
+	c.setZSPFlagsSized(asm.I64, v)
 }
 
 func (c *amd64Ctx) setZSFlagsFromI32(v string) {
-	z := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, v)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", z, c.flagsZSlot)
-	slt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", slt, v)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", slt, c.flagsSltSlot)
+	c.setZSPFlagsSized(asm.I32, v)
 }
 
 func (c *amd64Ctx) setCmpFlags(a, b string) {
-	// Plan 9 CMPQ uses source-destination order for flag interpretation here:
-	// treat CMPQ a,b as deriving less-than from a<b.
-	zt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, %s\n", zt, a, b)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zt, c.flagsZSlot)
-	slt := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %s, %s\n", slt, a, b)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", slt, c.flagsSltSlot)
-	ult := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, %s\n", ult, a, b)
-	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", ult, c.flagsCFSlot)
+	c.setCmpFlagsSized(asm.I64, a, b)
 }
 
 func (c *amd64Ctx) loadFlag(slot string) string {

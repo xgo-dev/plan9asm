@@ -276,17 +276,25 @@ func (c *amd64Ctx) x86CondValue(cc string) (string, bool) {
 		return c.loadFlag(c.flagsZSlot), true
 	case "NE", "NZ":
 		return not(c.loadFlag(c.flagsZSlot)), true
-	case "LT", "L":
-		return c.loadFlag(c.flagsSltSlot), true
-	case "GE":
-		return not(c.loadFlag(c.flagsSltSlot)), true
-	case "LE":
+	case "LT", "L", "NGE":
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, c.loadFlag(c.flagsSltSlot), c.loadFlag(c.flagsZSlot))
+		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, %s\n", t, c.loadFlag(c.flagsSltSlot), c.loadFlag(c.flagsOFSlot))
 		return "%" + t, true
-	case "GT", "G":
+	case "GE", "NL":
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, c.loadFlag(c.flagsSltSlot), c.loadFlag(c.flagsZSlot))
+		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, %s\n", t, c.loadFlag(c.flagsSltSlot), c.loadFlag(c.flagsOFSlot))
+		return not("%" + t), true
+	case "LE", "NG":
+		lt := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, %s\n", lt, c.loadFlag(c.flagsSltSlot), c.loadFlag(c.flagsOFSlot))
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %s\n", t, lt, c.loadFlag(c.flagsZSlot))
+		return "%" + t, true
+	case "GT", "G", "NLE":
+		lt := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, %s\n", lt, c.loadFlag(c.flagsSltSlot), c.loadFlag(c.flagsOFSlot))
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %s\n", t, lt, c.loadFlag(c.flagsZSlot))
 		return not("%" + t), true
 	case "CS", "LO", "B", "C", "NAE":
 		return c.loadFlag(c.flagsCFSlot), true
@@ -309,9 +317,9 @@ func (c *amd64Ctx) x86CondValue(cc string) (string, bool) {
 	case "OC", "NO":
 		return not(c.loadFlag(c.flagsOFSlot)), true
 	case "PS", "P", "PE":
-		return "false", true
+		return c.loadFlag(c.flagsPFSlot), true
 	case "PC", "NP", "PO":
-		return "true", true
+		return not(c.loadFlag(c.flagsPFSlot)), true
 	default:
 		return "", false
 	}
@@ -491,9 +499,6 @@ func (c *amd64Ctx) lowerX86ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = sub %s %s, 1\n", res, ty, cur)
 		case "neg":
 			fmt.Fprintf(c.b, "  %%%s = sub %s 0, %s\n", res, ty, cur)
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ne %s %s, 0\n", cf, ty, cur)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
 		case "not":
 			fmt.Fprintf(c.b, "  %%%s = xor %s %s, -1\n", res, ty, cur)
 		}
@@ -501,11 +506,14 @@ func (c *amd64Ctx) lowerX86ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 			return err
 		}
 		if spec.Flags == asm.FlagsWrite {
-			zf, sf := c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, ty, res)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
-			fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", sf, ty, res)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+			switch spec.LLVMOp {
+			case "inc":
+				c.setIncDecFlagsSized(ty, cur, "%"+res, false)
+			case "dec":
+				c.setIncDecFlagsSized(ty, cur, "%"+res, true)
+			case "neg":
+				c.setNegFlagsSized(ty, cur, "%"+res)
+			}
 		}
 		return nil
 
@@ -552,13 +560,13 @@ func (c *amd64Ctx) lowerX86ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 		if err := storeDst("%" + res); err != nil {
 			return err
 		}
-		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", cout, flagSlot)
-		if spec.LLVMOp == "adc" || spec.LLVMOp == "sbb" {
-			zf, sf := c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, ty, res)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
-			fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", sf, ty, res)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		switch spec.LLVMOp {
+		case "adc":
+			c.setAddCarryFlagsSized(ty, dstV, srcV, cf, "%"+res)
+		case "sbb":
+			c.setSubBorrowFlagsSized(ty, dstV, srcV, cf, "%"+res)
+		default:
+			fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", cout, flagSlot)
 		}
 		return nil
 	}
@@ -590,8 +598,18 @@ func (c *amd64Ctx) lowerX86ExtraShift(spec asm.OpSpec, ins asm.Instr) error {
 	if spec.Width < 32 {
 		mask = 31
 	}
+	immCount := int64(-1)
+	if cntOp.Kind == asm.OpImm {
+		immCount = cntOp.Imm & int64(mask)
+	}
 	cntM := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = and %s %s, %d\n", cntM, ty, cntRaw, mask)
+	cntM64 := "%" + cntM
+	if ty != asm.I64 {
+		z := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to i64\n", z, ty, cntM)
+		cntM64 = "%" + z
+	}
 	cnt := "%" + cntM
 	if spec.Width < 32 && (spec.LLVMOp == "rol" || spec.LLVMOp == "ror") {
 		rem := c.newTmp()
@@ -600,29 +618,29 @@ func (c *amd64Ctx) lowerX86ExtraShift(spec asm.OpSpec, ins asm.Instr) error {
 	}
 	switch spec.LLVMOp {
 	case "ashr", "shl", "lshr":
-		c2 := cnt
+		var resVal string
 		if spec.Width < 32 {
-			clamped := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = and %s %s, %d\n", clamped, ty, cnt, spec.Width-1)
-			c2 = "%" + clamped
+			// On x86, 8/16-bit shift counts are masked by 31; counts >= width zero-fill
+			// (for SHL/SHR) or sign-fill (for SAR) without invoking LLVM poison.
+			inRange, safeAmt, shifted := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp ult %s %%%s, %d\n", inRange, ty, cntM, spec.Width)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %%%s, %s %d\n", safeAmt, inRange, ty, cntM, ty, spec.Width-1)
+			fmt.Fprintf(c.b, "  %%%s = %s %s %s, %%%s\n", shifted, spec.LLVMOp, ty, cur, safeAmt)
+			resVal = "%" + shifted
+			if spec.LLVMOp != "ashr" {
+				out := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %%%s, %s 0\n", out, inRange, ty, shifted, ty)
+				resVal = "%" + out
+			}
+		} else {
+			res := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", res, spec.LLVMOp, ty, cur, cnt)
+			resVal = "%" + res
 		}
-		res := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", res, spec.LLVMOp, ty, cur, c2)
-		if err := storeDst("%" + res); err != nil {
+		if err := storeDst(resVal); err != nil {
 			return err
 		}
-		// Intel SDM: effective shift count 0 preserves all status flags unchanged.
-		isZero := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", isZero, ty, cntM)
-		oldZF := c.loadFlag(c.flagsZSlot)
-		oldSF := c.loadFlag(c.flagsSltSlot)
-		zf, sf, selZF, selSF := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, ty, res)
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %s, i1 %%%s\n", selZF, isZero, oldZF, zf)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selZF, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", sf, ty, res)
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %s, i1 %%%s\n", selSF, isZero, oldSF, sf)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selSF, c.flagsSltSlot)
+		c.setShiftFlagsSized(ty, int(spec.Width), spec.LLVMOp, cur, resVal, cntM64, immCount)
 		return nil
 	case "rol", "ror":
 		intr := "fshl"
@@ -631,7 +649,11 @@ func (c *amd64Ctx) lowerX86ExtraShift(spec asm.OpSpec, ins asm.Instr) error {
 		}
 		res := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %s, %s %s, %s %s)\n", res, ty, intr, ty, ty, cur, ty, cur, ty, cnt)
-		return storeDst("%" + res)
+		if err := storeDst("%" + res); err != nil {
+			return err
+		}
+		c.setRotateFlagsSized(ty, int(spec.Width), spec.LLVMOp == "rol", "%"+res, cntM64, immCount)
+		return nil
 	case "rcl", "rcr":
 		// Rotate through carry across (Width + 1) bits.
 		extBits := spec.Width + 1
@@ -655,6 +677,28 @@ func (c *amd64Ctx) lowerX86ExtraShift(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %d\n", cfSh, eTy, rot, spec.Width)
 		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to i1\n", newCF, eTy, cfSh)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newCF, c.flagsCFSlot)
+		// Effective rotate-through-carry count 0 leaves OF untouched; count 1 defines OF.
+		isZero := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", isZero, eTy, cntMod)
+		msb := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", msb, ty, outV)
+		var newOFVal string
+		if spec.LLVMOp == "rcl" {
+			ofTmp := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, %%%s\n", ofTmp, msb, newCF)
+			newOFVal = "%" + ofTmp
+		} else {
+			sh2, b2, bit2, ofTmp := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %d\n", sh2, ty, outV, spec.Width-2)
+			fmt.Fprintf(c.b, "  %%%s = and %s %%%s, 1\n", b2, ty, sh2)
+			fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, 0\n", bit2, ty, b2)
+			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, %%%s\n", ofTmp, msb, bit2)
+			newOFVal = "%" + ofTmp
+		}
+		oldOF := c.loadFlag(c.flagsOFSlot)
+		selOF := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %s, i1 %s\n", selOF, isZero, oldOF, newOFVal)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selOF, c.flagsOFSlot)
 		return storeDst("%" + outV)
 	}
 	return fmt.Errorf("amd64: unhandled shift %s", spec.Op)
@@ -684,7 +728,11 @@ func (c *amd64Ctx) lowerX86ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 			if err := c.storeRegSized(asm.AX, asm.I16, "%"+lo); err != nil {
 				return err
 			}
-			return c.storeRegSized(asm.DX, asm.I16, "%"+hi)
+			if err := c.storeRegSized(asm.DX, asm.I16, "%"+hi); err != nil {
+				return err
+			}
+			c.setSignedMulFlags(asm.I16, asm.I32, "%"+lo, "%"+prod)
+			return nil
 		}
 		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
 			return fmt.Errorf("amd64 IMULW expects 1 or 2 operands: %q", ins.Raw)
@@ -697,9 +745,16 @@ func (c *amd64Ctx) lowerX86ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
-		res := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = mul i16 %s, %s\n", res, dst, src)
-		return c.storeRegSized(ins.Args[1].Reg, asm.I16, "%"+res)
+		a32, b32, prod, res := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = sext i16 %s to i32\n", a32, dst)
+		fmt.Fprintf(c.b, "  %%%s = sext i16 %s to i32\n", b32, src)
+		fmt.Fprintf(c.b, "  %%%s = mul i32 %%%s, %%%s\n", prod, a32, b32)
+		fmt.Fprintf(c.b, "  %%%s = trunc i32 %%%s to i16\n", res, prod)
+		if err := c.storeRegSized(ins.Args[1].Reg, asm.I16, "%"+res); err != nil {
+			return err
+		}
+		c.setSignedMulFlags(asm.I16, asm.I32, "%"+res, "%"+prod)
+		return nil
 
 	case "imul3":
 		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
@@ -713,9 +768,16 @@ func (c *amd64Ctx) lowerX86ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
-		res := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = mul i16 %s, %s\n", res, src, imm)
-		return c.storeRegSized(ins.Args[2].Reg, asm.I16, "%"+res)
+		a32, b32, prod, res := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = sext i16 %s to i32\n", a32, src)
+		fmt.Fprintf(c.b, "  %%%s = sext i16 %s to i32\n", b32, imm)
+		fmt.Fprintf(c.b, "  %%%s = mul i32 %%%s, %%%s\n", prod, a32, b32)
+		fmt.Fprintf(c.b, "  %%%s = trunc i32 %%%s to i16\n", res, prod)
+		if err := c.storeRegSized(ins.Args[2].Reg, asm.I16, "%"+res); err != nil {
+			return err
+		}
+		c.setSignedMulFlags(asm.I16, asm.I32, "%"+res, "%"+prod)
+		return nil
 
 	case "mul", "imul1":
 		if len(ins.Args) != 1 {
@@ -738,17 +800,28 @@ func (c *amd64Ctx) lowerX86ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", aW, ext, ty, ax, wTy)
 		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", bW, ext, ty, src, wTy)
 		fmt.Fprintf(c.b, "  %%%s = mul %s %%%s, %%%s\n", prod, wTy, aW, bW)
-		if spec.Width == 8 {
-			return c.storeRegSized(asm.AX, asm.I16, "%"+prod)
-		}
 		lo, sh, hi := c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", lo, wTy, prod, ty)
 		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %d\n", sh, wTy, prod, spec.Width)
 		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", hi, wTy, sh, ty)
-		if err := c.storeRegSized(asm.AX, ty, "%"+lo); err != nil {
-			return err
+		if spec.Width == 8 {
+			if err := c.storeRegSized(asm.AX, asm.I16, "%"+prod); err != nil {
+				return err
+			}
+		} else {
+			if err := c.storeRegSized(asm.AX, ty, "%"+lo); err != nil {
+				return err
+			}
+			if err := c.storeRegSized(asm.DX, ty, "%"+hi); err != nil {
+				return err
+			}
 		}
-		return c.storeRegSized(asm.DX, ty, "%"+hi)
+		if spec.Signed {
+			c.setSignedMulFlags(ty, wTy, "%"+lo, "%"+prod)
+		} else {
+			c.setUnsignedMulFlags(ty, "%"+hi)
+		}
+		return nil
 
 	case "div", "idiv":
 		if len(ins.Args) != 1 {
@@ -893,6 +966,16 @@ func (c *amd64Ctx) lowerX86ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
 		if err := c.storeRegSized(ins.Args[1].Reg, ty, "%"+out); err != nil {
 			return err
 		}
+		if spec.LLVMOp == "popcnt" {
+			zf := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zf, ty, src)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+			return nil
+		}
 		zf, cf := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, ty, out)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
@@ -923,11 +1006,23 @@ func (c *amd64Ctx) lowerX86ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
 		if err := c.storeRegSized(ins.Args[1].Reg, ty, "%"+out); err != nil {
 			return err
 		}
-		zf, cf := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, ty, out)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", cf, ty, src)
+		sf, cf := c.newTmp(), c.newTmp()
+		if spec.LLVMOp == "blsmsk" {
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
+		} else {
+			zf := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, ty, out)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		}
+		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", sf, ty, out)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		if spec.LLVMOp == "blsi" {
+			fmt.Fprintf(c.b, "  %%%s = icmp ne %s %s, 0\n", cf, ty, src)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", cf, ty, src)
+		}
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		return nil
 
 	case "andn", "shlx", "shrx", "sarx", "rorx", "bzhi", "bextr":
@@ -942,7 +1037,7 @@ func (c *amd64Ctx) lowerX86ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
-		var out string
+		var out, bzhiCF string
 		switch spec.LLVMOp {
 		case "andn":
 			// Plan 9 ANDN src1(rm), src2(vvvv), dst => (~src2) & src1
@@ -974,6 +1069,7 @@ func (c *amd64Ctx) lowerX86ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = and %s %s, %%%s\n", masked, ty, b, mask)
 			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %s, %s %%%s\n", res, ge, ty, b, ty, masked)
 			out = "%" + res
+			bzhiCF = "%" + ge
 		case "bextr":
 			// Plan 9 BEXTR ctrl, src, dst: start = ctrl&0xff, len = (ctrl>>8)&0xff
 			start, lenSh, lenV, startGe, safeSt, shifted, lenGe, safeLen, sh1, mask, masked, res := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
@@ -993,7 +1089,34 @@ func (c *amd64Ctx) lowerX86ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %%%s, %s %%%s\n", res, lenGe, ty, sVal, ty, masked)
 			out = "%" + res
 		}
-		return c.storeRegSized(ins.Args[2].Reg, ty, out)
+		if err := c.storeRegSized(ins.Args[2].Reg, ty, out); err != nil {
+			return err
+		}
+		switch spec.LLVMOp {
+		case "andn":
+			zf, sf := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zf, ty, out)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", sf, ty, out)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		case "bzhi":
+			zf, sf := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zf, ty, out)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", sf, ty, out)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+			fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", bzhiCF, c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		case "bextr":
+			zf := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zf, ty, out)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		}
+		return nil
 	}
 	return fmt.Errorf("amd64: unhandled bit op %s", spec.Op)
 }
@@ -1245,6 +1368,10 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		cf := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i32 %%%s, 0\n", cf, okv)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
 		return c.storeRegSized(ins.Args[0].Reg, ty, "%"+val)
 	case "rdfsbase", "rdgsbase":
 		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpReg {
@@ -1267,6 +1394,10 @@ func (c *amd64Ctx) lowerX86ExtraSystem(spec asm.OpSpec, ins asm.Instr) error {
 		return nil
 	case "xtest":
 		fmt.Fprintf(c.b, "  store i1 true, ptr %s\n", c.flagsZSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
 		return nil
 	case "stmxcsr":
 		if len(ins.Args) != 1 || !isX86MemOp(ins.Args[0]) {

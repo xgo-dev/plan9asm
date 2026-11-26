@@ -57,6 +57,7 @@ type x86FlagSlot struct {
 func (c *amd64Ctx) x86FlagSlots() []x86FlagSlot {
 	flags := []x86FlagSlot{
 		{c.flagsCFSlot, 0},
+		{c.flagsPFSlot, 2},
 		{c.flagsZSlot, 6},
 		{c.flagsSltSlot, 7},
 	}
@@ -599,18 +600,12 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		switch op {
 		case "ADDQ":
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, %s\n", cf, r, dv)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			c.setAddFlagsSized(asm.I64, dv, src, r)
 		case "SUBQ":
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, %s\n", cf, dv, src)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			c.setSubFlagsSized(asm.I64, dv, src, r)
 		default:
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			c.setLogicFlagsSized(asm.I64, r)
 		}
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		c.setZSFlagsFromI64(r)
 		return true, false, nil
 
 	case "ADCL", "SBBL":
@@ -647,17 +642,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := storeDst("%" + result); err != nil {
 			return true, false, err
 		}
-		newCarry := c.newTmp()
 		if op == "ADCL" {
-			fmt.Fprintf(c.b, "  %%%s = icmp ugt i64 %%%s, 4294967295\n", newCarry, result64)
+			c.setAddCarryFlagsSized(asm.I32, dst, src, carry, "%"+result)
 		} else {
-			subtrahend := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", subtrahend, src64, carry64)
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %%%s, %%%s\n", newCarry, dst64, subtrahend)
+			c.setSubBorrowFlagsSized(asm.I32, dst, src, carry, "%"+result)
 		}
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newCarry, c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		c.setZSFlagsFromI32("%" + result)
 		return true, false, nil
 
 	case "ADCQ", "SBBQ":
@@ -678,13 +667,6 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i64\n", cf64t, cfIn)
 		cf64 := "%" + cf64t
 
-		dv128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", dv128, dv)
-		src128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", src128, src)
-		cf128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", cf128, cf64)
-
 		if op == "ADCQ" {
 			sum := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", sum, dv, src)
@@ -694,23 +676,10 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			if err := storeDst(out); err != nil {
 				return true, false, err
 			}
-
-			total1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i128 %%%s, %%%s\n", total1, dv128, src128)
-			total2 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i128 %%%s, %%%s\n", total2, total1, cf128)
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ugt i128 %%%s, 18446744073709551615\n", cf, total2)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-			c.setZSFlagsFromI64(out)
+			c.setAddCarryFlagsSized(asm.I64, dv, src, cfIn, out)
 			return true, false, nil
 		}
 
-		subtr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i128 %%%s, %%%s\n", subtr, src128, cf128)
-		borrow := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ult i128 %%%s, %%%s\n", borrow, dv128, subtr)
 		res := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %s\n", res, dv, src)
 		res2 := c.newTmp()
@@ -719,9 +688,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := storeDst(out); err != nil {
 			return true, false, err
 		}
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", borrow, c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		c.setZSFlagsFromI64(out)
+		c.setSubBorrowFlagsSized(asm.I64, dv, src, cfIn, out)
 		return true, false, nil
 
 	case "ADCB":
@@ -777,27 +744,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := storeDst(out8); err != nil {
 			return true, false, err
 		}
-
-		d16 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i16\n", d16, d8)
-		s16 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i16\n", s16, s8)
-		cf16 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i16\n", cf16, cf8)
-		total1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i16 %%%s, %%%s\n", total1, d16, s16)
-		total2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i16 %%%s, %%%s\n", total2, total1, cf16)
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ugt i16 %%%s, 255\n", cf, total2)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		zf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, res)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
-		sf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp slt i8 %%%s, 0\n", sf, res)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		c.setAddCarryFlagsSized(asm.I8, d8, s8, cfIn, out8)
 		return true, false, nil
 
 	case "ADCXQ", "ADOXQ":
@@ -878,18 +825,12 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		switch op {
 		case "ADDL":
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %%%s, %s\n", cf, x, dtr)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			c.setAddFlagsSized(asm.I32, dtr, s32, "%"+x)
 		case "SUBL":
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, %s\n", cf, dtr, s32)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			c.setSubFlagsSized(asm.I32, dtr, s32, "%"+x)
 		default:
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			c.setLogicFlagsSized(asm.I32, "%"+x)
 		}
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		c.setZSFlagsFromI32("%" + x)
 		return true, false, nil
 
 	case "ADDB", "SUBB", "XORB", "ANDB", "ORB":
@@ -924,46 +865,12 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		switch op {
 		case "ADDB":
-			d16 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i16\n", d16, d8)
-			s16 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i16\n", s16, s8)
-			total := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = add i16 %%%s, %%%s\n", total, d16, s16)
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ugt i16 %%%s, 255\n", cf, total)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			c.setAddFlagsSized(asm.I8, d8, s8, "%"+x)
 		case "SUBB":
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i8 %s, %s\n", cf, d8, s8)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+			c.setSubFlagsSized(asm.I8, d8, s8, "%"+x)
 		default:
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			c.setLogicFlagsSized(asm.I8, "%"+x)
 		}
-		if op == "ADDB" || op == "SUBB" {
-			x1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i8 %s, %s\n", x1, d8, s8)
-			if op == "ADDB" {
-				nx1 := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = xor i8 %%%s, -1\n", nx1, x1)
-				x1 = nx1
-			}
-			x2 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i8 %s, %%%s\n", x2, d8, x)
-			x3 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = and i8 %%%s, %%%s\n", x3, x1, x2)
-			of := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp slt i8 %%%s, 0\n", of, x3)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", of, c.flagsOFSlot)
-		} else {
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		}
-		zf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, x)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
-		sf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp slt i8 %%%s, 0\n", sf, x)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
 		return true, false, nil
 
 	case "ANDW", "ORW", "XORW", "ADDW", "SUBW":
@@ -994,30 +901,14 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := storeDst("%" + out); err != nil {
 			return true, false, err
 		}
-		zf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i16 %%%s, 0\n", zf, out)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
-		sf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp slt i16 %%%s, 0\n", sf, out)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
-		if op == "ADDW" {
-			sum := c.newTmp()
-			dst32 := c.newTmp()
-			src32 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext i16 %s to i32\n", dst32, dst)
-			fmt.Fprintf(c.b, "  %%%s = zext i16 %s to i32\n", src32, src)
-			fmt.Fprintf(c.b, "  %%%s = add i32 %%%s, %%%s\n", sum, dst32, src32)
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ugt i32 %%%s, 65535\n", cf, sum)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		} else if op == "SUBW" {
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i16 %s, %s\n", cf, dst, src)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		} else {
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+		switch op {
+		case "ADDW":
+			c.setAddFlagsSized(asm.I16, dst, src, "%"+out)
+		case "SUBW":
+			c.setSubFlagsSized(asm.I16, dst, src, "%"+out)
+		default:
+			c.setLogicFlagsSized(asm.I16, "%"+out)
 		}
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 		return true, false, nil
 
 	case "INCQ", "DECQ":
@@ -1069,7 +960,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := storeDst(out); err != nil {
 			return true, false, err
 		}
-		c.setZSFlagsFromI64(out)
+		c.setIncDecFlagsSized(asm.I64, v, out, op == "DECQ")
 		return true, false, nil
 
 	case "INCL", "DECL":
@@ -1121,7 +1012,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := storeDst("%" + x); err != nil {
 			return true, false, err
 		}
-		c.setZSFlagsFromI32("%" + x)
+		c.setIncDecFlagsSized(asm.I32, "%"+tr, "%"+x, op == "DECL")
 		return true, false, nil
 
 	case "LEAQ", "LEAL":
@@ -1239,7 +1130,17 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.ctpop.i32(i32 %s)\n", call, srcv)
 			z := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, call)
-			return true, false, c.storeReg(ins.Args[1].Reg, "%"+z)
+			if err := c.storeReg(ins.Args[1].Reg, "%"+z); err != nil {
+				return true, false, err
+			}
+			zf := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", zf, srcv)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+			return true, false, nil
 		}
 		srcv, err := c.evalIntSized(src, asm.I64)
 		if err != nil {
@@ -1247,7 +1148,17 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		call := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.ctpop.i64(i64 %s)\n", call, srcv)
-		return true, false, c.storeReg(ins.Args[1].Reg, "%"+call)
+		if err := c.storeReg(ins.Args[1].Reg, "%"+call); err != nil {
+			return true, false, err
+		}
+		zf := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", zf, srcv)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsPFSlot)
+		return true, false, nil
 
 	case "TZCNTQ":
 		// TZCNTQ src, dstReg.
@@ -1389,38 +1300,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("amd64 %s expects one destination: %q", op, ins.Raw)
 		}
-		cond := ""
-		switch op {
-		case "SETEQ":
-			cond = c.loadFlag(c.flagsZSlot)
-		case "SETLT":
-			cond = c.loadFlag(c.flagsSltSlot)
-		case "SETGT":
-			// signed >
-			slt := c.loadFlag(c.flagsSltSlot)
-			z := c.loadFlag(c.flagsZSlot)
-			t1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, slt, z)
-			t2 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-			cond = "%" + t2
-		case "SETGE":
-			slt := c.loadFlag(c.flagsSltSlot)
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, slt)
-			cond = "%" + t
-		case "SETHI":
-			// unsigned >
-			cf := c.loadFlag(c.flagsCFSlot)
-			z := c.loadFlag(c.flagsZSlot)
-			t1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, cf, z)
-			t2 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-			cond = "%" + t2
-		case "SETCS":
-			cond = c.loadFlag(c.flagsCFSlot)
-		}
+		cond, _ := c.x86CondValue(strings.TrimPrefix(string(op), "SET"))
 		switch ins.Args[0].Kind {
 		case asm.OpReg:
 			sel := c.newTmp()
@@ -1464,31 +1344,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err != nil {
 			return true, false, err
 		}
-		cond := ""
-		switch op {
-		case "CMOVQEQ":
-			cond = c.loadFlag(c.flagsZSlot)
-		case "CMOVQNE":
-			z := c.loadFlag(c.flagsZSlot)
-			nz := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", nz, z)
-			cond = "%" + nz
-		case "CMOVQCS":
-			cond = c.loadFlag(c.flagsCFSlot)
-		case "CMOVQCC":
-			cf := c.loadFlag(c.flagsCFSlot)
-			nc := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", nc, cf)
-			cond = "%" + nc
-		case "CMOVQGT":
-			slt := c.loadFlag(c.flagsSltSlot)
-			z := c.loadFlag(c.flagsZSlot)
-			t1 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, slt, z)
-			t2 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-			cond = "%" + t2
-		}
+		cond, _ := c.x86CondValue(strings.TrimPrefix(string(op), "CMOVQ"))
 		sel := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = select i1 %s, i64 %s, i64 %s\n", sel, cond, src, cur)
 		return true, false, c.storeReg(dst, "%"+sel)
@@ -1512,7 +1368,17 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			fmt.Fprintf(c.b, "  %%%s = xor i64 %s, -1\n", n, src2)
 			a := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, %s\n", a, n, src1)
-			return true, false, c.storeReg(dst, "%"+a)
+			if err := c.storeReg(dst, "%"+a); err != nil {
+				return true, false, err
+			}
+			zf, sf := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, 0\n", zf, a)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+			fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %%%s, 0\n", sf, a)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+			return true, false, nil
 		}
 		s1 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", s1, src1)
@@ -1524,7 +1390,17 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", a, n, s1)
 		z := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, a)
-		return true, false, c.storeReg(dst, "%"+z)
+		if err := c.storeReg(dst, "%"+z); err != nil {
+			return true, false, err
+		}
+		zf, sf := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %%%s, 0\n", zf, a)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", sf, a)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		return true, false, nil
 
 	case "BEXTRQ":
 		// BMI1 bit field extract: control, src, dst.
@@ -1571,17 +1447,28 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 -1, i64 %%%s\n", mask, isFull, maskTmp)
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, %%%s\n", out, shifted, mask)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+out)
+		if err := c.storeReg(ins.Args[2].Reg, "%"+out); err != nil {
+			return true, false, err
+		}
+		zf := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, 0\n", zf, out)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		return true, false, nil
 
 	case "BZHIQ":
 		// BMI2 zero high bits: index, src, dst.
 		if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("amd64 BZHIQ expects index, src, dstReg: %q", ins.Raw)
 		}
-		idx, err := c.evalI64(ins.Args[0])
+		idxRaw, err := c.evalI64(ins.Args[0])
 		if err != nil {
 			return true, false, err
 		}
+		idxTmp := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 255\n", idxTmp, idxRaw)
+		idx := "%" + idxTmp
 		src, err := c.evalI64(ins.Args[1])
 		if err != nil {
 			return true, false, err
@@ -1602,7 +1489,18 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 -1\n", mask, valid, maskOrZero)
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %%%s\n", out, src, mask)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+out)
+		if err := c.storeReg(ins.Args[2].Reg, "%"+out); err != nil {
+			return true, false, err
+		}
+		zf, sf, cf := c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, 0\n", zf, out)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %%%s, 0\n", sf, out)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", cf, valid)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		return true, false, nil
 
 	case "SHRQ", "SHLQ", "SARQ", "SHLL", "SHRL", "SARL", "SALQ", "SALL":
 		// Shift ops:
@@ -1674,69 +1572,13 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := storeDst(resVal); err != nil {
 			return true, false, err
 		}
-		// Intel SDM: effective shift count 0 leaves all status flags unaffected.
-		if immCount == 0 {
-			return true, false, nil
-		}
-		// Compute architectural ZF, SF, CF, and (for count == 1) OF.
-		// When count is dynamic, guard against count == 0 to preserve prior flags
-		// and keep bit-position arithmetic in range [0, valBits-1].
-		var isZero, safeAmt string
-		if immCount < 0 {
-			zTmp := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zTmp, valTy, amtVal)
-			isZero = "%" + zTmp
-			sTmp := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s 1, %s %s\n", sTmp, isZero, valTy, valTy, amtVal)
-			safeAmt = "%" + sTmp
-		} else {
-			safeAmt = amtVal
-		}
-		bitPos := c.newTmp()
+		kind := "lshr"
 		if isLeft {
-			fmt.Fprintf(c.b, "  %%%s = sub %s %d, %s\n", bitPos, valTy, valBits, safeAmt)
-		} else {
-			fmt.Fprintf(c.b, "  %%%s = sub %s %s, 1\n", bitPos, valTy, safeAmt)
-		}
-		cfSh, cfBit, newCF := c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %%%s\n", cfSh, valTy, dv, bitPos)
-		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, 1\n", cfBit, valTy, cfSh)
-		fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, 0\n", newCF, valTy, cfBit)
-		newZF, newSF := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", newZF, valTy, resVal)
-		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", newSF, valTy, resVal)
-		var newOFVal string
-		if isLeft {
-			ofTmp := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, %%%s\n", ofTmp, newSF, newCF)
-			newOFVal = "%" + ofTmp
+			kind = "shl"
 		} else if isArith {
-			newOFVal = "false"
-		} else {
-			ofTmp := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", ofTmp, valTy, dv)
-			newOFVal = "%" + ofTmp
+			kind = "ashr"
 		}
-		if immCount < 0 {
-			oldZF := c.loadFlag(c.flagsZSlot)
-			oldSF := c.loadFlag(c.flagsSltSlot)
-			oldCF := c.loadFlag(c.flagsCFSlot)
-			oldOF := c.loadFlag(c.flagsOFSlot)
-			selZF, selSF, selCF, selOF := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", selZF, isZero, oldZF, newZF)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selZF, c.flagsZSlot)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", selSF, isZero, oldSF, newSF)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selSF, c.flagsSltSlot)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", selCF, isZero, oldCF, newCF)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selCF, c.flagsCFSlot)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %s\n", selOF, isZero, oldOF, newOFVal)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selOF, c.flagsOFSlot)
-		} else {
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newZF, c.flagsZSlot)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newSF, c.flagsSltSlot)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newCF, c.flagsCFSlot)
-			fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", newOFVal, c.flagsOFSlot)
-		}
+		c.setShiftFlagsSized(valTy, int(valBits), kind, dv, resVal, amtI64, immCount)
 		return true, false, nil
 
 	case "SHLW", "SHRW", "SARW", "SALW":
@@ -1754,15 +1596,24 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			if err != nil {
 				return true, false, err
 			}
-			cntM, rem, res := c.newTmp(), c.newTmp(), c.newTmp()
+			immCount := int64(-1)
+			if ins.Args[0].Kind == asm.OpImm {
+				immCount = ins.Args[0].Imm & 31
+			}
+			cntM, cnt64, rem, res := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = and i16 %s, 31\n", cntM, cntRaw)
+			fmt.Fprintf(c.b, "  %%%s = zext i16 %%%s to i64\n", cnt64, cntM)
 			fmt.Fprintf(c.b, "  %%%s = urem i16 %%%s, 16\n", rem, cntM)
 			if op == "SHLW" {
 				fmt.Fprintf(c.b, "  %%%s = call i16 @llvm.fshl.i16(i16 %s, i16 %s, i16 %%%s)\n", res, dst, src, rem)
 			} else {
 				fmt.Fprintf(c.b, "  %%%s = call i16 @llvm.fshr.i16(i16 %s, i16 %s, i16 %%%s)\n", res, src, dst, rem)
 			}
-			return true, false, storeDst("%" + res)
+			if err := storeDst("%" + res); err != nil {
+				return true, false, err
+			}
+			c.setDoubleShiftFlagsSized(asm.I16, 16, op == "SHLW", dst, "%"+res, "%"+cnt64, immCount)
+			return true, false, nil
 		}
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("amd64 %s expects amt, dst: %q", op, ins.Raw)
@@ -1772,9 +1623,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, err
 		}
 		var amt string
+		immCount := int64(-1)
 		switch ins.Args[0].Kind {
 		case asm.OpImm:
-			amt = fmt.Sprintf("%d", ins.Args[0].Imm&31)
+			immCount = ins.Args[0].Imm & 31
+			amt = fmt.Sprintf("%d", immCount)
 		case asm.OpReg:
 			av, err := c.loadReg(ins.Args[0].Reg)
 			if err != nil {
@@ -1793,10 +1646,13 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		amt16 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i16\n", amt16, safeAmt)
 		shifted := c.newTmp()
+		kind := "lshr"
 		switch op {
 		case "SHLW", "SALW":
+			kind = "shl"
 			fmt.Fprintf(c.b, "  %%%s = shl i16 %s, %%%s\n", shifted, dv, amt16)
 		case "SARW":
+			kind = "ashr"
 			fmt.Fprintf(c.b, "  %%%s = ashr i16 %s, %%%s\n", shifted, dv, amt16)
 		case "SHRW":
 			fmt.Fprintf(c.b, "  %%%s = lshr i16 %s, %%%s\n", shifted, dv, amt16)
@@ -1807,7 +1663,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i16 %%%s, i16 0\n", out, inRange, shifted)
 			result = "%" + out
 		}
-		return true, false, storeDst(result)
+		if err := storeDst(result); err != nil {
+			return true, false, err
+		}
+		c.setShiftFlagsSized(asm.I16, 16, kind, dv, result, amt, immCount)
+		return true, false, nil
 
 	case "SHLB":
 		// 8-bit logical left shift: amt, dst.
@@ -1819,9 +1679,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, err
 		}
 		var amt string
+		immCount := int64(-1)
 		switch ins.Args[0].Kind {
 		case asm.OpImm:
-			amt = fmt.Sprintf("%d", ins.Args[0].Imm&31)
+			immCount = ins.Args[0].Imm & 31
+			amt = fmt.Sprintf("%d", immCount)
 		case asm.OpReg:
 			av, err := c.loadReg(ins.Args[0].Reg)
 			if err != nil {
@@ -1843,7 +1705,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = shl i8 %s, %%%s\n", sh, d8, amt8)
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 0\n", out, inRange, sh)
-		return true, false, storeDst("%" + out)
+		if err := storeDst("%" + out); err != nil {
+			return true, false, err
+		}
+		c.setShiftFlagsSized(asm.I8, 8, "shl", d8, "%"+out, amt, immCount)
+		return true, false, nil
 
 	case "SHLXQ", "SHRXQ":
 		// BMI2 variable shifts: amt, src, dst.
@@ -1888,9 +1754,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 
 		var cnt32 string
+		immCount := int64(-1)
 		switch ins.Args[0].Kind {
 		case asm.OpImm:
-			cnt32 = fmt.Sprintf("%d", uint32(ins.Args[0].Imm))
+			immCount = ins.Args[0].Imm & 31
+			cnt32 = fmt.Sprintf("%d", uint32(immCount))
 		case asm.OpReg:
 			cv64, err := c.loadReg(ins.Args[0].Reg)
 			if err != nil {
@@ -1905,6 +1773,8 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 
 		cm := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and i32 %s, 31\n", cm, cnt32)
+		cm64 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", cm64, cm)
 		neg := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = sub i32 32, %%%s\n", neg, cm)
 		nm := c.newTmp()
@@ -1915,7 +1785,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = lshr i32 %s, %%%s\n", rhs, dv32, nm)
 		rot := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i32 %%%s, %%%s\n", rot, lhs, rhs)
-		return true, false, storeDst("%" + rot)
+		if err := storeDst("%" + rot); err != nil {
+			return true, false, err
+		}
+		c.setRotateFlagsSized(asm.I32, 32, true, "%"+rot, "%"+cm64, immCount)
+		return true, false, nil
 
 	case "ROLQ":
 		// 64-bit rotate-left: count, dst.
@@ -1927,9 +1801,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, err
 		}
 		var cnt string
+		immCount := int64(-1)
 		switch ins.Args[0].Kind {
 		case asm.OpImm:
-			cnt = fmt.Sprintf("%d", uint64(ins.Args[0].Imm)&63)
+			immCount = ins.Args[0].Imm & 63
+			cnt = fmt.Sprintf("%d", uint64(immCount))
 		case asm.OpReg:
 			cv, err := c.loadReg(ins.Args[0].Reg)
 			if err != nil {
@@ -1951,7 +1827,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %%%s\n", rhs, dv, nm)
 		rot := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", rot, lhs, rhs)
-		return true, false, storeDst("%" + rot)
+		if err := storeDst("%" + rot); err != nil {
+			return true, false, err
+		}
+		c.setRotateFlagsSized(asm.I64, 64, true, "%"+rot, cnt, immCount)
+		return true, false, nil
 
 	case "RORQ":
 		// 64-bit rotate-right: count, dst.
@@ -1963,9 +1843,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, err
 		}
 		var cnt string
+		immCount := int64(-1)
 		switch ins.Args[0].Kind {
 		case asm.OpImm:
-			cnt = fmt.Sprintf("%d", uint64(ins.Args[0].Imm)&63)
+			immCount = ins.Args[0].Imm & 63
+			cnt = fmt.Sprintf("%d", uint64(immCount))
 		case asm.OpReg:
 			cv, err := c.loadReg(ins.Args[0].Reg)
 			if err != nil {
@@ -1987,7 +1869,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = shl i64 %s, %%%s\n", rhs, dv, nm)
 		rot := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", rot, lhs, rhs)
-		return true, false, storeDst("%" + rot)
+		if err := storeDst("%" + rot); err != nil {
+			return true, false, err
+		}
+		c.setRotateFlagsSized(asm.I64, 64, false, "%"+rot, cnt, immCount)
+		return true, false, nil
 
 	case "RORL":
 		// 32-bit rotate-right: count, dst.
@@ -1998,20 +1884,24 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err != nil {
 			return true, false, err
 		}
-		var cnt32 string
+		var cnt32, cnt64 string
+		immCount := int64(-1)
 		switch ins.Args[0].Kind {
 		case asm.OpImm:
-			cnt32 = fmt.Sprintf("%d", uint32(ins.Args[0].Imm)&31)
+			immCount = ins.Args[0].Imm & 31
+			cnt32 = fmt.Sprintf("%d", uint32(immCount))
+			cnt64 = fmt.Sprintf("%d", immCount)
 		case asm.OpReg:
 			cv64, err := c.loadReg(ins.Args[0].Reg)
 			if err != nil {
 				return true, false, err
 			}
+			m64 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 31\n", m64, cv64)
+			cnt64 = "%" + m64
 			tr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, cv64)
-			cm := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, 31\n", cm, tr)
-			cnt32 = "%" + cm
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", tr, m64)
+			cnt32 = "%" + tr
 		default:
 			return true, false, fmt.Errorf("amd64 RORL unsupported count: %q", ins.Raw)
 		}
@@ -2025,7 +1915,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = shl i32 %s, %%%s\n", rhs, dv32, nm)
 		rot := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i32 %%%s, %%%s\n", rot, lhs, rhs)
-		return true, false, storeDst("%" + rot)
+		if err := storeDst("%" + rot); err != nil {
+			return true, false, err
+		}
+		c.setRotateFlagsSized(asm.I32, 32, false, "%"+rot, cnt64, immCount)
+		return true, false, nil
 
 	case "RORXL", "RORXQ":
 		// BMI2 rotate-right without flags:
@@ -2204,9 +2098,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := c.storeReg(asm.DX, "%"+hi); err != nil {
 			return true, false, err
 		}
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, hi)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		c.setUnsignedMulFlags(asm.I64, "%"+hi)
 		return true, false, nil
 
 	case "MULXQ":
@@ -2279,6 +2171,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := c.storeReg(asm.DX, "%"+hi64); err != nil {
 			return true, false, err
 		}
+		c.setUnsignedMulFlags(asm.I32, "%"+hi32)
 		return true, false, nil
 
 	case "DIVL":
@@ -2360,7 +2253,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			if err := c.storeRegSized(asm.AX, asm.I32, "%"+lo); err != nil {
 				return true, false, err
 			}
-			return true, false, c.storeRegSized(asm.DX, asm.I32, "%"+hi)
+			if err := c.storeRegSized(asm.DX, asm.I32, "%"+hi); err != nil {
+				return true, false, err
+			}
+			c.setSignedMulFlags(asm.I32, asm.I64, "%"+lo, "%"+product)
+			return true, false, nil
 		case 2:
 			if ins.Args[1].Kind != asm.OpReg {
 				return true, false, fmt.Errorf("amd64 IMULL expects src, dstReg: %q", ins.Raw)
@@ -2373,9 +2270,16 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			if err != nil {
 				return true, false, err
 			}
-			product := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = mul i32 %s, %s\n", product, dst, src)
-			return true, false, c.storeRegSized(ins.Args[1].Reg, asm.I32, "%"+product)
+			a64, b64, prod64, product := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", a64, dst)
+			fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", b64, src)
+			fmt.Fprintf(c.b, "  %%%s = mul i64 %%%s, %%%s\n", prod64, a64, b64)
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", product, prod64)
+			if err := c.storeRegSized(ins.Args[1].Reg, asm.I32, "%"+product); err != nil {
+				return true, false, err
+			}
+			c.setSignedMulFlags(asm.I32, asm.I64, "%"+product, "%"+prod64)
+			return true, false, nil
 		case 3:
 			if op != "IMUL3L" || ins.Args[2].Kind != asm.OpReg {
 				return true, false, fmt.Errorf("amd64 %s expects imm, src, dstReg: %q", op, ins.Raw)
@@ -2388,9 +2292,16 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			if err != nil {
 				return true, false, err
 			}
-			product := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = mul i32 %s, %s\n", product, bv, a)
-			return true, false, c.storeRegSized(ins.Args[2].Reg, asm.I32, "%"+product)
+			a64, b64, prod64, product := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", a64, bv)
+			fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", b64, a)
+			fmt.Fprintf(c.b, "  %%%s = mul i64 %%%s, %%%s\n", prod64, a64, b64)
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", product, prod64)
+			if err := c.storeRegSized(ins.Args[2].Reg, asm.I32, "%"+product); err != nil {
+				return true, false, err
+			}
+			c.setSignedMulFlags(asm.I32, asm.I64, "%"+product, "%"+prod64)
+			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("amd64 %s unsupported operand count: %q", op, ins.Raw)
 		}
@@ -2427,6 +2338,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			if err := c.storeReg(asm.DX, "%"+hi); err != nil {
 				return true, false, err
 			}
+			c.setSignedMulFlags(asm.I64, asm.LLVMType("i128"), "%"+lo, "%"+p)
 			return true, false, nil
 		case 2:
 			if ins.Args[1].Kind != asm.OpReg {
@@ -2449,7 +2361,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", p, a128, b128)
 			lo := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", lo, p)
-			return true, false, c.storeReg(dst, "%"+lo)
+			if err := c.storeReg(dst, "%"+lo); err != nil {
+				return true, false, err
+			}
+			c.setSignedMulFlags(asm.I64, asm.LLVMType("i128"), "%"+lo, "%"+p)
+			return true, false, nil
 		case 3:
 			if op != "IMUL3Q" || ins.Args[2].Kind != asm.OpReg {
 				return true, false, fmt.Errorf("amd64 %s expects imm, src, dstReg: %q", op, ins.Raw)
@@ -2470,7 +2386,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", p, a128, b128)
 			lo := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", lo, p)
-			return true, false, c.storeReg(ins.Args[2].Reg, "%"+lo)
+			if err := c.storeReg(ins.Args[2].Reg, "%"+lo); err != nil {
+				return true, false, err
+			}
+			c.setSignedMulFlags(asm.I64, asm.LLVMType("i128"), "%"+lo, "%"+p)
+			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("amd64 %s expects 1/2/3 operands: %q", op, ins.Raw)
 		}
@@ -2490,10 +2410,7 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := storeDst(out); err != nil {
 			return true, false, err
 		}
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %s, 0\n", cf, v)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		c.setZSFlagsFromI64(out)
+		c.setNegFlagsSized(asm.I64, v, out)
 		return true, false, nil
 	}
 	return false, false, nil
@@ -2504,10 +2421,12 @@ func (c *amd64Ctx) lowerDoubleShift(op asm.Op, ins asm.Instr) error {
 		return fmt.Errorf("amd64 %s expects amt, srcReg, dst: %q", op, ins.Raw)
 	}
 	ty := asm.I64
+	width := 64
 	mask := int64(63)
 	left := op == "SHLQ"
 	if op == "SHLL" || op == "SHRL" {
 		ty = asm.I32
+		width = 32
 		mask = 31
 		left = op == "SHLL"
 	}
@@ -2522,9 +2441,11 @@ func (c *amd64Ctx) lowerDoubleShift(op asm.Op, ins asm.Instr) error {
 	}
 
 	count64 := ""
+	immCount := int64(-1)
 	switch ins.Args[0].Kind {
 	case asm.OpImm:
-		count64 = fmt.Sprintf("%d", ins.Args[0].Imm&mask)
+		immCount = ins.Args[0].Imm & mask
+		count64 = fmt.Sprintf("%d", immCount)
 	case asm.OpReg:
 		value, err := c.loadReg(ins.Args[0].Reg)
 		if err != nil {
@@ -2539,9 +2460,13 @@ func (c *amd64Ctx) lowerDoubleShift(op asm.Op, ins asm.Instr) error {
 
 	count := count64
 	if ty == asm.I32 {
-		truncated := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", truncated, count64)
-		count = "%" + truncated
+		if immCount >= 0 {
+			count = fmt.Sprintf("%d", immCount)
+		} else {
+			truncated := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", truncated, count64)
+			count = "%" + truncated
+		}
 	}
 	inverseNeg := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = sub %s 0, %s\n", inverseNeg, ty, count)
@@ -2563,7 +2488,11 @@ func (c *amd64Ctx) lowerDoubleShift(op asm.Op, ins asm.Instr) error {
 	fmt.Fprintf(c.b, "  %%%s = or %s %%%s, %%%s\n", merged, ty, dstPart, srcPart)
 	out := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %s, %s %%%s\n", out, zero, ty, dst, ty, merged)
-	return storeDst("%" + out)
+	if err := storeDst("%" + out); err != nil {
+		return err
+	}
+	c.setDoubleShiftFlagsSized(ty, width, left, dst, "%"+out, count64, immCount)
+	return nil
 }
 
 func (c *amd64Ctx) lower386Timestamp(serialized bool) error {
