@@ -1320,6 +1320,44 @@ TEXT ·f(SB), $0-8
 	RET
 `, true)
 
+	// MMX register bounce MUST FAIL.
+	checkCase("movq-sp-mmx-bounce-escape", goRet64, `
+TEXT ·f(SB), $0-8
+	MOVQ SP, AX
+	MOVQ AX, M0
+	MOVQ M0, BX
+	EMMS
+	MOVQ BX, ret+0(FP)
+	RET
+`, true)
+
+	// AVX-512 mask register bounce MUST FAIL.
+	checkCase("movq-sp-kreg-bounce-escape", goRet64, `
+TEXT ·f(SB), $0-8
+	MOVQ SP, AX
+	KMOVQ AX, K1
+	KMOVQ K1, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`, true)
+
+	// Outgoing ABI0 CALL argument escape MUST FAIL.
+	checkCase("pushq-sp-abi0-call-escape", "package p\nfunc id(x int64) int64\nfunc f() uint64\n", `
+TEXT ·id(SB), $0-16
+	MOVQ x+0(FP), AX
+	MOVQ AX, ret+8(FP)
+	RET
+
+TEXT ·f(SB), $16-8
+	PUSHQ SP
+	POPQ AX
+	MOVQ AX, 0(SP)
+	CALL ·id(SB)
+	MOVQ 8(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
 	// Positive counterpart: confined indirect copy that never escapes MUST PASS.
 	checkCase("confined-indirect-pushq-sp-ok", goRet64, `
 TEXT ·f(SB), $0-8
@@ -1343,6 +1381,341 @@ TEXT ·f(SB), $0-1
 	MOVB AL, ret+0(FP)
 	RET
 `, false)
+}
+
+// TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix verifies Round 9
+// P1 #1 (AF round-trip), P1 #2 (MMX M0..M7 round-trip), P1 #3 (outgoing ABI0
+// CALL argument boundary), plus sibling paths (K-reg, XMM upper lane, RFLAGS
+// DF/ID bits, external memory store, JRCXZ branch, x87 stack) across a 3-mode
+// matrix:
+//   - entry-undef: entry CF is undefined -> MUST BE REJECTED
+//   - clc-zero:    CLC sets CF=0         -> MUST PASS and LLVM 22 -O2 preserves 0
+//   - stc-one:     STC sets CF=1         -> MUST PASS and LLVM 22 -O2 preserves 1
+func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
+	optTool := findLLVM22Tool("opt")
+	translateAndOpt := func(t *testing.T, name, goSrc, asmSrc string, wantErr bool) string {
+		t.Helper()
+		fset := token.NewFileSet()
+		astFile, err := parser.ParseFile(fset, "p.go", goSrc, 0)
+		if err != nil {
+			t.Fatalf("%s: parse go: %v", name, err)
+		}
+		cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+		pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
+		if err != nil {
+			t.Fatalf("%s: typecheck go: %v", name, err)
+		}
+		res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(asmSrc), GoModuleOptions{
+			FileName:     "p_amd64.s",
+			GOOS:         "linux",
+			GOARCH:       "amd64",
+			TargetTriple: "x86_64-unknown-linux-gnu",
+			ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		})
+		if wantErr {
+			if err == nil {
+				ir := res.Module.String()
+				res.Module.Dispose()
+				t.Fatalf("%s: expected error on entry-undefined CF, got success:\n%s", name, ir)
+			}
+			return ""
+		}
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		rawIR := res.Module.String()
+		res.Module.Dispose()
+		if optTool == "" {
+			return rawIR
+		}
+		tmp := t.TempDir()
+		inPath := filepath.Join(tmp, "in.ll")
+		outPath := filepath.Join(tmp, "opt.ll")
+		if err := os.WriteFile(inPath, []byte(rawIR), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
+			t.Fatalf("%s: LLVM 22 opt -O2 failed: %v\n%s", name, err, out)
+		}
+		optBytes, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(optBytes)
+	}
+
+	type pathCase struct {
+		name      string
+		goSrc     string
+		asmPrefix string // helper funcs if any
+		header    string
+		body      string
+		wantZero  string
+		wantOne   string
+	}
+
+	goRet64 := "package p\nfunc f() int64\n"
+	goCallExt := "package p\nfunc id(x int64) int64\nfunc f() int64\n"
+	goPtrRet := "package p\nfunc f(p *int64) int64\n"
+
+	paths := []pathCase{
+		{
+			name:   "direct",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $0-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "af-roundtrip",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $0-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	SHLQ $12, AX
+	SAHF
+	MOVQ $0, AX
+	LAHF
+	SHRQ $12, AX
+	ANDQ $1, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "mmx-roundtrip",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $0-8",
+			body: `
+	PUSHFQ
+	POPQ BX
+	MOVQ BX, M0
+	MOVQ M0, AX
+	EMMS
+	ANDQ $1, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "abi0-call-external",
+			goSrc:  goCallExt,
+			header: "TEXT ·f(SB), $16-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, 0(SP)
+	CALL ·id(SB)
+	MOVQ 8(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantZero: "call i64 @id(i64 0)",
+			wantOne:  "call i64 @id(i64 1)",
+		},
+		{
+			name:  "abi0-call-local",
+			goSrc: goCallExt,
+			asmPrefix: `TEXT ·id(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			header: "TEXT ·f(SB), $16-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, 0(SP)
+	CALL ·id(SB)
+	MOVQ 8(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "kreg-roundtrip",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $0-8",
+			body: `
+	PUSHFQ
+	POPQ BX
+	KMOVQ BX, K1
+	KMOVQ K1, AX
+	ANDQ $1, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "xmm-upper-lane-roundtrip",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $16-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $0, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PEXTRQ $1, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "xmm-upper-lane-xor-roundtrip",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $16-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $0, 0(SP)
+	MOVQ AX, 8(SP)
+	MOVOU 0(SP), X0
+	PXOR X1, X1
+	PXOR X1, X0
+	PEXTRQ $1, X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "df-roundtrip",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $0-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	SHLQ $10, AX
+	PUSHQ AX
+	POPFQ
+	PUSHFQ
+	POPQ BX
+	CLD
+	SHRQ $10, BX
+	ANDQ $1, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "mem-store-roundtrip",
+			goSrc:  goPtrRet,
+			header: "TEXT ·f(SB), NOSPLIT, $0-16",
+			body: `
+	MOVQ p+0(FP), DI
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, (DI)
+	MOVQ (DI), BX
+	MOVQ BX, ret+8(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "divl-implicit-read",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $0-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVL $0, DX
+	MOVL $2, BX
+	DIVL BX
+	MOVQ DX, ret+0(FP)
+	RET
+`,
+			wantZero: "ret i64 0",
+			wantOne:  "ret i64 1",
+		},
+		{
+			name:   "x87-stack-roundtrip",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $24-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FLDZ
+	FMOVVP F0, 8(SP)
+	FMOVVP F0, 16(SP)
+	MOVQ 16(SP), BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantZero: "store i64 0, ptr %x87_hw_scalar",
+			wantOne:  "store i64 1, ptr %x87_hw_scalar",
+		},
+	}
+
+	modes := []struct {
+		name  string
+		setup string
+		undef bool
+	}{
+		{name: "entry-undef", setup: "", undef: true},
+		{name: "clc-zero", setup: "\tCLC\n", undef: false},
+		{name: "stc-one", setup: "\tSTC\n", undef: false},
+	}
+
+	for _, p := range paths {
+		for _, m := range modes {
+			label := p.name + "/" + m.name
+			t.Run(label, func(t *testing.T) {
+				asmSrc := p.asmPrefix + "\n" + p.header + "\n" + m.setup + p.body
+				optIR := translateAndOpt(t, label, p.goSrc, asmSrc, m.undef)
+				if m.undef || optTool == "" {
+					return
+				}
+				want := p.wantZero
+				if m.name == "stc-one" {
+					want = p.wantOne
+				}
+				// Locate @f body so local helper functions (e.g. @id) don't match falsely.
+				idx := strings.Index(optIR, "define ")
+				fIdx := strings.Index(optIR, "@f(")
+				if fIdx >= 0 {
+					idx = fIdx
+				}
+				if idx < 0 || !strings.Contains(optIR[idx:], want) {
+					t.Fatalf("%s: expected LLVM 22 -O2 IR for @f to contain %q, got:\n%s", label, want, optIR)
+				}
+			})
+		}
+	}
 }
 
 // TestStep1ExplicitUnsupportedAuditRegistry verifies that every audited

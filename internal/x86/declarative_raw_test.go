@@ -577,9 +577,15 @@ done:
 			},
 			{
 				name: "KMOVW k, r32 zero-extends to 64-bit GP (internal/runtime/gc/scan FilterNilAVX512 idiom)",
-				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nKMOVW K1, R15\nPOPCNTL R15, R15\nMOVQ R15, ret+8(FP)\nRET\n",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nKMOVW AX, K1\nKMOVW K1, R15\nPOPCNTL R15, R15\nMOVQ R15, ret+8(FP)\nRET\n",
 				sig:  sig,
 				ok:   true,
+			},
+			{
+				name: "KMOVW uninitialized K1 rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nKMOVW K1, R15\nPOPCNTL R15, R15\nMOVQ R15, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
 			},
 			{
 				name: "STC sets CF only: ADCXQ accepted",
