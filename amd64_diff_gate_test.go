@@ -420,6 +420,22 @@ int main(void) {
 	if ar3[17] != "0000000000000001" {
 		t.Fatalf("arith64[3] TESTQ 3, 3 JPS = %q, want 1", ar3[17])
 	}
+	// NEGL architectural AF & OF (caught on real amd64 by amd64-diff-gate):
+	//   arithw[3]  (a=3):          NEGL 3 -> 0xfffffffd, flags=0x93 (SF|AF|1|CF)
+	//   arithw[11] (a=0x80000000): NEGL MinInt32 -> 0x80000000, flags=0x187 (OF|SF|PF|1|CF)
+	aw3 := strings.Split(llvmMap["arithw[3]"], ",")
+	if aw3[22] != "00000000fffffffd" || aw3[23] != "0000000000000093" {
+		t.Fatalf("arithw[3] NEGL 3 = (%s, %s), want (00000000fffffffd, 0000000000000093)", aw3[22], aw3[23])
+	}
+	aw11 := strings.Split(llvmMap["arithw[11]"], ",")
+	if aw11[22] != "0000000080000000" || aw11[23] != "0000000000000187" {
+		t.Fatalf("arithw[11] NEGL 0x80000000 = (%s, %s), want (0000000080000000, 0000000000000187)", aw11[22], aw11[23])
+	}
+	// RCRQ $1 (CF=1, val=0): result=MinInt64, CF=0, OF=1, and prior ZF=1/SF=0/PF=1 preserved -> high16=0x0146
+	sh0 := strings.Split(llvmMap["shift[0]"], ",")
+	if sh0[22] != "8000000000000000" || sh0[23] != "0000000001460046" {
+		t.Fatalf("shift[0] RCLQ/RCRQ $1 (val=0,CF=1) = (%s, %s), want (8000000000000000, 0000000001460046)", sh0[22], sh0[23])
+	}
 	// PCMPESTRI $0x0c (Intel SDM Equal Ordered):
 	//   case 0: "abc" in "xyabcz" (nLen=3, hLen=6) -> ECX=2
 	//   case 1: "abc" in "abcdef" (nLen=3, hLen=6) -> ECX=0

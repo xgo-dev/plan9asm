@@ -453,7 +453,8 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		}
 		return true, false, nil
 	case "NEGL":
-		// 32-bit negate with x86 semantics: write back low 32 bits and zero-extend.
+		// 32-bit negate with x86 semantics: write back low 32 bits and zero-extend,
+		// updating CF, OF, AF, ZF, SF, and PF identically to 32-bit NEG.
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("amd64 NEGL expects dst: %q", ins.Raw)
 		}
@@ -467,15 +468,12 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t32, dv)
 			neg := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = sub i32 0, %%%s\n", neg, t32)
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ne i32 %%%s, 0\n", cf, t32)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
 			z := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, neg)
 			if err := c.storeReg(ins.Args[0].Reg, "%"+z); err != nil {
 				return true, false, err
 			}
-			c.setZSFlagsFromI32("%" + neg)
+			c.setNegFlagsSized(asm.I32, "%"+t32, "%"+neg)
 			return true, false, nil
 		case asm.OpMem, asm.OpSym:
 			p, pty, err := c.resolveMemPtr(ins.Args[0])
@@ -486,11 +484,8 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			fmt.Fprintf(c.b, "  %%%s = load i32, %s %s, align 1\n", ld, pty, p)
 			neg := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = sub i32 0, %%%s\n", neg, ld)
-			cf := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp ne i32 %%%s, 0\n", cf, ld)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
 			fmt.Fprintf(c.b, "  store i32 %%%s, %s %s, align 1\n", neg, pty, p)
-			c.setZSFlagsFromI32("%" + neg)
+			c.setNegFlagsSized(asm.I32, "%"+ld, "%"+neg)
 			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("amd64 NEGL expects reg/mem dst: %q", ins.Raw)
@@ -498,6 +493,8 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 	case "RCRQ":
 		// Rotate through carry right (count=1) fast path; general counts/operands
 		// fall through to lowerScalarDeclarative.
+		// Per Intel SDM, RCR $1 sets CF = LSB(old), OF = MSB(out) ^ bit62(out) = oldCF ^ MSB(old),
+		// and leaves ZF/SF/PF/AF untouched.
 		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpImm || ins.Args[0].Imm != 1 || ins.Args[1].Kind != asm.OpReg {
 			return false, false, nil
 		}
@@ -511,6 +508,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		newCF := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", newCF, lsb)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newCF, c.flagsCFSlot)
+		oldMSB := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %s, 0\n", oldMSB, dv)
+		newOF := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, %%%s\n", newOF, oldCF, oldMSB)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newOF, c.flagsOFSlot)
 		shr := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 1\n", shr, dv)
 		cf64 := c.newTmp()
@@ -522,7 +524,6 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		if err := c.storeReg(ins.Args[1].Reg, "%"+out); err != nil {
 			return true, false, err
 		}
-		c.setZSFlagsFromI64("%" + out)
 		return true, false, nil
 
 	case "ADDQ", "SUBQ", "XORQ", "ANDQ", "ORQ":

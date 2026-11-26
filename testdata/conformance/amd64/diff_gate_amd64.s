@@ -680,20 +680,37 @@ shlq_no_of:
 	MOVQ R10, 152(DI)
 	MOVQ AX, 160(DI)
 
-	// [21] RCLQ $1 (CF=1) result + CF, [22] RCRQ $1 (CF=1) result + CF
+	// [21] RCLQ $1 (CF=1) result, [22] RCRQ $1 (CF=1) result, [23] RCL/RCR CF+OF + ZF/SF/PF preservation
+	MOVQ $0, R11
+	CMPQ R11, R11 // set ZF=1, SF=0, PF=1 before rotates
 	STC
 	MOVQ R8, R10
 	RCLQ $1, R10
 	MOVQ $0, AX
-	SETCS AL
+	LAHF
+	MOVQ $0, BX
+	SETOS BL
+	SHRQ $8, AX
+	ANDQ $0xc7, AX
+	SHLQ $8, BX
+	ORQ BX, AX
 	MOVQ R10, 168(DI)
+	MOVQ AX, R12
+	MOVQ $0, R11
+	CMPQ R11, R11 // set ZF=1, SF=0, PF=1 before RCRQ $1
 	STC
 	MOVQ R8, R10
 	RCRQ $1, R10
+	MOVQ $0, AX
+	LAHF
 	MOVQ $0, BX
-	SETCS BL
-	SHLQ $1, BX
+	SETOS BL
+	SHRQ $8, AX
+	ANDQ $0xc7, AX
+	SHLQ $8, BX
 	ORQ BX, AX
+	SHLQ $16, AX
+	ORQ R12, AX
 	MOVQ R10, 176(DI)
 	MOVQ AX, 184(DI)
 	RET
