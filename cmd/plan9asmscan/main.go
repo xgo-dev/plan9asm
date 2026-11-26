@@ -78,6 +78,7 @@ type report struct {
 	DiffReportNativeOracle   bool   `json:"diff_report_native_oracle,omitempty"`
 	DiffReportComparedInputs int    `json:"diff_report_compared_inputs,omitempty"`
 	DiffVerifiedForms        int    `json:"diff_verified_forms"`
+	DiffExpectedOnlyForms    int    `json:"diff_expected_only_forms,omitempty"`
 	DiffFailedForms          int    `json:"diff_failed_forms,omitempty"`
 	HWPendingForms           int    `json:"hw_pending_forms,omitempty"`
 	CompileOnlyForms         int    `json:"compile_only_forms,omitempty"`
@@ -1437,8 +1438,8 @@ func renderMarkdown(rep report) []byte {
 		fmt.Fprintf(&b, "- metric 2 — object compiled (LLVM 22 `llc -filetype=obj` verified): _not run (pass `-verify-obj`)_\n")
 	}
 	if rep.DiffReportLoaded {
-		fmt.Fprintf(&b, "- metric 3 — semantically differentially verified (execution report): `%d` passed, `%d` hw-pending, `%d` failed (`native_oracle=%v`, `compared_inputs=%d`; static manifest declares `%d` execute forms)\n",
-			rep.DiffVerifiedForms, rep.HWPendingForms, rep.DiffFailedForms, rep.DiffReportNativeOracle, rep.DiffReportComparedInputs, rep.ManifestExecuteForms)
+		fmt.Fprintf(&b, "- metric 3 — semantically differentially verified (execution report): `%d` passed, `%d` hw-pending, `%d` expected-only, `%d` failed (`native_oracle=%v`, `compared_inputs=%d`; static manifest declares `%d` execute forms)\n",
+			rep.DiffVerifiedForms, rep.HWPendingForms, rep.DiffExpectedOnlyForms, rep.DiffFailedForms, rep.DiffReportNativeOracle, rep.DiffReportComparedInputs, rep.ManifestExecuteForms)
 	} else {
 		fmt.Fprintf(&b, "- metric 3 — semantically differentially verified (execution report): _not run (pass `-diff-report <file>`; static manifest declares `%d` execute forms, `%d` optional-ISA gated)_\n",
 			rep.ManifestExecuteForms, rep.ManifestHWGatedForms)

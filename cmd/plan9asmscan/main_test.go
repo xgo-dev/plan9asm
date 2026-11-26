@@ -396,18 +396,41 @@ GLOBL foo(SB), RODATA, $8
 		ComparedInputs:  7,
 		Cases: []diffCaseExecResult{
 			{
-				ID:             "case-pass",
-				Status:         "passed",
-				ExecutedInputs: 7,
-				ComparedInputs: 7,
-				Forms:          []string{"MOVQ immediate,gpr64"},
+				ID:               "case-expected-only",
+				Status:           "expected_value_only",
+				VerificationMode: "expected_value_only",
+				ExecutedInputs:   7,
+				ComparedInputs:   0,
+				Forms:            []string{"MOVQ immediate,gpr64"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("attachDiffExecutionReport(expected_value_only): %v", err)
+	}
+	if !rep.DiffReportLoaded || rep.DiffVerifiedForms != 0 || rep.DiffExpectedOnlyForms != 1 || rep.DiffReportComparedInputs != 0 {
+		t.Fatalf("expected_value_only must not count as native diff: loaded=%v diff=%d expected_only=%d compared=%d",
+			rep.DiffReportLoaded, rep.DiffVerifiedForms, rep.DiffExpectedOnlyForms, rep.DiffReportComparedInputs)
+	}
+	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
+		SchemaVersion:   1,
+		Goarch:          "amd64",
+		NativeOracleRan: true,
+		ComparedInputs:  7,
+		Cases: []diffCaseExecResult{
+			{
+				ID:               "case-pass",
+				Status:           "passed",
+				VerificationMode: "native_diff",
+				ExecutedInputs:   7,
+				ComparedInputs:   7,
+				Forms:            []string{"MOVQ immediate,gpr64"},
 			},
 		},
 	}); err != nil {
 		t.Fatalf("attachDiffExecutionReport(passed): %v", err)
 	}
-	if rep.DiffVerifiedForms != 1 || rep.HWPendingForms != 0 {
-		t.Fatalf("after passed diff report: diff=%d pending=%d, want 1 and 0", rep.DiffVerifiedForms, rep.HWPendingForms)
+	if rep.DiffVerifiedForms != 1 || rep.DiffExpectedOnlyForms != 0 || rep.HWPendingForms != 0 || rep.DiffReportComparedInputs != 7 {
+		t.Fatalf("after passed diff report: diff=%d expected_only=%d pending=%d compared=%d", rep.DiffVerifiedForms, rep.DiffExpectedOnlyForms, rep.HWPendingForms, rep.DiffReportComparedInputs)
 	}
 	attachObjectCompilation(&rep, map[string]bool{"MOVQ immediate,gpr64": true}, nil, "22.1.8")
 	if !rep.ObjectCompiledVerified || rep.ObjectCompiledForms != 1 || rep.ObjectCompileLLVMVersion != "22.1.8" {

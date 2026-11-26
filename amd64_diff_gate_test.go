@@ -554,6 +554,7 @@ type amd64DiffCaseExecResult struct {
 	ID                string   `json:"id"`
 	Asm               string   `json:"asm"`
 	Status            string   `json:"status"`
+	VerificationMode  string   `json:"verification_mode,omitempty"`
 	ExecutedInputs    int      `json:"executed_inputs"`
 	ComparedInputs    int      `json:"compared_inputs"`
 	FailedInputs      int      `json:"failed_inputs"`
@@ -601,7 +602,9 @@ func mergeAndWriteAMD64DiffReport(t *testing.T, nativeOracle bool, llvmVersion s
 		c := byID[id]
 		rep.Cases = append(rep.Cases, c)
 		rep.TotalInputs += c.ExecutedInputs
-		rep.ComparedInputs += c.ComparedInputs
+		if c.VerificationMode == "native_diff" {
+			rep.ComparedInputs += c.ComparedInputs
+		}
 		rep.FailedInputs += c.FailedInputs
 	}
 	data, err := json.MarshalIndent(rep, "", "  ")
@@ -617,43 +620,7 @@ func mergeAndWriteAMD64DiffReport(t *testing.T, nativeOracle bool, llvmVersion s
 	}
 }
 
-func recordAMD64ConformanceManifestCases(t *testing.T, asmRel string, nativeRan bool) {
-	t.Helper()
-	if strings.TrimSpace(os.Getenv("PLAN9ASM_DIFF_REPORT_OUT")) == "" {
-		return
-	}
-	data, err := os.ReadFile(filepath.Join("testdata", "conformance", "manifest.json"))
-	if err != nil {
-		t.Fatalf("read conformance manifest: %v", err)
-	}
-	var manifest testConformanceManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		t.Fatalf("parse conformance manifest: %v", err)
-	}
-	var cases []amd64DiffCaseExecResult
-	for _, tc := range manifest.Cases {
-		if tc.Goarch != "amd64" || tc.Asm != asmRel || tc.Validation != "execute" {
-			continue
-		}
-		status := "portable_only"
-		compared := 0
-		if nativeRan {
-			status = "passed"
-			compared = 1
-		}
-		cases = append(cases, amd64DiffCaseExecResult{
-			ID:             tc.ID,
-			Asm:            tc.Asm,
-			Status:         status,
-			ExecutedInputs: 1,
-			ComparedInputs: compared,
-			Forms:          append([]string(nil), tc.Forms...),
-		})
-	}
-	mergeAndWriteAMD64DiffReport(t, nativeRan, "", cases)
-}
-
-func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracle bool, llvmMap, oracleMap map[string]string, failedKeys map[string]bool, hwPending string) {
+func writeAMD64ManifestDiffExecutionReport(t *testing.T, asmRel, llcTool string, nativeOracle bool, casePrefixes map[string][]string, llvmMap, oracleMap map[string]string, failedKeys map[string]bool, hwPending string) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv("PLAN9ASM_DIFF_REPORT_OUT")) == "" {
 		return
@@ -667,11 +634,13 @@ func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracl
 		t.Fatalf("parse conformance manifest: %v", err)
 	}
 	llvmVer := ""
-	if out, err := exec.Command(llcTool, "--version").CombinedOutput(); err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.Contains(line, "LLVM version ") {
-				llvmVer = strings.TrimSpace(line)
-				break
+	if llcTool != "" {
+		if out, err := exec.Command(llcTool, "--version").CombinedOutput(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.Contains(line, "LLVM version ") {
+					llvmVer = strings.TrimSpace(line)
+					break
+				}
 			}
 		}
 	}
@@ -681,15 +650,6 @@ func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracl
 		if item != "" {
 			pendingSet[item] = true
 		}
-	}
-	casePrefixes := map[string][]string{
-		"amd64-diff-gate-scalar-arith-flags":      {"arith64[", "arithw[", "muldiv["},
-		"amd64-diff-gate-shifts-rotates-double16": {"shift[", "dshift16[", "dshift3264["},
-		"amd64-diff-gate-flags-save-restore":      {"flags[", "pushfq_raw_if"},
-		"amd64-diff-gate-bit-atomic-string-abi0":  {"bit[", "atomstr[", "zeroarg"},
-		"amd64-diff-gate-adx":                     {"adx["},
-		"amd64-diff-gate-sse42-ssse3":             {"pcmpestri0c["},
-		"amd64-diff-gate-sha-ni":                  {"sha256[", "sha1["},
 	}
 	matchesAny := func(k string, prefixes []string) bool {
 		for _, p := range prefixes {
@@ -701,7 +661,7 @@ func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracl
 	}
 	var results []amd64DiffCaseExecResult
 	for _, tc := range manifest.Cases {
-		if tc.Goarch != "amd64" || tc.Asm != "amd64/diff_gate_amd64.s" || tc.Validation != "execute" {
+		if tc.Goarch != "amd64" || tc.Asm != asmRel || tc.Validation != "execute" {
 			continue
 		}
 		prefixes := casePrefixes[tc.ID]
@@ -725,8 +685,10 @@ func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracl
 				missingHW = append(missingHW, f)
 			}
 		}
-		status := "portable_only"
+		status := "expected_value_only"
+		mode := "expected_value_only"
 		if nativeOracle {
+			mode = "native_diff"
 			switch {
 			case failCnt > 0:
 				status = "failed"
@@ -742,6 +704,7 @@ func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracl
 			ID:                tc.ID,
 			Asm:               tc.Asm,
 			Status:            status,
+			VerificationMode:  mode,
 			ExecutedInputs:    execCnt,
 			ComparedInputs:    cmpCnt,
 			FailedInputs:      failCnt,
@@ -750,6 +713,34 @@ func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracl
 		})
 	}
 	mergeAndWriteAMD64DiffReport(t, nativeOracle, llvmVer, results)
+}
+
+func writeAMD64ConformanceDiffExecutionReport(t *testing.T, llcTool string, nativeOracle bool, llvmMap, oracleMap map[string]string, failedKeys map[string]bool) {
+	t.Helper()
+	casePrefixes := map[string][]string{
+		"amd64-byte-memory-destinations":           {"byte_memory[", "byte_flags["},
+		"amd64-punpcklqdq-sources":                 {"punpck_mem[", "punpck_reg["},
+		"amd64-legacy-three-operand-shift":         {"legacy_shll["},
+		"amd64-btrq-register":                      {"btrq["},
+		"amd64-double-shift-family":                {"dshift32[", "dshift64["},
+		"amd64-go-hex-instruction-families":        {"gohex_vec[", "gohex_word["},
+		"amd64-packed-arithmetic-shift-saturation": {"psral["},
+	}
+	writeAMD64ManifestDiffExecutionReport(t, "amd64/conformance_amd64.s", llcTool, nativeOracle, casePrefixes, llvmMap, oracleMap, failedKeys, "")
+}
+
+func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracle bool, llvmMap, oracleMap map[string]string, failedKeys map[string]bool, hwPending string) {
+	t.Helper()
+	casePrefixes := map[string][]string{
+		"amd64-diff-gate-scalar-arith-flags":      {"arith64[", "arithw[", "muldiv["},
+		"amd64-diff-gate-shifts-rotates-double16": {"shift[", "dshift16[", "dshift3264["},
+		"amd64-diff-gate-flags-save-restore":      {"flags[", "pushfq_raw_if"},
+		"amd64-diff-gate-bit-atomic-string-abi0":  {"bit[", "atomstr[", "zeroarg"},
+		"amd64-diff-gate-adx":                     {"adx["},
+		"amd64-diff-gate-sse42-ssse3":             {"pcmpestri0c["},
+		"amd64-diff-gate-sha-ni":                  {"sha256[", "sha1["},
+	}
+	writeAMD64ManifestDiffExecutionReport(t, "amd64/diff_gate_amd64.s", llcTool, nativeOracle, casePrefixes, llvmMap, oracleMap, failedKeys, hwPending)
 }
 
 // TestTranslateGoModuleAMD64PopAndPushfqInitPropagation verifies Round 7 P1 #1
@@ -945,6 +936,242 @@ TEXT ·f(SB), $0-8
 	RET
 `, true)
 
+	// Round 8 P1 #1: partial writes to unrelated bytes of a saved flags word
+	// (on stack, in GP registers, across CFG joins, or through LAHF/ALU/XMM/XCHG)
+	// MUST NOT promote entry-undefined CF/OF to defined!
+	checkCase("r8-pushfq-movb-byte7-popfq-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	MOVB $0, 7(SP)
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-movb-byte7-popfq-forges-of", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	MOVB $0, 7(SP)
+	POPFQ
+	MOVQ $0, AX
+	SETOS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-popq-movb-bh-pushq-popfq-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ BX
+	MOVB $0, BH
+	PUSHQ BX
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	// Counterpart: MOVB $0, BH genuinely writes byte 1 (OF=bit 11 -> 0), so SETOS passes!
+	checkCase("r8-pushfq-popq-movb-bh-pushq-popfq-of-ok", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ BX
+	MOVB $0, BH
+	PUSHQ BX
+	POPFQ
+	MOVQ $0, AX
+	SETOS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, false)
+	// Counterpart: MOVB $0, BL genuinely writes byte 0 (CF=bit 0 -> 0), while OF stays undefined.
+	checkCase("r8-pushfq-popq-movb-bl-pushq-popfq-cf-ok", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ BX
+	MOVB $0, BL
+	PUSHQ BX
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, false)
+	checkCase("r8-pushfq-popq-movb-bl-pushq-popfq-forges-of", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ BX
+	MOVB $0, BL
+	PUSHQ BX
+	POPFQ
+	MOVQ $0, AX
+	SETOS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	// CFG join: two branches modify bytes 6 and 7 respectively before merging -> CF MUST stay undefined.
+	goParamRet64 := "package p\nfunc f(x uint64) uint64\n"
+	checkCase("r8-pushfq-cfg-branch-byte6-byte7-join-forges-cf", goParamRet64, `
+TEXT ·f(SB), $0-16
+	PUSHFQ
+	MOVQ x+0(FP), CX
+	CMPQ CX, $0
+	JE b2
+	MOVB $0, 6(SP)
+	JMP join
+b2:
+	MOVB $0, 7(SP)
+join:
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+8(FP)
+	RET
+`, true)
+	// CFG join: branch 1 defines byte 0 (CF), branch 2 defines byte 1 (OF) -> join leaves both undefined!
+	checkCase("r8-pushfq-cfg-branch-byte0-byte1-join-cf-rejected", goParamRet64, `
+TEXT ·f(SB), $0-16
+	PUSHFQ
+	MOVQ x+0(FP), CX
+	CMPQ CX, $0
+	JE b2
+	MOVB $0, 0(SP)
+	JMP join
+b2:
+	MOVB $0, 1(SP)
+join:
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+8(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-cfg-branch-byte0-byte1-join-of-rejected", goParamRet64, `
+TEXT ·f(SB), $0-16
+	PUSHFQ
+	MOVQ x+0(FP), CX
+	CMPQ CX, $0
+	JE b2
+	MOVB $0, 0(SP)
+	JMP join
+b2:
+	MOVB $0, 1(SP)
+join:
+	POPFQ
+	MOVQ $0, AX
+	SETOS AL
+	MOVQ AX, ret+8(FP)
+	RET
+`, true)
+	// Sibling partial-write/laundering checks on LAHF/SAHF, bitwise ops, ALU, XMM, XCHG, direct return:
+	checkCase("r8-lahf-movb-al-sahf-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	LAHF
+	MOVB $0, AL
+	SAHF
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-lahf-movb-ah-sahf-cf-ok", goRet64, `
+TEXT ·f(SB), $0-8
+	LAHF
+	MOVB $0, AH
+	SAHF
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, false)
+	checkCase("r8-pushfq-popq-movb-bl-ah-sahf-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ BX
+	MOVB BL, AH
+	SAHF
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-orq-unrelated-bit-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	ORQ $0x100, 0(SP)
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-orq-bit0-defines-cf-only", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	ORQ $1, 0(SP)
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, false)
+	checkCase("r8-pushfq-orq-bit0-leaves-of-undef", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	ORQ $1, 0(SP)
+	POPFQ
+	MOVQ $0, AX
+	SETOS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-popq-addq0-pushq-popfq-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ BX
+	ADDQ $0, BX
+	PUSHQ BX
+	POPFQ
+	MOVQ $0, AX
+	SETCS AL
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-popq-xmm-roundtrip-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ X0, BX
+	PUSHQ BX
+	POPFQ
+	MOVQ $0, CX
+	SETCS CL
+	MOVQ CX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-popq-xchg-pushq-popfq-forges-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ $0, BX
+	XCHGQ AX, BX
+	PUSHQ BX
+	POPFQ
+	MOVQ $0, CX
+	SETCS CL
+	MOVQ CX, ret+0(FP)
+	RET
+`, true)
+	checkCase("r8-pushfq-popq-andq1-returns-undef-cf", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
 	// P1 #2: PUSHFQ; POPQ AX; ANDQ $0x200, AX at entry MUST PASS and fold to 512 under LLVM 22 -O2!
 	rawIFIR := checkCase("pushfq-raw-if-bit9", goRet64, `
 TEXT ·f(SB), $0-8
@@ -973,6 +1200,149 @@ TEXT ·f(SB), $0-8
 			t.Fatalf("expected PUSHFQ; POPQ AX; ANDQ $0x200, AX to fold to ret i64 512 under LLVM 22 -O2:\n%s", string(optBytes))
 		}
 	}
+}
+
+// TestTranslateGoModuleAMD64PrivateSPConfinement verifies Round 8 P1 #2:
+// private stack-frame addresses cannot escape to ABI0 result slots through
+// direct PUSHQ SP -> POPQ, indirect memory-source PUSHQ 0(SP) stack copies,
+// stack MOVQ/XCHGQ loads, parameter FP bounces, or XMM register bounces, while
+// non-escaping stack copies and explicitly overwritten clean bytes remain valid.
+func TestTranslateGoModuleAMD64PrivateSPConfinement(t *testing.T) {
+	checkCase := func(name, goSrc, asmSrc string, wantErr bool) {
+		t.Helper()
+		fset := token.NewFileSet()
+		astFile, err := parser.ParseFile(fset, "p.go", goSrc, 0)
+		if err != nil {
+			t.Fatalf("%s: parse go: %v", name, err)
+		}
+		cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+		pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
+		if err != nil {
+			t.Fatalf("%s: typecheck go: %v", name, err)
+		}
+		res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(asmSrc), GoModuleOptions{
+			FileName:     "p_amd64.s",
+			GOOS:         "linux",
+			GOARCH:       "amd64",
+			TargetTriple: "x86_64-unknown-linux-gnu",
+			ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		})
+		if wantErr {
+			if err == nil {
+				ir := res.Module.String()
+				res.Module.Dispose()
+				t.Fatalf("%s: expected private frame escape error, got success:\n%s", name, ir)
+			}
+			if !strings.Contains(err.Error(), "private frame address escapes") {
+				t.Fatalf("%s: unexpected error = %v, want private frame address escapes", name, err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		res.Module.Dispose()
+	}
+
+	goRet64 := "package p\nfunc f() uint64\n"
+	goRet8 := "package p\nfunc f() uint8\n"
+	goParamRet64 := "package p\nfunc f(a uint64) uint64\n"
+
+	// Direct copy: PUSHQ SP -> POPQ AX -> ret+0(FP) MUST FAIL.
+	checkCase("direct-pushq-sp-popq-escape", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHQ SP
+	POPQ AX
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
+	// Indirect stack copy (Round 8 P1 #2): PUSHQ SP -> PUSHQ 0(SP) -> POPQ AX -> POPQ BX -> ret+0(FP) MUST FAIL.
+	checkCase("indirect-pushq-sp-pushq-0sp-escape", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHQ SP
+	PUSHQ 0(SP)
+	POPQ AX
+	POPQ BX
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
+	// Indirect stack copy with partial overwrite of unrelated byte MUST STILL FAIL.
+	checkCase("indirect-pushq-sp-partial-overwrite-escape", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHQ SP
+	MOVB $0, 7(SP)
+	PUSHQ 0(SP)
+	POPQ AX
+	POPQ BX
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
+	// Stack MOVQ read of pushed SP MUST FAIL.
+	checkCase("pushq-sp-movq-0sp-escape", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHQ SP
+	MOVQ 0(SP), AX
+	POPQ BX
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
+	// Stack XCHGQ swap with pushed SP MUST FAIL.
+	checkCase("pushq-sp-xchgq-0sp-escape", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHQ SP
+	MOVQ $0, AX
+	XCHGQ 0(SP), AX
+	POPQ BX
+	MOVQ AX, ret+0(FP)
+	RET
+`, true)
+
+	// Parameter FP slot bounce MUST FAIL.
+	checkCase("movq-sp-param-fp-bounce-escape", goParamRet64, `
+TEXT ·f(SB), $0-16
+	MOVQ SP, a+0(FP)
+	MOVQ a+0(FP), AX
+	MOVQ AX, ret+8(FP)
+	RET
+`, true)
+
+	// XMM register bounce MUST FAIL.
+	checkCase("movq-sp-xmm-bounce-escape", goRet64, `
+TEXT ·f(SB), $0-8
+	MOVQ SP, AX
+	MOVQ AX, X0
+	MOVQ X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`, true)
+
+	// Positive counterpart: confined indirect copy that never escapes MUST PASS.
+	checkCase("confined-indirect-pushq-sp-ok", goRet64, `
+TEXT ·f(SB), $0-8
+	PUSHQ SP
+	PUSHQ 0(SP)
+	POPQ AX
+	POPQ BX
+	MOVQ $42, ret+0(FP)
+	RET
+`, false)
+
+	// Positive counterpart: per-byte copy returning only an explicitly overwritten clean byte MUST PASS.
+	checkCase("per-byte-overwritten-clean-byte-ok", goRet8, `
+TEXT ·f(SB), $0-1
+	PUSHQ SP
+	MOVB $7, 7(SP)
+	PUSHQ 0(SP)
+	MOVB 7(SP), AL
+	POPQ CX
+	POPQ DX
+	MOVB AL, ret+0(FP)
+	RET
+`, false)
 }
 
 // TestStep1ExplicitUnsupportedAuditRegistry verifies that every audited

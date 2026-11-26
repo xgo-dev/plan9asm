@@ -2,7 +2,12 @@
 
 package amd64conformance
 
-import "testing"
+import (
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestByteMemoryDestinations(t *testing.T) {
 	got := [4]byte{0x10, 0xf0, 0x5a, 0xa0}
@@ -179,6 +184,111 @@ func TestPackedArithmeticShiftCountSaturation(t *testing.T) {
 	want := [8]int32{0, 0, -1, -1, 0, 0, -1, -1}
 	if got != want {
 		t.Fatalf("packedArithmeticShift32() = %#v, want %#v", got, want)
+	}
+}
+
+func runConformanceOracleLines() []string {
+	var lines []string
+
+	bytes := [4]byte{0x10, 0xf0, 0x5a, 0xa0}
+	byteMemory(&bytes, 0x0f)
+	lines = append(lines, fmt.Sprintf("byte_memory[0]=%02x%02x%02x%02x", bytes[0], bytes[1], bytes[2], bytes[3]))
+
+	flagValues := [4]byte{0xff, 0xff, 0x7f, 0}
+	var flags [8]byte
+	byteFlags(&flagValues, &flags)
+	lines = append(lines, fmt.Sprintf("byte_flags[0]=%x|%x", flagValues, flags))
+
+	dst := [2]uint64{0x0123456789abcdef, 0xfedcba9876543210}
+	src := [2]uint64{0x1122334455667788, 0x8877665544332211}
+	unpackLowQWords(&dst, &src)
+	lines = append(lines, fmt.Sprintf("punpck_mem[0]=%016x,%016x", dst[0], dst[1]))
+
+	dup := [2]uint64{0x0123456789abcdef, 0xfedcba9876543210}
+	unpackDuplicateLowQWord(&dup)
+	lines = append(lines, fmt.Sprintf("punpck_reg[0]=%016x,%016x", dup[0], dup[1]))
+
+	lines = append(lines, fmt.Sprintf("legacy_shll[0]=%08x", shiftLegacyThreeOperand(0x12345678, 0x89abcdef, 5)))
+
+	for i, in := range []uint64{^uint64(0), 0x0123456789abcdef} {
+		lines = append(lines, fmt.Sprintf("btrq[%d]=%016x", i, clearTopBit(in)))
+	}
+
+	pairs32 := [][2]uint32{
+		{0x12345678, 0x89abcdef},
+		{0, ^uint32(0)},
+		{^uint32(0), 0},
+		{0x80000001, 0x7ffffffe},
+	}
+	idx32 := 0
+	for _, pair := range pairs32 {
+		for count := uint32(0); count < 128; count++ {
+			var out [8]uint32
+			doubleShift32(&out, pair[0], pair[1], count)
+			lines = append(lines, fmt.Sprintf("dshift32[%d]=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x",
+				idx32, out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7]))
+			idx32++
+		}
+	}
+
+	pairs64 := [][2]uint64{
+		{0x0123456789abcdef, 0xfedcba9876543210},
+		{0, ^uint64(0)},
+		{^uint64(0), 0},
+		{0x8000000000000001, 0x7ffffffffffffffe},
+	}
+	idx64 := 0
+	for _, pair := range pairs64 {
+		for count := uint64(0); count < 256; count++ {
+			var out [8]uint64
+			doubleShift64(&out, pair[0], pair[1], count)
+			lines = append(lines, fmt.Sprintf("dshift64[%d]=%016x,%016x,%016x,%016x,%016x,%016x,%016x,%016x",
+				idx64, out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7]))
+			idx64++
+		}
+	}
+
+	var a, b [16]byte
+	for i := range a {
+		a[i] = byte(i*29 + 3)
+		b[i] = byte(i*17 + 0x70)
+	}
+	var vecOut [160]byte
+	goHexVectorOps(&vecOut, &a, &b)
+	lines = append(lines, fmt.Sprintf("gohex_vec[0]=%x", vecOut))
+
+	wordInputs := [][2]uint64{
+		{0x123456789abcdef0, 0},
+		{0x123456789abcdef0, 4},
+		{0xfedcba9876543210, 12},
+	}
+	for i, tc := range wordInputs {
+		lines = append(lines, fmt.Sprintf("gohex_word[%d]=%016x", i, goHexWordOps(tc[0], tc[1])))
+	}
+
+	psrc := [4]int32{0, 1, -1, -1 << 31}
+	var pout [8]int32
+	packedArithmeticShift32(&pout, &psrc)
+	lines = append(lines, fmt.Sprintf("psral[0]=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x",
+		uint32(pout[0]), uint32(pout[1]), uint32(pout[2]), uint32(pout[3]),
+		uint32(pout[4]), uint32(pout[5]), uint32(pout[6]), uint32(pout[7])))
+
+	return lines
+}
+
+func TestAMD64ConformanceDumpOracle(t *testing.T) {
+	outPath := os.Getenv("PLAN9ASM_CONFORMANCE_ORACLE_OUT")
+	if outPath == "" {
+		return
+	}
+	lines := runConformanceOracleLines()
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(outPath, []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write conformance oracle output %s: %v", outPath, err)
 	}
 }
 

@@ -15,46 +15,46 @@ type ABI0EffectReport struct {
 	WrittenResults map[int64]bool
 }
 
-const (
-	abi0FlagCF  uint8 = 1 << 0
-	abi0FlagOF  uint8 = 1 << 1
-	abi0FlagZF  uint8 = 1 << 2
-	abi0FlagSF  uint8 = 1 << 3
-	abi0FlagPF  uint8 = 1 << 4
-	abi0FlagAll uint8 = abi0FlagCF | abi0FlagOF | abi0FlagZF | abi0FlagSF | abi0FlagPF
-)
-
 type abi0State struct {
 	// gpBytesInit records initialized bytes per canonical GP register:
 	// bit i (0..7) corresponds to byte i (AL/R8B = bit 0, AH = bit 1,
 	// 16-bit = bits 0..1, 32-bit = bits 0..3, 64-bit = bits 0..7).
 	gpBytesInit map[asm.Reg]uint8
-	gpTaintedSP map[asm.Reg]bool
-	// gpFlagTags tracks the exact architectural status-flag definedness mask
-	// carried by a GP register holding a saved FLAGS/RFLAGS/LAHF snapshot.
-	gpFlagTags map[asm.Reg]uint8
+	// gpBitDef records exact per-bit definedness for canonical GP registers
+	// (bit k = 1 means bit k has a defined value; bit k = 0 means undefined,
+	// e.g. uninitialized bytes or entry-undefined CF/PF/ZF/SF/OF bits captured
+	// by PUSHFQ/LAHF). Every uninitialized byte has its 8 bits set to 0.
+	gpBitDef map[asm.Reg]uint64
+	// gpBytesTaintedSP records per-byte private stack-pointer provenance:
+	// bit i (0..7) = 1 means byte i of the GP register may contain bytes of
+	// the function's private SP frame address.
+	gpBytesTaintedSP map[asm.Reg]uint8
 	// vecBytesInit records initialized bytes per XMM/YMM/ZMM register:
 	// bits 0..15 = XMM, bits 0..31 = YMM, bits 0..63 = ZMM.
 	vecBytesInit map[int]uint64
+	// vecLowBitDef tracks exact per-bit definedness for the low 8 bytes of each
+	// vector register so moving a partial-flag RFLAGS word through XMM cannot
+	// forge defined flag bits.
+	vecLowBitDef map[int]uint64
+	vecTaintedSP map[int]bool
 	vecFromRaw   map[int]bool
 	// fpBytesInit records initialized byte offsets in the FP frame
 	// (pre-populated with declared parameter slot bytes plus written result bytes).
-	fpBytesInit map[int64]bool
+	fpBytesInit      map[int64]bool
+	fpByteBitDef     map[int64]uint8
+	fpBytesTaintedSP map[int64]bool
 	// spBytesInit records initialized byte offsets in the private SP stack frame
 	// (relative to initial SP at function entry; indexed by spOffset + mem.Off).
 	spBytesInit      map[int64]bool
+	spByteBitDef     map[int64]uint8
 	spBytesTaintedSP map[int64]bool
-	// spFlagSlots records the exact architectural status-flag definedness mask
-	// pushed by PUSHFQ/PUSHFL/PUSHFW (or propagated via PUSHQ/PUSHL/PUSHW of a
-	// tagged GP register) at a stack slot offset.
-	spFlagSlots map[int64]uint8
-	spOffset    int64
+	spOffset         int64
 	// Architectural status flag definedness tracked independently:
-	//   - cfInit: Carry Flag (CF)
-	//   - ofInit: Overflow Flag (OF)
-	//   - zfInit: Zero Flag (ZF) — preserved by BT/BTS/BTR/BTC
-	//   - sfInit: Sign Flag (SF)
-	//   - pfInit: Parity Flag (PF)
+	//   - cfInit: Carry Flag (CF, RFLAGS bit 0)
+	//   - ofInit: Overflow Flag (OF, RFLAGS bit 11)
+	//   - zfInit: Zero Flag (ZF, RFLAGS bit 6) — preserved by BT/BTS/BTR/BTC
+	//   - sfInit: Sign Flag (SF, RFLAGS bit 7)
+	//   - pfInit: Parity Flag (PF, RFLAGS bit 2)
 	cfInit bool
 	ofInit bool
 	zfInit bool
@@ -62,82 +62,64 @@ type abi0State struct {
 	pfInit bool
 }
 
-func (s *abi0State) flagsMask() uint8 {
-	var m uint8
+// flagsLowByteBitMask returns the exact per-bit definedness of RFLAGS byte 0
+// (bits 0..7, also copied into AH by LAHF):
+//   - bit 0 (0x01): CF
+//   - bit 2 (0x04): PF
+//   - bit 6 (0x40): ZF
+//   - bit 7 (0x80): SF
+//   - bits 1,3,4,5 (0x3a): reserved bits 1/3/5 and non-conditional AF slot
+func (s *abi0State) flagsLowByteBitMask() uint8 {
+	m := uint8(0x3a)
 	if s.cfInit {
-		m |= abi0FlagCF
-	}
-	if s.ofInit {
-		m |= abi0FlagOF
-	}
-	if s.zfInit {
-		m |= abi0FlagZF
-	}
-	if s.sfInit {
-		m |= abi0FlagSF
+		m |= 0x01
 	}
 	if s.pfInit {
-		m |= abi0FlagPF
+		m |= 0x04
+	}
+	if s.zfInit {
+		m |= 0x40
+	}
+	if s.sfInit {
+		m |= 0x80
 	}
 	return m
 }
 
-func (s *abi0State) setFlagsFromMask(m uint8) {
-	s.cfInit = (m & abi0FlagCF) != 0
-	s.ofInit = (m & abi0FlagOF) != 0
-	s.zfInit = (m & abi0FlagZF) != 0
-	s.sfInit = (m & abi0FlagSF) != 0
-	s.pfInit = (m & abi0FlagPF) != 0
-}
-
-func (s *abi0State) effectiveStackFlagMask(off int64) uint8 {
-	if m, ok := s.spFlagSlots[off]; ok {
-		return m
-	}
-	var m uint8
-	if s.spBytesInit[off] {
-		m |= abi0FlagCF | abi0FlagPF | abi0FlagZF | abi0FlagSF
-	}
-	if s.spBytesInit[off+1] {
-		m |= abi0FlagOF
+// flagsHighByteBitMask returns the exact per-bit definedness of RFLAGS byte 1
+// (bits 8..15): bit 11 (byte-1 bit 3 = 0x08) is OF; all other user-mode bits
+// (including IF bit 9 = 0x02 and DF bit 10 = 0x04) are architecturally defined.
+func (s *abi0State) flagsHighByteBitMask() uint8 {
+	m := uint8(0xf7)
+	if s.ofInit {
+		m |= 0x08
 	}
 	return m
 }
 
-func (s *abi0State) effectiveGPFlagMask(r asm.Reg) uint8 {
-	if m, ok := s.gpFlagTags[r]; ok {
-		return m
-	}
-	var m uint8
-	b := s.gpBytesInit[r]
-	if (b & 0x01) != 0 {
-		m |= abi0FlagCF | abi0FlagPF | abi0FlagZF | abi0FlagSF
-	}
-	if (b & 0x02) != 0 {
-		m |= abi0FlagOF
-	}
-	return m
-}
-
-func (s *abi0State) invalidateStackFlagSlotsRange(start, end int64) {
-	for slot := range s.spFlagSlots {
-		if slot < end && start < slot+8 {
-			delete(s.spFlagSlots, slot)
-		}
-	}
+func (s *abi0State) setFlagsFromBytes(b0, b1 uint8) {
+	s.cfInit = (b0 & 0x01) != 0
+	s.pfInit = (b0 & 0x04) != 0
+	s.zfInit = (b0 & 0x40) != 0
+	s.sfInit = (b0 & 0x80) != 0
+	s.ofInit = (b1 & 0x08) != 0
 }
 
 func (s *abi0State) clone() *abi0State {
 	out := &abi0State{
 		gpBytesInit:      make(map[asm.Reg]uint8, len(s.gpBytesInit)),
-		gpTaintedSP:      make(map[asm.Reg]bool, len(s.gpTaintedSP)),
-		gpFlagTags:       make(map[asm.Reg]uint8, len(s.gpFlagTags)),
+		gpBitDef:         make(map[asm.Reg]uint64, len(s.gpBitDef)),
+		gpBytesTaintedSP: make(map[asm.Reg]uint8, len(s.gpBytesTaintedSP)),
 		vecBytesInit:     make(map[int]uint64, len(s.vecBytesInit)),
+		vecLowBitDef:     make(map[int]uint64, len(s.vecLowBitDef)),
+		vecTaintedSP:     make(map[int]bool, len(s.vecTaintedSP)),
 		vecFromRaw:       make(map[int]bool, len(s.vecFromRaw)),
 		fpBytesInit:      make(map[int64]bool, len(s.fpBytesInit)),
+		fpByteBitDef:     make(map[int64]uint8, len(s.fpByteBitDef)),
+		fpBytesTaintedSP: make(map[int64]bool, len(s.fpBytesTaintedSP)),
 		spBytesInit:      make(map[int64]bool, len(s.spBytesInit)),
+		spByteBitDef:     make(map[int64]uint8, len(s.spByteBitDef)),
 		spBytesTaintedSP: make(map[int64]bool, len(s.spBytesTaintedSP)),
-		spFlagSlots:      make(map[int64]uint8, len(s.spFlagSlots)),
 		spOffset:         s.spOffset,
 		cfInit:           s.cfInit,
 		ofInit:           s.ofInit,
@@ -148,14 +130,20 @@ func (s *abi0State) clone() *abi0State {
 	for k, v := range s.gpBytesInit {
 		out.gpBytesInit[k] = v
 	}
-	for k, v := range s.gpTaintedSP {
-		out.gpTaintedSP[k] = v
+	for k, v := range s.gpBitDef {
+		out.gpBitDef[k] = v
 	}
-	for k, v := range s.gpFlagTags {
-		out.gpFlagTags[k] = v
+	for k, v := range s.gpBytesTaintedSP {
+		out.gpBytesTaintedSP[k] = v
 	}
 	for k, v := range s.vecBytesInit {
 		out.vecBytesInit[k] = v
+	}
+	for k, v := range s.vecLowBitDef {
+		out.vecLowBitDef[k] = v
+	}
+	for k, v := range s.vecTaintedSP {
+		out.vecTaintedSP[k] = v
 	}
 	for k, v := range s.vecFromRaw {
 		out.vecFromRaw[k] = v
@@ -163,44 +151,33 @@ func (s *abi0State) clone() *abi0State {
 	for k, v := range s.fpBytesInit {
 		out.fpBytesInit[k] = v
 	}
+	for k, v := range s.fpByteBitDef {
+		out.fpByteBitDef[k] = v
+	}
+	for k, v := range s.fpBytesTaintedSP {
+		out.fpBytesTaintedSP[k] = v
+	}
 	for k, v := range s.spBytesInit {
 		out.spBytesInit[k] = v
 	}
+	for k, v := range s.spByteBitDef {
+		out.spByteBitDef[k] = v
+	}
 	for k, v := range s.spBytesTaintedSP {
 		out.spBytesTaintedSP[k] = v
-	}
-	for k, v := range s.spFlagSlots {
-		out.spFlagSlots[k] = v
 	}
 	return out
 }
 
 // merge combines incoming state `other` into `s` at a CFG join point:
-//   - must-initialized byte masks/sets and saved-flag masks intersect
-//   - may-tainted sets (gpTaintedSP, spBytesTaintedSP, vecFromRaw) union
+//   - must-initialized byte masks and per-bit definedness masks intersect (&)
+//   - may-tainted sets (gpBytesTaintedSP, spBytesTaintedSP, fpBytesTaintedSP,
+//     vecTaintedSP, vecFromRaw) union (| / ||)
 //
+// Registers, stack slots, and FP slots all follow the same per-bit intersection rule.
 // Returns true if `s` changed.
 func (s *abi0State) merge(other *abi0State) bool {
 	changed := false
-	// Compute joined GP flag tags before intersecting gpBytesInit so untagged
-	// paths contribute their byte-derived flag mask accurately.
-	if len(s.gpFlagTags) > 0 || len(other.gpFlagTags) > 0 {
-		keys := make(map[asm.Reg]struct{}, len(s.gpFlagTags)+len(other.gpFlagTags))
-		for k := range s.gpFlagTags {
-			keys[k] = struct{}{}
-		}
-		for k := range other.gpFlagTags {
-			keys[k] = struct{}{}
-		}
-		for k := range keys {
-			inter := s.effectiveGPFlagMask(k) & other.effectiveGPFlagMask(k)
-			cur, had := s.gpFlagTags[k]
-			if !had || cur != inter {
-				s.gpFlagTags[k] = inter
-				changed = true
-			}
-		}
-	}
 	for k, cur := range s.gpBytesInit {
 		inter := cur & other.gpBytesInit[k]
 		if inter != cur {
@@ -208,6 +185,17 @@ func (s *abi0State) merge(other *abi0State) bool {
 				delete(s.gpBytesInit, k)
 			} else {
 				s.gpBytesInit[k] = inter
+			}
+			changed = true
+		}
+	}
+	for k, cur := range s.gpBitDef {
+		inter := cur & other.gpBitDef[k]
+		if inter != cur {
+			if inter == 0 {
+				delete(s.gpBitDef, k)
+			} else {
+				s.gpBitDef[k] = inter
 			}
 			changed = true
 		}
@@ -223,9 +211,31 @@ func (s *abi0State) merge(other *abi0State) bool {
 			changed = true
 		}
 	}
+	for k, cur := range s.vecLowBitDef {
+		inter := cur & other.vecLowBitDef[k]
+		if inter != cur {
+			if inter == 0 {
+				delete(s.vecLowBitDef, k)
+			} else {
+				s.vecLowBitDef[k] = inter
+			}
+			changed = true
+		}
+	}
 	for k := range s.fpBytesInit {
 		if !other.fpBytesInit[k] {
 			delete(s.fpBytesInit, k)
+			changed = true
+		}
+	}
+	for k, cur := range s.fpByteBitDef {
+		inter := cur & other.fpByteBitDef[k]
+		if inter != cur {
+			if inter == 0 {
+				delete(s.fpByteBitDef, k)
+			} else {
+				s.fpByteBitDef[k] = inter
+			}
 			changed = true
 		}
 	}
@@ -234,31 +244,25 @@ func (s *abi0State) merge(other *abi0State) bool {
 			s.spBytesInit = make(map[int64]bool)
 			changed = true
 		}
-		if len(s.spFlagSlots) > 0 {
-			s.spFlagSlots = make(map[int64]uint8)
+		if len(s.spByteBitDef) > 0 {
+			s.spByteBitDef = make(map[int64]uint8)
 			changed = true
 		}
 	} else {
-		if len(s.spFlagSlots) > 0 || len(other.spFlagSlots) > 0 {
-			keys := make(map[int64]struct{}, len(s.spFlagSlots)+len(other.spFlagSlots))
-			for k := range s.spFlagSlots {
-				keys[k] = struct{}{}
-			}
-			for k := range other.spFlagSlots {
-				keys[k] = struct{}{}
-			}
-			for k := range keys {
-				inter := s.effectiveStackFlagMask(k) & other.effectiveStackFlagMask(k)
-				cur, had := s.spFlagSlots[k]
-				if !had || cur != inter {
-					s.spFlagSlots[k] = inter
-					changed = true
-				}
-			}
-		}
 		for k := range s.spBytesInit {
 			if !other.spBytesInit[k] {
 				delete(s.spBytesInit, k)
+				changed = true
+			}
+		}
+		for k, cur := range s.spByteBitDef {
+			inter := cur & other.spByteBitDef[k]
+			if inter != cur {
+				if inter == 0 {
+					delete(s.spByteBitDef, k)
+				} else {
+					s.spByteBitDef[k] = inter
+				}
 				changed = true
 			}
 		}
@@ -283,9 +287,22 @@ func (s *abi0State) merge(other *abi0State) bool {
 		s.pfInit = false
 		changed = true
 	}
-	for k, v := range other.gpTaintedSP {
-		if v && !s.gpTaintedSP[k] {
-			s.gpTaintedSP[k] = true
+	for k, v := range other.gpBytesTaintedSP {
+		merged := s.gpBytesTaintedSP[k] | v
+		if merged != s.gpBytesTaintedSP[k] {
+			s.gpBytesTaintedSP[k] = merged
+			changed = true
+		}
+	}
+	for k, v := range other.vecTaintedSP {
+		if v && !s.vecTaintedSP[k] {
+			s.vecTaintedSP[k] = true
+			changed = true
+		}
+	}
+	for k, v := range other.fpBytesTaintedSP {
+		if v && !s.fpBytesTaintedSP[k] {
+			s.fpBytesTaintedSP[k] = true
 			changed = true
 		}
 	}
@@ -325,9 +342,11 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 	}
 
 	wordMask := uint8(0xff)
+	wordBitMask := ^uint64(0)
 	ptrBytes := int64(8)
 	if goarch == "386" {
 		wordMask = 0x0f
+		wordBitMask = 0xffffffff
 		ptrBytes = 4
 	}
 
@@ -391,23 +410,30 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 	// Entry state at pc = 0: pre-populate declared parameter FP bytes and ArgRegs.
 	entry := &abi0State{
 		gpBytesInit:      map[asm.Reg]uint8{},
-		gpTaintedSP:      map[asm.Reg]bool{},
-		gpFlagTags:       map[asm.Reg]uint8{},
+		gpBitDef:         map[asm.Reg]uint64{},
+		gpBytesTaintedSP: map[asm.Reg]uint8{},
 		vecBytesInit:     map[int]uint64{},
+		vecLowBitDef:     map[int]uint64{},
+		vecTaintedSP:     map[int]bool{},
 		vecFromRaw:       map[int]bool{},
 		fpBytesInit:      map[int64]bool{},
+		fpByteBitDef:     map[int64]uint8{},
+		fpBytesTaintedSP: map[int64]bool{},
 		spBytesInit:      map[int64]bool{},
+		spByteBitDef:     map[int64]uint8{},
 		spBytesTaintedSP: map[int64]bool{},
-		spFlagSlots:      map[int64]uint8{},
 	}
 	for _, s := range sig.Frame.Params {
 		sz := x86ABI0SlotBytes(s.Type, goarch)
 		for off := s.Offset; off < s.Offset+sz; off++ {
 			entry.fpBytesInit[off] = true
+			entry.fpByteBitDef[off] = 0xff
 		}
 	}
 	for _, r := range sig.ArgRegs {
-		entry.gpBytesInit[canonicalGP(r)] = wordMask
+		cr := canonicalGP(r)
+		entry.gpBytesInit[cr] = wordMask
+		entry.gpBitDef[cr] = wordBitMask
 	}
 
 	if len(instrs) == 0 {
@@ -460,51 +486,68 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		return nil
 	}
 
-	// evalOperand evaluates the exact byte-level definedness bitmask of an input
-	// operand while enforcing hard safety checks on memory dereferences, FP slot
-	// reads, and private SP stack reads. Pure GP/vector register reads propagate
-	// exact byte-level definedness rather than rejecting dead scratch arithmetic
-	// (e.g., Go stdlib hash/crc32's dead ADDQ $0x40, DI or math/big's TESTQ AX, AX).
-	evalOperand := func(st *abi0State, op asm.Operand, readBytes int64, isLEA bool, opName asm.Op, raw string) (mask uint64, allInit bool, err error) {
+	// evalOperand evaluates both the exact byte-level initialization bitmask and
+	// exact per-bit definedness bitmask of an input operand while enforcing hard
+	// safety checks on memory dereferences, FP slot reads, and private SP stack
+	// reads. Pure GP/vector register reads propagate exact byte/bit definedness
+	// rather than rejecting dead scratch arithmetic (e.g., Go stdlib hash/crc32's
+	// dead ADDQ $0x40, DI or math/big's TESTQ AX, AX).
+	evalOperand := func(st *abi0State, op asm.Operand, readBytes int64, isLEA bool, opName asm.Op, raw string) (byteMask uint64, bitDef uint64, allBytesInit bool, allBitsDef bool, err error) {
 		switch op.Kind {
 		case asm.OpImm, asm.OpSym:
-			full := abi0ByteMaskN(readBytes)
-			return full, true, nil
+			return abi0ByteMaskN(readBytes), abi0BitMaskN(readBytes), true, true, nil
 
 		case asm.OpReg:
 			if op.Reg == asm.SP || isAMD64KReg(op.Reg) || isAMD64MReg(op.Reg) {
-				full := abi0ByteMaskN(readBytes)
-				return full, true, nil
+				return abi0ByteMaskN(readBytes), abi0BitMaskN(readBytes), true, true, nil
 			}
 			if idx, ok := anyVecRegIndex(op.Reg); ok {
 				req := vecRegReadByteMask(op.Reg, opName, readBytes)
 				have := st.vecBytesInit[idx] & req
-				return have, have == req, nil
+				allInit := have == req
+				reqLowBytes := uint8(req & 0xff)
+				reqLowBits := abi0ByteMaskToBitMask(reqLowBytes)
+				haveLowBits := st.vecLowBitDef[idx] & reqLowBits
+				return have, haveLowBits, allInit, allInit && haveLowBits == reqLowBits, nil
 			}
 			req := gpRegReadByteMask(op.Reg, readBytes, wordMask)
-			have := st.gpBytesInit[canonicalGP(op.Reg)] & req
-			aligned := uint64(have)
+			r := canonicalGP(op.Reg)
+			have := st.gpBytesInit[r] & req
+			reqBits := abi0ByteMaskToBitMask(req)
+			haveBits := st.gpBitDef[r] & reqBits
+			alignedBytes := uint64(have)
+			alignedBits := haveBits
 			if req == 0x02 {
-				aligned = uint64((have >> 1) & 0x01)
+				alignedBytes = uint64((have >> 1) & 0x01)
+				alignedBits = (haveBits >> 8) & 0xff
 			}
-			return aligned, have == req, nil
+			return alignedBytes, alignedBits, have == req, haveBits == reqBits, nil
 
 		case asm.OpFP:
 			if isLEA {
-				full := abi0ByteMaskN(ptrBytes)
-				return full, true, nil
+				return abi0ByteMaskN(ptrBytes), abi0BitMaskN(ptrBytes), true, true, nil
 			}
 			nBytes := readBytes
 			if nBytes <= 0 {
 				nBytes = ptrBytes
 			}
-			for off := op.FPOffset; off < op.FPOffset+nBytes; off++ {
+			var bits uint64
+			bitsOK := true
+			for b := int64(0); b < nBytes; b++ {
+				off := op.FPOffset + b
 				if !st.fpBytesInit[off] {
-					return 0, false, fmt.Errorf("%w: %s reads uninitialized FP byte +%d(FP) (read +%d(FP) width %d)",
+					return 0, 0, false, false, fmt.Errorf("%w: %s reads uninitialized FP byte +%d(FP) (read +%d(FP) width %d)",
 						asm.ErrProbeNeedsContext, raw, off, op.FPOffset, nBytes)
 				}
+				bd := st.fpByteBitDef[off]
+				if b < 8 {
+					bits |= uint64(bd) << uint(b*8)
+				}
+				if bd != 0xff {
+					bitsOK = false
+				}
 			}
-			return abi0ByteMaskN(nBytes), true, nil
+			return abi0ByteMaskN(nBytes), bits, true, bitsOK, nil
 
 		case asm.OpMem:
 			if op.Mem.Base == asm.SP {
@@ -512,10 +555,13 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					if op.Mem.Index != "" {
 						r := canonicalGP(op.Mem.Index)
 						if (st.gpBytesInit[r] & wordMask) != wordMask {
-							return 0, false, nil
+							return 0, 0, false, false, nil
+						}
+						if (st.gpBitDef[r] & wordBitMask) != wordBitMask {
+							return abi0ByteMaskN(ptrBytes), 0, true, false, nil
 						}
 					}
-					return abi0ByteMaskN(ptrBytes), true, nil
+					return abi0ByteMaskN(ptrBytes), abi0BitMaskN(ptrBytes), true, true, nil
 				}
 				if op.Mem.Index != "" {
 					// Indexed stack read (e.g. sha256block_amd64.s (SP)(SI*1)):
@@ -523,57 +569,166 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					// conservatively treated as uninitialized so they cannot satisfy
 					// an ABI0 result slot or be dereferenced as a pointer.
 					if err := checkGPRead(st, op.Mem.Index, wordMask, raw); err != nil {
-						return 0, false, err
+						return 0, 0, false, false, err
 					}
-					return 0, false, nil
+					return 0, 0, false, false, nil
 				}
 				nBytes := readBytes
 				if nBytes <= 0 {
 					nBytes = ptrBytes
 				}
-				for off := op.Mem.Off; off < op.Mem.Off+nBytes; off++ {
-					if !st.spBytesInit[st.spOffset+off] {
-						return 0, false, fmt.Errorf("%w: %s reads uninitialized stack byte %d(SP) (read %d(SP) width %d)",
+				var bits uint64
+				bitsOK := true
+				for b := int64(0); b < nBytes; b++ {
+					off := op.Mem.Off + b
+					slot := st.spOffset + off
+					if !st.spBytesInit[slot] {
+						return 0, 0, false, false, fmt.Errorf("%w: %s reads uninitialized stack byte %d(SP) (read %d(SP) width %d)",
 							asm.ErrProbeNeedsContext, raw, off, op.Mem.Off, nBytes)
 					}
+					bd := st.spByteBitDef[slot]
+					if b < 8 {
+						bits |= uint64(bd) << uint(b*8)
+					}
+					if bd != 0xff {
+						bitsOK = false
+					}
 				}
-				return abi0ByteMaskN(nBytes), true, nil
+				return abi0ByteMaskN(nBytes), bits, true, bitsOK, nil
 			}
 			if isLEA {
-				ok := true
+				okBytes := true
+				okBits := true
 				if op.Mem.Base != "" && op.Mem.Base != asm.PC {
 					r := canonicalGP(op.Mem.Base)
 					if (st.gpBytesInit[r] & wordMask) != wordMask {
-						ok = false
+						okBytes = false
+					}
+					if (st.gpBitDef[r] & wordBitMask) != wordBitMask {
+						okBits = false
 					}
 				}
 				if op.Mem.Index != "" {
 					r := canonicalGP(op.Mem.Index)
 					if (st.gpBytesInit[r] & wordMask) != wordMask {
-						ok = false
+						okBytes = false
+					}
+					if (st.gpBitDef[r] & wordBitMask) != wordBitMask {
+						okBits = false
 					}
 				}
-				if !ok {
-					return 0, false, nil
+				if !okBytes {
+					return 0, 0, false, false, nil
 				}
-				return abi0ByteMaskN(ptrBytes), true, nil
+				if !okBits {
+					return abi0ByteMaskN(ptrBytes), 0, true, false, nil
+				}
+				return abi0ByteMaskN(ptrBytes), abi0BitMaskN(ptrBytes), true, true, nil
 			}
 			if op.Mem.Base != "" && op.Mem.Base != asm.SP && op.Mem.Base != asm.PC {
 				if err := checkGPRead(st, op.Mem.Base, wordMask, raw); err != nil {
-					return 0, false, err
+					return 0, 0, false, false, err
 				}
 			}
 			if op.Mem.Index != "" {
 				if err := checkGPRead(st, op.Mem.Index, wordMask, raw); err != nil {
-					return 0, false, err
+					return 0, 0, false, false, err
 				}
 			}
-			return abi0ByteMaskN(readBytes), true, nil
+			return abi0ByteMaskN(readBytes), abi0BitMaskN(readBytes), true, true, nil
 		}
-		return abi0ByteMaskN(readBytes), true, nil
+		return abi0ByteMaskN(readBytes), abi0BitMaskN(readBytes), true, true, nil
 	}
 
-	writeDstMask := func(st *abi0State, op asm.Operand, writeBytes int64, valMask uint64, opName asm.Op, spec asm.OpSpec, pureCopy bool, fromRaw bool, taintSP bool, srcIsReg bool) error {
+	// evalOperandTaintSP returns per-byte private SP-frame address taint for op
+	// (bit b of mask corresponds to byte b aligned to bit 0, plus anyTaint).
+	evalOperandTaintSP := func(st *abi0State, op asm.Operand, readBytes int64, isLEA bool) (mask uint8, anyTaint bool) {
+		switch op.Kind {
+		case asm.OpReg:
+			if op.Reg == asm.SP {
+				return wordMask, true
+			}
+			if isAMD64KReg(op.Reg) || isAMD64MReg(op.Reg) {
+				return 0, false
+			}
+			if idx, ok := anyVecRegIndex(op.Reg); ok {
+				if st.vecTaintedSP[idx] {
+					n := readBytes
+					if n <= 0 || n > 8 {
+						n = 8
+					}
+					return uint8(abi0ByteMaskN(n)), true
+				}
+				return 0, false
+			}
+			req := gpRegReadByteMask(op.Reg, readBytes, wordMask)
+			raw := st.gpBytesTaintedSP[canonicalGP(op.Reg)] & req
+			if req == 0x02 {
+				raw = (raw >> 1) & 0x01
+			}
+			return raw, raw != 0
+
+		case asm.OpMem:
+			if op.Mem.Base == asm.SP {
+				if isLEA {
+					return wordMask, true
+				}
+				nBytes := readBytes
+				if nBytes <= 0 {
+					nBytes = ptrBytes
+				}
+				if op.Mem.Index != "" {
+					if len(st.spBytesTaintedSP) > 0 {
+						n := nBytes
+						if n > 8 {
+							n = 8
+						}
+						return uint8(abi0ByteMaskN(n)), true
+					}
+					return 0, false
+				}
+				for b := int64(0); b < nBytes; b++ {
+					if st.spBytesTaintedSP[st.spOffset+op.Mem.Off+b] {
+						anyTaint = true
+						if b < 8 {
+							mask |= 1 << uint(b)
+						}
+					}
+				}
+				return mask, anyTaint
+			}
+			if isLEA {
+				if op.Mem.Base != "" && op.Mem.Base != asm.PC && st.gpBytesTaintedSP[canonicalGP(op.Mem.Base)] != 0 {
+					return wordMask, true
+				}
+				if op.Mem.Index != "" && st.gpBytesTaintedSP[canonicalGP(op.Mem.Index)] != 0 {
+					return wordMask, true
+				}
+			}
+			return 0, false
+
+		case asm.OpFP:
+			if isLEA {
+				return 0, false
+			}
+			nBytes := readBytes
+			if nBytes <= 0 {
+				nBytes = ptrBytes
+			}
+			for b := int64(0); b < nBytes; b++ {
+				if st.fpBytesTaintedSP[op.FPOffset+b] {
+					anyTaint = true
+					if b < 8 {
+						mask |= 1 << uint(b)
+					}
+				}
+			}
+			return mask, anyTaint
+		}
+		return 0, false
+	}
+
+	writeDstMask := func(st *abi0State, op asm.Operand, writeBytes int64, valMask uint64, valBitDef uint64, opName asm.Op, spec asm.OpSpec, pureCopy bool, fromRaw bool, taintMask uint8, anyTaint bool, srcIsReg bool) error {
 		switch op.Kind {
 		case asm.OpReg:
 			if op.Reg == asm.SP || isAMD64KReg(op.Reg) || isAMD64MReg(op.Reg) {
@@ -589,13 +744,22 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					lowWidth := vecCopyWidth(op.Reg, name, writeBytes)
 					lowMask := abi0ByteMaskN(lowWidth)
 					lowBits := valMask & lowMask
+					low8 := lowWidth
+					if low8 > 8 {
+						low8 = 8
+					}
+					low8BitMask := abi0BitMaskN(low8)
+					placedLowBitDef := valBitDef & low8BitMask
 					if zeroUpper {
 						st.vecBytesInit[idx] = lowBits | ^lowMask
+						st.vecLowBitDef[idx] = placedLowBitDef | ^low8BitMask
 					} else if (name == "MOVSS" || name == "MOVSD") && srcIsReg {
 						st.vecBytesInit[idx] = (st.vecBytesInit[idx] &^ lowMask) | lowBits
+						st.vecLowBitDef[idx] = (st.vecLowBitDef[idx] &^ low8BitMask) | placedLowBitDef
 					} else {
 						// Legacy SSE write into XMM zeroes bytes [lowWidth..15] and preserves [16..63].
 						st.vecBytesInit[idx] = (st.vecBytesInit[idx] &^ uint64(0xffff)) | lowBits | (uint64(0xffff) &^ lowMask)
+						st.vecLowBitDef[idx] = placedLowBitDef | ^low8BitMask
 					}
 				} else if spec.Effect == asm.EffectPreserveUpper {
 					lowWidth := int64(8)
@@ -603,51 +767,98 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						lowWidth = 4
 					}
 					lowMask := abi0ByteMaskN(lowWidth)
+					lowBitMask := abi0BitMaskN(lowWidth)
 					if (valMask & lowMask) == lowMask {
 						st.vecBytesInit[idx] |= lowMask
+						if (valBitDef & lowBitMask) == lowBitMask {
+							st.vecLowBitDef[idx] |= lowBitMask
+						} else {
+							st.vecLowBitDef[idx] &^= lowBitMask
+						}
 					} else {
 						st.vecBytesInit[idx] &^= lowMask
+						st.vecLowBitDef[idx] &^= lowBitMask
 					}
 				} else {
 					allInit := writeBytes <= 0 || (valMask&abi0ByteMaskN(writeBytes)) == abi0ByteMaskN(writeBytes)
+					lowCheck := writeBytes
+					if lowCheck > 8 {
+						lowCheck = 8
+					}
+					lowBitCheck := abi0BitMaskN(lowCheck)
+					allLowBits := writeBytes <= 0 || (valBitDef&lowBitCheck) == lowBitCheck
 					if zeroUpper {
 						regMask := vecRegFullByteMask(op.Reg)
 						if allInit {
 							st.vecBytesInit[idx] = ^uint64(0)
+							if allLowBits {
+								st.vecLowBitDef[idx] = ^uint64(0)
+							} else {
+								st.vecLowBitDef[idx] = 0
+							}
 						} else {
 							st.vecBytesInit[idx] = ^regMask
+							st.vecLowBitDef[idx] = 0
 						}
 					} else {
 						if allInit {
 							st.vecBytesInit[idx] |= wMask
+							if allLowBits {
+								st.vecLowBitDef[idx] |= abi0ByteMaskToBitMask(uint8(wMask & 0xff))
+							} else {
+								st.vecLowBitDef[idx] &^= abi0ByteMaskToBitMask(uint8(wMask & 0xff))
+							}
 						} else {
 							st.vecBytesInit[idx] &^= wMask
+							st.vecLowBitDef[idx] &^= abi0ByteMaskToBitMask(uint8(wMask & 0xff))
 						}
 					}
+				}
+				if anyTaint {
+					st.vecTaintedSP[idx] = true
+				} else if zeroUpper || wMask == vecRegFullByteMask(op.Reg) {
+					delete(st.vecTaintedSP, idx)
 				}
 				st.vecFromRaw[idx] = fromRaw
 				return nil
 			}
 			r := canonicalGP(op.Reg)
-			delete(st.gpFlagTags, r)
 			wMask, clearsUpper := gpRegWriteByteMask(op.Reg, writeBytes, goarch)
+			wBitMask := abi0ByteMaskToBitMask(wMask)
 			var placed uint8
+			var placedBits uint64
+			var placedTaint uint8
 			if wMask == 0x02 {
 				placed = uint8((valMask & 0x01) << 1)
+				placedBits = (valBitDef & 0xff) << 8
+				placedTaint = (taintMask & 0x01) << 1
 			} else {
 				placed = uint8(valMask) & wMask
+				placedBits = valBitDef & wBitMask
+				placedTaint = taintMask & wMask
 			}
+			// Keep invariant: uninitialized bytes have bit-definedness 0.
+			placedBits &= abi0ByteMaskToBitMask(placed)
 			if clearsUpper {
-				// 32-bit GP writes on amd64 zero-extend upper 4 bytes (known zero = initialized).
+				// 32-bit GP writes on amd64 zero-extend upper 4 bytes (known zero = initialized & bit-defined).
 				upperZero := wordMask &^ wMask
+				upperZeroBits := wordBitMask &^ wBitMask
 				st.gpBytesInit[r] = placed | upperZero
+				st.gpBitDef[r] = placedBits | upperZeroBits
+				if placedTaint != 0 {
+					st.gpBytesTaintedSP[r] = placedTaint
+				} else {
+					delete(st.gpBytesTaintedSP, r)
+				}
 			} else {
 				st.gpBytesInit[r] = (st.gpBytesInit[r] &^ wMask) | placed
-			}
-			if taintSP {
-				st.gpTaintedSP[r] = true
-			} else if clearsUpper || wMask == wordMask {
-				st.gpTaintedSP[r] = false
+				st.gpBitDef[r] = (st.gpBitDef[r] &^ wBitMask) | placedBits
+				newTaint := (st.gpBytesTaintedSP[r] &^ wMask) | placedTaint
+				if newTaint != 0 {
+					st.gpBytesTaintedSP[r] = newTaint
+				} else {
+					delete(st.gpBytesTaintedSP, r)
+				}
 			}
 
 		case asm.OpFP:
@@ -662,7 +873,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				}
 			}
 			if touchesResult {
-				if taintSP {
+				if anyTaint {
 					return fmt.Errorf("%w: private frame address escapes to result slot +%d(FP)", asm.ErrProbeNeedsContext, op.FPOffset)
 				}
 				if fromRaw {
@@ -673,14 +884,31 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				off := op.FPOffset + b
 				if b < 64 && (valMask&(uint64(1)<<uint(b))) != 0 {
 					st.fpBytesInit[off] = true
+					if b < 8 {
+						st.fpByteBitDef[off] = uint8(valBitDef >> uint(b*8))
+					} else {
+						st.fpByteBitDef[off] = 0xff
+					}
 				} else {
 					delete(st.fpBytesInit, off)
+					delete(st.fpByteBitDef, off)
+				}
+				byteTainted := false
+				if pureCopy && b < 8 {
+					byteTainted = (taintMask & (1 << uint(b))) != 0
+				} else {
+					byteTainted = anyTaint
+				}
+				if byteTainted {
+					st.fpBytesTaintedSP[off] = true
+				} else {
+					delete(st.fpBytesTaintedSP, off)
 				}
 			}
 
 		case asm.OpMem:
 			if op.Mem.Base == asm.SP && op.Mem.Index == "" {
-				if taintSP {
+				if anyTaint {
 					return fmt.Errorf("%w: private frame address escapes to stack slot %d(SP)", asm.ErrProbeNeedsContext, op.Mem.Off)
 				}
 				nBytes := writeBytes
@@ -688,14 +916,19 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					return nil
 				}
 				start := st.spOffset + op.Mem.Off
-				st.invalidateStackFlagSlotsRange(start, start+nBytes)
 				for b := int64(0); b < nBytes; b++ {
 					off := start + b
 					delete(st.spBytesTaintedSP, off)
 					if b < 64 && (valMask&(uint64(1)<<uint(b))) != 0 {
 						st.spBytesInit[off] = true
+						if b < 8 {
+							st.spByteBitDef[off] = uint8(valBitDef >> uint(b*8))
+						} else {
+							st.spByteBitDef[off] = 0xff
+						}
 					} else {
 						delete(st.spBytesInit, off)
+						delete(st.spByteBitDef, off)
 					}
 				}
 			}
@@ -748,8 +981,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			continue
 		}
 
-		// Model stack-pointer displacement, exact byte-level stack-slot
-		// initialization, and saved status-flag definedness for PUSH*/POP*/PUSHF*/POPF*.
+		// Model stack-pointer displacement, exact per-byte stack-slot
+		// initialization, per-bit flag definedness, and per-byte SP taint for
+		// PUSH*/POP*/PUSHF*/POPF*/XCHG*.
 		switch op {
 		case "PUSHFQ", "PUSHFL", "PUSHFW":
 			w := int64(8)
@@ -759,14 +993,21 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				w = 2
 			}
 			st.spOffset -= w
-			st.invalidateStackFlagSlotsRange(st.spOffset, st.spOffset+w)
+			b0 := st.flagsLowByteBitMask()
+			b1 := st.flagsHighByteBitMask()
 			for b := int64(0); b < w; b++ {
-				st.spBytesInit[st.spOffset+b] = true
-				delete(st.spBytesTaintedSP, st.spOffset+b)
+				slot := st.spOffset + b
+				st.spBytesInit[slot] = true
+				delete(st.spBytesTaintedSP, slot)
+				switch b {
+				case 0:
+					st.spByteBitDef[slot] = b0
+				case 1:
+					st.spByteBitDef[slot] = b1
+				default:
+					st.spByteBitDef[slot] = 0xff
+				}
 			}
-			// Preserve exact status-flag definedness so PUSHF*; POPF* cannot forge
-			// defined CF/OF/ZF/SF/PF from undefined entry flags.
-			st.spFlagSlots[st.spOffset] = st.flagsMask()
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
 			} else {
@@ -780,14 +1021,16 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			} else if op == "POPFW" {
 				w = 2
 			}
-			restored := st.effectiveStackFlagMask(st.spOffset)
-			delete(st.spFlagSlots, st.spOffset)
+			b0 := st.spByteBitDef[st.spOffset]
+			b1 := st.spByteBitDef[st.spOffset+1]
 			for b := int64(0); b < w; b++ {
-				delete(st.spBytesInit, st.spOffset+b)
-				delete(st.spBytesTaintedSP, st.spOffset+b)
+				slot := st.spOffset + b
+				delete(st.spBytesInit, slot)
+				delete(st.spByteBitDef, slot)
+				delete(st.spBytesTaintedSP, slot)
 			}
 			st.spOffset += w
-			st.setFlagsFromMask(restored)
+			st.setFlagsFromBytes(b0, b1)
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
 			} else {
@@ -801,46 +1044,33 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			} else if op == "PUSHW" {
 				w = 2
 			}
-			var pushMask uint64 = abi0ByteMaskN(w)
-			var pushTaintSP bool
-			var pushFlagTag uint8
-			var hasPushFlagTag bool
+			pushMask := abi0ByteMaskN(w)
+			pushBitDef := abi0BitMaskN(w)
+			var pushTaintMask uint8
 			if len(ins.Args) == 1 {
 				arg := ins.Args[0]
-				if arg.Kind == asm.OpReg {
-					if arg.Reg == asm.SP || st.gpTaintedSP[canonicalGP(arg.Reg)] {
-						pushTaintSP = true
-					}
-					if tag, ok := st.gpFlagTags[canonicalGP(arg.Reg)]; ok && w >= 2 {
-						pushFlagTag, hasPushFlagTag = tag, true
-					}
-				} else if arg.Kind == asm.OpMem && arg.Mem.Base == asm.SP && arg.Mem.Index == "" && w >= 2 {
-					if tag, ok := st.spFlagSlots[st.spOffset+arg.Mem.Off]; ok {
-						pushFlagTag, hasPushFlagTag = tag, true
-					}
-				}
-				m, _, err := evalOperand(st, arg, w, false, op, ins.Raw)
+				m, bd, _, _, err := evalOperand(st, arg, w, false, op, ins.Raw)
 				if err != nil {
 					return nil, err
 				}
-				pushMask = m
+				pushMask, pushBitDef = m, bd
+				pushTaintMask, _ = evalOperandTaintSP(st, arg, w, false)
 			}
 			st.spOffset -= w
-			st.invalidateStackFlagSlotsRange(st.spOffset, st.spOffset+w)
 			for b := int64(0); b < w; b++ {
+				slot := st.spOffset + b
 				if (pushMask & (uint64(1) << uint(b))) != 0 {
-					st.spBytesInit[st.spOffset+b] = true
+					st.spBytesInit[slot] = true
+					st.spByteBitDef[slot] = uint8(pushBitDef >> uint(b*8))
 				} else {
-					delete(st.spBytesInit, st.spOffset+b)
+					delete(st.spBytesInit, slot)
+					delete(st.spByteBitDef, slot)
 				}
-				if pushTaintSP {
-					st.spBytesTaintedSP[st.spOffset+b] = true
+				if (pushTaintMask & (uint8(1) << uint(b))) != 0 {
+					st.spBytesTaintedSP[slot] = true
 				} else {
-					delete(st.spBytesTaintedSP, st.spOffset+b)
+					delete(st.spBytesTaintedSP, slot)
 				}
-			}
-			if hasPushFlagTag {
-				st.spFlagSlots[st.spOffset] = pushFlagTag
 			}
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
@@ -856,20 +1086,22 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				w = 2
 			}
 			var valMask uint64
-			var popTaintSP bool
+			var valBitDef uint64
+			var popTaintMask uint8
+			var popAnyTaint bool
 			for b := int64(0); b < w; b++ {
-				if st.spBytesInit[st.spOffset+b] {
+				slot := st.spOffset + b
+				if st.spBytesInit[slot] {
 					valMask |= uint64(1) << uint(b)
+					valBitDef |= uint64(st.spByteBitDef[slot]) << uint(b*8)
 				}
-				if st.spBytesTaintedSP[st.spOffset+b] {
-					popTaintSP = true
+				if st.spBytesTaintedSP[slot] {
+					popAnyTaint = true
+					popTaintMask |= uint8(1) << uint(b)
 				}
-			}
-			popFlagTag, hasPopFlagTag := st.spFlagSlots[st.spOffset]
-			delete(st.spFlagSlots, st.spOffset)
-			for b := int64(0); b < w; b++ {
-				delete(st.spBytesInit, st.spOffset+b)
-				delete(st.spBytesTaintedSP, st.spOffset+b)
+				delete(st.spBytesInit, slot)
+				delete(st.spByteBitDef, slot)
+				delete(st.spBytesTaintedSP, slot)
 			}
 			// Intel SDM: POP increments SP before computing an SP-relative destination address.
 			st.spOffset += w
@@ -888,22 +1120,8 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					}
 				}
 				specPop := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectWriteOnly}
-				if err := writeDstMask(st, dst, w, valMask, op, specPop, true, false, popTaintSP, false); err != nil {
+				if err := writeDstMask(st, dst, w, valMask, valBitDef, op, specPop, true, false, popTaintMask, popAnyTaint, false); err != nil {
 					return nil, err
-				}
-				if hasPopFlagTag && w >= 2 {
-					switch dst.Kind {
-					case asm.OpReg:
-						if dst.Reg != asm.SP && !isAMD64KReg(dst.Reg) && !isAMD64MReg(dst.Reg) {
-							if _, isVec := anyVecRegIndex(dst.Reg); !isVec {
-								st.gpFlagTags[canonicalGP(dst.Reg)] = popFlagTag
-							}
-						}
-					case asm.OpMem:
-						if dst.Mem.Base == asm.SP && dst.Mem.Index == "" {
-							st.spFlagSlots[st.spOffset+dst.Mem.Off] = popFlagTag
-						}
-					}
 				}
 			}
 			if pc+1 < len(instrs) {
@@ -912,6 +1130,41 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				finalState = st
 			}
 			continue
+		case "XCHGB", "XCHGW", "XCHGL", "XCHGQ":
+			if len(ins.Args) == 2 {
+				w := int64(8)
+				switch op {
+				case "XCHGB":
+					w = 1
+				case "XCHGW":
+					w = 2
+				case "XCHGL":
+					w = 4
+				}
+				m0, bd0, _, _, err := evalOperand(st, ins.Args[0], w, false, op, ins.Raw)
+				if err != nil {
+					return nil, err
+				}
+				m1, bd1, _, _, err := evalOperand(st, ins.Args[1], w, false, op, ins.Raw)
+				if err != nil {
+					return nil, err
+				}
+				tm0, any0 := evalOperandTaintSP(st, ins.Args[0], w, false)
+				tm1, any1 := evalOperandTaintSP(st, ins.Args[1], w, false)
+				specXchg := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectReadWrite}
+				if err := writeDstMask(st, ins.Args[0], w, m1, bd1, op, specXchg, true, false, tm1, any1, ins.Args[1].Kind == asm.OpReg); err != nil {
+					return nil, err
+				}
+				if err := writeDstMask(st, ins.Args[1], w, m0, bd0, op, specXchg, true, false, tm0, any0, ins.Args[0].Kind == asm.OpReg); err != nil {
+					return nil, err
+				}
+				if pc+1 < len(instrs) {
+					enqueue(pc+1, st, false)
+				} else {
+					finalState = st
+				}
+				continue
+			}
 		case "ADDQ", "SUBQ":
 			if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg && ins.Args[1].Reg == asm.SP {
 				if op == "ADDQ" {
@@ -1007,9 +1260,11 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					}
 				}
 				st.gpBytesInit = map[asm.Reg]uint8{}
-				st.gpTaintedSP = map[asm.Reg]bool{}
-				st.gpFlagTags = map[asm.Reg]uint8{}
+				st.gpBitDef = map[asm.Reg]uint64{}
+				st.gpBytesTaintedSP = map[asm.Reg]uint8{}
 				st.vecBytesInit = map[int]uint64{}
+				st.vecLowBitDef = map[int]uint64{}
+				st.vecTaintedSP = map[int]bool{}
 				st.vecFromRaw = map[int]bool{}
 				st.cfInit = false
 				st.ofInit = false
@@ -1020,10 +1275,11 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					if len(csig.ArgRegs) == 0 {
 						for _, rs := range csig.Frame.Results {
 							sz := x86ABI0SlotBytes(rs.Type, goarch)
-							st.invalidateStackFlagSlotsRange(st.spOffset+rs.Offset, st.spOffset+rs.Offset+sz)
 							for off := rs.Offset; off < rs.Offset+sz; off++ {
-								st.spBytesInit[st.spOffset+off] = true
-								delete(st.spBytesTaintedSP, st.spOffset+off)
+								slot := st.spOffset + off
+								st.spBytesInit[slot] = true
+								st.spByteBitDef[slot] = 0xff
+								delete(st.spBytesTaintedSP, slot)
 							}
 						}
 					} else if csig.Ret != "" && csig.Ret != asm.Void {
@@ -1031,8 +1287,10 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						wMask, clearsUpper := gpRegWriteByteMask(asm.AX, sz, goarch)
 						if clearsUpper {
 							st.gpBytesInit[asm.AX] = wordMask
+							st.gpBitDef[asm.AX] = wordBitMask
 						} else if wMask != 0 {
 							st.gpBytesInit[asm.AX] = wMask
+							st.gpBitDef[asm.AX] = abi0ByteMaskToBitMask(wMask)
 						}
 					}
 				}
@@ -1042,9 +1300,11 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					return nil, err
 				}
 				st.gpBytesInit = map[asm.Reg]uint8{}
-				st.gpTaintedSP = map[asm.Reg]bool{}
-				st.gpFlagTags = map[asm.Reg]uint8{}
+				st.gpBitDef = map[asm.Reg]uint64{}
+				st.gpBytesTaintedSP = map[asm.Reg]uint8{}
 				st.vecBytesInit = map[int]uint64{}
+				st.vecLowBitDef = map[int]uint64{}
+				st.vecTaintedSP = map[int]bool{}
 				st.vecFromRaw = map[int]bool{}
 				st.cfInit = false
 				st.ofInit = false
@@ -1052,11 +1312,14 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				st.sfInit = false
 				st.pfInit = false
 				st.gpBytesInit[asm.AX] = wordMask
+				st.gpBitDef[asm.AX] = wordBitMask
 			} else {
 				st.gpBytesInit = map[asm.Reg]uint8{}
-				st.gpTaintedSP = map[asm.Reg]bool{}
-				st.gpFlagTags = map[asm.Reg]uint8{}
+				st.gpBitDef = map[asm.Reg]uint64{}
+				st.gpBytesTaintedSP = map[asm.Reg]uint8{}
 				st.vecBytesInit = map[int]uint64{}
+				st.vecLowBitDef = map[int]uint64{}
+				st.vecTaintedSP = map[int]bool{}
 				st.vecFromRaw = map[int]bool{}
 				st.cfInit = false
 				st.ofInit = false
@@ -1104,7 +1367,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		// Self-XOR / self-SUB / self-PCMPEQ idioms materialize a known constant
 		// (0 or all-ones) without depending on prior contents of dst.
 		if isZeroingIdiom(op, ins.Args) {
-			if err := writeDstMask(st, ins.Args[len(ins.Args)-1], writeBytes, abi0ByteMaskN(writeBytes), op, spec, false, false, false, true); err != nil {
+			if err := writeDstMask(st, ins.Args[len(ins.Args)-1], writeBytes, abi0ByteMaskN(writeBytes), abi0BitMaskN(writeBytes), op, spec, false, false, 0, false, true); err != nil {
 				return nil, err
 			}
 			if isX86ClearCFOfOp(op) || isX86GPFlagWriter(op) {
@@ -1127,6 +1390,8 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		// nontrapping ALU ops propagate definedness to their outputs.
 		impReads, impWrites := implicitRegByteEffects(op, spec, curRep, wordMask)
 		allInputsInit := true
+		allInputsBitDef := true
+		srcAnyTaint := false
 		hardImplicit := spec.Family == asm.FamilyString ||
 			op == "DIVB" || op == "IDIVB" || op == "DIVW" || op == "IDIVW" ||
 			op == "DIVL" || op == "IDIVL" || op == "DIVQ" || op == "IDIVQ" ||
@@ -1139,23 +1404,33 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			} else if (st.gpBytesInit[ir.reg] & ir.mask) != ir.mask {
 				allInputsInit = false
 			}
+			irBits := abi0ByteMaskToBitMask(ir.mask)
+			if (st.gpBitDef[ir.reg] & irBits) != irBits {
+				allInputsBitDef = false
+			}
+			if (st.gpBytesTaintedSP[ir.reg] & ir.mask) != 0 {
+				srcAnyTaint = true
+			}
 		}
 
 		// Flag-consuming instructions require their exact consumed flag(s) to be initialized.
 		// For RCL/RCR with an immediate effective count of 0, CF is neither read nor modified.
 		if missingCondFlag(st, op) != "" {
 			allInputsInit = false
+			allInputsBitDef = false
 		}
 		if needsNonCondCF(op, ins.Args) && !st.cfInit {
 			allInputsInit = false
+			allInputsBitDef = false
 		}
 		if (op == "ADOXL" || op == "ADOXQ") && !st.ofInit {
 			allInputsInit = false
+			allInputsBitDef = false
 		}
 
 		// Check source operands. EffectPreserveUpper preserves upper lanes of the
 		// destination register; for pure byte-preserving moves we propagate exact
-		// per-byte definedness masks.
+		// per-byte initialization, per-bit definedness, and per-byte SP taint masks.
 		n := len(ins.Args)
 		readEnd := n - 1
 		if spec.Effect == asm.EffectReadOnly || spec.Effect == asm.EffectReadWrite ||
@@ -1186,24 +1461,18 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 
 		pureCopy := isPureByteCopyOp(op, ins.Args)
 		var copyMask uint64
+		var copyBitDef uint64
+		var copyTaintMask uint8
+		var arg0BitDef uint64
+		var dstInBitDef uint64
 
-		srcTaintSP := false
 		srcFromRaw := false
 		for i := 0; i < readEnd && i < n; i++ {
 			a := ins.Args[i]
-			if a.Kind == asm.OpReg && a.Reg == asm.SP {
-				srcTaintSP = true
-			}
-			if a.Kind == asm.OpReg && st.gpTaintedSP[canonicalGP(a.Reg)] {
-				srcTaintSP = true
-			}
 			if a.Kind == asm.OpReg {
 				if idx, ok := anyVecRegIndex(a.Reg); ok && st.vecFromRaw[idx] {
 					srcFromRaw = true
 				}
-			}
-			if a.Kind == asm.OpMem && a.Mem.Base == asm.SP && isLEA {
-				srcTaintSP = true
 			}
 			argReadBytes := readBytes
 			if i == n-1 && readEnd == n {
@@ -1219,90 +1488,117 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			if spec.Effect == asm.EffectPreserveUpper && i == n-1 && a.Kind == asm.OpReg {
 				continue
 			}
-			m, okInit, err := evalOperand(st, a, argReadBytes, isLEA, op, ins.Raw)
+			m, bd, okInit, okBits, err := evalOperand(st, a, argReadBytes, isLEA, op, ins.Raw)
 			if err != nil {
 				return nil, err
 			}
-			if pureCopy && i == 0 {
-				copyMask = m
+			tm, anyT := evalOperandTaintSP(st, a, argReadBytes, isLEA)
+			if anyT {
+				srcAnyTaint = true
+			}
+			if i == 0 {
+				arg0BitDef = bd
+				if pureCopy {
+					copyMask = m
+					copyBitDef = bd
+					copyTaintMask = tm
+				}
+			}
+			if i == n-1 {
+				dstInBitDef = bd
 			}
 			if !okInit {
 				allInputsInit = false
 			}
-		}
-
-		// Capture saved-flag tag on pure copies before writeDstMask clears destination tags.
-		var copyFlagTag uint8
-		var hasCopyFlagTag bool
-		if pureCopy && n == 2 && writeBytes >= 2 {
-			src := ins.Args[0]
-			if src.Kind == asm.OpReg {
-				if tag, ok := st.gpFlagTags[canonicalGP(src.Reg)]; ok {
-					copyFlagTag, hasCopyFlagTag = tag, true
-				}
-			} else if src.Kind == asm.OpMem && src.Mem.Base == asm.SP && src.Mem.Index == "" {
-				if tag, ok := st.spFlagSlots[st.spOffset+src.Mem.Off]; ok {
-					copyFlagTag, hasCopyFlagTag = tag, true
-				}
+			if !okBits {
+				allInputsBitDef = false
 			}
 		}
 
-		// Apply destination writes with exact byte-level definedness masks.
+		// Apply destination writes with exact per-byte init, per-bit definedness,
+		// and per-byte SP-taint propagation.
 		var dstValMask uint64
+		var dstValBitDef uint64
+		var dstTaintMask uint8
 		if pureCopy {
 			dstValMask = copyMask
-		} else if allInputsInit {
-			dstValMask = abi0ByteMaskN(writeBytes)
+			dstValBitDef = copyBitDef
+			dstTaintMask = copyTaintMask
 		} else {
-			dstValMask = 0
+			if allInputsInit {
+				dstValMask = abi0ByteMaskN(writeBytes)
+			}
+			dstValBitDef = computeX86OpBitDef(op, ins.Args, readBytes, writeBytes, arg0BitDef, dstInBitDef, allInputsInit, allInputsBitDef)
+			if srcAnyTaint {
+				w := writeBytes
+				if w <= 0 || w > 8 {
+					w = 8
+				}
+				dstTaintMask = uint8(abi0ByteMaskN(w))
+			}
 		}
 
 		srcIsReg := n >= 2 && ins.Args[0].Kind == asm.OpReg
 		if spec.ThreeOp && spec.Effect == asm.EffectImplicit && n == 3 {
 			for i := 1; i < n; i++ {
-				if err := writeDstMask(st, ins.Args[i], writeBytes, dstValMask, op, spec, false, srcFromRaw, srcTaintSP, srcIsReg); err != nil {
+				if err := writeDstMask(st, ins.Args[i], writeBytes, dstValMask, dstValBitDef, op, spec, false, srcFromRaw, dstTaintMask, srcAnyTaint, srcIsReg); err != nil {
 					return nil, err
 				}
 			}
 		} else if n > 0 && spec.Effect != asm.EffectReadOnly && spec.Effect != asm.EffectNone && spec.Effect != asm.EffectImplicit {
-			if err := writeDstMask(st, ins.Args[n-1], writeBytes, dstValMask, op, spec, pureCopy, srcFromRaw, srcTaintSP, srcIsReg); err != nil {
+			if err := writeDstMask(st, ins.Args[n-1], writeBytes, dstValMask, dstValBitDef, op, spec, pureCopy, srcFromRaw, dstTaintMask, srcAnyTaint, srcIsReg); err != nil {
 				return nil, err
-			}
-			if hasCopyFlagTag {
-				dst := ins.Args[n-1]
-				if dst.Kind == asm.OpReg && dst.Reg != asm.SP && !isAMD64KReg(dst.Reg) && !isAMD64MReg(dst.Reg) {
-					if _, isVec := anyVecRegIndex(dst.Reg); !isVec {
-						st.gpFlagTags[canonicalGP(dst.Reg)] = copyFlagTag
-					}
-				} else if dst.Kind == asm.OpMem && dst.Mem.Base == asm.SP && dst.Mem.Index == "" {
-					st.spFlagSlots[st.spOffset+dst.Mem.Off] = copyFlagTag
-				}
 			}
 		}
 		for _, iw := range impWrites {
-			delete(st.gpFlagTags, iw.reg)
-			if allInputsInit {
+			iwBitMask := abi0ByteMaskToBitMask(iw.mask)
+			if allInputsInit && allInputsBitDef {
 				if iw.clearsUpper {
 					st.gpBytesInit[iw.reg] = wordMask
-					st.gpTaintedSP[iw.reg] = false
+					st.gpBitDef[iw.reg] = wordBitMask
+					if srcAnyTaint {
+						st.gpBytesTaintedSP[iw.reg] = iw.mask
+					} else {
+						delete(st.gpBytesTaintedSP, iw.reg)
+					}
 				} else {
 					st.gpBytesInit[iw.reg] |= iw.mask
+					st.gpBitDef[iw.reg] |= iwBitMask
+					if srcAnyTaint {
+						st.gpBytesTaintedSP[iw.reg] |= iw.mask
+					} else {
+						st.gpBytesTaintedSP[iw.reg] &^= iw.mask
+						if st.gpBytesTaintedSP[iw.reg] == 0 {
+							delete(st.gpBytesTaintedSP, iw.reg)
+						}
+					}
 				}
 			} else {
 				if iw.clearsUpper {
 					st.gpBytesInit[iw.reg] = wordMask &^ iw.mask
+					st.gpBitDef[iw.reg] = wordBitMask &^ iwBitMask
 				} else {
 					st.gpBytesInit[iw.reg] &^= iw.mask
+					st.gpBitDef[iw.reg] &^= iwBitMask
+				}
+				if srcAnyTaint {
+					st.gpBytesTaintedSP[iw.reg] |= iw.mask
 				}
 			}
 		}
 		if op == "LAHF" {
-			// Record exact definedness of the low-byte flags copied into AH so
-			// LAHF; SAHF cannot forge defined CF/ZF/SF/PF from undefined entry flags.
-			st.gpFlagTags[asm.AX] = st.flagsMask() &^ abi0FlagOF
+			// Copy exact low-byte status-flag bit-definedness into AH (byte 1 of AX)
+			// without touching AL or upper bytes of AX.
+			st.gpBytesInit[asm.AX] |= 0x02
+			st.gpBitDef[asm.AX] = (st.gpBitDef[asm.AX] &^ 0xff00) | (uint64(st.flagsLowByteBitMask()) << 8)
+			st.gpBytesTaintedSP[asm.AX] &^= 0x02
+			if st.gpBytesTaintedSP[asm.AX] == 0 {
+				delete(st.gpBytesTaintedSP, asm.AX)
+			}
 		}
 		// Update status flags independently per architectural semantics.
-		updateX86FlagsAfter(st, op, ins.Args, allInputsInit)
+		flagsInputsInit := computeX86FlagInputsInit(op, ins.Args, readBytes, writeBytes, arg0BitDef, dstInBitDef, allInputsInit, allInputsBitDef)
+		updateX86FlagsAfter(st, op, ins.Args, flagsInputsInit)
 		if pc+1 < len(instrs) {
 			enqueue(pc+1, st, false)
 		} else {
@@ -1311,7 +1607,8 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 	}
 
 	// Verify that on EVERY reachable RET (and any fallthrough end), every byte of
-	// every declared ABI0 result slot was initialized on ALL paths reaching it.
+	// every declared ABI0 result slot was initialized with all 8 bits defined on
+	// ALL paths reaching it.
 	if finalState != nil {
 		retStates = append(retStates, finalState)
 	}
@@ -1321,6 +1618,10 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				if !st.fpBytesInit[off] {
 					return nil, fmt.Errorf("%w: RET with uninitialized result byte +%d(FP) (result slot +%d(FP) width %d)",
 						asm.ErrProbeNeedsContext, off, span.offset, span.size)
+				}
+				if st.fpByteBitDef[off] != 0xff {
+					return nil, fmt.Errorf("%w: RET with undefined bits (0x%02x) in result byte +%d(FP) (result slot +%d(FP) width %d)",
+						asm.ErrProbeNeedsContext, st.fpByteBitDef[off], off, span.offset, span.size)
 				}
 			}
 		}
@@ -1855,6 +2156,146 @@ func abi0ByteMaskN(n int64) uint64 {
 	return (uint64(1) << uint(n)) - 1
 }
 
+func abi0BitMaskN(n int64) uint64 {
+	if n <= 0 {
+		return 0
+	}
+	if n >= 8 {
+		return ^uint64(0)
+	}
+	return (uint64(1) << uint(n*8)) - 1
+}
+
+func abi0ByteMaskToBitMask(byteMask uint8) uint64 {
+	var out uint64
+	for b := uint(0); b < 8; b++ {
+		if (byteMask & (1 << b)) != 0 {
+			out |= uint64(0xff) << (b * 8)
+		}
+	}
+	return out
+}
+
+// computeX86OpBitDef computes the exact per-bit definedness of the destination
+// value produced by op so bitwise/shift/extend operations on saved RFLAGS/LAHF
+// snapshots update only the bits they deterministically define and never forge
+// undefined status-flag bits (CF/PF/ZF/SF/OF).
+func computeX86OpBitDef(op asm.Op, args []asm.Operand, readBytes, writeBytes int64, srcBitDef, dstBitDef uint64, allInputsInit, allInputsBitDef bool) uint64 {
+	if !allInputsInit {
+		return 0
+	}
+	wBitMask := abi0BitMaskN(writeBytes)
+	rBitMask := abi0BitMaskN(readBytes)
+	switch op {
+	case "MOVBWZX", "MOVBLZX", "MOVBQZX", "MOVWLZX", "MOVWQZX", "MOVLQZX":
+		return (srcBitDef & rBitMask) | (wBitMask &^ rBitMask)
+	case "MOVBWSX", "MOVBLSX", "MOVBQSX", "MOVWLSX", "MOVWQSX", "MOVLQSX":
+		if readBytes > 0 && readBytes <= 8 {
+			signBit := uint64(1) << uint(readBytes*8-1)
+			if (srcBitDef & signBit) != 0 {
+				return (srcBitDef & rBitMask) | (wBitMask &^ rBitMask)
+			}
+		}
+		return srcBitDef & rBitMask
+	case "ANDB", "ANDW", "ANDL", "ANDQ":
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			imm := uint64(args[0].Imm) & wBitMask
+			return ((^imm) | dstBitDef) & wBitMask
+		}
+		return srcBitDef & dstBitDef & wBitMask
+	case "ORB", "ORW", "ORL", "ORQ":
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			imm := uint64(args[0].Imm) & wBitMask
+			return (imm | dstBitDef) & wBitMask
+		}
+		return srcBitDef & dstBitDef & wBitMask
+	case "XORB", "XORW", "XORL", "XORQ":
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			return dstBitDef & wBitMask
+		}
+		return srcBitDef & dstBitDef & wBitMask
+	case "NOTB", "NOTW", "NOTL", "NOTQ":
+		return dstBitDef & wBitMask
+	case "SHLB", "SHLW", "SHLL", "SHLQ", "SALB", "SALW", "SALL", "SALQ":
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			if eff, ok := x86ShiftEffectiveImmCount(op, args); ok {
+				if eff >= writeBytes*8 {
+					return wBitMask
+				}
+				lowZero := (uint64(1) << uint(eff)) - 1
+				return ((dstBitDef << uint(eff)) | lowZero) & wBitMask
+			}
+		}
+	case "SHRB", "SHRW", "SHRL", "SHRQ":
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			if eff, ok := x86ShiftEffectiveImmCount(op, args); ok {
+				if eff >= writeBytes*8 {
+					return wBitMask
+				}
+				d := dstBitDef & wBitMask
+				hiZero := wBitMask &^ (wBitMask >> uint(eff))
+				return ((d >> uint(eff)) | hiZero) & wBitMask
+			}
+		}
+	case "BTSW", "BTSL", "BTSQ", "BTRW", "BTRL", "BTRQ":
+		if len(args) == 2 && args[0].Kind == asm.OpImm && writeBytes > 0 && writeBytes <= 8 {
+			bit := uint(args[0].Imm) & uint(writeBytes*8-1)
+			return (dstBitDef | (uint64(1) << bit)) & wBitMask
+		}
+	case "BTCW", "BTCL", "BTCQ":
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			return dstBitDef & wBitMask
+		}
+	}
+	if allInputsBitDef {
+		return wBitMask
+	}
+	return 0
+}
+
+// computeX86FlagInputsInit determines whether the bits actually observed by an
+// instruction's flag update are defined (e.g. TESTQ $0x200, AX only observes
+// bit 9 of AX, while TESTQ $1, AX observes entry-undefined CF bit 0).
+func computeX86FlagInputsInit(op asm.Op, args []asm.Operand, readBytes, writeBytes int64, arg0BitDef, dstBitDef uint64, allInputsInit, allInputsBitDef bool) bool {
+	if !allInputsInit {
+		return false
+	}
+	if allInputsBitDef {
+		return true
+	}
+	switch op {
+	case "TESTB", "TESTW", "TESTL", "TESTQ":
+		rBitMask := abi0BitMaskN(readBytes)
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			imm := uint64(args[0].Imm) & rBitMask
+			return (dstBitDef & imm) == imm
+		}
+		if len(args) == 2 && args[1].Kind == asm.OpImm {
+			imm := uint64(args[1].Imm) & rBitMask
+			return (arg0BitDef & imm) == imm
+		}
+	case "ANDB", "ANDW", "ANDL", "ANDQ":
+		wBitMask := abi0BitMaskN(writeBytes)
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			imm := uint64(args[0].Imm) & wBitMask
+			return (dstBitDef & imm) == imm
+		}
+	case "ORB", "ORW", "ORL", "ORQ":
+		wBitMask := abi0BitMaskN(writeBytes)
+		if len(args) == 2 && args[0].Kind == asm.OpImm {
+			imm := uint64(args[0].Imm) & wBitMask
+			return ((dstBitDef | imm) & wBitMask) == wBitMask
+		}
+	case "BTB", "BTW", "BTL", "BTQ",
+		"BTSW", "BTSL", "BTSQ", "BTRW", "BTRL", "BTRQ", "BTCW", "BTCL", "BTCQ":
+		if len(args) == 2 && args[0].Kind == asm.OpImm && readBytes > 0 && readBytes <= 8 {
+			bit := uint(args[0].Imm) & uint(readBytes*8-1)
+			return (dstBitDef & (uint64(1) << bit)) != 0
+		}
+	}
+	return false
+}
+
 func vecRegFullByteMask(r asm.Reg) uint64 {
 	if isAMD64ZReg(r) {
 		return ^uint64(0)
@@ -2158,19 +2599,14 @@ func updateX86FlagsAfter(st *abi0State, op asm.Op, args []asm.Operand, allInputs
 		st.pfInit = true
 		return
 	case "SAHF":
-		// SAHF loads SF/ZF/AF/PF/CF from AH; OF is preserved.
-		// If AX carries a LAHF/PUSHF tag, restore only the flags that were actually defined.
-		if tag, ok := st.gpFlagTags[asm.AX]; ok {
-			st.cfInit = allInputsInit && (tag&abi0FlagCF) != 0
-			st.zfInit = allInputsInit && (tag&abi0FlagZF) != 0
-			st.sfInit = allInputsInit && (tag&abi0FlagSF) != 0
-			st.pfInit = allInputsInit && (tag&abi0FlagPF) != 0
-			return
-		}
-		st.cfInit = allInputsInit
-		st.zfInit = allInputsInit
-		st.sfInit = allInputsInit
-		st.pfInit = allInputsInit
+		// SAHF loads SF/ZF/AF/PF/CF from AH (byte 1 of AX); OF is preserved.
+		// Always derive exact flag definedness from the per-bit definedness of AH
+		// so partial writes to AL or LAHF; SAHF never forge undefined entry flags.
+		ah := uint8(st.gpBitDef[asm.AX] >> 8)
+		st.cfInit = (ah & 0x01) != 0
+		st.pfInit = (ah & 0x04) != 0
+		st.zfInit = (ah & 0x40) != 0
+		st.sfInit = (ah & 0x80) != 0
 		return
 	}
 	if isX86GPFlagWriter(op) {

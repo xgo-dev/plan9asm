@@ -328,14 +328,25 @@ func compileAndRunRuntimeTest(t *testing.T, llc, clang, name, ll, mainC string) 
 }
 
 func compileAndRunRuntimeTestForTarget(t *testing.T, llc, clang, name, triple, ll, mainC string, runPrefix []string) {
+	t.Helper()
+	_ = compileAndRunRuntimeTestForTargetOutput(t, llc, clang, name, triple, ll, mainC, runPrefix)
+}
+
+func compileAndRunRuntimeTestForTargetOutput(t *testing.T, llc, clang, name, triple, ll, mainC string, runPrefix []string) string {
+	t.Helper()
 	compiler := []string{clang}
 	if triple != testTargetTriple(runtime.GOOS, runtime.GOARCH) {
 		compiler = append(compiler, "-target", triple)
 	}
-	compileAndRunRuntimeTestWithCompiler(t, llc, compiler, name, triple, ll, mainC, runPrefix)
+	return compileAndRunRuntimeTestWithCompilerOutput(t, llc, compiler, name, triple, ll, mainC, runPrefix)
 }
 
 func compileAndRunRuntimeTestWithCompiler(t *testing.T, llc string, compiler []string, name, triple, ll, mainC string, runPrefix []string) {
+	t.Helper()
+	_ = compileAndRunRuntimeTestWithCompilerOutput(t, llc, compiler, name, triple, ll, mainC, runPrefix)
+}
+
+func compileAndRunRuntimeTestWithCompilerOutput(t *testing.T, llc string, compiler []string, name, triple, ll, mainC string, runPrefix []string) string {
 	t.Helper()
 	if len(compiler) == 0 {
 		t.Fatal("empty compiler command")
@@ -371,9 +382,11 @@ func compileAndRunRuntimeTestWithCompiler(t *testing.T, llc string, compiler []s
 
 	runArgs := append(append([]string(nil), runPrefix...), exePath)
 	runCmd := exec.Command(runArgs[0], runArgs[1:]...)
-	if out, err := runCmd.CombinedOutput(); err != nil {
+	out, err := runCmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
+	return string(out)
 }
 
 func llcUnsupportedTarget(s string) bool {

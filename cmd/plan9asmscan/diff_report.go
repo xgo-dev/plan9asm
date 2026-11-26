@@ -26,7 +26,8 @@ type diffExecutionReport struct {
 type diffCaseExecResult struct {
 	ID                string   `json:"id"`
 	Asm               string   `json:"asm"`
-	Status            string   `json:"status"` // "passed", "hw_pending", "failed", "portable_only"
+	Status            string   `json:"status"` // "passed", "hw_pending", "failed", "expected_value_only", "portable_only"
+	VerificationMode  string   `json:"verification_mode,omitempty"`
 	ExecutedInputs    int      `json:"executed_inputs"`
 	ComparedInputs    int      `json:"compared_inputs"`
 	FailedInputs      int      `json:"failed_inputs"`
@@ -61,14 +62,20 @@ func attachDiffExecutionReport(rep *report, dr *diffExecutionReport) error {
 	}
 
 	type formExecAgg struct {
-		passed    bool
-		hwPending bool
-		failed    bool
-		cases     map[string]struct{}
-		missingHW map[string]struct{}
+		passed       bool
+		expectedOnly bool
+		hwPending    bool
+		failed       bool
+		cases        map[string]struct{}
+		missingHW    map[string]struct{}
 	}
 	byForm := map[string]*formExecAgg{}
+	nativeComparedInputs := 0
 	for _, tc := range dr.Cases {
+		isNativeDiff := dr.NativeOracleRan && tc.VerificationMode == "native_diff" && tc.ComparedInputs > 0
+		if isNativeDiff && tc.Status == "passed" && tc.FailedInputs == 0 {
+			nativeComparedInputs += tc.ComparedInputs
+		}
 		for _, form := range tc.Forms {
 			agg := byForm[form]
 			if agg == nil {
@@ -83,9 +90,13 @@ func attachDiffExecutionReport(rep *report, dr *diffExecutionReport) error {
 			case "failed":
 				agg.failed = true
 			case "passed":
-				if dr.NativeOracleRan && tc.ComparedInputs > 0 && tc.FailedInputs == 0 {
+				if isNativeDiff && tc.FailedInputs == 0 {
 					agg.passed = true
+				} else if tc.VerificationMode == "expected_value_only" {
+					agg.expectedOnly = true
 				}
+			case "expected_value_only", "portable_only":
+				agg.expectedOnly = true
 			case "hw_pending":
 				agg.hwPending = true
 				for _, feat := range tc.MissingHWFeatures {
@@ -99,8 +110,9 @@ func attachDiffExecutionReport(rep *report, dr *diffExecutionReport) error {
 
 	rep.DiffReportLoaded = true
 	rep.DiffReportNativeOracle = dr.NativeOracleRan
-	rep.DiffReportComparedInputs = dr.ComparedInputs
+	rep.DiffReportComparedInputs = nativeComparedInputs
 	rep.DiffVerifiedForms = 0
+	rep.DiffExpectedOnlyForms = 0
 	rep.DiffFailedForms = 0
 	rep.HWPendingForms = 0
 	rep.HWPendingByForm = nil
@@ -140,6 +152,9 @@ func attachDiffExecutionReport(rep *report, dr *diffExecutionReport) error {
 				MissingHWFeatures: missing,
 				Cases:             caseList,
 			})
+		case agg.expectedOnly:
+			rep.Forms[i].DiffStatus = "expected_value_only"
+			rep.DiffExpectedOnlyForms++
 		}
 	}
 	sort.Slice(rep.HWPendingByForm, func(i, j int) bool {
