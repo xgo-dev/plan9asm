@@ -76,6 +76,9 @@ TEXT ·x87SqrtSum(SB),NOSPLIT,$0-24
 	}
 	mainC := `
 #include <stdio.h>
+#if defined(_WIN32) && !defined(_MSC_VER)
+int _fltused = 0;
+#endif
 extern double x87SqrtSum(double a, double b);
 int main(void) {
     double got = x87SqrtSum(1.5, 2.5);
