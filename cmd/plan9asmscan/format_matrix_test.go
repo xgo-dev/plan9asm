@@ -15,6 +15,10 @@ func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 		// Go 1.20-1.21 cmd/internal/obj/arm64 optab omits the status regTo2 slot
 		// on 16 STXR*/STLXR*/CASP*/DUFF* rows.
 		arm64MaxUnsup = 24
+	} else if strings.HasPrefix(ver, "go1.22") || strings.HasPrefix(ver, "go1.23") || strings.HasPrefix(ver, "go1.24") || strings.HasPrefix(ver, "go1.25") {
+		// Go 1.22-1.25 cmd/internal/obj/arm64 optab still includes DUFFZERO/DUFFCOPY
+		// in addition to privileged AT/IC and raw-word DWORD (8 forms total).
+		arm64MaxUnsup = 8
 	}
 	cases := []struct {
 		goarch         string
