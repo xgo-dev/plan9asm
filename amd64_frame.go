@@ -331,6 +331,14 @@ func (s *GoAMD64FrameSource) snapshotIncludedHeaders(pkg GoPackage) error {
 
 // Verify checks that the source owner has not been closed and that no captured
 // Go/assembly/header file (including resolved includes) has changed since capture.
+// CheckX86ABI0ResultInitialization proves via forward CFG dataflow and
+// byte-level FP slot tracking that every reachable RET initializes all result
+// bytes and preserves ABI0 register/stack invariants.
+func CheckX86ABI0ResultInitialization(fn Func, sig FuncSig, goarch string) error {
+	_, err := x86.CheckABI0ResultInit(fn, sig, goarch)
+	return err
+}
+
 func (s *GoAMD64FrameSource) Verify(ctx context.Context) error {
 	if s == nil {
 		return fmt.Errorf("%w: nil AMD64 frame source", ErrProbeNeedsContext)

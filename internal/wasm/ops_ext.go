@@ -3,6 +3,7 @@ package wasm
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/asm"
@@ -137,10 +138,23 @@ func (s *wasmExtState) lowerExtOp(op string, ins asm.Instr) (bool, error) {
 
 	// 2. Float32 / Float64 const, load, store, arithmetic, unary, compare, convert
 	case "F32CONST":
-		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpImm {
+		if len(ins.Args) != 1 {
 			return true, fmt.Errorf("F32Const expects one immediate")
 		}
-		f32 := math.Float32frombits(uint32(ins.Args[0].Imm))
+		var f32 float32
+		switch ins.Args[0].Kind {
+		case asm.OpImm:
+			f32 = math.Float32frombits(uint32(ins.Args[0].Imm))
+		case asm.OpSym:
+			raw := strings.TrimPrefix(strings.TrimSpace(ins.Args[0].Sym), "$")
+			v, err := strconv.ParseFloat(raw, 32)
+			if err != nil {
+				return true, fmt.Errorf("F32Const expects one immediate: %w", err)
+			}
+			f32 = float32(v)
+		default:
+			return true, fmt.Errorf("F32Const expects one immediate")
+		}
 		s.push(wasmValue{typ: asm.LLVMType("float"), val: asm.FormatLLVMFloat64Literal(float64(f32))})
 		return true, nil
 
@@ -414,28 +428,12 @@ func (s *wasmExtState) lowerExtOp(op string, ins asm.Instr) (bool, error) {
 		s.push(wasmValue{typ: dstTy, val: "%" + t})
 		return true, nil
 
-	// 3. Bulk memory / table / misc directives
-	case "DATADROP", "ELEMDROP", "RESUMEPOINT", "WORD":
-		return true, nil
-	case "MEMORYINIT", "TABLEINIT", "TABLECOPY", "TABLEFILL":
-		for i := 0; i < 3; i++ {
-			if _, err := s.pop(op); err != nil {
-				return true, err
-			}
-		}
-		return true, nil
-	case "TABLESIZE":
-		s.push(wasmValue{typ: asm.I32, val: "0"})
-		return true, nil
-	case "TABLEGROW":
-		if _, err := s.pop(op); err != nil {
-			return true, err
-		}
-		if _, err := s.pop(op); err != nil {
-			return true, err
-		}
-		s.push(wasmValue{typ: asm.I32, val: "-1"})
-		return true, nil
+	// 3. Unmodeled bulk memory passive segments, table ops, and assembler/compiler pseudo-ops
+	// must fail explicitly rather than silently dropping instructions or fabricating 0/-1.
+	case "DATADROP", "ELEMDROP", "MEMORYINIT", "TABLEINIT", "TABLECOPY", "TABLEFILL", "TABLESIZE", "TABLEGROW":
+		return true, fmt.Errorf("wasm: %s is not supported (passive data/elem segments and tables are not modeled)", ins.Op)
+	case "RESUMEPOINT", "WORD":
+		return true, fmt.Errorf("wasm: %s is not supported", ins.Op)
 	}
 
 	// 4. WebAssembly SIMD128 (V128 / I8X16 / I16X8 / I32X4 / I64X2 / F32X4 / F64X2)
@@ -1040,17 +1038,10 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, res)
 		s.push(wasmValue{typ: v128, val: "%" + bc})
 		return nil
-	}
-
-	// Remaining SIMD128 unary/binary/ternary ops (swizzle, shuffle, narrow, extend, dot, convert, q15mulr)
-	if strings.Contains(suffix, "DOTI8X16I7X16ADD") {
-		if _, err := s.pop(op); err != nil {
-			return err
+	case "SHUFFLE", "SHUFFLE16":
+		if op != "I8X16SHUFFLE" && op != "I8X16SHUFFLE16" {
+			return fmt.Errorf("wasm: unsupported SIMD128 instruction %s", ins.Op)
 		}
-	}
-	if strings.Contains(suffix, "SHUFFLE") || strings.Contains(suffix, "SWIZZLE") ||
-		strings.Contains(suffix, "NARROW") || strings.Contains(suffix, "EXTMUL") ||
-		strings.Contains(suffix, "DOT") || strings.Contains(suffix, "Q15MULR") {
 		rhs, err := s.pop(op)
 		if err != nil {
 			return err
@@ -1067,20 +1058,457 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
+		mask := make([]string, 16)
+		for i := 0; i < 16; i++ {
+			idx := 0
+			if i < len(ins.Args) && ins.Args[i].Kind == asm.OpImm {
+				idx = int(ins.Args[i].Imm) & 31
+			}
+			mask[i] = fmt.Sprintf("i32 %d", idx)
+		}
 		t := s.newTmp()
-		fmt.Fprintf(s.b, "  %%%s = xor <16 x i8> %s, %s\n", t, a, b)
+		fmt.Fprintf(s.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> %s, <16 x i32> <%s>\n",
+			t, a, b, strings.Join(mask, ", "))
 		s.push(wasmValue{typ: v128, val: "%" + t})
 		return nil
+
+	case "SWIZZLE", "RELAXEDSWIZZLE":
+		if op != "I8X16SWIZZLE" && op != "I8X16RELAXEDSWIZZLE" {
+			return fmt.Errorf("wasm: unsupported SIMD128 instruction %s", ins.Op)
+		}
+		idxV, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		srcV, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		a, err := s.castV128(srcV, v128)
+		if err != nil {
+			return err
+		}
+		idxB, err := s.castV128(idxV, v128)
+		if err != nil {
+			return err
+		}
+		acc := "zeroinitializer"
+		for i := 0; i < 16; i++ {
+			ix, inR, safeIx, el, val, insE := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+			fmt.Fprintf(s.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", ix, idxB, i)
+			fmt.Fprintf(s.b, "  %%%s = icmp ult i8 %%%s, 16\n", inR, ix)
+			fmt.Fprintf(s.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 0\n", safeIx, inR, ix)
+			fmt.Fprintf(s.b, "  %%%s = extractelement <16 x i8> %s, i8 %%%s\n", el, a, safeIx)
+			fmt.Fprintf(s.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 0\n", val, inR, el)
+			fmt.Fprintf(s.b, "  %%%s = insertelement <16 x i8> %s, i8 %%%s, i32 %d\n", insE, acc, val, i)
+			acc = "%" + insE
+		}
+		s.push(wasmValue{typ: v128, val: acc})
+		return nil
+
+	case "EXTENDLOWI8X16S", "EXTENDLOWI8X16U", "EXTENDHIGHI8X16S", "EXTENDHIGHI8X16U",
+		"EXTENDLOWI16X8S", "EXTENDLOWI16X8U", "EXTENDHIGHI16X8S", "EXTENDHIGHI16X8U",
+		"EXTENDLOWI32X4S", "EXTENDLOWI32X4U", "EXTENDHIGHI32X4S", "EXTENDHIGHI32X4U":
+		v, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		srcBits := (128 / lanes) / 2
+		srcLanes := lanes * 2
+		srcFullTy := asm.LLVMType(fmt.Sprintf("<%d x i%d>", srcLanes, srcBits))
+		srcHalfTy := fmt.Sprintf("<%d x i%d>", lanes, srcBits)
+		sv, err := s.castV128(v, srcFullTy)
+		if err != nil {
+			return err
+		}
+		start := 0
+		if strings.Contains(suffix, "HIGH") {
+			start = lanes
+		}
+		mask := make([]string, lanes)
+		for i := 0; i < lanes; i++ {
+			mask[i] = fmt.Sprintf("i32 %d", start+i)
+		}
+		extOp := "zext"
+		if strings.HasSuffix(suffix, "S") {
+			extOp = "sext"
+		}
+		half, ex, bc := s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
+			half, srcFullTy, sv, srcFullTy, lanes, strings.Join(mask, ", "))
+		fmt.Fprintf(s.b, "  %%%s = %s %s %%%s to %s\n", ex, extOp, srcHalfTy, half, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, ex)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "EXTMULLOWI8X16S", "EXTMULLOWI8X16U", "EXTMULHIGHI8X16S", "EXTMULHIGHI8X16U",
+		"EXTMULLOWI16X8S", "EXTMULLOWI16X8U", "EXTMULHIGHI16X8S", "EXTMULHIGHI16X8U",
+		"EXTMULLOWI32X4S", "EXTMULLOWI32X4U", "EXTMULHIGHI32X4S", "EXTMULHIGHI32X4U":
+		rhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		lhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		srcBits := (128 / lanes) / 2
+		srcLanes := lanes * 2
+		srcFullTy := asm.LLVMType(fmt.Sprintf("<%d x i%d>", srcLanes, srcBits))
+		srcHalfTy := fmt.Sprintf("<%d x i%d>", lanes, srcBits)
+		av, err := s.castV128(lhs, srcFullTy)
+		if err != nil {
+			return err
+		}
+		bv, err := s.castV128(rhs, srcFullTy)
+		if err != nil {
+			return err
+		}
+		start := 0
+		if strings.Contains(suffix, "HIGH") {
+			start = lanes
+		}
+		mask := make([]string, lanes)
+		for i := 0; i < lanes; i++ {
+			mask[i] = fmt.Sprintf("i32 %d", start+i)
+		}
+		extOp := "zext"
+		if strings.HasSuffix(suffix, "S") {
+			extOp = "sext"
+		}
+		ah, bh, ae, be, mul, bc := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
+			ah, srcFullTy, av, srcFullTy, lanes, strings.Join(mask, ", "))
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
+			bh, srcFullTy, bv, srcFullTy, lanes, strings.Join(mask, ", "))
+		fmt.Fprintf(s.b, "  %%%s = %s %s %%%s to %s\n", ae, extOp, srcHalfTy, ah, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = %s %s %%%s to %s\n", be, extOp, srcHalfTy, bh, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = mul %s %%%s, %%%s\n", mul, vecTy, ae, be)
+		fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, mul)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "EXTADDPAIRWISEI8X16S", "EXTADDPAIRWISEI8X16U",
+		"EXTADDPAIRWISEI16X8S", "EXTADDPAIRWISEI16X8U":
+		v, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		srcBits := (128 / lanes) / 2
+		srcLanes := lanes * 2
+		srcFullTy := asm.LLVMType(fmt.Sprintf("<%d x i%d>", srcLanes, srcBits))
+		srcHalfTy := fmt.Sprintf("<%d x i%d>", lanes, srcBits)
+		sv, err := s.castV128(v, srcFullTy)
+		if err != nil {
+			return err
+		}
+		evenM, oddM := make([]string, lanes), make([]string, lanes)
+		for i := 0; i < lanes; i++ {
+			evenM[i] = fmt.Sprintf("i32 %d", 2*i)
+			oddM[i] = fmt.Sprintf("i32 %d", 2*i+1)
+		}
+		extOp := "zext"
+		if strings.HasSuffix(suffix, "S") {
+			extOp = "sext"
+		}
+		ev, od, ee, oe, sm, bc := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
+			ev, srcFullTy, sv, srcFullTy, lanes, strings.Join(evenM, ", "))
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n",
+			od, srcFullTy, sv, srcFullTy, lanes, strings.Join(oddM, ", "))
+		fmt.Fprintf(s.b, "  %%%s = %s %s %%%s to %s\n", ee, extOp, srcHalfTy, ev, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = %s %s %%%s to %s\n", oe, extOp, srcHalfTy, od, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = add %s %%%s, %%%s\n", sm, vecTy, ee, oe)
+		fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, sm)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "NARROWI16X8S", "NARROWI16X8U", "NARROWI32X4S", "NARROWI32X4U":
+		rhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		lhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		dstBits := 128 / lanes
+		srcBits := dstBits * 2
+		halfLanes := lanes / 2
+		srcTy := asm.LLVMType(fmt.Sprintf("<%d x i%d>", halfLanes, srcBits))
+		halfDstTy := fmt.Sprintf("<%d x i%d>", halfLanes, dstBits)
+		av, err := s.castV128(lhs, srcTy)
+		if err != nil {
+			return err
+		}
+		bv, err := s.castV128(rhs, srcTy)
+		if err != nil {
+			return err
+		}
+		signed := strings.HasSuffix(suffix, "S")
+		var loLim, hiLim int64
+		if signed {
+			loLim = -(int64(1) << uint(dstBits-1))
+			hiLim = (int64(1) << uint(dstBits-1)) - 1
+		} else {
+			loLim = 0
+			hiLim = (int64(1) << uint(dstBits)) - 1
+		}
+		mkSplat := func(val int64) string {
+			ps := make([]string, halfLanes)
+			for i := range ps {
+				ps[i] = fmt.Sprintf("i%d %d", srcBits, val)
+			}
+			return "<" + strings.Join(ps, ", ") + ">"
+		}
+		loSplat, hiSplat := mkSplat(loLim), mkSplat(hiLim)
+		clampTrunc := func(x string) string {
+			c1, s1, c2, s2, tr := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+			fmt.Fprintf(s.b, "  %%%s = icmp slt %s %s, %s\n", c1, srcTy, x, loSplat)
+			fmt.Fprintf(s.b, "  %%%s = select <%d x i1> %%%s, %s %s, %s %s\n", s1, halfLanes, c1, srcTy, loSplat, srcTy, x)
+			fmt.Fprintf(s.b, "  %%%s = icmp sgt %s %%%s, %s\n", c2, srcTy, s1, hiSplat)
+			fmt.Fprintf(s.b, "  %%%s = select <%d x i1> %%%s, %s %s, %s %%%s\n", s2, halfLanes, c2, srcTy, hiSplat, srcTy, s1)
+			fmt.Fprintf(s.b, "  %%%s = trunc %s %%%s to %s\n", tr, srcTy, s2, halfDstTy)
+			return "%" + tr
+		}
+		ta, tb := clampTrunc(av), clampTrunc(bv)
+		catMask := make([]string, lanes)
+		for i := 0; i < lanes; i++ {
+			catMask[i] = fmt.Sprintf("i32 %d", i)
+		}
+		cat, bc := s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s %s, <%d x i32> <%s>\n",
+			cat, halfDstTy, ta, halfDstTy, tb, lanes, strings.Join(catMask, ", "))
+		fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, cat)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "DOTI16X8S", "RELAXEDDOTI8X16I7X16S":
+		rhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		lhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		srcBits := (128 / lanes) / 2
+		srcLanes := lanes * 2
+		srcFullTy := asm.LLVMType(fmt.Sprintf("<%d x i%d>", srcLanes, srcBits))
+		srcHalfTy := fmt.Sprintf("<%d x i%d>", lanes, srcBits)
+		av, err := s.castV128(lhs, srcFullTy)
+		if err != nil {
+			return err
+		}
+		bv, err := s.castV128(rhs, srcFullTy)
+		if err != nil {
+			return err
+		}
+		evenM, oddM := make([]string, lanes), make([]string, lanes)
+		for i := 0; i < lanes; i++ {
+			evenM[i] = fmt.Sprintf("i32 %d", 2*i)
+			oddM[i] = fmt.Sprintf("i32 %d", 2*i+1)
+		}
+		a0, a1, b0, b1 := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+		ae0, ae1, be0, be1 := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+		p0, p1, sm, bc := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n", a0, srcFullTy, av, srcFullTy, lanes, strings.Join(evenM, ", "))
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n", a1, srcFullTy, av, srcFullTy, lanes, strings.Join(oddM, ", "))
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n", b0, srcFullTy, bv, srcFullTy, lanes, strings.Join(evenM, ", "))
+		fmt.Fprintf(s.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n", b1, srcFullTy, bv, srcFullTy, lanes, strings.Join(oddM, ", "))
+		fmt.Fprintf(s.b, "  %%%s = sext %s %%%s to %s\n", ae0, srcHalfTy, a0, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = sext %s %%%s to %s\n", ae1, srcHalfTy, a1, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = sext %s %%%s to %s\n", be0, srcHalfTy, b0, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = sext %s %%%s to %s\n", be1, srcHalfTy, b1, vecTy)
+		fmt.Fprintf(s.b, "  %%%s = mul %s %%%s, %%%s\n", p0, vecTy, ae0, be0)
+		fmt.Fprintf(s.b, "  %%%s = mul %s %%%s, %%%s\n", p1, vecTy, ae1, be1)
+		fmt.Fprintf(s.b, "  %%%s = add %s %%%s, %%%s\n", sm, vecTy, p0, p1)
+		fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, sm)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "RELAXEDDOTI8X16I7X16ADDS":
+		accV, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		rhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		lhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		av, err := s.castV128(lhs, v128)
+		if err != nil {
+			return err
+		}
+		bv, err := s.castV128(rhs, v128)
+		if err != nil {
+			return err
+		}
+		cv, err := s.castV128(accV, asm.LLVMType("<4 x i32>"))
+		if err != nil {
+			return err
+		}
+		cur := cv
+		for k := 0; k < 4; k++ {
+			m := fmt.Sprintf("<i32 %d, i32 %d, i32 %d, i32 %d>", k, 4+k, 8+k, 12+k)
+			as, bs, ae, be, p, sm := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+			fmt.Fprintf(s.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> poison, <4 x i32> %s\n", as, av, m)
+			fmt.Fprintf(s.b, "  %%%s = shufflevector <16 x i8> %s, <16 x i8> poison, <4 x i32> %s\n", bs, bv, m)
+			fmt.Fprintf(s.b, "  %%%s = sext <4 x i8> %%%s to <4 x i32>\n", ae, as)
+			fmt.Fprintf(s.b, "  %%%s = sext <4 x i8> %%%s to <4 x i32>\n", be, bs)
+			fmt.Fprintf(s.b, "  %%%s = mul <4 x i32> %%%s, %%%s\n", p, ae, be)
+			fmt.Fprintf(s.b, "  %%%s = add <4 x i32> %s, %%%s\n", sm, cur, p)
+			cur = "%" + sm
+		}
+		bc := s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = bitcast <4 x i32> %s to <16 x i8>\n", bc, cur)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "Q15MULRSATS", "RELAXEDQ15MULRS":
+		rhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		lhs, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		av, err := s.castV128(lhs, asm.LLVMType("<8 x i16>"))
+		if err != nil {
+			return err
+		}
+		bv, err := s.castV128(rhs, asm.LLVMType("<8 x i16>"))
+		if err != nil {
+			return err
+		}
+		ae, be, prod, rnd, sh, cHi, clamped, tr, bc := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = sext <8 x i16> %s to <8 x i32>\n", ae, av)
+		fmt.Fprintf(s.b, "  %%%s = sext <8 x i16> %s to <8 x i32>\n", be, bv)
+		fmt.Fprintf(s.b, "  %%%s = mul <8 x i32> %%%s, %%%s\n", prod, ae, be)
+		fmt.Fprintf(s.b, "  %%%s = add <8 x i32> %%%s, <i32 16384, i32 16384, i32 16384, i32 16384, i32 16384, i32 16384, i32 16384, i32 16384>\n", rnd, prod)
+		fmt.Fprintf(s.b, "  %%%s = ashr <8 x i32> %%%s, <i32 15, i32 15, i32 15, i32 15, i32 15, i32 15, i32 15, i32 15>\n", sh, rnd)
+		fmt.Fprintf(s.b, "  %%%s = icmp sgt <8 x i32> %%%s, <i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767>\n", cHi, sh)
+		fmt.Fprintf(s.b, "  %%%s = select <8 x i1> %%%s, <8 x i32> <i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767>, <8 x i32> %%%s\n", clamped, cHi, sh)
+		fmt.Fprintf(s.b, "  %%%s = trunc <8 x i32> %%%s to <8 x i16>\n", tr, clamped)
+		fmt.Fprintf(s.b, "  %%%s = bitcast <8 x i16> %%%s to <16 x i8>\n", bc, tr)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "CONVERTI32X4S", "CONVERTI32X4U":
+		v, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		iv, err := s.castV128(v, asm.LLVMType("<4 x i32>"))
+		if err != nil {
+			return err
+		}
+		cvt := "uitofp"
+		if strings.HasSuffix(suffix, "S") {
+			cvt = "sitofp"
+		}
+		res, bc := s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = %s <4 x i32> %s to <4 x float>\n", res, cvt, iv)
+		fmt.Fprintf(s.b, "  %%%s = bitcast <4 x float> %%%s to <16 x i8>\n", bc, res)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "CONVERTLOWI32X4S", "CONVERTLOWI32X4U":
+		v, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		iv, err := s.castV128(v, asm.LLVMType("<4 x i32>"))
+		if err != nil {
+			return err
+		}
+		cvt := "uitofp"
+		if strings.HasSuffix(suffix, "S") {
+			cvt = "sitofp"
+		}
+		lo, res, bc := s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = shufflevector <4 x i32> %s, <4 x i32> poison, <2 x i32> <i32 0, i32 1>\n", lo, iv)
+		fmt.Fprintf(s.b, "  %%%s = %s <2 x i32> %%%s to <2 x double>\n", res, cvt, lo)
+		fmt.Fprintf(s.b, "  %%%s = bitcast <2 x double> %%%s to <16 x i8>\n", bc, res)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "DEMOTEF64X2ZERO":
+		v, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		fv, err := s.castV128(v, asm.LLVMType("<2 x double>"))
+		if err != nil {
+			return err
+		}
+		tr, pad, bc := s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = fptrunc <2 x double> %s to <2 x float>\n", tr, fv)
+		fmt.Fprintf(s.b, "  %%%s = shufflevector <2 x float> %%%s, <2 x float> zeroinitializer, <4 x i32> <i32 0, i32 1, i32 2, i32 3>\n", pad, tr)
+		fmt.Fprintf(s.b, "  %%%s = bitcast <4 x float> %%%s to <16 x i8>\n", bc, pad)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "PROMOTELOWF32X4":
+		v, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		fv, err := s.castV128(v, asm.LLVMType("<4 x float>"))
+		if err != nil {
+			return err
+		}
+		lo, ex, bc := s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = shufflevector <4 x float> %s, <4 x float> poison, <2 x i32> <i32 0, i32 1>\n", lo, fv)
+		fmt.Fprintf(s.b, "  %%%s = fpext <2 x float> %%%s to <2 x double>\n", ex, lo)
+		fmt.Fprintf(s.b, "  %%%s = bitcast <2 x double> %%%s to <16 x i8>\n", bc, ex)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "TRUNCSATF32X4S", "TRUNCSATF32X4U", "RELAXEDTRUNCF32X4S", "RELAXEDTRUNCF32X4U":
+		v, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		fv, err := s.castV128(v, asm.LLVMType("<4 x float>"))
+		if err != nil {
+			return err
+		}
+		fn := "fptoui.sat"
+		if strings.HasSuffix(suffix, "S") {
+			fn = "fptosi.sat"
+		}
+		res, bc := s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = call <4 x i32> @llvm.%s.v4i32.v4f32(<4 x float> %s)\n", res, fn, fv)
+		fmt.Fprintf(s.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", bc, res)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
+
+	case "TRUNCSATF64X2SZERO", "TRUNCSATF64X2UZERO", "RELAXEDTRUNCF64X2S", "RELAXEDTRUNCF64X2U":
+		v, err := s.pop(op)
+		if err != nil {
+			return err
+		}
+		fv, err := s.castV128(v, asm.LLVMType("<2 x double>"))
+		if err != nil {
+			return err
+		}
+		fn := "fptoui.sat"
+		if strings.Contains(suffix, "64X2S") {
+			fn = "fptosi.sat"
+		}
+		res, pad, bc := s.newTmp(), s.newTmp(), s.newTmp()
+		fmt.Fprintf(s.b, "  %%%s = call <2 x i32> @llvm.%s.v2i32.v2f64(<2 x double> %s)\n", res, fn, fv)
+		fmt.Fprintf(s.b, "  %%%s = shufflevector <2 x i32> %%%s, <2 x i32> zeroinitializer, <4 x i32> <i32 0, i32 1, i32 2, i32 3>\n", pad, res)
+		fmt.Fprintf(s.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", bc, pad)
+		s.push(wasmValue{typ: v128, val: "%" + bc})
+		return nil
 	}
-	// Unary vector conversion / extend / pairwise
-	v, err := s.pop(op)
-	if err != nil {
-		return err
-	}
-	vb, err := s.castV128(v, v128)
-	if err != nil {
-		return err
-	}
-	s.push(wasmValue{typ: v128, val: vb})
-	return nil
+
+	return fmt.Errorf("wasm: unsupported SIMD128 instruction %s", ins.Op)
 }

@@ -505,27 +505,186 @@ func x86StripEVEXMask(args []asm.Operand) (stripped []asm.Operand, kreg asm.Reg,
 // x86ApplyMask blends `resVal` with `oldVal` (or zeroinitializer when zeroMask)
 // lane-by-lane according to the low `lanes` bits of `kreg`.
 func (c *amd64Ctx) x86ApplyMask(kreg asm.Reg, zeroMask bool, lanes int, vecTy, resVal, oldVal string) (string, error) {
-	kv, err := c.loadK(kreg)
+	mv, err := c.x86KToI1Vec(kreg, lanes)
 	if err != nil {
 		return "", err
 	}
-	var maskBits string
-	if lanes == 64 {
-		maskBits = kv
-	} else {
-		tr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i%d\n", tr, kv, lanes)
-		maskBits = "%" + tr
-	}
-	mvec := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = bitcast i%d %s to <%d x i1>\n", mvec, lanes, maskBits, lanes)
 	fb := oldVal
 	if zeroMask {
 		fb = "zeroinitializer"
 	}
 	sel := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s %s, %s %s\n", sel, lanes, mvec, vecTy, resVal, vecTy, fb)
+	fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %s, %s %s, %s %s\n", sel, lanes, mv, vecTy, resVal, vecTy, fb)
 	return "%" + sel, nil
+}
+
+// x86EmitMaskedVecLoad emits a fault-suppressing @llvm.masked.load for `lanes`
+// integer elements of `laneBits` width so masked-off lanes never read memory.
+func (c *amd64Ctx) x86EmitMaskedVecLoad(p, ptrType string, lanes, laneBits int, kreg asm.Reg, passthru string) (string, error) {
+	mv, err := c.x86KToI1Vec(kreg, lanes)
+	if err != nil {
+		return "", err
+	}
+	vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
+	ld := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s @llvm.masked.load.v%di%d.p0(%s %s, i32 1, <%d x i1> %s, %s %s)\n",
+		ld, vecTy, lanes, laneBits, ptrType, p, lanes, mv, vecTy, passthru)
+	return "%" + ld, nil
+}
+
+// x86EmitMaskedVecStore emits a fault-suppressing @llvm.masked.store for `lanes`
+// integer elements of `laneBits` width so masked-off lanes never read or write memory.
+func (c *amd64Ctx) x86EmitMaskedVecStore(val, p, ptrType string, lanes, laneBits int, kreg asm.Reg) error {
+	mv, err := c.x86KToI1Vec(kreg, lanes)
+	if err != nil {
+		return err
+	}
+	vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
+	fmt.Fprintf(c.b, "  call void @llvm.masked.store.v%di%d.p0(%s %s, %s %s, i32 1, <%d x i1> %s)\n",
+		lanes, laneBits, vecTy, val, ptrType, p, lanes, mv)
+	return nil
+}
+
+// x86EmitMaskedAnyActiveI1Vec returns a `<1 x i1>` predicate that is true iff
+// at least one of the low `lanes` bits of `kreg` is set.
+func (c *amd64Ctx) x86EmitMaskedAnyActiveI1Vec(kreg asm.Reg, lanes int) (string, error) {
+	kv, err := c.loadK(kreg)
+	if err != nil {
+		return "", err
+	}
+	checked := kv
+	if lanes < 64 {
+		m := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", m, kv, (uint64(1)<<uint(lanes))-1)
+		checked = "%" + m
+	}
+	any, m1 := c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %s, 0\n", any, checked)
+	fmt.Fprintf(c.b, "  %%%s = bitcast i1 %%%s to <1 x i1>\n", m1, any)
+	return "%" + m1, nil
+}
+
+// x86EmitMaskedBroadcastLoad loads one `laneBits`-wide element from memory only
+// when at least one of the low `lanes` bits of `kreg` is active, then splats it.
+func (c *amd64Ctx) x86EmitMaskedBroadcastLoad(p, ptrType string, lanes, laneBits int, kreg asm.Reg) (string, error) {
+	m1, err := c.x86EmitMaskedAnyActiveI1Vec(kreg, lanes)
+	if err != nil {
+		return "", err
+	}
+	elemTy := fmt.Sprintf("i%d", laneBits)
+	vecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
+	ld, el, ins0, splat := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call <1 x %s> @llvm.masked.load.v1i%d.p0(%s %s, i32 1, <1 x i1> %s, <1 x %s> zeroinitializer)\n",
+		ld, elemTy, laneBits, ptrType, p, m1, elemTy)
+	fmt.Fprintf(c.b, "  %%%s = extractelement <1 x %s> %%%s, i32 0\n", el, elemTy, ld)
+	fmt.Fprintf(c.b, "  %%%s = insertelement %s undef, %s %%%s, i32 0\n", ins0, vecTy, elemTy, el)
+	fmt.Fprintf(c.b, "  %%%s = shufflevector %s %%%s, %s poison, <%d x i32> zeroinitializer\n", splat, vecTy, ins0, vecTy, lanes)
+	return "%" + splat, nil
+}
+
+// x86EmitMaskedScalarLoad loads a single `bits`-wide integer from memory iff bit 0
+// of `kreg` is set (returning 0 without touching memory when bit 0 is clear).
+func (c *amd64Ctx) x86EmitMaskedScalarLoad(p, ptrType string, bits int, kreg asm.Reg) (string, error) {
+	kv, err := c.loadK(kreg)
+	if err != nil {
+		return "", err
+	}
+	bit, m1, ld, el := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+	elemTy := fmt.Sprintf("i%d", bits)
+	fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", bit, kv)
+	fmt.Fprintf(c.b, "  %%%s = bitcast i1 %%%s to <1 x i1>\n", m1, bit)
+	fmt.Fprintf(c.b, "  %%%s = call <1 x %s> @llvm.masked.load.v1i%d.p0(%s %s, i32 1, <1 x i1> %%%s, <1 x %s> zeroinitializer)\n",
+		ld, elemTy, bits, ptrType, p, m1, elemTy)
+	fmt.Fprintf(c.b, "  %%%s = extractelement <1 x %s> %%%s, i32 0\n", el, elemTy, ld)
+	return "%" + el, nil
+}
+
+// x86EmitMaskedScalarStore stores a single `bits`-wide integer to memory iff bit 0
+// of `kreg` is set (without touching memory when bit 0 is clear).
+func (c *amd64Ctx) x86EmitMaskedScalarStore(val, p, ptrType string, bits int, kreg asm.Reg) error {
+	kv, err := c.loadK(kreg)
+	if err != nil {
+		return err
+	}
+	bit, m1, vec := c.newTmp(), c.newTmp(), c.newTmp()
+	elemTy := fmt.Sprintf("i%d", bits)
+	fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", bit, kv)
+	fmt.Fprintf(c.b, "  %%%s = bitcast i1 %%%s to <1 x i1>\n", m1, bit)
+	fmt.Fprintf(c.b, "  %%%s = insertelement <1 x %s> undef, %s %s, i32 0\n", vec, elemTy, elemTy, val)
+	fmt.Fprintf(c.b, "  call void @llvm.masked.store.v1i%d.p0(<1 x %s> %%%s, %s %s, i32 1, <1 x i1> %%%s)\n",
+		bits, elemTy, vec, ptrType, p, m1)
+	return nil
+}
+
+// x86EvalScalarFPMasked evaluates a scalar float/double operand, using a masked
+// load when `hasMask` is true and the operand is memory/symbol so k[0]==0 never faults.
+func (c *amd64Ctx) x86EvalScalarFPMasked(op asm.Operand, bits int, kreg asm.Reg, hasMask bool) (string, error) {
+	if hasMask && (op.Kind == asm.OpMem || op.Kind == asm.OpSym) {
+		p, ptrType, err := c.resolveMemPtr(op)
+		if err != nil {
+			return "", err
+		}
+		raw, err := c.x86EmitMaskedScalarLoad(p, ptrType, bits, kreg)
+		if err != nil {
+			return "", err
+		}
+		fpTy := "double"
+		if bits == 32 {
+			fpTy = "float"
+		}
+		bc := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast i%d %s to %s\n", bc, bits, raw, fpTy)
+		return "%" + bc, nil
+	}
+	if bits == 32 {
+		return c.evalF32(op)
+	}
+	return c.evalF64(op)
+}
+
+// x86EmitPrefixMask builds a `<lanes x i1>` mask where lane j is true iff j < countI32.
+func (c *amd64Ctx) x86EmitPrefixMask(countI32 string, lanes int) string {
+	idxElems := make([]string, lanes)
+	for i := 0; i < lanes; i++ {
+		idxElems[i] = fmt.Sprintf("i32 %d", i)
+	}
+	ins0, splat, cmp := c.newTmp(), c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = insertelement <%d x i32> undef, i32 %s, i32 0\n", ins0, lanes, countI32)
+	fmt.Fprintf(c.b, "  %%%s = shufflevector <%d x i32> %%%s, <%d x i32> poison, <%d x i32> zeroinitializer\n", splat, lanes, ins0, lanes, lanes)
+	fmt.Fprintf(c.b, "  %%%s = icmp ult <%d x i32> <%s>, %%%s\n", cmp, lanes, strings.Join(idxElems, ", "), splat)
+	return "%" + cmp
+}
+
+// x86LoadVecMasked loads a vector operand (with optional EVEX broadcast) as
+// `vi.byteVecTy`, suppressing memory faults on masked-off lanes when `hasMask` is true.
+func (c *amd64Ctx) x86LoadVecMasked(vi x86VecInfo, op asm.Operand, bcst bool, laneBits int, kreg asm.Reg, hasMask bool) (string, error) {
+	if !hasMask || (op.Kind != asm.OpMem && op.Kind != asm.OpSym) {
+		return c.x86LoadVecOrBcst(vi, op, bcst, laneBits)
+	}
+	if laneBits == 0 {
+		laneBits = 8
+	}
+	lanes := vi.totalBits / laneBits
+	p, ptrType, err := c.resolveMemPtr(op)
+	if err != nil {
+		return "", err
+	}
+	var typed string
+	if bcst {
+		typed, err = c.x86EmitMaskedBroadcastLoad(p, ptrType, lanes, laneBits, kreg)
+	} else {
+		typed, err = c.x86EmitMaskedVecLoad(p, ptrType, lanes, laneBits, kreg, "zeroinitializer")
+	}
+	if err != nil {
+		return "", err
+	}
+	vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
+	if vecTy == vi.byteVecTy {
+		return typed, nil
+	}
+	bc := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bc, vecTy, typed, vi.byteVecTy)
+	return "%" + bc, nil
 }
 
 func (c *amd64Ctx) loadXLowF32(r asm.Reg) (string, error) {
@@ -793,12 +952,9 @@ func (c *amd64Ctx) lowerX86ScalarFPDeclarative(spec asm.OpSpec, zeroMask bool, i
 		ty, suf = "double", "f64"
 	}
 	evalS := func(o asm.Operand) (string, error) {
-		if spec.Width == 64 {
-			return c.evalF64(o)
-		}
-		return c.evalF32(o)
+		return c.x86EvalScalarFPMasked(o, int(spec.Width), kreg, hasMask)
 	}
-	storeS := func(r asm.Reg, val string) error {
+	storeSWithOld := func(r asm.Reg, val, oldLow string) error {
 		if hasMask {
 			kv, err := c.loadK(kreg)
 			if err != nil {
@@ -808,10 +964,7 @@ func (c *amd64Ctx) lowerX86ScalarFPDeclarative(spec asm.OpSpec, zeroMask bool, i
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", bit, kv)
 			fb := "0.0"
 			if !zeroMask {
-				fb, err = evalS(asm.Operand{Kind: asm.OpReg, Reg: r})
-				if err != nil {
-					return err
-				}
+				fb = oldLow
 			}
 			sel := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %s, %s %s\n", sel, bit, ty, val, ty, fb)
@@ -822,6 +975,21 @@ func (c *amd64Ctx) lowerX86ScalarFPDeclarative(spec asm.OpSpec, zeroMask bool, i
 		}
 		return c.storeXLowF32(r, val)
 	}
+	storeS := func(r asm.Reg, val string) error {
+		var oldLow string
+		if hasMask && !zeroMask {
+			var err error
+			if spec.Width == 64 {
+				oldLow, err = c.loadXLowF64(r)
+			} else {
+				oldLow, err = c.loadXLowF32(r)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return storeSWithOld(r, val, oldLow)
+	}
 
 	switch spec.LLVMOp {
 	case "movs":
@@ -831,6 +999,17 @@ func (c *amd64Ctx) lowerX86ScalarFPDeclarative(spec asm.OpSpec, zeroMask bool, i
 			if err != nil {
 				return err
 			}
+			var oldLow string
+			if hasMask && !zeroMask {
+				if spec.Width == 64 {
+					oldLow, err = c.loadXLowF64(args[2].Reg)
+				} else {
+					oldLow, err = c.loadXLowF32(args[2].Reg)
+				}
+				if err != nil {
+					return err
+				}
+			}
 			upper, err := c.loadXVecOperand(args[1])
 			if err != nil {
 				return err
@@ -838,7 +1017,7 @@ func (c *amd64Ctx) lowerX86ScalarFPDeclarative(spec asm.OpSpec, zeroMask bool, i
 			if err := c.storeX(args[2].Reg, upper); err != nil {
 				return err
 			}
-			return storeS(args[2].Reg, lo)
+			return storeSWithOld(args[2].Reg, lo, oldLow)
 		}
 		if len(args) != 2 {
 			return fmt.Errorf("amd64 %s expects 2 or 3 operands: %q", spec.Op, ins.Raw)
@@ -849,26 +1028,36 @@ func (c *amd64Ctx) lowerX86ScalarFPDeclarative(spec asm.OpSpec, zeroMask bool, i
 		}
 		switch args[1].Kind {
 		case asm.OpReg:
+			var oldLow string
+			if hasMask && !zeroMask {
+				if spec.Width == 64 {
+					oldLow, err = c.loadXLowF64(args[1].Reg)
+				} else {
+					oldLow, err = c.loadXLowF32(args[1].Reg)
+				}
+				if err != nil {
+					return err
+				}
+			}
 			if args[0].Kind != asm.OpReg {
 				// Load from mem/FP/SB into X reg zeroes upper lanes.
 				if err := c.storeX(args[1].Reg, "zeroinitializer"); err != nil {
 					return err
 				}
 			}
-			return storeS(args[1].Reg, v)
-		case asm.OpMem:
-			p, ptrType, err := c.ptrFromMem(args[1].Mem)
+			return storeSWithOld(args[1].Reg, v, oldLow)
+		case asm.OpMem, asm.OpSym:
+			p, ptrType, err := c.resolveMemPtr(args[1])
 			if err != nil {
 				return err
+			}
+			if hasMask {
+				bits := int(spec.Width)
+				bc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to i%d\n", bc, ty, v, bits)
+				return c.x86EmitMaskedScalarStore("%"+bc, p, ptrType, bits, kreg)
 			}
 			fmt.Fprintf(c.b, "  store %s %s, %s %s, align 1\n", ty, v, ptrType, p)
-			return nil
-		case asm.OpSym:
-			p, err := c.ptrFromSB(args[1].Sym)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", ty, v, p)
 			return nil
 		case asm.OpFP:
 			return c.storeFPResult(args[1].FPOffset, asm.LLVMType(ty), v)
@@ -1110,9 +1299,16 @@ func (c *amd64Ctx) lowerX86VecUnaryDeclarative(spec asm.OpSpec, zeroMask bool, i
 			if err != nil {
 				return err
 			}
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", ld, srcVecTy, ptrType, p)
-			srcVal = "%" + ld
+			if hasMask {
+				srcVal, err = c.x86EmitMaskedVecLoad(p, ptrType, lanes, srcBits, kreg, "zeroinitializer")
+				if err != nil {
+					return err
+				}
+			} else {
+				ld := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", ld, srcVecTy, ptrType, p)
+				srcVal = "%" + ld
+			}
 		} else {
 			return fmt.Errorf("amd64 %s unsupported src: %q", spec.Op, ins.Raw)
 		}
@@ -1147,7 +1343,7 @@ func (c *amd64Ctx) lowerX86VecUnaryDeclarative(spec asm.OpSpec, zeroMask bool, i
 		return vi.storeVec(args[1].Reg, res)
 	}
 
-	rawSrc, err := vi.loadVec(args[0])
+	rawSrc, err := c.x86LoadVecMasked(vi, args[0], false, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -1234,6 +1430,38 @@ func (c *amd64Ctx) lowerX86VecMoveDeclarative(spec asm.OpSpec, zeroMask bool, in
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
+		if hasMask && isX86MemOp(args[0]) {
+			p, ptrType, err := c.resolveMemPtr(args[0])
+			if err != nil {
+				return err
+			}
+			lanes := vi.totalBits / laneBits
+			vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
+			passthru := "zeroinitializer"
+			if !zeroMask {
+				oldRaw, err := vi.loadReg(args[1].Reg)
+				if err != nil {
+					return err
+				}
+				passthru = oldRaw
+				if vecTy != vi.byteVecTy {
+					t2 := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", t2, vi.byteVecTy, oldRaw, vecTy)
+					passthru = "%" + t2
+				}
+			}
+			loaded, err := c.x86EmitMaskedVecLoad(p, ptrType, lanes, laneBits, kreg, passthru)
+			if err != nil {
+				return err
+			}
+			v := loaded
+			if vecTy != vi.byteVecTy {
+				bc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bc, vecTy, loaded, vi.byteVecTy)
+				v = "%" + bc
+			}
+			return vi.storeVec(args[1].Reg, v)
+		}
 		v, err := vi.loadVec(args[0])
 		if err != nil {
 			return err
@@ -1288,20 +1516,13 @@ func (c *amd64Ctx) lowerX86VecMoveDeclarative(spec asm.OpSpec, zeroMask bool, in
 		if hasMask {
 			lanes := vi.totalBits / laneBits
 			vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-			oldMem := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", oldMem, vecTy, ptrType, p)
 			vTyped := v
 			if vecTy != vi.byteVecTy {
 				t1 := c.newTmp()
 				fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", t1, vi.byteVecTy, v, vecTy)
 				vTyped = "%" + t1
 			}
-			blended, err := c.x86ApplyMask(kreg, false, lanes, vecTy, vTyped, "%"+oldMem)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(c.b, "  store %s %s, %s %s, align 1\n", vecTy, blended, ptrType, p)
-			return nil
+			return c.x86EmitMaskedVecStore(vTyped, p, ptrType, lanes, laneBits, kreg)
 		}
 		fmt.Fprintf(c.b, "  store %s %s, %s %s, align 1\n", vi.byteVecTy, v, ptrType, p)
 		return nil
@@ -1327,7 +1548,11 @@ func (c *amd64Ctx) lowerX86VecShiftDeclarative(spec asm.OpSpec, zeroMask bool, i
 	if !ok {
 		return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 	}
-	srcRaw, err := vi.loadVec(srcOp)
+	shiftLaneBits := int(spec.LaneBits)
+	if shiftLaneBits == 0 {
+		shiftLaneBits = 8
+	}
+	srcRaw, err := c.x86LoadVecMasked(vi, srcOp, false, shiftLaneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -1579,7 +1804,7 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
-		raw, err := vi.loadVec(args[1])
+		raw, err := c.x86LoadVecMasked(vi, args[1], false, 32, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -1620,11 +1845,11 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 VPSHUFB dst must be vector reg: %q", ins.Raw)
 		}
-		maskRaw, err := vi.loadVec(args[0])
+		maskRaw, err := c.x86LoadVecMasked(vi, args[0], false, 8, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		srcRaw, err := vi.loadVec(args[1])
+		srcRaw, err := c.x86LoadVecMasked(vi, args[1], false, 8, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -1674,11 +1899,11 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 VPALIGNR dst must be vector reg: %q", ins.Raw)
 		}
-		src1Raw, err := vi.loadVec(args[1])
+		src1Raw, err := c.x86LoadVecMasked(vi, args[1], false, 8, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		src2Raw, err := vi.loadVec(args[2])
+		src2Raw, err := c.x86LoadVecMasked(vi, args[2], false, 8, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -1804,7 +2029,7 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
-		raw, err := vi.loadVec(args[1])
+		raw, err := c.x86LoadVecMasked(vi, args[1], false, 16, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -1861,16 +2086,16 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
-		lhsRaw, err := vi.loadVec(lhsOp)
-		if err != nil {
-			return err
-		}
-		rhsRaw, err := vi.loadVec(rhsOp)
-		if err != nil {
-			return err
-		}
 		laneBits := int(spec.LaneBits)
 		lanes := vi.totalBits / laneBits
+		lhsRaw, err := c.x86LoadVecMasked(vi, lhsOp, false, laneBits, kreg, hasMask)
+		if err != nil {
+			return err
+		}
+		rhsRaw, err := c.x86LoadVecMasked(vi, rhsOp, false, laneBits, kreg, hasMask)
+		if err != nil {
+			return err
+		}
 		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
 		per128 := 128 / laneBits
 		mask := make([]string, lanes)
@@ -1927,16 +2152,16 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
-		lhsRaw, err := vi.loadVec(lhsOp)
-		if err != nil {
-			return err
-		}
-		rhsRaw, err := vi.loadVec(rhsOp)
-		if err != nil {
-			return err
-		}
 		laneBits := int(spec.LaneBits)
 		lanes := vi.totalBits / laneBits
+		lhsRaw, err := c.x86LoadVecMasked(vi, lhsOp, false, laneBits, kreg, hasMask)
+		if err != nil {
+			return err
+		}
+		rhsRaw, err := c.x86LoadVecMasked(vi, rhsOp, false, laneBits, kreg, hasMask)
+		if err != nil {
+			return err
+		}
 		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
 		chunkBits := vi.totalBits
 		if chunkBits > 128 {
@@ -1985,16 +2210,16 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
-		rhsRaw, err := vi.loadVec(args[0])
-		if err != nil {
-			return err
-		}
-		lhsRaw, err := vi.loadVec(args[1])
-		if err != nil {
-			return err
-		}
 		laneBits := int(spec.LaneBits)
 		lanes := vi.totalBits / laneBits
+		rhsRaw, err := c.x86LoadVecMasked(vi, args[0], false, laneBits, kreg, hasMask)
+		if err != nil {
+			return err
+		}
+		lhsRaw, err := c.x86LoadVecMasked(vi, args[1], false, laneBits, kreg, hasMask)
+		if err != nil {
+			return err
+		}
 		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
 		rb, lb := rhsRaw, lhsRaw
 		if vecTy != vi.byteVecTy {
@@ -2045,6 +2270,20 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 			ex := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 0\n", ex, srcTy, xTyped)
 			elem = "%" + ex
+		} else if hasMask && isX86MemOp(args[0]) {
+			p, ptrType, err := c.resolveMemPtr(args[0])
+			if err != nil {
+				return err
+			}
+			m1, err := c.x86EmitMaskedAnyActiveI1Vec(kreg, lanes)
+			if err != nil {
+				return err
+			}
+			ld, el := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = call <1 x %s> @llvm.masked.load.v1i%d.p0(%s %s, i32 1, <1 x i1> %s, <1 x %s> zeroinitializer)\n",
+				ld, ty, laneBits, ptrType, p, m1, ty)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <1 x %s> %%%s, i32 0\n", el, ty, ld)
+			elem = "%" + el
 		} else {
 			var err error
 			elem, err = c.evalIntSized(args[0], ty)
@@ -2088,11 +2327,15 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
-		rhsRaw, err := vi.loadVec(args[1])
+		subLaneBits := 32
+		if strings.Contains(string(spec.Op), "64") {
+			subLaneBits = 64
+		}
+		rhsRaw, err := c.x86LoadVecMasked(vi, args[1], false, subLaneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		lhsRaw, err := vi.loadVec(args[2])
+		lhsRaw, err := c.x86LoadVecMasked(vi, args[2], false, subLaneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -2150,12 +2393,12 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
-		raw, err := vi.loadVec(args[0])
+		laneBits := int(spec.LaneBits)
+		lanes := vi.totalBits / laneBits
+		raw, err := c.x86LoadVecMasked(vi, args[0], false, laneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		laneBits := int(spec.LaneBits)
-		lanes := vi.totalBits / laneBits
 		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
 		mask := make([]string, lanes)
 		for i := 0; i < lanes; i++ {
@@ -2542,6 +2785,17 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 			if err != nil {
 				return err
 			}
+			if hasMask {
+				laneBits := 32
+				if strings.Contains(string(spec.Op), "64") {
+					laneBits = 64
+				}
+				lanes := int(spec.Width) / laneBits
+				vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
+				rb := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <%d x i8> %s to %s\n", rb, subBytes, res, vecTy)
+				return c.x86EmitMaskedVecStore("%"+rb, p, ptrType, lanes, laneBits, kreg)
+			}
 			fmt.Fprintf(c.b, "  store <%d x i8> %s, %s %s, align 1\n", subBytes, res, ptrType, p)
 			return nil
 		}
@@ -2917,11 +3171,11 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		laneBits := int(spec.LaneBits)
 		lanes := vi.totalBits / laneBits
 		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-		aRaw, err := c.x86LoadVecOrBcst(vi, args[1], bcst, laneBits)
+		aRaw, err := c.x86LoadVecMasked(vi, args[1], bcst, laneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		bRaw, err := vi.loadVec(args[2])
+		bRaw, err := c.x86LoadVecMasked(vi, args[2], false, laneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -3010,11 +3264,11 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 		laneBits := int(spec.LaneBits)
 		lanes := vi.totalBits / laneBits
 		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-		rhsRaw, err := c.x86LoadVecOrBcst(vi, args[1], bcst, laneBits)
+		rhsRaw, err := c.x86LoadVecMasked(vi, args[1], bcst, laneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		lhsRaw, err := vi.loadVec(args[2])
+		lhsRaw, err := c.x86LoadVecMasked(vi, args[2], false, laneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -3149,19 +3403,24 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 			if err != nil {
 				return err
 			}
+			// Compress active lanes in registers and emit a single prefix-masked
+			// store so only the popcount(mask) active lanes ever touch memory.
+			packed := "zeroinitializer"
 			writePos := "0"
 			for i := 0; i < lanes; i++ {
 				bit := amd64MaskBitI1(c, maskv, i)
-				lane, gep, oldM, val, step, nextPos := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+				lane, insE, sel, step, nextPos := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 				fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", lane, vecTy, sv, i)
-				fmt.Fprintf(c.b, "  %%%s = getelementptr i%d, %s %s, i32 %s\n", gep, laneBits, ptrType, basePtr, writePos)
-				fmt.Fprintf(c.b, "  %%%s = load i%d, %s %%%s, align 1\n", oldM, laneBits, ptrType, gep)
-				fmt.Fprintf(c.b, "  %%%s = select i1 %s, i%d %%%s, i%d %%%s\n", val, bit, laneBits, lane, laneBits, oldM)
-				fmt.Fprintf(c.b, "  store i%d %%%s, %s %%%s, align 1\n", laneBits, val, ptrType, gep)
+				fmt.Fprintf(c.b, "  %%%s = insertelement %s %s, i%d %%%s, i32 %s\n", insE, vecTy, packed, laneBits, lane, writePos)
+				fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s %%%s, %s %s\n", sel, bit, vecTy, insE, vecTy, packed)
 				fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i32\n", step, bit)
 				fmt.Fprintf(c.b, "  %%%s = add i32 %s, %%%s\n", nextPos, writePos, step)
+				packed = "%" + sel
 				writePos = "%" + nextPos
 			}
+			prefixMask := c.x86EmitPrefixMask(writePos, lanes)
+			fmt.Fprintf(c.b, "  call void @llvm.masked.store.v%di%d.p0(%s %s, %s %s, i32 1, <%d x i1> %s)\n",
+				lanes, laneBits, vecTy, packed, ptrType, basePtr, lanes, prefixMask)
 			return nil
 		}
 		return fmt.Errorf("amd64 %s unsupported dst: %q", spec.Op, ins.Raw)
@@ -3175,11 +3434,11 @@ func (c *amd64Ctx) lowerX86VecShuffleDeclarative(spec asm.OpSpec, zeroMask bool,
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
 		lanes := vi.totalBits / 8
-		src1, err := vi.loadVec(args[0])
+		src1, err := c.x86LoadVecMasked(vi, args[0], false, 8, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		src2, err := vi.loadVec(args[1])
+		src2, err := c.x86LoadVecMasked(vi, args[1], false, 8, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -3275,11 +3534,11 @@ func (c *amd64Ctx) lowerX86VAESDeclarative(spec asm.OpSpec, zeroMask bool, ins a
 		if !ok {
 			return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 		}
-		matRaw, err := c.x86LoadVecOrBcst(vi, matOp, bcst, 64)
+		matRaw, err := c.x86LoadVecMasked(vi, matOp, bcst, 64, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		srcRaw, err := vi.loadVec(srcOp)
+		srcRaw, err := c.x86LoadVecMasked(vi, srcOp, false, 8, kreg, hasMask)
 		if err != nil {
 			return err
 		}

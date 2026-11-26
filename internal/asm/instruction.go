@@ -390,12 +390,7 @@ func shiftClass(op ShiftOp) string {
 // required before a form is considered semantically verified.
 func ProbeInstructionWith(arch Arch, goarch string, ins Instr, translateFn func(*File, Options) (string, error)) error {
 	if arch == ArchWASM {
-		// WebAssembly instructions share a typed operand stack, structured
-		// control stack, physical function signature, and (for Go code) the
-		// linear-memory SP/PC_B state. An isolated instruction cannot prove a
-		// form valid or invalid. The corpus gate therefore compiles every full
-		// wasm assembly file after treating per-instruction probes as contextual.
-		return fmt.Errorf("%w: wasm instructions require their full function", ErrProbeNeedsContext)
+		return probeWASMInstructionWith(ins, translateFn)
 	}
 	if strings.HasPrefix(NormalizeInstructionOpcode(ins.Op), "REP") {
 		return fmt.Errorf("%w: REP prefix must be probed with its following instruction", ErrProbeNeedsContext)
@@ -455,4 +450,210 @@ func ProbeInstructionWith(arch Arch, goarch string, ins Instr, translateFn func(
 	}
 	_, err := translateFn(file, Options{Goarch: goarch, TargetTriple: triple, Sigs: sigs, WASMABI: wasmABI})
 	return err
+}
+
+// probeWASMInstructionWith actually invokes the real WebAssembly lowerer instead
+// of unconditionally classifying all wasm instructions as context-required.
+// Structured control flow and frame/ABI-dependent instructions still return
+// ErrProbeNeedsContext, while stack instructions are probed with typed dummy
+// stack seeds so unsupported ops (e.g. MemoryInit, DataDrop, Table*) are
+// reported honestly as unsupported.
+func probeWASMInstructionWith(ins Instr, translateFn func(*File, Options) (string, error)) error {
+	op := NormalizeInstructionOpcode(ins.Op)
+	// Structured control flow and call/frame-context ops require their enclosing function.
+	switch op {
+	case "BLOCK", "LOOP", "IF", "ELSE", "END", "BR", "BRIF", "BRTABLE",
+		"CALL", "CALLINDIRECT", "CALLNORESUME", "WASMCALL", "JMP",
+		"RET", "RETURN", "WASMRETURN", "RETUNWIND":
+		return fmt.Errorf("%w: wasm control-flow instruction %s requires enclosing function context", ErrProbeNeedsContext, ins.Op)
+	}
+	for _, arg := range ins.Args {
+		switch arg.Kind {
+		case OpFP, OpFPAddr:
+			return fmt.Errorf("%w: %s uses an FP frame slot", ErrProbeNeedsContext, ins.Raw)
+		case OpMem:
+			if arg.Mem.OffRaw != "" {
+				return fmt.Errorf("%w: %s uses a symbolic memory offset", ErrProbeNeedsContext, ins.Raw)
+			}
+		case OpImm:
+			if arg.ImmRaw != "" {
+				return fmt.Errorf("%w: %s uses a symbolic immediate", ErrProbeNeedsContext, ins.Raw)
+			}
+		}
+	}
+
+	// Build typed operand stack seeds matching the instruction's stack signature.
+	seedInstrs, dropCount := wasmProbeStackSeeds(op, ins)
+	instrs := make([]Instr, 0, len(seedInstrs)+2+dropCount)
+	instrs = append(instrs, seedInstrs...)
+	instrs = append(instrs, ins)
+	for i := 0; i < dropCount; i++ {
+		instrs = append(instrs, Instr{Op: "Drop", Raw: "Drop"})
+	}
+	instrs = append(instrs,
+		Instr{Op: "I32Const", Args: []Operand{{Kind: OpImm, Imm: 0}}, Raw: "I32Const $0"},
+		Instr{Op: "Return", Raw: "Return"},
+	)
+
+	fn := Func{Sym: "plan9asm.probe", Instrs: instrs}
+	sigs := map[string]FuncSig{
+		fn.Sym: {Name: fn.Sym, Ret: Void},
+	}
+	file := &File{Arch: ArchWASM, Funcs: []Func{fn}}
+	_, err := translateFn(file, Options{
+		Goarch:       "wasm",
+		TargetTriple: "wasm32-unknown-unknown",
+		Sigs:         sigs,
+		WASMABI:      WASMABIGo,
+	})
+	return err
+}
+
+func wasmProbeStackSeeds(op string, ins Instr) (seeds []Instr, drops int) {
+	i32Seed := Instr{Op: "I32Const", Args: []Operand{{Kind: OpImm, Imm: 1}}, Raw: "I32Const $1"}
+	i64Seed := Instr{Op: "I64Const", Args: []Operand{{Kind: OpImm, Imm: 1}}, Raw: "I64Const $1"}
+	f32Seed := Instr{Op: "F32Const", Args: []Operand{{Kind: OpImm, Imm: 0x3f800000}}, Raw: "F32Const $1065353216"}
+	f64Seed := Instr{Op: "F64Const", Args: []Operand{{Kind: OpImm, Imm: 0x3ff0000000000000}}, Raw: "F64Const $4607182418800017408"}
+	v128Seed := Instr{Op: "V128Const", Args: []Operand{{Kind: OpImm, Imm: 0}, {Kind: OpImm, Imm: 0}}, Raw: "V128Const $0, $0"}
+
+	switch op {
+	case "NOP", "UNREACHABLE", "DATADROP", "ELEMDROP", "RESUMEPOINT", "WORD", "MOVB", "MOVH", "MOVW", "MOVD":
+		return nil, 0
+	case "DROP":
+		return []Instr{i64Seed}, 0
+	case "SELECT":
+		return []Instr{i64Seed, i64Seed, i32Seed}, 1
+	case "NOT":
+		return []Instr{i32Seed}, 1
+	case "I32CONST", "I64CONST", "F32CONST", "F64CONST", "V128CONST",
+		"GET", "LOCALGET", "GLOBALGET", "CURRENTMEMORY", "MEMORYSIZE", "TABLESIZE":
+		return nil, 1
+	case "SET", "LOCALSET", "GLOBALSET":
+		return []Instr{i64Seed}, 0
+	case "TEE", "LOCALTEE":
+		return []Instr{i64Seed}, 1
+	case "GROWMEMORY", "MEMORYGROW":
+		return []Instr{i32Seed}, 1
+	case "MEMORYCOPY", "MEMORYFILL", "MEMORYINIT", "TABLEINIT", "TABLECOPY", "TABLEFILL":
+		return []Instr{i32Seed, i32Seed, i32Seed}, 0
+	case "TABLEGROW":
+		return []Instr{i32Seed, i32Seed}, 1
+	case "V128BITSELECT":
+		return []Instr{v128Seed, v128Seed, v128Seed}, 1
+	case "V128NOT", "V128ANYTRUE":
+		return []Instr{v128Seed}, 1
+	case "V128AND", "V128ANDNOT", "V128OR", "V128XOR":
+		return []Instr{v128Seed, v128Seed}, 1
+	case "V128STORE":
+		return []Instr{i32Seed, v128Seed}, 0
+	case "V128LOAD8LANE", "V128LOAD16LANE", "V128LOAD32LANE", "V128LOAD64LANE":
+		return []Instr{i32Seed, v128Seed}, 1
+	case "V128STORE8LANE", "V128STORE16LANE", "V128STORE32LANE", "V128STORE64LANE":
+		return []Instr{i32Seed, v128Seed}, 0
+	}
+	if strings.HasPrefix(op, "V128LOAD") {
+		return []Instr{i32Seed}, 1
+	}
+	// Scalar loads/stores
+	if strings.Contains(op, "LOAD") && !strings.HasPrefix(op, "V128") {
+		return []Instr{i32Seed}, 1
+	}
+	if strings.Contains(op, "STORE") && !strings.HasPrefix(op, "V128") {
+		val := i32Seed
+		switch {
+		case strings.HasPrefix(op, "I64"):
+			val = i64Seed
+		case strings.HasPrefix(op, "F32"):
+			val = f32Seed
+		case strings.HasPrefix(op, "F64"):
+			val = f64Seed
+		}
+		return []Instr{i32Seed, val}, 0
+	}
+	// SIMD128 lane/vector ops
+	if strings.HasPrefix(op, "I8X16") || strings.HasPrefix(op, "I16X8") ||
+		strings.HasPrefix(op, "I32X4") || strings.HasPrefix(op, "I64X2") ||
+		strings.HasPrefix(op, "F32X4") || strings.HasPrefix(op, "F64X2") {
+		suffix := op[5:]
+		elemSeed := i32Seed
+		switch {
+		case strings.HasPrefix(op, "I64X2"):
+			elemSeed = i64Seed
+		case strings.HasPrefix(op, "F32X4"):
+			elemSeed = f32Seed
+		case strings.HasPrefix(op, "F64X2"):
+			elemSeed = f64Seed
+		}
+		switch {
+		case suffix == "SPLAT":
+			return []Instr{elemSeed}, 1
+		case suffix == "REPLACELANE":
+			return []Instr{v128Seed, elemSeed}, 1
+		case suffix == "SHL" || suffix == "SHRS" || suffix == "SHRU":
+			return []Instr{v128Seed, i32Seed}, 1
+		case suffix == "RELAXEDMADD" || suffix == "RELAXEDNMADD" ||
+			suffix == "RELAXEDLANESELECT" || suffix == "RELAXEDDOTI8X16I7X16ADDS":
+			return []Instr{v128Seed, v128Seed, v128Seed}, 1
+		case strings.HasPrefix(suffix, "EXTRACTLANE") ||
+			suffix == "ALLTRUE" || suffix == "BITMASK" ||
+			suffix == "ABS" || suffix == "NEG" || suffix == "POPCNT" ||
+			suffix == "SQRT" || suffix == "CEIL" || suffix == "FLOOR" ||
+			suffix == "TRUNC" || suffix == "NEAREST" ||
+			strings.HasPrefix(suffix, "EXTEND") ||
+			strings.HasPrefix(suffix, "EXTADDPAIRWISE") ||
+			strings.HasPrefix(suffix, "CONVERT") ||
+			strings.HasPrefix(suffix, "DEMOTE") ||
+			strings.HasPrefix(suffix, "PROMOTE") ||
+			strings.HasPrefix(suffix, "TRUNCSAT") ||
+			strings.HasPrefix(suffix, "RELAXEDTRUNC"):
+			return []Instr{v128Seed}, 1
+		default:
+			return []Instr{v128Seed, v128Seed}, 1
+		}
+	}
+	// Scalar unary/conversion/reinterpret/extend ops
+	switch {
+	case strings.HasSuffix(op, "EQZ") || strings.HasSuffix(op, "CLZ") ||
+		strings.HasSuffix(op, "CTZ") || strings.HasSuffix(op, "POPCNT") ||
+		strings.HasSuffix(op, "ABS") || strings.HasSuffix(op, "NEG") ||
+		strings.HasSuffix(op, "CEIL") || strings.HasSuffix(op, "FLOOR") ||
+		strings.HasSuffix(op, "TRUNC") || strings.HasSuffix(op, "NEAREST") ||
+		strings.HasSuffix(op, "SQRT") || strings.Contains(op, "EXTEND8") ||
+		strings.Contains(op, "EXTEND16") || strings.Contains(op, "EXTEND32"):
+		switch {
+		case strings.HasPrefix(op, "I64"):
+			return []Instr{i64Seed}, 1
+		case strings.HasPrefix(op, "F32"):
+			return []Instr{f32Seed}, 1
+		case strings.HasPrefix(op, "F64"):
+			return []Instr{f64Seed}, 1
+		default:
+			return []Instr{i32Seed}, 1
+		}
+	case op == "I32WRAPI64":
+		return []Instr{i64Seed}, 1
+	case strings.HasPrefix(op, "I64EXTENDI32"):
+		return []Instr{i32Seed}, 1
+	case strings.Contains(op, "TRUNCF32") || strings.Contains(op, "TRUNCSATF32") ||
+		op == "I32REINTERPRETF32" || op == "F64PROMOTEF32":
+		return []Instr{f32Seed}, 1
+	case strings.Contains(op, "TRUNCF64") || strings.Contains(op, "TRUNCSATF64") ||
+		op == "I64REINTERPRETF64" || op == "F32DEMOTEF64":
+		return []Instr{f64Seed}, 1
+	case strings.Contains(op, "CONVERTI32") || op == "F32REINTERPRETI32":
+		return []Instr{i32Seed}, 1
+	case strings.Contains(op, "CONVERTI64") || op == "F64REINTERPRETI64":
+		return []Instr{i64Seed}, 1
+	}
+	// Remaining scalar binary ops
+	switch {
+	case strings.HasPrefix(op, "I64"):
+		return []Instr{i64Seed, i64Seed}, 1
+	case strings.HasPrefix(op, "F32"):
+		return []Instr{f32Seed, f32Seed}, 1
+	case strings.HasPrefix(op, "F64"):
+		return []Instr{f64Seed, f64Seed}, 1
+	default:
+		return []Instr{i32Seed, i32Seed}, 1
+	}
 }

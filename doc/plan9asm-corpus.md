@@ -326,25 +326,42 @@ union is intentional: operand-class names and generated SVE encoders evolve
 between releases, so using only the newest tree would lose forms that existed
 in earlier supported releases.
 
-The Go 1.27 snapshot currently reports:
+The Go 1.27 `go-asm` snapshot currently reports:
 
 | GOARCH | official names | encoder forms | observed ops | observed forms | supported | context | unsupported | runtime verified | parse failures |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 54 | 6 | 0 | 0 | 0 |
-| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 6690 | 6 | 46 | 35 | 0 |
+| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 6736 | 6 | 0 | 35 | 0 |
 | arm | 181 | 528 | 135 | 500 | 459 | 41 | 0 | 0 | 0 |
-| arm64 | 1417 including SVE | 2964 | 1281 | 1980 | 1927 | 53 | 0 | 64 | 0 |
-| wasm | 463 | 463 opcode-only rows | 71 | 120 | 0 | 120 | 0 | 0 | 0 |
+| arm64 | 1417 including SVE | 2964 | 1281 | 1980 | 1308 | 53 | 619 | 64 | 0 |
+| wasm | 463 | 463 opcode-only rows | 71 | 120 | 68 | 52 | 0 | 0 | 0 |
 
 Encoder forms use Go's internal operand classes and are a complete machine-
 readable inventory of the encoder rows; the wasm count is deliberately an
 opcode-only inventory because its Go backend has no such table. Observed forms
 use plan9asm's concrete shape classification and can outnumber encoder rows
 because generated testdata varies registers, address shapes, and concrete
-encodings. The remaining 46 unsupported amd64 forms are all 386-only x87
-instructions intentionally rejected in 64-bit mode. Go 1.27's ARM64 SVE corpus
-and encoder tables are lowered across all 1980 observed forms with zero parse
-failures.
+encodings.
+
+Important scope notes (these numbers measure lowering-probe status, not full
+runtime semantic conformance):
+
+- **amd64**: all 6,742 observed Go 1.27 assembler corpus forms parse and lower
+  with 0 unsupported forms (including x87 instructions such as `FADDD` and
+  `FSQRT` in both `X87Hardware` and `X87Software` modes).
+- **arm64**: all non-SVE scalar, FP, and NEON forms in the Go 1.27 corpus have
+  0 unsupported forms. Modeled SVE core instructions lower to runtime-scalable
+  LLVM IR (`@llvm.vscale.i64()`, `<vscale x N x T>`, `@llvm.aarch64.sve.*`),
+  while the 619 remaining unsupported forms are unmodeled SVE2/SME instructions
+  that are intentionally rejected rather than lowered with placeholder IR.
+- **wasm**: `ProbeInstructionWith` now invokes the real WebAssembly lowerer
+  under `WASMABIGo` rather than marking all Wasm ops context-required. On the
+  Go 1.27 `go-asm` stdlib corpus this yields 68 supported, 52 context-required
+  (control-flow / frame / symbolic forms), and 0 unsupported; on the full 462-op
+  Wasm encoder scan it yields 440 supported, 13 context-required, and 9
+  unsupported (`DataDrop`, `ElemDrop`, `MemoryInit`, `ResumePoint`,
+  `TableCopy`, `TableFill`, `TableGrow`, `TableInit`, `TableSize`), which fail
+  explicitly until passive segments and tables are modeled.
 
 The machine-readable cross-version snapshots are in
 `testdata/coverage/go-asm-baseline.json`. On Go 1.27, a CI fingerprint mismatch

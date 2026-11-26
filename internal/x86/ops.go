@@ -401,7 +401,7 @@ func (c *amd64Ctx) lowerDeclarativeVecBinOp(op asm.Op, ins asm.Instr) (ok bool, 
 	if !ok {
 		return true, false, fmt.Errorf("x86 %s unsupported destination register %s: %q", op, dstOp.Reg, ins.Raw)
 	}
-	totalBits, byteVecTy, loadVec, storeVec := vi.totalBits, vi.byteVecTy, vi.loadVec, vi.storeVec
+	totalBits, byteVecTy, storeVec := vi.totalBits, vi.byteVecTy, vi.storeVec
 
 	var lhsOp, rhsOp asm.Operand
 	if spec.ThreeOp {
@@ -425,32 +425,19 @@ func (c *amd64Ctx) lowerDeclarativeVecBinOp(op asm.Op, ins asm.Instr) (ok bool, 
 	}
 	opVecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
 
-	lhsRaw, err := loadVec(lhsOp)
+	lhsRaw, err := c.x86LoadVecMasked(vi, lhsOp, false, laneBits, kreg, hasMask)
 	if err != nil {
 		return true, false, err
 	}
-	var rhsVal string
-	if bcst && rhsOp.Kind == asm.OpMem {
-		p, ptrType, err := c.ptrFromMem(rhsOp.Mem)
-		if err != nil {
-			return true, false, err
-		}
-		ld, ins0, splat := c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", ld, elemTy, ptrType, p)
-		fmt.Fprintf(c.b, "  %%%s = insertelement %s undef, %s %%%s, i32 0\n", ins0, opVecTy, elemTy, ld)
-		fmt.Fprintf(c.b, "  %%%s = shufflevector %s %%%s, %s poison, <%d x i32> zeroinitializer\n", splat, opVecTy, ins0, opVecTy, lanes)
-		rhsVal = "%" + splat
-	} else {
-		rhsRaw, err := loadVec(rhsOp)
-		if err != nil {
-			return true, false, err
-		}
-		rhsVal = rhsRaw
-		if opVecTy != byteVecTy {
-			rt := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", rt, byteVecTy, rhsRaw, opVecTy)
-			rhsVal = "%" + rt
-		}
+	rhsRaw, err := c.x86LoadVecMasked(vi, rhsOp, bcst, laneBits, kreg, hasMask)
+	if err != nil {
+		return true, false, err
+	}
+	rhsVal := rhsRaw
+	if opVecTy != byteVecTy {
+		rt := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", rt, byteVecTy, rhsRaw, opVecTy)
+		rhsVal = "%" + rt
 	}
 
 	lhsVal := lhsRaw

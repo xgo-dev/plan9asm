@@ -288,8 +288,25 @@ func (c *amd64Ctx) lowerX86FMA(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Ins
 		if err != nil {
 			return err
 		}
-		ld4 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load <4 x float>, %s %s, align 1\n", ld4, memPtrTy, memPtr)
+		var ld4 string
+		if hasMask {
+			checkLanes := 16
+			if isScalar {
+				checkLanes = 1
+			}
+			m1, err := c.x86EmitMaskedAnyActiveI1Vec(kreg, checkLanes)
+			if err != nil {
+				return err
+			}
+			m4, ldi, bc := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <1 x i1> %s, <1 x i1> poison, <4 x i32> zeroinitializer\n", m4, m1)
+			fmt.Fprintf(c.b, "  %%%s = call <4 x i32> @llvm.masked.load.v4i32.p0(%s %s, i32 1, <4 x i1> %%%s, <4 x i32> zeroinitializer)\n", ldi, memPtrTy, memPtr, m4)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <4 x float>\n", bc, ldi)
+			ld4 = bc
+		} else {
+			ld4 = c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load <4 x float>, %s %s, align 1\n", ld4, memPtrTy, memPtr)
+		}
 		if isScalar {
 			acc, err := c.loadXLowF32(args[2].Reg)
 			if err != nil {
@@ -388,19 +405,19 @@ func (c *amd64Ctx) lowerX86FMA(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Ins
 		if isF32 {
 			fpTy, intr = "float", "@llvm.fma.f32"
 		}
-		evalS := c.evalF64
+		scalarBits := 64
 		loadS := c.loadXLowF64
 		storeS := c.storeXLowF64
 		if isF32 {
-			evalS = c.evalF32
+			scalarBits = 32
 			loadS = c.loadXLowF32
 			storeS = c.storeXLowF32
 		}
-		op3, err := evalS(args[0])
+		op3, err := c.x86EvalScalarFPMasked(args[0], scalarBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		op2, err := evalS(args[1])
+		op2, err := c.x86EvalScalarFPMasked(args[1], scalarBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -435,11 +452,11 @@ func (c *amd64Ctx) lowerX86FMA(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Ins
 	vecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
 	intr := fmt.Sprintf("@llvm.fma.v%d%s", lanes, intrSuf)
 
-	raw3, err := c.x86LoadVecOrBcst(vi, args[0], bcst, laneBits)
+	raw3, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	raw2, err := vi.loadVec(args[1])
+	raw2, err := c.x86LoadVecMasked(vi, args[1], false, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -692,8 +709,8 @@ func (c *amd64Ctx) lowerX86CVT(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Ins
 	srcVecTy := fmt.Sprintf("<%d x %s>", lanes, srcElemTy)
 	dstVecTy := fmt.Sprintf("<%d x %s>", lanes, dstElemTy)
 
-	// Load `lanes` elements of `srcElemTy` from srcOp (supporting reg, partial reg, mem, .BCST, sym).
-	srcVal, err := c.x86LoadTypedLanes(srcOp, lanes, srcBits, srcElemTy, bcst)
+	// Load `lanes` elements of `srcElemTy` from srcOp (supporting reg, partial reg, mem, .BCST, sym, and masked fault suppression).
+	srcVal, err := c.x86LoadTypedLanesMasked(srcOp, lanes, srcBits, srcElemTy, bcst, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -772,6 +789,33 @@ func (c *amd64Ctx) lowerX86CVT(spec asm.OpSpec, zeroMask, bcst bool, ins asm.Ins
 	out := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", out, dstFullTy, res, dstVI.byteVecTy)
 	return dstVI.storeVec(dstOp.Reg, "%"+out)
+}
+
+func (c *amd64Ctx) x86LoadTypedLanesMasked(op asm.Operand, lanes, elemBits int, elemTy string, bcst bool, kreg asm.Reg, hasMask bool) (string, error) {
+	if !hasMask || (op.Kind != asm.OpMem && op.Kind != asm.OpSym) {
+		return c.x86LoadTypedLanes(op, lanes, elemBits, elemTy, bcst)
+	}
+	p, pty, err := c.resolveMemPtr(op)
+	if err != nil {
+		return "", err
+	}
+	intVecTy := fmt.Sprintf("<%d x i%d>", lanes, elemBits)
+	vecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
+	var raw string
+	if bcst {
+		raw, err = c.x86EmitMaskedBroadcastLoad(p, pty, lanes, elemBits, kreg)
+	} else {
+		raw, err = c.x86EmitMaskedVecLoad(p, pty, lanes, elemBits, kreg, "zeroinitializer")
+	}
+	if err != nil {
+		return "", err
+	}
+	if intVecTy == vecTy {
+		return raw, nil
+	}
+	bc := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", bc, intVecTy, raw, vecTy)
+	return "%" + bc, nil
 }
 
 func (c *amd64Ctx) x86LoadTypedLanes(op asm.Operand, lanes, elemBits int, elemTy string, bcst bool) (string, error) {

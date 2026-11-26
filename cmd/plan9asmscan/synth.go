@@ -561,6 +561,8 @@ func synthesizeWASMLines(row encoderFormReport) []string {
 		return []string{op + " $1.0"}
 	case "V128CONST":
 		return []string{op + " $0, $0"}
+	case "I8X16SHUFFLE16":
+		return []string{op + " $0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15"}
 	case "GET", "SET", "TEE", "LOCALGET", "LOCALSET", "LOCALTEE", "GLOBALGET", "GLOBALSET":
 		return []string{op + " R0"}
 	case "BR", "BRIF", "BRTABLE":
@@ -569,7 +571,14 @@ func synthesizeWASMLines(row encoderFormReport) []string {
 		return []string{op + " sym(SB)"}
 	case "MOVD", "MOVW", "MOVH", "MOVB":
 		return []string{op + " R0, R1"}
-	case "MEMORYGROW", "MEMORYSIZE", "MEMORYCOPY", "MEMORYFILL":
+	case "MEMORYGROW", "MEMORYSIZE", "MEMORYCOPY", "MEMORYFILL",
+		"MEMORYINIT", "DATADROP", "ELEMDROP", "TABLEINIT", "TABLECOPY", "TABLEFILL", "TABLESIZE", "TABLEGROW":
+		return []string{op + " $0"}
+	case "V128LOAD8LANE", "V128LOAD16LANE", "V128LOAD32LANE", "V128LOAD64LANE",
+		"V128STORE8LANE", "V128STORE16LANE", "V128STORE32LANE", "V128STORE64LANE":
+		return []string{op + " $0, $0"}
+	}
+	if strings.Contains(op, "EXTRACTLANE") || strings.Contains(op, "REPLACELANE") {
 		return []string{op + " $0"}
 	}
 	if strings.Contains(op, "LOAD") || strings.Contains(op, "STORE") {

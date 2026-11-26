@@ -127,7 +127,7 @@ func newX86Ctx(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(st
 }
 
 func (c *amd64Ctx) useHardwareX87() bool {
-	return c.goarch == "386" && c.x87Mode != asm.X87Software
+	return (c.goarch == "386" || c.goarch == "amd64") && c.x87Mode != asm.X87Software
 }
 
 func (c *amd64Ctx) emitSourceComment(ins asm.Instr) {
@@ -231,7 +231,7 @@ func (c *amd64Ctx) scanUsedRegs() {
 			c.usedKRegs[idx] = true
 			return
 		}
-		if _, ok := amd64ParseX87Reg(r); ok && c.goarch == "386" {
+		if _, ok := amd64ParseX87Reg(r); ok && (c.goarch == "386" || c.goarch == "amd64") {
 			c.usedX87 = true
 			return
 		}
@@ -260,7 +260,7 @@ func (c *amd64Ctx) scanUsedRegs() {
 	for _, blk := range c.blocks {
 		for _, ins := range blk.instrs {
 			op := strings.ToUpper(string(ins.Op))
-			if c.goarch == "386" && isX87Op(asm.Op(op)) {
+			if (c.goarch == "386" || c.goarch == "amd64") && isX87Op(asm.Op(op)) {
 				c.usedX87 = true
 				if op == "FMOVVP" {
 					c.usesX87Convert = true

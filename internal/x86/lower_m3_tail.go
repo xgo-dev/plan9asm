@@ -351,14 +351,11 @@ func (c *amd64Ctx) lowerX86M3FPUnary(spec asm.OpSpec, zeroMask, bcst bool, ins a
 			fpTy, mangle = "float", "f32"
 		}
 		var xv, oldv string
-		if laneBits == 32 {
-			xv, err = c.evalF32(srcOp)
-			if err == nil {
+		xv, err = c.x86EvalScalarFPMasked(srcOp, laneBits, kreg, hasMask)
+		if err == nil {
+			if laneBits == 32 {
 				oldv, err = c.loadXLowF32(dstOp.Reg)
-			}
-		} else {
-			xv, err = c.evalF64(srcOp)
-			if err == nil {
+			} else {
 				oldv, err = c.loadXLowF64(dstOp.Reg)
 			}
 		}
@@ -392,7 +389,7 @@ func (c *amd64Ctx) lowerX86M3FPUnary(spec asm.OpSpec, zeroMask, bcst bool, ins a
 		elemTy, mangle = "float", fmt.Sprintf("v%df32", lanes)
 	}
 	fpVecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
-	raw, err := c.x86LoadVecOrBcst(vi, args[0], bcst, laneBits)
+	raw, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -485,20 +482,14 @@ func (c *amd64Ctx) lowerX86M3FPBinary(spec asm.OpSpec, zeroMask, bcst bool, ins 
 		}
 		var a, b, oldv string
 		var err error
-		if laneBits == 32 {
-			b, err = c.evalF32(args[0])
-			if err == nil {
-				a, err = c.evalF32(args[1])
-			}
-			if err == nil {
+		b, err = c.x86EvalScalarFPMasked(args[0], laneBits, kreg, hasMask)
+		if err == nil {
+			a, err = c.x86EvalScalarFPMasked(args[1], laneBits, kreg, hasMask)
+		}
+		if err == nil {
+			if laneBits == 32 {
 				oldv, err = c.loadXLowF32(args[2].Reg)
-			}
-		} else {
-			b, err = c.evalF64(args[0])
-			if err == nil {
-				a, err = c.evalF64(args[1])
-			}
-			if err == nil {
+			} else {
 				oldv, err = c.loadXLowF64(args[2].Reg)
 			}
 		}
@@ -536,11 +527,11 @@ func (c *amd64Ctx) lowerX86M3FPBinary(spec asm.OpSpec, zeroMask, bcst bool, ins 
 		elemTy, mangle = "float", fmt.Sprintf("v%df32", lanes)
 	}
 	fpVecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
-	bRaw, err := c.x86LoadVecOrBcst(vi, args[0], bcst, laneBits)
+	bRaw, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	aRaw, err := vi.loadVec(args[1])
+	aRaw, err := c.x86LoadVecMasked(vi, args[1], false, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -607,13 +598,7 @@ func (c *amd64Ctx) lowerX86VFPClass(spec asm.OpSpec, bcst bool, ins asm.Instr) e
 		if laneBits == 32 {
 			fpTy, mangle = "float", "f32"
 		}
-		var fv string
-		var err error
-		if laneBits == 32 {
-			fv, err = c.evalF32(args[1])
-		} else {
-			fv, err = c.evalF64(args[1])
-		}
+		fv, err := c.x86EvalScalarFPMasked(args[1], laneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -648,7 +633,7 @@ func (c *amd64Ctx) lowerX86VFPClass(spec asm.OpSpec, bcst bool, ins asm.Instr) e
 		elemTy, mangle = "float", fmt.Sprintf("v%df32", lanes)
 	}
 	fpVecTy := fmt.Sprintf("<%d x %s>", lanes, elemTy)
-	sv, err := c.x86LoadTypedLanes(args[1], lanes, laneBits, elemTy, bcst)
+	sv, err := c.x86LoadTypedLanesMasked(args[1], lanes, laneBits, elemTy, bcst, kreg, hasMask)
 	if err != nil {
 		return err
 	}

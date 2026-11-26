@@ -17,17 +17,22 @@ func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 		arm64MaxUnsup = 20
 	}
 	cases := []struct {
-		goarch      string
-		arch        plan9asm.Arch
-		maxUnsup    int
-		minForms    int
-		wantExample string
+		goarch         string
+		arch           plan9asm.Arch
+		maxUnsup       int
+		maxNonSVEUnsup int
+		minForms       int
 	}{
 		{goarch: "386", arch: plan9asm.ArchAMD64, maxUnsup: 10, minForms: 10000},
 		{goarch: "amd64", arch: plan9asm.ArchAMD64, maxUnsup: 275, minForms: 10000},
 		{goarch: "arm", arch: plan9asm.ArchARM, maxUnsup: 0, minForms: 400},
-		{goarch: "arm64", arch: plan9asm.ArchARM64, maxUnsup: arm64MaxUnsup, minForms: 900},
-		{goarch: "wasm", arch: plan9asm.ArchWASM, maxUnsup: 0, minForms: 200},
+		// ARM64 keeps strict <= arm64MaxUnsup on all non-SVE/NEON/scalar forms,
+		// while honestly rejecting unmodeled SVE2/SME forms rather than emitting
+		// placeholder IR.
+		{goarch: "arm64", arch: plan9asm.ArchARM64, maxUnsup: 900, maxNonSVEUnsup: arm64MaxUnsup, minForms: 900},
+		// Wasm honestly rejects the 9 unmodeled segment/table/pseudo ops
+		// (DataDrop, ElemDrop, MemoryInit, ResumePoint, TableCopy/Fill/Grow/Init/Size).
+		{goarch: "wasm", arch: plan9asm.ArchWASM, maxUnsup: 9, minForms: 200},
 	}
 
 	for _, tc := range cases {
@@ -52,17 +57,35 @@ func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 				t.Fatalf("scanOrthogonalFormatMatrix(%s) forms=%d < min=%d", tc.goarch, len(forms), tc.minForms)
 			}
 			unsup := 0
+			nonSVEUnsup := 0
 			var bad []string
+			var badNonSVE []string
 			for _, fs := range forms {
 				if fs.UnsupportedCount > 0 && fs.SupportedCount == 0 && fs.ContextCount == 0 {
 					unsup++
 					if len(bad) < 10 && len(fs.Examples) > 0 {
 						bad = append(bad, fs.Examples[0])
 					}
+					opName := ""
+					if len(fs.Examples) > 0 {
+						fields := strings.Fields(fs.Examples[0])
+						if len(fields) > 0 {
+							opName = strings.ToUpper(fields[0])
+						}
+					}
+					if tc.goarch == "arm64" && !strings.HasPrefix(opName, "Z") && !strings.HasPrefix(opName, "P") {
+						nonSVEUnsup++
+						if len(badNonSVE) < 10 && len(fs.Examples) > 0 {
+							badNonSVE = append(badNonSVE, fs.Examples[0])
+						}
+					}
 				}
 			}
 			if unsup > tc.maxUnsup {
 				t.Fatalf("scanOrthogonalFormatMatrix(%s) unsupported=%d > max=%d; samples=%v", tc.goarch, unsup, tc.maxUnsup, bad)
+			}
+			if tc.goarch == "arm64" && nonSVEUnsup > tc.maxNonSVEUnsup {
+				t.Fatalf("scanOrthogonalFormatMatrix(arm64) non-SVE unsupported=%d > max=%d; samples=%v", nonSVEUnsup, tc.maxNonSVEUnsup, badNonSVE)
 			}
 		})
 	}

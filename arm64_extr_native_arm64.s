@@ -1,0 +1,45 @@
+//go:build arm64
+
+#include "textflag.h"
+
+TEXT ·nativeARM64Extr35(SB),NOSPLIT,$0-24
+	MOVD rm+0(FP), R22
+	MOVD rn+8(FP), R12
+	EXTR $35, R22, R12, R8
+	MOVD R8, ret+16(FP)
+	RET
+
+TEXT ·nativeARM64Extr0(SB),NOSPLIT,$0-24
+	MOVD rm+0(FP), R22
+	MOVD rn+8(FP), R12
+	EXTR $0, R22, R12, R8
+	MOVD R8, ret+16(FP)
+	RET
+
+TEXT ·nativeARM64Extr1(SB),NOSPLIT,$0-24
+	MOVD rm+0(FP), R22
+	MOVD rn+8(FP), R12
+	EXTR $1, R22, R12, R8
+	MOVD R8, ret+16(FP)
+	RET
+
+TEXT ·nativeARM64Extr63(SB),NOSPLIT,$0-24
+	MOVD rm+0(FP), R22
+	MOVD rn+8(FP), R12
+	EXTR $63, R22, R12, R8
+	MOVD R8, ret+16(FP)
+	RET
+
+TEXT ·nativeARM64ExtrW17(SB),NOSPLIT,$0-16
+	MOVW rm+0(FP), R22
+	MOVW rn+4(FP), R12
+	EXTRW $17, R22, R12, R8
+	MOVW R8, ret+8(FP)
+	RET
+
+TEXT ·nativeARM64ExtrW0(SB),NOSPLIT,$0-16
+	MOVW rm+0(FP), R22
+	MOVW rn+4(FP), R12
+	EXTRW $0, R22, R12, R8
+	MOVW R8, ret+8(FP)
+	RET

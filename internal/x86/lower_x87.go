@@ -38,8 +38,8 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 	if !isX87Op(op) {
 		return false, false, nil
 	}
-	if c.goarch != "386" {
-		return true, false, fmt.Errorf("amd64: x87 instruction %s requires GOARCH=386", op)
+	if c.goarch != "386" && c.goarch != "amd64" {
+		return true, false, fmt.Errorf("%s: x87 instruction %s requires GOARCH=386 or amd64", c.goarch, op)
 	}
 
 	switch op {

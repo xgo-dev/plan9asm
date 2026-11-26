@@ -194,7 +194,6 @@ func TestTranslate386RejectsInvalidInstructionForms(t *testing.T) {
 		{name: "fstsw count", instruction: "FSTSW", want: "FSTSW expects dst"},
 		{name: "fstsw destination", instruction: "FSTSW ret+0(FP)", want: "unsupported x87 word destination"},
 		{name: "fld1 operand", instruction: "FLD1 AX", want: "FLD1 takes no operands"},
-		{name: "x87 on amd64", instruction: "FLD1", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushl on amd64", instruction: "PUSHL AX", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "popl on amd64", instruction: "POPL AX", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushfl on amd64", instruction: "PUSHFL", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},

@@ -358,11 +358,11 @@ func (c *amd64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		if _, ok := amd64ParseXReg(args[2].Reg); !ok {
 			return false, false, nil
 		}
-		s1, err := c.evalF64(args[0])
+		s1, err := c.x86EvalScalarFPMasked(args[0], 64, kreg, hasMask)
 		if err != nil {
 			return true, false, err
 		}
-		s2, err := c.evalF64(args[1])
+		s2, err := c.x86EvalScalarFPMasked(args[1], 64, kreg, hasMask)
 		if err != nil {
 			return true, false, err
 		}

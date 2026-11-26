@@ -1130,9 +1130,9 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, c.storeReg(dst, "%"+out)
 
 	case "EXTR":
-		// EXTR shift, hi, lo, dst
+		// EXTR $lsb, rm, rn, dst  =>  dst = (rn:rm) >> lsb
 		if len(ins.Args) != 4 || ins.Args[3].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 EXTR expects shift, hi, lo, dstReg: %q", ins.Raw)
+			return true, false, fmt.Errorf("arm64 EXTR expects shift, rm, rn, dstReg: %q", ins.Raw)
 		}
 		var sh int64
 		if ins.Args[0].Kind == asm.OpImm {
@@ -1140,20 +1140,16 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		} else {
 			return true, false, fmt.Errorf("arm64 EXTR expects immediate shift: %q", ins.Raw)
 		}
-		hi, err := c.eval64(ins.Args[1], false)
+		rm, err := c.eval64(ins.Args[1], false)
 		if err != nil {
 			return true, false, err
 		}
-		lo, err := c.eval64(ins.Args[2], false)
+		rn, err := c.eval64(ins.Args[2], false)
 		if err != nil {
 			return true, false, err
 		}
-		loPart := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", loPart, lo, sh)
-		hiPart := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i64 %s, %d\n", hiPart, hi, (64-sh)&63)
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", t, loPart, hiPart)
+		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.fshr.i64(i64 %s, i64 %s, i64 %d)\n", t, rn, rm, sh)
 		return true, false, c.storeReg(ins.Args[3].Reg, "%"+t)
 
 	case "RORW":

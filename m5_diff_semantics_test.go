@@ -165,24 +165,6 @@ TEXT ·arm64M5Kernel(SB),NOSPLIT,$0-16
 	FMULX F0, F1, F2         // 3.0 * 2.5 = 7.5
 	FCVTZS F2, R7            // 7
 	MOVD R7, 296(R0)
-
-	// SVE VL=128 executable kernel: RDVL, ADDVL, ADDPL, PPTRUE, PWHILELT, PCNTP, ZLD1W, ZADD, ZST1W
-	RDVL $1, R2              // 16 (VL=128 bits = 16 bytes)
-	MOVD R2, 304(R0)
-	ADDVL $2, R2, R3         // 16 + 32 = 48
-	MOVD R3, 312(R0)
-	ADDPL $2, R2, R4         // 16 + 4 = 20 (PL=2 bytes)
-	MOVD R4, 320(R0)
-	PPTRUE P0.S
-	MOVD $0, R5
-	MOVD $3, R6
-	PWHILELT R6, R5, P1.S    // lanes 0,1,2 active (3 lanes)
-	PCNTP P1.S, P0, R7       // 3
-	MOVD R7, 328(R0)
-	ZLD1W (R1), P0/Z, Z0.S
-	ZLD1W 16(R1), P0/Z, Z1.S
-	ZADD Z1.S, Z0.S, Z2.S    // lane-wise u32 add
-	ZST1W Z2.S, P0, 336(R0)  // writes 16 bytes -> out[42], out[43]
 	RET
 
 // Kernel 2: Additional M5 ARM64 x/arch & encoder forms (verified via opt + llc).
@@ -230,7 +212,6 @@ TEXT ·arm64M5Forms(SB),NOSPLIT,$0-16
 	ZCMPLO Z0.D, Z1.D, P0.Z, P3.D
 	ZCMPLS $2, Z0.S, P0.Z, P3.S
 	ZCMPLT Z0.S, Z1.S, P0.Z, P3.S
-	ZADDQP Z0.S, Z1.S, Z2.S
 	AT $4
 	IC $4
 	PRFUM $0, (R1)
@@ -285,7 +266,7 @@ int main(void) {
     };
     uint64_t out[48] = {0};
     arm64M5Kernel(out, data);
-    uint64_t want[44] = {
+    uint64_t want[38] = {
         2ULL,                      // [0] REM 100 % 7
         0x00000000fffffffeULL,     // [1] REMW -100 % 7
         2ULL,                      // [2] UREM 100 % 7
@@ -324,14 +305,8 @@ int main(void) {
         0xffffffffffffffffULL,     // [35] FCMGT
         0ULL,                      // [36] FCMGE
         7ULL,                      // [37] FMULX 3.0*2.5 -> 7
-        16ULL,                     // [38] SVE RDVL $1 = 16
-        48ULL,                     // [39] SVE ADDVL $2 = 48
-        20ULL,                     // [40] SVE ADDPL $2 = 20
-        3ULL,                      // [41] SVE PWHILELT(0,3) + PCNTP = 3
-        0x000000220000cdffULL,     // [42] SVE ZADD lane0 (0xcdef+0x10=0xcdff), lane1 (2+0x20=0x22)
-        0x0000004400000033ULL,     // [43] SVE ZADD lane2 (3+0x30=0x33), lane3 (4+0x40=0x44)
     };
-    for (int i = 0; i < 44; i++) {
+    for (int i = 0; i < 38; i++) {
         if (out[i] != want[i]) {
             fprintf(stderr, "mismatch at [%d]: got=0x%llx want=0x%llx\n", i, (unsigned long long)out[i], (unsigned long long)want[i]);
             return i + 1;
@@ -341,6 +316,93 @@ int main(void) {
 }
 `
 	compileAndRunRuntimeTestWithCompiler(t, llc, []string{clang}, "arm64_m5_diff", triple, ll, mainC, nil)
+}
+
+// TestM5_ARM64SVEScalableCodegen verifies that SVE instructions lower to true
+// runtime-scalable LLVM IR (@llvm.vscale.i64(), <vscale x N x T>,
+// @llvm.aarch64.sve.*) rather than hardcoding VL=128, and lower to hardware
+// SVE instructions under llc -mtriple=aarch64-unknown-linux-gnu.
+func TestM5_ARM64SVEScalableCodegen(t *testing.T) {
+	src := `
+TEXT ·sveRDVL(SB),NOSPLIT,$0-8
+	RDVL $1, R0
+	MOVD R0, ret+0(FP)
+	RET
+
+TEXT ·sveKernel(SB),NOSPLIT,$0-16
+	MOVD out+0(FP), R0
+	MOVD data+8(FP), R1
+	RDVL $1, R2
+	MOVD R2, 0(R0)
+	ADDVL $2, R0, R3
+	MOVD R3, 8(R0)
+	ADDPL $2, R1, R4
+	MOVD R4, 16(R0)
+	PPTRUE P0.S
+	MOVD 0(R1), R5
+	MOVD 8(R1), R6
+	PWHILELT R6, R5, P1.S
+	PCNTP P1.S, P0, R7
+	MOVD R7, 24(R0)
+	ZLD1W (R1), P0/Z, Z0.S
+	ZLD1W (VL*1)(R1), P0/Z, Z1.S
+	ZADD Z1.S, Z0.S, Z2.S
+	ZST1W Z2.S, P0, 32(R0)
+	RET
+`
+	file, err := Parse(ArchARM64, src)
+	if err != nil {
+		t.Fatalf("Parse arm64 scalable SVE failed: %v", err)
+	}
+	ll, err := Translate(file, Options{
+		TargetTriple: "aarch64-unknown-linux-gnu",
+		Goarch:       "arm64",
+		ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		Sigs: map[string]FuncSig{
+			"sveRDVL": {Name: "sveRDVL", Ret: I64, Frame: FrameLayout{Results: []FrameSlot{{Offset: 0, Type: I64, Index: 0}}}},
+			"sveKernel": {
+				Name: "sveKernel",
+				Args: []LLVMType{Ptr, Ptr},
+				Ret:  Void,
+				Frame: FrameLayout{Params: []FrameSlot{
+					{Offset: 0, Type: Ptr, Index: 0, Field: -1},
+					{Offset: 8, Type: Ptr, Index: 1, Field: -1},
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Translate arm64 scalable SVE failed: %v", err)
+	}
+	for _, want := range []string{
+		"@llvm.vscale.i64()",
+		"<vscale x 4 x i32>",
+		"@llvm.aarch64.sve.whilelt.nxv4i1.i64",
+		"@llvm.aarch64.sve.cntp.nxv4i1",
+		"@llvm.masked.load.nxv4i32.p0",
+		"@llvm.masked.store.nxv4i32.p0",
+		`"target-features"="+sve"`,
+	} {
+		if !strings.Contains(ll, want) {
+			t.Fatalf("missing %q in scalable SVE IR:\n%s", want, ll)
+		}
+	}
+	verifyLLVMWithTargetLLC(t, ll, "aarch64-unknown-linux-gnu")
+	verifyLLVMWithTargetLLC(t, ll, "arm64-apple-darwin")
+	if llc := findLLVM22Tool("llc"); llc != "" {
+		cmd := exec.Command(llc, "-mtriple=aarch64-unknown-linux-gnu", "-filetype=asm", "-o", "-")
+		cmd.Stdin = strings.NewReader(ll)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("llc asm failed: %v\n%s", err, out)
+		}
+		asmOut := string(out)
+		for _, wantAsm := range []string{"rdvl", "addvl", "whilelt", "cntp", "ld1w", "st1w"} {
+			if !strings.Contains(asmOut, wantAsm) {
+				t.Errorf("missing hardware SVE mnemonic %q in llc output:\n%s", wantAsm, asmOut)
+			}
+		}
+	}
 }
 
 // TestM5_AMD64DiffSemantics verifies M1-M5 amd64 extensions under opt + Haswell llc
@@ -757,20 +819,10 @@ TEXT ·wasmM5(SB),NOSPLIT,$0-8
 	F64Store $8
 	Drop
 
-	// Memory/Table/Misc
+	// Memory / Misc
 	MemorySize
 	MemoryGrow
 	Drop
-	TableSize
-	I32Const $1
-	TableGrow
-	Drop
-	I32Const $0
-	I32Const $0
-	I32Const $0
-	MemoryInit
-	DataDrop
-	ElemDrop
 	MOVH $1, R3
 
 	// SIMD128 (V128)
@@ -927,6 +979,48 @@ TEXT ·wasmM5(SB),NOSPLIT,$0-8
 		t.Fatalf("Translate wasm M5 failed: %v", err)
 	}
 	verifyLLVMWithTargetLLC(t, ll, "wasm32-unknown-unknown")
+}
+
+// TestM5_WASMRejectsUnmodeledSegmentAndTableOps ensures segment/table/pseudo
+// Wasm instructions without real segment/table semantics fail explicitly
+// instead of being silently dropped or stubbed.
+func TestM5_WASMRejectsUnmodeledSegmentAndTableOps(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"MemoryInit+DataDrop", "I32Const $0\nI32Const $0\nI32Const $0\nMemoryInit $0\nDataDrop $0\n"},
+		{"MemoryInit", "I32Const $0\nI32Const $0\nI32Const $0\nMemoryInit\n"},
+		{"DataDrop", "DataDrop $0\n"},
+		{"ElemDrop", "ElemDrop $0\n"},
+		{"TableInit", "I32Const $0\nI32Const $0\nI32Const $0\nTableInit $0\n"},
+		{"TableCopy", "I32Const $0\nI32Const $0\nI32Const $0\nTableCopy $0\n"},
+		{"TableFill", "I32Const $0\nI32Const $0\nI32Const $0\nTableFill $0\n"},
+		{"TableSize", "TableSize $0\nDrop\n"},
+		{"TableGrow", "I32Const $0\nI32Const $1\nTableGrow $0\nDrop\n"},
+		{"ResumePoint", "ResumePoint\n"},
+		{"Word", "Word $1\n"},
+		{"GlobalGet imm", "GlobalGet $0\nDrop\n"},
+		{"GlobalSet imm", "I32Const $1\nGlobalSet $0\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "TEXT ·bad(SB),NOSPLIT,$0-0\n" + tc.body + "Return\n"
+			file, err := Parse(ArchWASM, src)
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			ir, err := Translate(file, Options{
+				TargetTriple: "wasm32-unknown-unknown",
+				Goarch:       "wasm",
+				ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+				Sigs:         map[string]FuncSig{"bad": {Name: "bad", Ret: Void}},
+			})
+			if err == nil {
+				t.Fatalf("expected explicit unsupported error for %s, got IR:\n%s", tc.name, ir)
+			}
+		})
+	}
 }
 
 // TestM5_ErrorPaths exercises error/edge branches across M5 ARM64, WASM, and x86 lowerers.

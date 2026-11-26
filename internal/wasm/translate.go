@@ -3,8 +3,10 @@ package wasm
 import (
 	"errors"
 	"fmt"
-	"github.com/xgo-dev/plan9asm/internal/asm"
+	"strconv"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/asm"
 )
 
 type wasmValue struct {
@@ -1251,24 +1253,24 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 				push(v)
 			}
 		case "GLOBALGET":
-			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpReg {
-				v, err := loadRegister(ins.Args[0].Reg)
-				if err != nil {
-					return err
-				}
-				push(v)
-			} else {
-				push(wasmValue{typ: asm.I64, val: "0"})
+			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpReg {
+				return fmt.Errorf("wasm: %s expects one modeled global register operand: %q", ins.Op, ins.Raw)
 			}
+			v, err := loadRegister(ins.Args[0].Reg)
+			if err != nil {
+				return err
+			}
+			push(v)
 		case "GLOBALSET":
+			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpReg {
+				return fmt.Errorf("wasm: %s expects one modeled global register operand: %q", ins.Op, ins.Raw)
+			}
 			v, err := pop(op)
 			if err != nil {
 				return err
 			}
-			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpReg {
-				if _, err := storeRegister(ins.Args[0].Reg, v); err != nil {
-					return err
-				}
+			if _, err := storeRegister(ins.Args[0].Reg, v); err != nil {
+				return err
 			}
 		case "BRTABLE":
 			idx, err := pop(op)
@@ -1334,10 +1336,22 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			}
 			push(v)
 		case "F64CONST":
-			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpImm {
+			if len(ins.Args) != 1 {
 				return fmt.Errorf("F64Const expects one floating immediate")
 			}
-			push(wasmValue{typ: asm.LLVMType("double"), val: fmt.Sprintf("0x%016X", uint64(ins.Args[0].Imm))})
+			switch ins.Args[0].Kind {
+			case asm.OpImm:
+				push(wasmValue{typ: asm.LLVMType("double"), val: fmt.Sprintf("0x%016X", uint64(ins.Args[0].Imm))})
+			case asm.OpSym:
+				raw := strings.TrimPrefix(strings.TrimSpace(ins.Args[0].Sym), "$")
+				fv, err := strconv.ParseFloat(raw, 64)
+				if err != nil {
+					return fmt.Errorf("F64Const expects one floating immediate: %w", err)
+				}
+				push(wasmValue{typ: asm.LLVMType("double"), val: asm.FormatLLVMFloat64Literal(fv)})
+			default:
+				return fmt.Errorf("F64Const expects one floating immediate")
+			}
 		case "F64NE", "F64GT", "F64LT":
 			rhs, err := pop(op)
 			if err != nil {

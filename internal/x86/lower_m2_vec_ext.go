@@ -576,11 +576,11 @@ func (c *amd64Ctx) lowerX86PMAddDP(spec asm.OpSpec, zeroMask, bcst bool, ins asm
 	if spec.LaneBits == 64 {
 		bcstBits = 64
 	}
-	bRaw, err := c.x86LoadVecOrBcst(vi, srcOp, bcst, bcstBits)
+	bRaw, err := c.x86LoadVecMasked(vi, srcOp, bcst, bcstBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	aRaw, err := vi.loadVec(lhsOp)
+	aRaw, err := c.x86LoadVecMasked(vi, lhsOp, false, bcstBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -762,11 +762,11 @@ func (c *amd64Ctx) lowerX86FunnelRot(spec asm.OpSpec, zeroMask, bcst bool, ins a
 		}
 		lanes := vi.totalBits / laneBits
 		vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-		s2, err := c.x86LoadVecOrBcst(vi, args[1], bcst, laneBits)
+		s2, err := c.x86LoadVecMasked(vi, args[1], bcst, laneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		s1, err := vi.loadVec(args[2])
+		s1, err := c.x86LoadVecMasked(vi, args[2], false, laneBits, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -807,11 +807,11 @@ func (c *amd64Ctx) lowerX86FunnelRot(spec asm.OpSpec, zeroMask, bcst bool, ins a
 	}
 	lanes := vi.totalBits / laneBits
 	vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-	s0, err := c.x86LoadVecOrBcst(vi, args[0], bcst, laneBits)
+	s0, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	s1, err := vi.loadVec(args[1])
+	s1, err := c.x86LoadVecMasked(vi, args[1], false, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -856,11 +856,11 @@ func (c *amd64Ctx) lowerX86SADMultiShift(spec asm.OpSpec, zeroMask, bcst bool, i
 		if !ok {
 			return fmt.Errorf("amd64 VPMULTISHIFTQB dst must be vector reg: %q", ins.Raw)
 		}
-		srcB, err := c.x86LoadVecOrBcst(vi, args[0], bcst, 64)
+		srcB, err := c.x86LoadVecMasked(vi, args[0], bcst, 64, kreg, hasMask)
 		if err != nil {
 			return err
 		}
-		ctrlB, err := vi.loadVec(args[1])
+		ctrlB, err := c.x86LoadVecMasked(vi, args[1], false, 8, kreg, hasMask)
 		if err != nil {
 			return err
 		}
@@ -913,11 +913,11 @@ func (c *amd64Ctx) lowerX86SADMultiShift(spec asm.OpSpec, zeroMask, bcst bool, i
 	if !ok {
 		return fmt.Errorf("amd64 %s dst must be vector reg: %q", spec.Op, ins.Raw)
 	}
-	srcB, err := vi.loadVec(srcOp)
+	srcB, err := c.x86LoadVecMasked(vi, srcOp, false, 16, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	lhsB, err := vi.loadVec(lhsOp)
+	lhsB, err := c.x86LoadVecMasked(vi, lhsOp, false, 16, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -1091,11 +1091,11 @@ func (c *amd64Ctx) lowerX86VCMPFP(spec asm.OpSpec, bcst bool, ins asm.Instr) err
 		fpElem = "float"
 	}
 	fpVecTy := fmt.Sprintf("<%d x %s>", lanes, fpElem)
-	bRaw, err := c.x86LoadVecOrBcst(vi, args[1], bcst, laneBits)
+	bRaw, err := c.x86LoadVecMasked(vi, args[1], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	aRaw, err := vi.loadVec(args[2])
+	aRaw, err := c.x86LoadVecMasked(vi, args[2], false, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -1142,11 +1142,11 @@ func (c *amd64Ctx) lowerX86VPTESTM(spec asm.OpSpec, bcst bool, ins asm.Instr) er
 	laneBits := int(spec.LaneBits)
 	lanes := vi.totalBits / laneBits
 	vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-	bRaw, err := c.x86LoadVecOrBcst(vi, args[0], bcst, laneBits)
+	bRaw, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	aRaw, err := vi.loadVec(args[1])
+	aRaw, err := c.x86LoadVecMasked(vi, args[1], false, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -1446,7 +1446,7 @@ func (c *amd64Ctx) lowerX86VPLZCNT(spec asm.OpSpec, zeroMask, bcst bool, ins asm
 	laneBits := int(spec.LaneBits)
 	lanes := vi.totalBits / laneBits
 	vecTy := fmt.Sprintf("<%d x i%d>", lanes, laneBits)
-	raw, err := c.x86LoadVecOrBcst(vi, args[0], bcst, laneBits)
+	raw, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -1485,11 +1485,11 @@ func (c *amd64Ctx) lowerX86VPerm(spec asm.OpSpec, zeroMask, bcst bool, ins asm.I
 	intTy := fmt.Sprintf("i%d", laneBits)
 	vecTy := fmt.Sprintf("<%d x %s>", lanes, intTy)
 
-	raw0, err := c.x86LoadVecOrBcst(vi, args[0], bcst, laneBits)
+	raw0, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	raw1, err := vi.loadVec(args[1])
+	raw1, err := c.x86LoadVecMasked(vi, args[1], false, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -1598,14 +1598,25 @@ func (c *amd64Ctx) lowerX86VExpand(spec asm.OpSpec, zeroMask bool, ins asm.Instr
 		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", sb, vi.byteVecTy, sr, vecTy)
 		srcVec = "%" + sb
 	} else {
-		// Load contiguous source elements into a vector (for mem, use masked.load or plain load).
-		sr, err := vi.loadVec(args[0])
+		// Load only popcount(k[0..lanes-1]) contiguous source elements via masked.load
+		// so masked-off trailing memory never faults on a guard page.
+		p, ptrType, err := c.resolveMemPtr(args[0])
 		if err != nil {
 			return err
 		}
-		sb := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to %s\n", sb, vi.byteVecTy, sr, vecTy)
-		srcVec = "%" + sb
+		kLow := kv
+		if lanes < 64 {
+			m := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", m, kv, (uint64(1)<<uint(lanes))-1)
+			kLow = "%" + m
+		}
+		cnt64, cnt32, ld := c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.ctpop.i64(i64 %s)\n", cnt64, kLow)
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", cnt32, cnt64)
+		prefixMask := c.x86EmitPrefixMask("%"+cnt32, lanes)
+		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.masked.load.v%di%d.p0(%s %s, i32 1, <%d x i1> %s, %s zeroinitializer)\n",
+			ld, vecTy, lanes, laneBits, ptrType, p, lanes, prefixMask, vecTy)
+		srcVec = "%" + ld
 	}
 	// Expand: active bit i reads srcVec[popcount(k & ((1<<i)-1))].
 	acc := "zeroinitializer"
@@ -1649,7 +1660,7 @@ func (c *amd64Ctx) lowerX86VPConflict(spec asm.OpSpec, zeroMask, bcst bool, ins 
 	lanes := vi.totalBits / laneBits
 	intTy := fmt.Sprintf("i%d", laneBits)
 	vecTy := fmt.Sprintf("<%d x %s>", lanes, intTy)
-	raw, err := c.x86LoadVecOrBcst(vi, args[0], bcst, laneBits)
+	raw, err := c.x86LoadVecMasked(vi, args[0], bcst, laneBits, kreg, hasMask)
 	if err != nil {
 		return err
 	}
@@ -1704,9 +1715,42 @@ func (c *amd64Ctx) lowerX86VBcastSub(spec asm.OpSpec, zeroMask bool, ins asm.Ins
 	subBytes := int(spec.Width) / 8
 	dstBytes := dvi.totalBits / 8
 	subTy := fmt.Sprintf("<%d x i8>", subBytes)
-	subVal, err := c.x86LoadTypedLanes(args[0], subBytes, 8, "i8", false)
-	if err != nil {
-		return err
+	var subVal string
+	var err error
+	if hasMask && (args[0].Kind == asm.OpMem || args[0].Kind == asm.OpSym) {
+		laneBits := int(spec.LaneBits)
+		subLanes := int(spec.Width) / laneBits
+		totalLanes := dvi.totalBits / laneBits
+		repeats := totalLanes / subLanes
+		kv, err := c.loadK(kreg)
+		if err != nil {
+			return err
+		}
+		folded := kv
+		for r := 1; r < repeats; r++ {
+			sh, orv := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", sh, kv, r*subLanes)
+			fmt.Fprintf(c.b, "  %%%s = or i64 %s, %%%s\n", orv, folded, sh)
+			folded = "%" + orv
+		}
+		tr, mv := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i%d\n", tr, folded, subLanes)
+		fmt.Fprintf(c.b, "  %%%s = bitcast i%d %%%s to <%d x i1>\n", mv, subLanes, tr, subLanes)
+		p, ptrType, err := c.resolveMemPtr(args[0])
+		if err != nil {
+			return err
+		}
+		subLaneTy := fmt.Sprintf("<%d x i%d>", subLanes, laneBits)
+		ld, bc := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.masked.load.v%di%d.p0(%s %s, i32 1, <%d x i1> %%%s, %s zeroinitializer)\n",
+			ld, subLaneTy, subLanes, laneBits, ptrType, p, subLanes, mv, subLaneTy)
+		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to %s\n", bc, subLaneTy, ld, subTy)
+		subVal = "%" + bc
+	} else {
+		subVal, err = c.x86LoadTypedLanes(args[0], subBytes, 8, "i8", false)
+		if err != nil {
+			return err
+		}
 	}
 	me := make([]string, dstBytes)
 	for i := 0; i < dstBytes; i++ {
@@ -1851,11 +1895,11 @@ func (c *amd64Ctx) lowerX86VPShufBitQMB(ins asm.Instr) error {
 	if !ok {
 		return fmt.Errorf("amd64 VPSHUFBITQMB requires vector source reg: %q", ins.Raw)
 	}
-	idxB, err := vi.loadVec(args[0])
+	idxB, err := c.x86LoadVecMasked(vi, args[0], false, 8, kreg, hasMask)
 	if err != nil {
 		return err
 	}
-	srcB, err := vi.loadVec(args[1])
+	srcB, err := c.x86LoadVecMasked(vi, args[1], false, 8, kreg, hasMask)
 	if err != nil {
 		return err
 	}

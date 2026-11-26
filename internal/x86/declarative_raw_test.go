@@ -212,7 +212,7 @@ func TestCheckABI0ResultInitBoundaries(t *testing.T) {
 	MOVB SIB, DIB
 	MOVQ a+0(FP), R10
 	MOVL R10L, R11L
-	MOVB R8B, ret+8(FP)
+	MOVQ R8, ret+8(FP)
 	RET
 `)
 		if err != nil {
@@ -220,6 +220,86 @@ func TestCheckABI0ResultInitBoundaries(t *testing.T) {
 		}
 		if _, err := CheckABI0ResultInit(file.Funcs[0], sig, "amd64"); err != nil {
 			t.Fatalf("extended sub-register aliases rejected: %v", err)
+		}
+	})
+
+	t.Run("CFG unreachable write skipped by JMP rejected", func(t *testing.T) {
+		file, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	JMP done
+	MOVQ $1, ret+8(FP)
+done:
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(file.Funcs[0], sig, "amd64"); !errors.Is(err, asm.ErrProbeNeedsContext) {
+			t.Fatalf("JMP-skipped result write err = %v, want ErrProbeNeedsContext", err)
+		}
+	})
+
+	t.Run("CFG conditional branch leaving one path uninitialized rejected", func(t *testing.T) {
+		file, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	MOVQ a+0(FP), AX
+	CMPQ AX, $0
+	JE done
+	MOVQ $1, ret+8(FP)
+done:
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(file.Funcs[0], sig, "amd64"); !errors.Is(err, asm.ErrProbeNeedsContext) {
+			t.Fatalf("conditional-skipped result write err = %v, want ErrProbeNeedsContext", err)
+		}
+	})
+
+	t.Run("CFG diamond initializing result on all paths accepted", func(t *testing.T) {
+		file, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	MOVQ a+0(FP), AX
+	CMPQ AX, $0
+	JE zero
+	MOVQ $1, ret+8(FP)
+	JMP done
+zero:
+	MOVQ $0, ret+8(FP)
+done:
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(file.Funcs[0], sig, "amd64"); err != nil {
+			t.Fatalf("complete diamond CFG rejected: %v", err)
+		}
+	})
+
+	t.Run("byte-level partial result write rejected and complete split write accepted", func(t *testing.T) {
+		partial, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	MOVQ a+0(FP), AX
+	MOVL AX, ret+8(FP)
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(partial.Funcs[0], sig, "amd64"); !errors.Is(err, asm.ErrProbeNeedsContext) {
+			t.Fatalf("partial 4-byte write to i64 result err = %v, want ErrProbeNeedsContext", err)
+		}
+
+		split, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	MOVQ a+0(FP), AX
+	MOVL AX, ret+8(FP)
+	SHRQ $32, AX
+	MOVL AX, ret+12(FP)
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(split.Funcs[0], sig, "amd64"); err != nil {
+			t.Fatalf("complete 4+4 split write to i64 result rejected: %v", err)
 		}
 	})
 

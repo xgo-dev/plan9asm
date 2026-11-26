@@ -84,6 +84,12 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 			if strings.HasPrefix(op, "CRC32") {
 				add("+crc")
 			}
+			if arm64InstrUsesSVE(op, ins) {
+				add("+sve")
+			}
+			if arm64InstrUsesSVE2(op) {
+				add("+sve", "+sve2")
+			}
 		case ArchARM:
 			// Go's ARM runtime keeps VFP save/restore instructions in the
 			// GOARM=5 image and guards their execution with goarmsoftfp. LLVM
@@ -114,4 +120,67 @@ func inferFuncTargetFeaturesForGOARCH(arch Arch, goarch string, fn Func) string 
 	}
 	sort.Strings(featureSet)
 	return strings.Join(featureSet, ",")
+}
+
+func arm64InstrUsesSVE(op string, ins Instr) bool {
+	if dot := strings.IndexByte(op, '.'); dot >= 0 {
+		op = op[:dot]
+	}
+	switch op {
+	case "RDVL", "ADDVL", "ADDPL", "CTERMEQ", "CTERMEQW", "CTERMNE", "CTERMNEW",
+		"CNTB", "CNTH", "CNTW", "CNTD",
+		"PLDR", "PSTR", "PPFALSE", "PPTRUE", "PWRFFR", "PRDFFR", "PRDFFRS", "PPTEST",
+		"PCNTP", "PFIRSTP", "PLASTP", "PINCP", "PDECP", "PREV", "PSEL",
+		"PAND", "PANDS", "PBIC", "PBICS", "PEOR", "PEORS", "PNAND", "PNANDS",
+		"PNOR", "PNORS", "PORN", "PORNS", "PORR", "PORRS":
+		return true
+	}
+	if strings.HasPrefix(op, "PWHILE") || strings.HasPrefix(op, "PPRF") ||
+		strings.HasPrefix(op, "PBRK") || strings.HasPrefix(op, "PSQINC") ||
+		strings.HasPrefix(op, "PSQDEC") || strings.HasPrefix(op, "PUQINC") ||
+		strings.HasPrefix(op, "PUQDEC") ||
+		(len(op) >= 2 && op[0] == 'Z' && op[1] >= 'A' && op[1] <= 'Z') {
+		return true
+	}
+	for _, a := range ins.Args {
+		var txt string
+		switch a.Kind {
+		case OpReg:
+			txt = string(a.Reg)
+		case OpSym:
+			txt = a.Sym
+		case OpIdent:
+			txt = a.Ident
+		case OpRegList:
+			for _, r := range a.RegList {
+				u := strings.ToUpper(string(r))
+				if (len(u) >= 2 && (u[0] == 'Z' || u[0] == 'P') && u[1] >= '0' && u[1] <= '9') ||
+					(len(u) >= 3 && strings.HasPrefix(u, "PN") && u[2] >= '0' && u[2] <= '9') {
+					return true
+				}
+			}
+			continue
+		default:
+			continue
+		}
+		u := strings.ToUpper(strings.TrimSpace(txt))
+		if (len(u) >= 2 && (u[0] == 'Z' || u[0] == 'P') && u[1] >= '0' && u[1] <= '9') ||
+			(len(u) >= 3 && strings.HasPrefix(u, "PN") && u[2] >= '0' && u[2] <= '9') {
+			return true
+		}
+	}
+	return false
+}
+
+func arm64InstrUsesSVE2(op string) bool {
+	if dot := strings.IndexByte(op, '.'); dot >= 0 {
+		op = op[:dot]
+	}
+	switch op {
+	case "PWHILEGE", "PWHILEGEW", "PWHILEGT", "PWHILEGTW",
+		"PWHILEHI", "PWHILEHIW", "PWHILEHS", "PWHILEHSW",
+		"PWHILERW", "PWHILEWR":
+		return true
+	}
+	return false
 }

@@ -28,9 +28,12 @@ type arm64Ctx struct {
 	usedVRegs map[int]bool
 	vRegSlot  map[int]string // vreg index -> alloca name (<16 x i8>)
 
+	usedZRegs map[int]bool
+	zRegSlot  map[int]string // SVE zreg index -> alloca name (<vscale x 16 x i8>)
+
 	usedPRegs map[int]bool
-	pRegSlot  map[int]string // SVE predicate P0..P15/PN0..PN15 -> alloca i16
-	ffrSlot   string         // SVE First-Fault Register -> alloca i16
+	pRegSlot  map[int]string // SVE predicate P0..P15/PN0..PN15 -> alloca <vscale x 16 x i1>
+	ffrSlot   string         // SVE First-Fault Register -> alloca <vscale x 16 x i1>
 	usesSVE   bool
 
 	flagsNSlot   string
@@ -67,6 +70,8 @@ func newARM64Ctx(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(
 		regSlot:        map[asm.Reg]string{},
 		usedVRegs:      map[int]bool{},
 		vRegSlot:       map[int]string{},
+		usedZRegs:      map[int]bool{},
+		zRegSlot:       map[int]string{},
 		usedPRegs:      map[int]bool{},
 		pRegSlot:       map[int]string{},
 		fpParams:       map[int64]asm.FrameSlot{},
@@ -151,7 +156,7 @@ func (c *arm64Ctx) scanUsedRegs() {
 			return
 		}
 		if idx, _, _, ok := arm64ParseZReg(string(r)); ok {
-			c.usedVRegs[idx] = true
+			c.usedZRegs[idx] = true
 			c.usesSVE = true
 			return
 		}
@@ -168,7 +173,7 @@ func (c *arm64Ctx) scanUsedRegs() {
 			markReg(op.Reg)
 		case asm.OpSym:
 			if idx, _, _, ok := arm64ParseZReg(op.Sym); ok {
-				c.usedVRegs[idx] = true
+				c.usedZRegs[idx] = true
 				c.usesSVE = true
 			} else if idx, _, _, ok := arm64ParsePReg(op.Sym); ok {
 				c.usedPRegs[idx] = true
@@ -321,6 +326,20 @@ func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 		fmt.Fprintf(c.b, "  %s = alloca <16 x i8>\n", name)
 		fmt.Fprintf(c.b, "  store <16 x i8> zeroinitializer, ptr %s\n", name)
 	}
+	// Scalable SVE vector registers: <vscale x 16 x i8> (runtime-scalable VL).
+	if len(c.usedZRegs) > 0 {
+		zIdx := make([]int, 0, len(c.usedZRegs))
+		for i := range c.usedZRegs {
+			zIdx = append(zIdx, i)
+		}
+		sort.Ints(zIdx)
+		for _, i := range zIdx {
+			name := fmt.Sprintf("%%z%d", i)
+			c.zRegSlot[i] = name
+			fmt.Fprintf(c.b, "  %s = alloca <vscale x 16 x i8>\n", name)
+			fmt.Fprintf(c.b, "  store <vscale x 16 x i8> zeroinitializer, ptr %s\n", name)
+		}
+	}
 	if len(c.usedPRegs) > 0 {
 		pIdx := make([]int, 0, len(c.usedPRegs))
 		for i := range c.usedPRegs {
@@ -330,14 +349,16 @@ func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 		for _, i := range pIdx {
 			name := fmt.Sprintf("%%p%d", i)
 			c.pRegSlot[i] = name
-			fmt.Fprintf(c.b, "  %s = alloca i16\n", name)
-			fmt.Fprintf(c.b, "  store i16 0, ptr %s\n", name)
+			fmt.Fprintf(c.b, "  %s = alloca <vscale x 16 x i1>\n", name)
+			fmt.Fprintf(c.b, "  store <vscale x 16 x i1> zeroinitializer, ptr %s\n", name)
 		}
 	}
 	if c.usesSVE {
 		c.ffrSlot = "%sve_ffr"
-		fmt.Fprintf(c.b, "  %s = alloca i16\n", c.ffrSlot)
-		fmt.Fprintf(c.b, "  store i16 -1, ptr %s\n", c.ffrSlot)
+		allTrue := c.newTmp()
+		fmt.Fprintf(c.b, "  %s = alloca <vscale x 16 x i1>\n", c.ffrSlot)
+		fmt.Fprintf(c.b, "  %%%s = call <vscale x 16 x i1> @llvm.aarch64.sve.ptrue.nxv16i1(i32 31)\n", allTrue)
+		fmt.Fprintf(c.b, "  store <vscale x 16 x i1> %%%s, ptr %s\n", allTrue, c.ffrSlot)
 	}
 
 	// Flags state: model "last CMP/SUBS/ANDS result" as two i64 slots.
@@ -594,5 +615,11 @@ func (c *arm64Ctx) storeVReg(r asm.Reg, v string) error {
 		return fmt.Errorf("arm64: unknown vreg %s", r)
 	}
 	fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s\n", v, slot)
+	if zSlot := c.zRegSlot[idx]; zSlot != "" {
+		// Architectural NEON/scalar writes clear the scalable upper bits of Zn.
+		ins := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call <vscale x 16 x i8> @llvm.vector.insert.nxv16i8.v16i8(<vscale x 16 x i8> zeroinitializer, <16 x i8> %s, i64 0)\n", ins, v)
+		fmt.Fprintf(c.b, "  store <vscale x 16 x i8> %%%s, ptr %s\n", ins, zSlot)
+	}
 	return nil
 }

@@ -311,9 +311,11 @@ func expandWASMFormatMatrix(row encoderFormReport, base []string) []string {
 	case strings.Contains(op, "LOAD") || strings.Contains(op, "STORE"):
 		out = append(out, op+" $8")
 	case op == "LOCALGET" || op == "LOCALSET" || op == "LOCALTEE":
-		out = append(out, op+" $0")
+		out = append(out, op+" R1")
 	case op == "GET" || op == "SET" || op == "TEE":
-		out = append(out, op+" 8(SP)")
+		out = append(out, op+" R1")
+	case op == "GLOBALGET" || op == "GLOBALSET":
+		out = append(out, op+" R1")
 	case op == "BRTABLE":
 		out = append(out, op+" $0, $1, $2")
 	}
@@ -436,8 +438,8 @@ func extraOrthogonalFormatLines(goarch string) []string {
 	case "wasm":
 		return []string{
 			"I32Const $42", "I64Const $42", "F32Const $1", "F64Const $1",
-			"LocalGet $0", "LocalSet $0", "LocalTee $0",
-			"GlobalGet $0", "GlobalSet $0",
+			"LocalGet R0", "LocalSet R0", "LocalTee R0",
+			"GlobalGet R0", "GlobalSet R0",
 			"I32Load $8", "I64Load $16", "F32Load $4", "F64Load $8",
 			"I32Store $8", "I64Store $16", "F32Store $4", "F64Store $8",
 			"I8x16Shuffle $0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15",
