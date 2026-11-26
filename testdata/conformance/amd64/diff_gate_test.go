@@ -215,6 +215,10 @@ func runDiffGateOracleLines() (lines []string, hwPending []string) {
 		hwPending = append(hwPending, "sha-ni")
 	}
 
+	var vbs [8]uint64
+	diffVecByteShifts(0x0123456789abcdef, 0xfedcba9876543210, &vbs)
+	lines = append(lines, fmt.Sprintf("vecbshift[0]=%s", formatU64Slice(vbs[:])))
+
 	return lines, hwPending
 }
 
@@ -235,6 +239,16 @@ func TestAMD64DiffGateNativeSanity(t *testing.T) {
 	}
 	if got := diffPushfqRawIF(); got != 0x0000000002000200 {
 		t.Fatalf("diffPushfqRawIF() = %#x, want 0x2000200 (IF=0x200 preserved)", got)
+	}
+	var vbs [8]uint64
+	diffVecByteShifts(0x0123456789abcdef, 0xfedcba9876543210, &vbs)
+	for i := 0; i < 6; i++ {
+		if vbs[i] != 0 {
+			t.Fatalf("diffVecByteShifts[%d] = %#x, want 0", i, vbs[i])
+		}
+	}
+	if vbs[6] != 0x23456789abcdef00 || vbs[7] != 0xfedcba9876543210 {
+		t.Fatalf("diffVecByteShifts[6..7] = [%#x, %#x], unexpected", vbs[6], vbs[7])
 	}
 	_, _, hasSHA := cpuidFeatures()
 	if hasSHA {

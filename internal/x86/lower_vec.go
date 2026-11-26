@@ -1571,12 +1571,9 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if _, ok := amd64ParseYReg(ins.Args[2].Reg); !ok {
 			return false, false, nil
 		}
-		n := ins.Args[0].Imm
-		if n < 0 {
-			n = 0
-		}
-		if n > 16 {
-			n = 16
+		n, err := x86VecByteShiftCount(op, ins.Args[0].Imm)
+		if err != nil {
+			return true, false, fmt.Errorf("%v: %q", err, ins.Raw)
 		}
 		src, err := c.loadY(ins.Args[1].Reg)
 		if err != nil {
@@ -3012,9 +3009,9 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
 			return false, false, nil
 		}
-		n := ins.Args[0].Imm
-		if n < 0 || n > 16 {
-			return true, false, fmt.Errorf("amd64 PSRLDQ invalid imm %d: %q", n, ins.Raw)
+		n, err := x86VecByteShiftCount(op, ins.Args[0].Imm)
+		if err != nil {
+			return true, false, fmt.Errorf("%v: %q", err, ins.Raw)
 		}
 		v, err := c.loadX(ins.Args[1].Reg)
 		if err != nil {
@@ -3032,9 +3029,9 @@ func (c *amd64Ctx) lowerVec(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
 			return false, false, nil
 		}
-		n := ins.Args[0].Imm
-		if n < 0 || n > 16 {
-			return true, false, fmt.Errorf("amd64 PSLLDQ invalid imm %d: %q", n, ins.Raw)
+		n, err := x86VecByteShiftCount(op, ins.Args[0].Imm)
+		if err != nil {
+			return true, false, fmt.Errorf("%v: %q", err, ins.Raw)
 		}
 		v, err := c.loadX(ins.Args[1].Reg)
 		if err != nil {

@@ -379,14 +379,19 @@
         "FADDDP x87,x87",
         "FBLD memory.gpr64-base",
         "FBSTP memory.gpr64-base",
+        "FCOMD x87,x87",
         "FCOMI x87,x87",
         "FCOMIP x87,x87",
+        "FDECSTP ",
         "FDIVD x87,x87",
+        "FINCSTP ",
         "FLD1 ",
         "FLDL2E ",
         "FLDL2T ",
         "FLDLG2 ",
-        "FLDPI "
+        "FLDPI ",
+        "FSQRT ",
+        "FTST "
       ]
     },
     {

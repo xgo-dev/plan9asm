@@ -275,17 +275,8 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			c.storeX87Value(0, res)
 			return true, false, nil
 		}
-		v, err := c.x87ValueToF64(c.loadX87Value(0))
-		if err != nil {
-			return true, false, err
-		}
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call double @llvm.sqrt.f64(double %s)\n", out, v)
-		x87v, err := c.f64ToX87Value("%" + out)
-		if err != nil {
-			return true, false, err
-		}
-		c.storeX87Value(0, x87v)
+		res := c.x87PortableSqrt(c.loadX87Value(0), c.loadX87ControlWord())
+		c.storeX87Value(0, res)
 		return true, false, nil
 
 	case "FUCOMI":
@@ -323,7 +314,8 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		c0w := c.x87IR("select i1 %s, i16 256, i16 0", c0)
 		s01 := c.x87IR("or i16 %s, %s", c3w, c2w)
 		status := c.x87IR("or i16 %s, %s", s01, c0w)
-		fmt.Fprintf(c.b, "  store i16 %s, ptr %s\n", status, c.x87StatusSlot)
+		// Update C3|C2|C1|C0 (0x4700, with C1=0) while preserving TOP (0x3800).
+		c.projectX87Status(status, 0x4700)
 		return true, false, nil
 
 	case "FSTSW":
@@ -372,11 +364,24 @@ func (c *amd64Ctx) storeX87Value(index int, value x87Value) {
 	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, value, c.x87Slot[index])
 }
 
+// adjustX87Top adds delta (modulo 8: -1 on push/FDECSTP, +1 on pop/FINCSTP)
+// to the architectural TOP field (bits 13:11, mask 0x3800) of c.x87StatusSlot
+// while preserving all other status-word bits.
+func (c *amd64Ctx) adjustX87Top(delta int) {
+	status := c.x87IR("load i16, ptr %s", c.x87StatusSlot)
+	top := c.x87IR("and i16 %s, 7", c.x87IR("lshr i16 %s, 11", status))
+	nextTop := c.x87IR("and i16 %s, 7", c.x87IR("add i16 %s, %d", top, delta&7))
+	kept := c.x87IR("and i16 %s, %d", status, ^uint16(0x3800))
+	merged := c.x87IR("or i16 %s, %s", kept, c.x87IR("shl i16 %s, 11", nextTop))
+	fmt.Fprintf(c.b, "  store i16 %s, ptr %s\n", merged, c.x87StatusSlot)
+}
+
 func (c *amd64Ctx) pushX87Value(value x87Value) error {
 	for i := len(c.x87Slot) - 1; i > 0; i-- {
 		c.storeX87Value(i, c.loadX87Value(i-1))
 	}
 	c.storeX87Value(0, value)
+	c.adjustX87Top(-1)
 	return nil
 }
 
@@ -385,6 +390,7 @@ func (c *amd64Ctx) popX87Value() {
 		c.storeX87Value(i, c.loadX87Value(i+1))
 	}
 	c.storeX87Value(len(c.x87Slot)-1, x87ZeroValue)
+	c.adjustX87Top(1)
 }
 
 func (c *amd64Ctx) f64ToX87Value(f64 string) (x87Value, error) {
@@ -417,13 +423,6 @@ func (c *amd64Ctx) evalX87Value(op asm.Operand) (x87Value, error) {
 		return "", err
 	}
 	return c.f64ToX87Value(f64)
-}
-
-func (c *amd64Ctx) evalX87F64(op asm.Operand) (string, error) {
-	if index, ok := x87OperandReg(op); ok {
-		return c.x87ValueToF64(c.loadX87Value(index))
-	}
-	return c.evalF64(op)
 }
 
 func (c *amd64Ctx) storeX87F64(dst asm.Operand, value string) error {

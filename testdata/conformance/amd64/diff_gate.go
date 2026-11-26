@@ -35,3 +35,5 @@ func diffPCMPESTRI0C(needle, hay *[16]byte, nLen, hLen uint64, out *[8]uint64)
 func diffSHA256Block(state *[8]uint32, block *[64]byte)
 
 func diffSHA1Block(state *[5]uint32, block *[64]byte)
+
+func diffVecByteShifts(lo, hi uint64, out *[8]uint64)

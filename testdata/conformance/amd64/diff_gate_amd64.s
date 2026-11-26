@@ -1798,3 +1798,76 @@ sha1_r20:
 	MOVOU X0, (DI)
 	PEXTRD $3, X5, 16(DI)
 	RET
+
+// diffVecByteShifts exercises PSLLDQ and PSRLDQ across $16, $17, $31 (all 6
+// must zero the full 128-bit lane per Intel SDM imm8 saturation) plus $1/$8.
+TEXT ·diffVecByteShifts(SB), NOSPLIT, $0-24
+	MOVQ lo+0(FP), R8
+	MOVQ hi+8(FP), R9
+	MOVQ out+16(FP), DI
+
+	// Helper state in X7 = {lo=R8, hi=R9}
+	MOVQ R8, X7
+	PINSRQ $1, R9, X7
+
+	// [0] PSLLDQ $16 -> 0 (OR of both lanes)
+	MOVOA X7, X0
+	PSLLDQ $16, X0
+	PEXTRQ $0, X0, AX
+	PEXTRQ $1, X0, BX
+	ORQ BX, AX
+	MOVQ AX, 0(DI)
+
+	// [1] PSLLDQ $17 -> 0
+	MOVOA X7, X0
+	PSLLDQ $17, X0
+	PEXTRQ $0, X0, AX
+	PEXTRQ $1, X0, BX
+	ORQ BX, AX
+	MOVQ AX, 8(DI)
+
+	// [2] PSLLDQ $31 -> 0
+	MOVOA X7, X0
+	PSLLDQ $31, X0
+	PEXTRQ $0, X0, AX
+	PEXTRQ $1, X0, BX
+	ORQ BX, AX
+	MOVQ AX, 16(DI)
+
+	// [3] PSRLDQ $16 -> 0
+	MOVOA X7, X0
+	PSRLDQ $16, X0
+	PEXTRQ $0, X0, AX
+	PEXTRQ $1, X0, BX
+	ORQ BX, AX
+	MOVQ AX, 24(DI)
+
+	// [4] PSRLDQ $17 -> 0
+	MOVOA X7, X0
+	PSRLDQ $17, X0
+	PEXTRQ $0, X0, AX
+	PEXTRQ $1, X0, BX
+	ORQ BX, AX
+	MOVQ AX, 32(DI)
+
+	// [5] PSRLDQ $31 -> 0
+	MOVOA X7, X0
+	PSRLDQ $31, X0
+	PEXTRQ $0, X0, AX
+	PEXTRQ $1, X0, BX
+	ORQ BX, AX
+	MOVQ AX, 40(DI)
+
+	// [6] PSLLDQ $1 low lane
+	MOVOA X7, X0
+	PSLLDQ $1, X0
+	PEXTRQ $0, X0, AX
+	MOVQ AX, 48(DI)
+
+	// [7] PSRLDQ $8 low lane (equals hi)
+	MOVOA X7, X0
+	PSRLDQ $8, X0
+	PEXTRQ $0, X0, AX
+	MOVQ AX, 56(DI)
+
+	RET

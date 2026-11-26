@@ -516,7 +516,7 @@ define i64 @ok(i64 %x) {
 
 func TestAddFormStatCachesConcreteInstructionsWithoutCollapsingValues(t *testing.T) {
 	forms := map[string]*formStat{}
-	for _, imm := range []int64{1, 17, 17} {
+	for _, imm := range []int64{1, 256, 256} {
 		addFormStat(forms, plan9asm.ArchAMD64, "amd64", plan9asm.Instr{
 			Op:  "PSRLDQ",
 			Raw: "PSRLDQ immediate, X0",

@@ -74,6 +74,19 @@ func runX87DiffOracleLines() []string {
 		lines = append(lines, fmt.Sprintf("x87_fucomi[%d]=%s", i, formatU64Slice(out[:])))
 	}
 
+	var topOut [12]uint64
+	diffX87TopStatus(&topOut)
+	lines = append(lines, fmt.Sprintf("x87_top=%s", formatU64Slice(topOut[:])))
+
+	var bin80Int [6]int64
+	var bin80Raw [60]byte
+	diffX87Binary80Precision(&bin80Int, &bin80Raw)
+	bin80U64 := make([]uint64, len(bin80Int))
+	for i, v := range bin80Int {
+		bin80U64[i] = uint64(v)
+	}
+	lines = append(lines, fmt.Sprintf("x87_bin80=%s|%x", formatU64Slice(bin80U64), bin80Raw))
+
 	return lines
 }
 
@@ -111,6 +124,34 @@ func TestAMD64X87NativeSanity(t *testing.T) {
 	diffX87FUCOMI(1.0, 2.0, &cmpOut)
 	if cmpOut[0]&0x890 != 0 || cmpOut[0]&0x45 != 0x01 {
 		t.Fatalf("diffX87FUCOMI(1, 2) flags = %#x, want CF=1, ZF=0, PF=0, OF=SF=AF=0", cmpOut[0])
+	}
+
+	// Verify FSTSW tracks x87 stack TOP pointer across pushes, pops, FTST, FCOMD, FINCSTP, FDECSTP.
+	var topOut [12]uint64
+	diffX87TopStatus(&topOut)
+	wantTop := [12]uint64{0x0000, 0x3800, 0x3000, 0x2800, 0x6800, 0x2900, 0x2800, 0x3000, 0x0000, 0x3800, 0x0000, 0x0000}
+	for i, want := range wantTop {
+		if topOut[i] != want {
+			t.Fatalf("diffX87TopStatus[%d] = %#x, want %#x", i, topOut[i], want)
+		}
+	}
+
+	// Verify 64-bit significand binary80 precision (2^53 + 1 == 9007199254740993).
+	var bin80Int [6]int64
+	var bin80Raw [60]byte
+	diffX87Binary80Precision(&bin80Int, &bin80Raw)
+	wantBin80 := [6]int64{
+		9007199254740993,
+		4611686018427387905,
+		4611686018427387903,
+		27021597764222979,
+		384307168202282326,
+		2147483648,
+	}
+	for i, want := range wantBin80 {
+		if bin80Int[i] != want {
+			t.Fatalf("diffX87Binary80Precision[%d] = %d, want %d", i, bin80Int[i], want)
+		}
 	}
 }
 

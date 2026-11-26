@@ -1,10 +1,26 @@
 package x86
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/asm"
 )
+
+// x86VecByteShiftCount normalizes the immediate byte-shift count for
+// PSLLDQ/PSRLDQ/PSLLO/PSRLO/VPSLLDQ/VPSRLDQ so the ABI0 checker and all
+// lowerers share one exact Intel SDM imm8 rule: accept [-128, 255], interpret
+// as unsigned imm8 (uint8(imm)), and saturate counts > 16 to 16 (full zero).
+func x86VecByteShiftCount(op asm.Op, imm int64) (int64, error) {
+	if imm < -128 || imm > 255 {
+		return 0, fmt.Errorf("amd64 %s invalid imm %d", op, imm)
+	}
+	n := int64(uint8(imm))
+	if n > 16 {
+		n = 16
+	}
+	return n, nil
+}
 
 // handleX86VecLaneOp models lane-selecting, lane-inserting, half-register move,
 // and byte-shift vector instructions with exact per-byte initialization,
@@ -380,10 +396,10 @@ func handleX86VecLaneOp(
 		}
 	}
 
-	// 5. Byte shifts within 128-bit lanes: PSRLDQ/PSLLDQ (2-arg) and VPSRLDQ/VPSLLDQ (3-arg).
-	if (name == "PSRLDQ" || name == "PSLLDQ" || name == "VPSRLDQ" || name == "VPSLLDQ") &&
+	// 5. Byte shifts within 128-bit lanes: PSRLDQ/PSLLDQ/PSRLO/PSLLO (2-arg) and VPSRLDQ/VPSLLDQ (3-arg).
+	if (name == "PSRLDQ" || name == "PSLLDQ" || name == "PSRLO" || name == "PSLLO" || name == "VPSRLDQ" || name == "VPSLLDQ") &&
 		len(ins.Args) >= 2 && ins.Args[0].Kind == asm.OpImm {
-		isRight := strings.HasSuffix(name, "RLDQ")
+		isRight := strings.HasSuffix(name, "RLDQ") || name == "PSRLO"
 		isVEX := strings.HasPrefix(name, "V")
 		var srcIdx, dstIdx int
 		var dstReg asm.Reg
@@ -402,12 +418,9 @@ func handleX86VecLaneOp(
 			}
 		}
 		if valid {
-			shift := ins.Args[0].Imm
-			if shift < 0 {
-				shift = 0
-			}
-			if shift > 16 {
-				shift = 16
+			shift, err := x86VecByteShiftCount(op, ins.Args[0].Imm)
+			if err != nil {
+				return true, err
 			}
 			lanes := int64(1)
 			if isAMD64ZReg(dstReg) {

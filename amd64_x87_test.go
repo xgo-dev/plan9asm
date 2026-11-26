@@ -1119,6 +1119,8 @@ extern void diffX87Constants(uint64_t *outF64, uint8_t *outRaw80);
 extern void diffX87BCD(uint8_t *inBCD, uint8_t *outBCD, uint64_t *outF64);
 extern void diffX87Arith80(double a, double b, uint64_t *out);
 extern void diffX87FUCOMI(double a, double b, uint64_t *out);
+extern void diffX87TopStatus(uint64_t *out);
+extern void diffX87Binary80Precision(int64_t *outInt, uint8_t *outRaw80);
 
 static void print_u64s(const uint64_t *v, int n) {
     for (int i = 0; i < n; i++) {
@@ -1182,6 +1184,17 @@ int main(void) {
         diffX87FUCOMI(cpairs[i][0], cpairs[i][1], out6);
         printf("x87_fucomi[%d]=", i); print_u64s(out6, 6); putchar('\n');
     }
+
+    uint64_t topOut[12] = {0};
+    diffX87TopStatus(topOut);
+    printf("x87_top="); print_u64s(topOut, 12); putchar('\n');
+
+    int64_t bin80Int[6] = {0};
+    uint8_t bin80Raw[60] = {0};
+    diffX87Binary80Precision(bin80Int, bin80Raw);
+    uint64_t bin80U64[6];
+    for (int i = 0; i < 6; i++) bin80U64[i] = (uint64_t)bin80Int[i];
+    printf("x87_bin80="); print_u64s(bin80U64, 6); putchar('|'); print_hex(bin80Raw, 60); putchar('\n');
     return 0;
 }
 `
@@ -1215,7 +1228,9 @@ int main(void) {
 		t.Fatalf("llc x86_64 (X87Hardware) failed: %v\n%s", err, out)
 	}
 
-	// Step 2: Portable X87Software execution on EVERY host (including arm64).
+	// Step 2: Portable X87Software execution on EVERY host (including arm64) AND
+	// zero-libcall 32-bit softfloat llc verification.
+	var swMap map[string]string
 	hostTriple := hostLLVMTriple()
 	if hostTriple != "" {
 		swRes, err := TranslateGoModule(gp, asmSrc, GoModuleOptions{
@@ -1241,6 +1256,20 @@ int main(void) {
 		if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", swInPath, "-o", swOptPath).CombinedOutput(); err != nil {
 			t.Fatalf("LLVM 22 opt -O2 (X87Software) failed: %v\n%s", err, out)
 		}
+		// Verify pure-integer binary80 software IR compiles cleanly on 32-bit i386
+		// softfloat with zero hardware x87 instructions and zero i128 libcalls.
+		sw386Asm := filepath.Join(tmp, "x87_sw_386.s")
+		if out, err := exec.Command(llcTool, "-O2", "-mtriple=i386-unknown-linux-gnu", "-mattr=+soft-float,-x87,-sse,-sse2", "-filetype=asm", swOptPath, "-o", sw386Asm).CombinedOutput(); err != nil {
+			t.Fatalf("llc i386 softfloat (X87Software) failed: %v\n%s", err, out)
+		}
+		if asmBytes, err := os.ReadFile(sw386Asm); err == nil {
+			s := string(asmBytes)
+			for _, badCall := range []string{"__udivti3", "__divti3", "__multi3", "__ashlti3", "__lshrti3"} {
+				if strings.Contains(s, badCall) {
+					t.Fatalf("X87Software i386 softfloat unexpectedly emitted external libcall %s", badCall)
+				}
+			}
+		}
 		swOptBytes, err := os.ReadFile(swOptPath)
 		if err != nil {
 			t.Fatal(err)
@@ -1260,14 +1289,18 @@ int main(void) {
 		if runtime.GOOS == "windows" {
 			swBin += ".exe"
 		}
-		if out, err := exec.Command(clangTool, "-O2", harnessPath, swObjPath, "-lm", "-o", swBin).CombinedOutput(); err != nil {
+		swLinkArgs := []string{"-O2", harnessPath, swObjPath, "-o", swBin}
+		if runtime.GOOS != "windows" {
+			swLinkArgs = append(swLinkArgs, "-lm")
+		}
+		if out, err := exec.Command(clangTool, swLinkArgs...).CombinedOutput(); err != nil {
 			t.Fatalf("clang link X87Software harness failed: %v\n%s", err, out)
 		}
 		swOut, err := exec.Command(swBin).CombinedOutput()
 		if err != nil {
 			t.Fatalf("run X87Software harness failed: %v\n%s", err, swOut)
 		}
-		swMap, _ := parseDiffTranscript(t, string(swOut))
+		swMap, _ = parseDiffTranscript(t, string(swOut))
 
 		// Verify golden invariants on portable X87Software run:
 		wantStackVals := []float64{0, 1, 0, 10, 30, 20, 10, 7, 7, 5, 9, 2, 9, 22, 33, 55}
@@ -1301,6 +1334,37 @@ int main(void) {
 		// Verify BCD -0 preserves negative zero sign bit.
 		if got := swMap["x87_bcd[1]"]; got != "00000000000000000080|8000000000000000" {
 			t.Fatalf("X87Software x87_bcd[1] (-0) = %s, want 00000000000000000080|8000000000000000", got)
+		}
+		// Verify Round 11 P1 #1: FSTSW tracks architectural x87 stack TOP pointer across all 12 steps.
+		wantTopVals := []uint64{0x0000, 0x3800, 0x3000, 0x2800, 0x6800, 0x2900, 0x2800, 0x3000, 0x0000, 0x3800, 0x0000, 0x0000}
+		wantTopHex := make([]string, len(wantTopVals))
+		for i, v := range wantTopVals {
+			wantTopHex[i] = fmt.Sprintf("%016x", v)
+		}
+		if got, want := swMap["x87_top"], strings.Join(wantTopHex, ","); got != want {
+			t.Fatalf("X87Software x87_top:\n  got:  %s\n  want: %s", got, want)
+		}
+		// Verify Round 11 P1 #2: X87Software preserves full 64-bit significand binary80 precision!
+		wantBin80Ints := []uint64{
+			9007199254740993,    // 2^53 + 1
+			4611686018427387905, // 2^62 + 1
+			4611686018427387903, // 2^62 - 1
+			27021597764222979,   // (2^53 + 1) * 3
+			384307168202282326,  // (2^60 + 2) / 3
+			2147483648,          // sqrt(2^62)
+		}
+		wantBin80Hex := make([]string, len(wantBin80Ints))
+		for i, v := range wantBin80Ints {
+			wantBin80Hex[i] = fmt.Sprintf("%016x", v)
+		}
+		wantBin80Raw := "abaaaaaaaaaaaaaafd3f" + // 1 / 3
+			"8464def933f304b5ff3f" + // sqrt(2)
+			"9e5365c242d7b3ddff3f" + // sqrt(3)
+			"4a5dba671b7cb2920140" + // pi + log2(e)
+			"3cb705850c925d8b0040" + // pi * ln(2)
+			"fefffffffffffffffe3f" // 1 - 2^-63
+		if got, want := swMap["x87_bin80"], strings.Join(wantBin80Hex, ",")+"|"+wantBin80Raw; got != want {
+			t.Fatalf("X87Software x87_bin80:\n  got:  %s\n  want: %s", got, want)
 		}
 	}
 
@@ -1360,31 +1424,35 @@ int main(void) {
 		t.Fatalf("read x87 oracle transcript %s: %v", oraclePath, err)
 	}
 	oracleMap, _ := parseDiffTranscript(t, string(oracleBytes))
-	if len(oracleMap) < 19 {
-		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 19", len(oracleMap))
+	if len(oracleMap) < 21 {
+		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 21", len(oracleMap))
 	}
 
 	compared := 0
 	var mismatches []string
 	failedKeys := map[string]bool{}
 	for k, want := range oracleMap {
-		got, ok := llvmMap[k]
+		gotHW, ok := llvmMap[k]
 		if !ok {
-			mismatches = append(mismatches, fmt.Sprintf("%s: missing from LLVM x87 transcript (oracle=%s)", k, want))
+			mismatches = append(mismatches, fmt.Sprintf("%s: missing from LLVM X87Hardware transcript (oracle=%s)", k, want))
 			failedKeys[k] = true
 			continue
 		}
 		compared++
-		if got != want {
-			mismatches = append(mismatches, fmt.Sprintf("%s:\n  go-asm:   %s\n  plan9asm: %s", k, want, got))
+		if gotHW != want {
+			mismatches = append(mismatches, fmt.Sprintf("%s [X87Hardware]:\n  go-asm:   %s\n  plan9asm: %s", k, want, gotHW))
+			failedKeys[k] = true
+		}
+		if gotSW, okSW := swMap[k]; !okSW || gotSW != want {
+			mismatches = append(mismatches, fmt.Sprintf("%s [X87Software]:\n  go-asm:   %s\n  plan9asm: %s", k, want, gotSW))
 			failedKeys[k] = true
 		}
 	}
 	writeAMD64ManifestDiffExecutionReport(t, "amd64/x87_diff_amd64.s", llcTool, true, map[string][]string{
-		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi["},
+		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80"},
 	}, llvmMap, oracleMap, failedKeys, "")
 	if len(mismatches) > 0 {
 		t.Fatalf("AMD64 x87 machine-code differential mismatch (%d/%d failed):\n%s", len(mismatches), compared, strings.Join(mismatches, "\n"))
 	}
-	t.Logf("AMD64 x87 native machine-code differential gate PASSED: compared=%d (X87Hardware vs Go native amd64 asm)", compared)
+	t.Logf("AMD64 x87 native machine-code differential gate PASSED: compared=%d (BOTH X87Hardware and X87Software vs Go native amd64 asm)", compared)
 }

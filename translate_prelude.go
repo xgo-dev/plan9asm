@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string, goarch string, wasmABI WASMABI) {
+func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string, goarch string, wasmABI WASMABI, x87Mode X87Mode) {
 	switch file.Arch {
 	case ArchARM:
 		arm.EmitPrelude(b)
@@ -18,7 +18,7 @@ func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string
 		// Keep historical gating to avoid injecting x86-only prelude when
 		// parsing x86 syntax for unrelated targets in tests.
 		if goarch == "amd64" || goarch == "386" {
-			x86.EmitPrelude(b, goarch, file)
+			x86.EmitPreludeWithX87Mode(b, goarch, x87Mode, file)
 		}
 	case ArchWASM:
 		emitWASMPrelude(b, file, resolve, wasmABI)

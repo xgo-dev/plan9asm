@@ -301,3 +301,214 @@ TEXT ·diffX87FUCOMI(SB), NOSPLIT, $0-24
 	FMOVDP F0, 40(DI)
 
 	RET
+
+// diffX87TopStatus verifies architectural x87 stack TOP pointer (bits 13:11,
+// mask 0x3800) via FSTSW AX across FINIT, pushes, FMOVD Fi,F0, FTST/FCOMD
+// (preserving TOP while updating C3/C2/C1/C0), FCLEX, pops, FCOMDPP double-pop,
+// FDECSTP, FINCSTP, and 8-push wraparound.
+TEXT ·diffX87TopStatus(SB), NOSPLIT, $0-8
+	MOVQ out+0(FP), DI
+
+	// [0] FINIT -> TOP = 0 (0x0000)
+	FINIT
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 0(DI)
+
+	// [1] FLD1 -> TOP = 7 (0x3800) [Round 11 P1 #1 counterexample]
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 8(DI)
+
+	// [2] FLDZ -> TOP = 6 (0x3000)
+	FLDZ
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 16(DI)
+
+	// [3] FMOVD F1, F0 (FLD ST(1), pushes 1.0) -> TOP = 5 (0x2800)
+	FMOVD F1, F0
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 24(DI)
+
+	// [4] FXCHD F0, F1 (F0=0.0, F1=1.0); FTST -> C3=1 (0x4000) + TOP=5 (0x2800) = 0x6800
+	FXCHD F0, F1
+	FTST
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x7f00, AX
+	MOVQ AX, 32(DI)
+
+	// [5] FCOMD F1, F0 (0.0 < 1.0) -> C0=1 (0x0100) + TOP=5 (0x2800) = 0x2900
+	FCOMD F1, F0
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x7f00, AX
+	MOVQ AX, 40(DI)
+
+	// [6] FCLEX preserves TOP=5 (0x2800)
+	FCLEX
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 48(DI)
+
+	// [7] FMOVDP F0, F0 (pop 1) -> TOP = 6 (0x3000)
+	FMOVDP F0, F0
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 56(DI)
+
+	// [8] FCOMDPP F0, F1 (pop 2) -> TOP = 0 (0x0000)
+	FCOMDPP F0, F1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 64(DI)
+
+	// [9] FDECSTP -> TOP = 7 (0x3800)
+	FDECSTP
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 72(DI)
+
+	// [10] FINCSTP -> TOP = 0 (0x0000)
+	FINCSTP
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 80(DI)
+
+	// [11] 8 pushes wrap TOP modulo 8 back to 0 (0x0000)
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 88(DI)
+
+	FINIT
+	RET
+
+// diffX87Binary80Precision verifies true 64-bit significand binary80 precision
+// across FADDDP, FSUBDP, FMULDP, FDIVDP, and FSQRT in BOTH X87Hardware and
+// X87Software modes (starting with FINIT so CW = 0x037f on Linux and Windows).
+TEXT ·diffX87Binary80Precision(SB), NOSPLIT, $24-16
+	MOVQ outInt+0(FP), DI
+	MOVQ outRaw80+8(FP), SI
+	FINIT
+
+	// outInt[0]: 2^53 + 1 = 9007199254740993 [Round 11 P1 #2 counterexample]
+	MOVQ $0x0020000000000000, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FLD1
+	FADDDP F0, F1
+	FMOVVP F0, 0(DI)
+
+	// outInt[1]: 2^62 + 1 = 4611686018427387905
+	MOVQ $0x4000000000000000, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FLD1
+	FADDDP F0, F1
+	FMOVVP F0, 8(DI)
+
+	// outInt[2]: 2^62 - 1 = 4611686018427387903
+	MOVQ $0x4000000000000000, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FLD1
+	FSUBDP F0, F1
+	FMOVVP F0, 16(DI)
+
+	// outInt[3]: (2^53 + 1) * 3 = 27021597764222979
+	MOVQ $9007199254740993, AX
+	MOVQ AX, 0(SP)
+	MOVQ $3, BX
+	MOVQ BX, 8(SP)
+	FMOVV 0(SP), F0
+	FMOVV 8(SP), F0
+	FMULDP F0, F1
+	FMOVVP F0, 24(DI)
+
+	// outInt[4]: (2^60 + 2) / 3 = 384307168202282326
+	MOVQ $0x1000000000000002, AX
+	MOVQ AX, 0(SP)
+	MOVQ $3, BX
+	MOVQ BX, 8(SP)
+	FMOVV 0(SP), F0
+	FMOVV 8(SP), F0
+	FDIVDP F0, F1
+	FMOVVP F0, 32(DI)
+
+	// outInt[5]: sqrt(2^62) = 2^31 = 2147483648
+	MOVQ $0x4000000000000000, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FSQRT
+	FMOVVP F0, 40(DI)
+
+	// outRaw80[0..9]: 1 / 3 in full 80-bit binary80
+	FLD1
+	MOVQ $3, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FDIVDP F0, F1
+	FMOVXP F0, 0(SI)
+
+	// outRaw80[10..19]: sqrt(2) in full 80-bit binary80
+	MOVQ $2, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FSQRT
+	FMOVXP F0, 10(SI)
+
+	// outRaw80[20..29]: sqrt(3) in full 80-bit binary80
+	MOVQ $3, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FSQRT
+	FMOVXP F0, 20(SI)
+
+	// outRaw80[30..39]: pi + log2(e) in full 80-bit binary80
+	FLDPI
+	FLDL2E
+	FADDDP F0, F1
+	FMOVXP F0, 30(SI)
+
+	// outRaw80[40..49]: pi * ln(2) in full 80-bit binary80
+	FLDPI
+	FLDLN2
+	FMULDP F0, F1
+	FMOVXP F0, 40(SI)
+
+	// outRaw80[50..59]: 1 - 2^-63 in full 80-bit binary80
+	FLD1
+	FLD1
+	MOVQ $0x4000000000000000, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FDIVDP F0, F1
+	MOVQ $2, AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	FDIVDP F0, F1
+	FSUBDP F0, F1
+	FMOVXP F0, 50(SI)
+
+	RET

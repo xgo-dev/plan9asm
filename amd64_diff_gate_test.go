@@ -201,6 +201,7 @@ extern void diffADX(uint64_t a, uint64_t b, uint64_t *out);
 extern void diffPCMPESTRI0C(uint8_t *needle, uint8_t *hay, uint64_t nLen, uint64_t hLen, uint64_t *out);
 extern void diffSHA256Block(uint32_t *state, uint8_t *block);
 extern void diffSHA1Block(uint32_t *state, uint8_t *block);
+extern void diffVecByteShifts(uint64_t lo, uint64_t hi, uint64_t *out);
 
 static void print_u64s(const uint64_t *v, int n) {
     for (int i = 0; i < n; i++) {
@@ -368,6 +369,11 @@ int main(void) {
         for (int j = 0; j < 20; j++) printf("%02x", d1[j]);
         putchar('\n');
     }
+    {
+        uint64_t vbs[8] = {0};
+        diffVecByteShifts(0x0123456789abcdefULL, 0xfedcba9876543210ULL, vbs);
+        printf("vecbshift[0]="); print_u64s(vbs, 8); putchar('\n');
+    }
     return 0;
 }
 `
@@ -427,6 +433,11 @@ int main(void) {
 	ar3 := strings.Split(llvmMap["arith64[3]"], ",")
 	if ar3[17] != "0000000000000001" {
 		t.Fatalf("arith64[3] TESTQ 3, 3 JPS = %q, want 1", ar3[17])
+	}
+	// Round 11 P2: PSLLDQ/PSRLDQ $16/$17/$31 all zero the 128-bit lane; $1/$8 shift accurately.
+	wantVbs := "0000000000000000,0000000000000000,0000000000000000,0000000000000000,0000000000000000,0000000000000000,23456789abcdef00,fedcba9876543210"
+	if got := llvmMap["vecbshift[0]"]; got != wantVbs {
+		t.Fatalf("vecbshift[0] = %q, want %q", got, wantVbs)
 	}
 	// NEGL architectural AF & OF (caught on real amd64 by amd64-diff-gate):
 	//   arithw[3]  (a=3):          NEGL 3 -> 0xfffffffd, flags=0x93 (SF|AF|1|CF)
@@ -733,7 +744,7 @@ func writeAMD64DiffGateExecutionReport(t *testing.T, llcTool string, nativeOracl
 	t.Helper()
 	casePrefixes := map[string][]string{
 		"amd64-diff-gate-scalar-arith-flags":      {"arith64[", "arithw[", "muldiv["},
-		"amd64-diff-gate-shifts-rotates-double16": {"shift[", "dshift16[", "dshift3264["},
+		"amd64-diff-gate-shifts-rotates-double16": {"shift[", "dshift16[", "dshift3264[", "vecbshift["},
 		"amd64-diff-gate-flags-save-restore":      {"flags[", "pushfq_raw_if"},
 		"amd64-diff-gate-bit-atomic-string-abi0":  {"bit[", "atomstr[", "zeroarg"},
 		"amd64-diff-gate-adx":                     {"adx["},
@@ -2066,6 +2077,213 @@ func TestTranslateGoModuleAMD64VecLaneSelectPrecision(t *testing.T) {
 	PINSRQ $1, BX, X0
 	PEXTRQ $1, X0, CX
 	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		// Round 11 P2: PSLLDQ / PSRLDQ large counts ($16, $17, $31, $-1) share
+		// the same Intel SDM imm8 saturation rule between checker and lowerer,
+		// zeroing the entire 128-bit lane even if X0 previously held entry-undef CF.
+		{
+			name: "pslldq-16-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSLLDQ $16, X0
+	PEXTRQ $0, X0, CX
+	PEXTRQ $1, X0, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "pslldq-17-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSLLDQ $17, X0
+	PEXTRQ $0, X0, CX
+	PEXTRQ $1, X0, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "pslldq-31-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSLLDQ $31, X0
+	PEXTRQ $0, X0, CX
+	PEXTRQ $1, X0, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "psrldq-16-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSRLDQ $16, X0
+	PEXTRQ $0, X0, CX
+	PEXTRQ $1, X0, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "psrldq-17-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSRLDQ $17, X0
+	PEXTRQ $0, X0, CX
+	PEXTRQ $1, X0, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "psrldq-31-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSRLDQ $31, X0
+	PEXTRQ $0, X0, CX
+	PEXTRQ $1, X0, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "pslldq-neg1-unsigned-imm8-255-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSLLDQ $-1, X0
+	PEXTRQ $0, X0, CX
+	PEXTRQ $1, X0, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "psrldq-neg1-unsigned-imm8-255-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	PSRLDQ $-1, X0
+	PEXTRQ $0, X0, CX
+	PEXTRQ $1, X0, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "vpslldq-31-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	VPSLLDQ $31, X0, X1
+	PEXTRQ $0, X1, CX
+	PEXTRQ $1, X1, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "vpsrldq-17-clears-lane-to-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	PUSHFQ
+	POPQ AX
+	MOVQ AX, X0
+	MOVQ $41, BX
+	PINSRQ $1, BX, X0
+	VPSRLDQ $17, X0, X1
+	PEXTRQ $0, X1, CX
+	PEXTRQ $1, X1, DX
+	ORQ DX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantErr: false,
+			wantO2:  "ret i64 0",
+		},
+		{
+			name: "pslldq-256-invalid-imm8-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $41, AX
+	MOVQ AX, X0
+	PSLLDQ $256, X0
+	MOVQ X0, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "psrldq-neg129-invalid-imm8-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $41, AX
+	MOVQ AX, X0
+	PSRLDQ $-129, X0
+	MOVQ X0, BX
+	MOVQ BX, ret+0(FP)
 	RET
 `,
 			wantErr: true,

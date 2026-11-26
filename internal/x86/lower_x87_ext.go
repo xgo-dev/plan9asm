@@ -72,6 +72,8 @@ func (c *amd64Ctx) lowerX87Ext(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			c.storeX87Value(i, c.loadX87Value(i+1))
 		}
 		c.storeX87Value(len(c.x87Slot)-1, top)
+		c.adjustX87Top(1)
+		c.projectX87Status("0", 0x0200)
 		return true, false, nil
 	case "FDECSTP":
 		if len(ins.Args) != 0 {
@@ -82,6 +84,8 @@ func (c *amd64Ctx) lowerX87Ext(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 			c.storeX87Value(i, c.loadX87Value(i-1))
 		}
 		c.storeX87Value(0, last)
+		c.adjustX87Top(-1)
+		c.projectX87Status("0", 0x0200)
 		return true, false, nil
 	}
 	return false, false, nil
@@ -96,34 +100,6 @@ func (c *amd64Ctx) x87MemPtr(op asm.Operand) (string, string, error) {
 		return p, "ptr", err
 	default:
 		return "", "", fmt.Errorf("386 x87: expected memory operand, got %s", op.String())
-	}
-}
-
-func (c *amd64Ctx) evalX87TypedF64(op asm.Operand, memKind string) (string, error) {
-	if _, ok := x87OperandReg(op); ok {
-		return c.evalX87F64(op)
-	}
-	switch memKind {
-	case "f64":
-		return c.evalF64(op)
-	case "f32":
-		f32, err := c.evalF32(op)
-		if err != nil {
-			return "", err
-		}
-		return c.x87IR("fpext float %s to double", f32), nil
-	case "i32":
-		iv, err := c.evalIntSized(op, asm.I32)
-		if err != nil {
-			return "", err
-		}
-		return c.x87IR("sitofp i32 %s to double", iv), nil
-	default: // i16
-		iv, err := c.evalIntSized(op, asm.I16)
-		if err != nil {
-			return "", err
-		}
-		return c.x87IR("sitofp i16 %s to double", iv), nil
 	}
 }
 
@@ -172,24 +148,25 @@ func (c *amd64Ctx) lowerX87ExtArith(op asm.Op, spec x87ArithSpec, ins asm.Instr)
 	if len(ins.Args) != 2 {
 		return fmt.Errorf("386 %s expects src, dst: %q", op, ins.Raw)
 	}
+	src, err := c.evalX87TypedValue(ins.Args[0], spec.memKind)
+	if err != nil {
+		return err
+	}
+	dst, err := c.evalX87Value(ins.Args[1])
+	if err != nil {
+		return err
+	}
+	lhs, rhs := dst, src
+	if spec.rev {
+		lhs, rhs = src, dst
+	}
+	var res x87Value
 	if c.useHardwareX87() {
 		// Execute in true 80-bit extended x87 precision using the live x87
 		// control word (precision + rounding mode). evaluateX87Native pushes
 		// inputs[1] (lhs) into ST(1) and inputs[0] (rhs) into ST(0).
 		// Note AT&T mnemonic convention: fsubrp = [0xde,0xe9] = ST(1)-ST(0),
 		// fdivrp = [0xde,0xf9] = ST(1)/ST(0).
-		src, err := c.evalX87TypedValue(ins.Args[0], spec.memKind)
-		if err != nil {
-			return err
-		}
-		dst, err := c.evalX87Value(ins.Args[1])
-		if err != nil {
-			return err
-		}
-		lhs, rhs := dst, src
-		if spec.rev {
-			lhs, rhs = src, dst
-		}
 		var hwOp string
 		switch spec.llvmOp {
 		case "fadd":
@@ -201,39 +178,24 @@ func (c *amd64Ctx) lowerX87ExtArith(op asm.Op, spec x87ArithSpec, ins asm.Instr)
 		default: // fdiv
 			hwOp = "fdivrp"
 		}
-		res, _, status := c.evaluateX87Native(hwOp, []x87Value{rhs, lhs}, 1, 1)
+		var status string
+		res, _, status = c.evaluateX87Native(hwOp, []x87Value{rhs, lhs}, 1, 1)
 		c.projectX87Status(status, 0x0200)
-		if dstIdx, ok := x87OperandReg(ins.Args[1]); ok {
-			c.storeX87Value(dstIdx, res)
-		} else {
-			f64, err := c.x87ValueToF64(res)
-			if err != nil {
-				return err
-			}
-			if err := c.storeX87F64(ins.Args[1], f64); err != nil {
-				return err
-			}
+	} else {
+		// Execute in bit-exact IEEE-754 binary80 pure-integer software arithmetic
+		// honoring live RC (rounding mode) and PC (precision control) in x87ControlSlot.
+		res = c.x87PortableArith(spec.llvmOp, lhs, rhs, c.loadX87ControlWord())
+	}
+	if dstIdx, ok := x87OperandReg(ins.Args[1]); ok {
+		c.storeX87Value(dstIdx, res)
+	} else {
+		f64, err := c.x87ValueToF64(res)
+		if err != nil {
+			return err
 		}
-		if spec.pop {
-			c.popX87Value()
+		if err := c.storeX87F64(ins.Args[1], f64); err != nil {
+			return err
 		}
-		return nil
-	}
-	src, err := c.evalX87TypedF64(ins.Args[0], spec.memKind)
-	if err != nil {
-		return err
-	}
-	dst, err := c.evalX87F64(ins.Args[1])
-	if err != nil {
-		return err
-	}
-	lhs, rhs := dst, src
-	if spec.rev {
-		lhs, rhs = src, dst
-	}
-	out := c.x87IR("%s double %s, %s", spec.llvmOp, lhs, rhs)
-	if err := c.storeX87F64(ins.Args[1], out); err != nil {
-		return err
 	}
 	if spec.pop {
 		c.popX87Value()
@@ -285,7 +247,8 @@ func (c *amd64Ctx) lowerX87ExtCmp(op asm.Op, spec x87CmpSpec, ins asm.Instr) err
 		c2w := c.x87IR("select i1 %s, i16 1024, i16 0", uno)
 		c0w := c.x87IR("select i1 %s, i16 256, i16 0", c0)
 		status := c.x87IR("or i16 %s, %s", c.x87IR("or i16 %s, %s", c3w, c2w), c0w)
-		fmt.Fprintf(c.b, "  store i16 %s, ptr %s\n", status, c.x87StatusSlot)
+		// Update C3|C2|C1|C0 (0x4700, with C1=0) while preserving TOP (0x3800).
+		c.projectX87Status(status, 0x4700)
 	}
 	for i := 0; i < spec.pops; i++ {
 		c.popX87Value()

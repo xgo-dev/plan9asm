@@ -2026,8 +2026,8 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		{"PINSRB", asm.Instr{Raw: "PINSRB $1, AX, Y0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.Reg("Y0")}}}, "wrong dst class", false},
 		{"PEXTRB", asm.Instr{Raw: "PEXTRB AX, X0, BX", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}, {Kind: asm.OpReg, Reg: asm.BX}}}, "missing imm", true},
 		{"PALIGNR", asm.Instr{Raw: "PALIGNR $1, Y0, X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpReg, Reg: asm.Reg("Y0")}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "wrong src class", false},
-		{"PSRLDQ", asm.Instr{Raw: "PSRLDQ $17, X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 17}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "invalid imm", true},
-		{"PSLLDQ", asm.Instr{Raw: "PSLLDQ $17, X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 17}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "invalid imm", true},
+		{"PSRLDQ", asm.Instr{Raw: "PSRLDQ $256, X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 256}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "invalid imm", true},
+		{"PSLLDQ", asm.Instr{Raw: "PSLLDQ $256, X0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 256}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "invalid imm", true},
 		{"PSRLQ", asm.Instr{Raw: "PSRLQ AX, X0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}}}, "non-imm shift", true},
 		{"PEXTRD", asm.Instr{Raw: "PEXTRD $1, X0, label", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpReg, Reg: asm.Reg("X0")}, {Kind: asm.OpIdent, Ident: "label"}}}, "bad dst kind", true},
 	} {

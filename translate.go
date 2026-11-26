@@ -65,7 +65,7 @@ func translateIRText(file *File, opt Options) (string, error) {
 	}
 	// Keep translate.go as the cross-platform pipeline entry.
 	// Architecture-specific declarations live in arch-specific files.
-	emitArchPrelude(&b, file, resolve, opt.Goarch, opt.WASMABI)
+	emitArchPrelude(&b, file, resolve, opt.Goarch, opt.WASMABI, opt.X87Mode)
 
 	emitExternSBGlobals(&b, file, resolve, opt.Sigs)
 

@@ -1563,10 +1563,11 @@ func (c *amd64Ctx) lowerX86VecShiftDeclarative(spec asm.OpSpec, zeroMask bool, i
 		if cntOp.Kind != asm.OpImm {
 			return fmt.Errorf("amd64 %s expects $imm: %q", spec.Op, ins.Raw)
 		}
-		n := int(uint8(cntOp.Imm))
-		if n > 16 {
-			n = 16
+		n64, err := x86VecByteShiftCount(spec.Op, cntOp.Imm)
+		if err != nil {
+			return fmt.Errorf("%v: %q", err, ins.Raw)
 		}
+		n := int(n64)
 		totalBytes := vi.totalBits / 8
 		mask := make([]string, totalBytes)
 		for base := 0; base < totalBytes; base += 16 {

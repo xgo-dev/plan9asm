@@ -10,6 +10,10 @@ type amd64EmitBr func(target string)
 type amd64EmitCondBr func(cond string, target string, fall string) error
 
 func EmitPrelude(b *strings.Builder, goarch string, file *asm.File) {
+	EmitPreludeWithX87Mode(b, goarch, asm.X87Auto, file)
+}
+
+func EmitPreludeWithX87Mode(b *strings.Builder, goarch string, x87Mode asm.X87Mode, file *asm.File) {
 	b.WriteString("declare i64 @syscall(i64, i64, i64, i64, i64, i64, i64)\n")
 	b.WriteString("declare i32 @cliteErrno()\n")
 	// Generic LLVM intrinsics used by amd64 lowering.
@@ -49,6 +53,9 @@ func EmitPrelude(b *strings.Builder, goarch string, file *asm.File) {
 	b.WriteString("\n")
 	if goarch == "386" {
 		emit386StringHelpers(b, file)
+	}
+	if x87Mode == asm.X87Software && file != nil {
+		emitX87SoftwareArithHelpers(b, file)
 	}
 }
 

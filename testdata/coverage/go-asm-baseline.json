@@ -589,7 +589,7 @@
         "coverage_fingerprint": "c86db2f77613f67816ac11794e2ca4f3b3a38aefd468a47682b73e50a7aae3d8",
         "official_opcodes": 1600,
         "parse_err_count": 0,
-        "runtime_verified_forms": 179,
+        "runtime_verified_forms": 184,
         "supported_forms": 6411,
         "unique_forms": 6742,
         "unique_ops": 1456,
