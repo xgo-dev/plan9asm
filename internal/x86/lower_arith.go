@@ -1620,9 +1620,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, fmt.Errorf("amd64 %s expects amt,dst: %q", op, ins.Raw)
 		}
 		amtMask := int64(63)
+		valBits := int64(64)
 		valTy := asm.I64
 		if op == "SHLL" || op == "SHRL" || op == "SARL" || op == "SALL" {
 			amtMask = 31
+			valBits = 32
 			valTy = asm.I32
 		}
 		dv, storeDst, err := c.loadIntDestination(ins.Args[1], valTy)
@@ -1630,9 +1632,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, fmt.Errorf("amd64 %s %v: %q", op, err, ins.Raw)
 		}
 		amtI64 := ""
+		immCount := int64(-1)
 		switch ins.Args[0].Kind {
 		case asm.OpImm:
-			amtI64 = fmt.Sprintf("%d", ins.Args[0].Imm&amtMask)
+			immCount = ins.Args[0].Imm & amtMask
+			amtI64 = fmt.Sprintf("%d", immCount)
 		case asm.OpReg:
 			av, err := c.loadReg(ins.Args[0].Reg)
 			if err != nil {
@@ -1645,30 +1649,95 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, fmt.Errorf("amd64 %s unsupported shift amt: %q", op, ins.Raw)
 		}
 
-		if valTy == asm.I64 {
-			t := c.newTmp()
-			switch op {
-			case "SHRQ":
-				fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %s\n", t, dv, amtI64)
-			case "SHLQ", "SALQ":
-				fmt.Fprintf(c.b, "  %%%s = shl i64 %s, %s\n", t, dv, amtI64)
-			case "SARQ":
-				fmt.Fprintf(c.b, "  %%%s = ashr i64 %s, %s\n", t, dv, amtI64)
+		isLeft := op == "SHLQ" || op == "SALQ" || op == "SHLL" || op == "SALL"
+		isArith := op == "SARQ" || op == "SARL"
+		amtVal := amtI64
+		if valTy == asm.I32 {
+			if immCount >= 0 {
+				amtVal = fmt.Sprintf("%d", immCount)
+			} else {
+				amt32 := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", amt32, amtI64)
+				amtVal = "%" + amt32
 			}
-			return true, false, storeDst("%" + t)
 		}
 
-		amt32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", amt32, amtI64)
-		sh := c.newTmp()
-		if op == "SHLL" || op == "SALL" {
-			fmt.Fprintf(c.b, "  %%%s = shl i32 %s, %%%s\n", sh, dv, amt32)
-		} else if op == "SARL" {
-			fmt.Fprintf(c.b, "  %%%s = ashr i32 %s, %%%s\n", sh, dv, amt32)
+		resTmp := c.newTmp()
+		if isLeft {
+			fmt.Fprintf(c.b, "  %%%s = shl %s %s, %s\n", resTmp, valTy, dv, amtVal)
+		} else if isArith {
+			fmt.Fprintf(c.b, "  %%%s = ashr %s %s, %s\n", resTmp, valTy, dv, amtVal)
 		} else {
-			fmt.Fprintf(c.b, "  %%%s = lshr i32 %s, %%%s\n", sh, dv, amt32)
+			fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %s\n", resTmp, valTy, dv, amtVal)
 		}
-		return true, false, storeDst("%" + sh)
+		resVal := "%" + resTmp
+		if err := storeDst(resVal); err != nil {
+			return true, false, err
+		}
+		// Intel SDM: effective shift count 0 leaves all status flags unaffected.
+		if immCount == 0 {
+			return true, false, nil
+		}
+		// Compute architectural ZF, SF, CF, and (for count == 1) OF.
+		// When count is dynamic, guard against count == 0 to preserve prior flags
+		// and keep bit-position arithmetic in range [0, valBits-1].
+		var isZero, safeAmt string
+		if immCount < 0 {
+			zTmp := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zTmp, valTy, amtVal)
+			isZero = "%" + zTmp
+			sTmp := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, %s 1, %s %s\n", sTmp, isZero, valTy, valTy, amtVal)
+			safeAmt = "%" + sTmp
+		} else {
+			safeAmt = amtVal
+		}
+		bitPos := c.newTmp()
+		if isLeft {
+			fmt.Fprintf(c.b, "  %%%s = sub %s %d, %s\n", bitPos, valTy, valBits, safeAmt)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = sub %s %s, 1\n", bitPos, valTy, safeAmt)
+		}
+		cfSh, cfBit, newCF := c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %%%s\n", cfSh, valTy, dv, bitPos)
+		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, 1\n", cfBit, valTy, cfSh)
+		fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, 0\n", newCF, valTy, cfBit)
+		newZF, newSF := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", newZF, valTy, resVal)
+		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", newSF, valTy, resVal)
+		var newOFVal string
+		if isLeft {
+			ofTmp := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, %%%s\n", ofTmp, newSF, newCF)
+			newOFVal = "%" + ofTmp
+		} else if isArith {
+			newOFVal = "false"
+		} else {
+			ofTmp := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", ofTmp, valTy, dv)
+			newOFVal = "%" + ofTmp
+		}
+		if immCount < 0 {
+			oldZF := c.loadFlag(c.flagsZSlot)
+			oldSF := c.loadFlag(c.flagsSltSlot)
+			oldCF := c.loadFlag(c.flagsCFSlot)
+			oldOF := c.loadFlag(c.flagsOFSlot)
+			selZF, selSF, selCF, selOF := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", selZF, isZero, oldZF, newZF)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selZF, c.flagsZSlot)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", selSF, isZero, oldSF, newSF)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selSF, c.flagsSltSlot)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", selCF, isZero, oldCF, newCF)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selCF, c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %s\n", selOF, isZero, oldOF, newOFVal)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selOF, c.flagsOFSlot)
+		} else {
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newZF, c.flagsZSlot)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newSF, c.flagsSltSlot)
+			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newCF, c.flagsCFSlot)
+			fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", newOFVal, c.flagsOFSlot)
+		}
+		return true, false, nil
 
 	case "SHLW", "SHRW", "SARW", "SALW":
 		if len(ins.Args) == 3 && (op == "SHLW" || op == "SHRW") {

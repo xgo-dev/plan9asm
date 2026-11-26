@@ -43,14 +43,12 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op asm.Op, ins asm.Instr, emitBr 
 			return true, false, fmt.Errorf("amd64 CALL expects reg or symbol(SB) target: %q", ins.Raw)
 		}
 
-	case "JMP",
-		"JE", "JEQ", "JZ", "JNE", "JNZ",
-		"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
-		"JA", "JHI", "JAE", "JHS", "JB", "JLO", "JBE", "JLS", "JNA",
-		"JC", "JNC", "JCC":
+	case "JMP":
 		// ok
 	default:
-		return false, false, nil
+		if !isX86FlagCondJumpOp(op) {
+			return false, false, nil
+		}
 	}
 	if len(ins.Args) != 1 {
 		return true, false, fmt.Errorf("amd64 %s expects 1 operand: %q", op, ins.Raw)
@@ -157,70 +155,12 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op asm.Op, ins asm.Instr, emitBr 
 		return true, false, fmt.Errorf("amd64 %s has no fallthrough block: %q", op, ins.Raw)
 	}
 	fall := c.blocks[bi+1].name
-	cond := ""
-	switch op {
-	case "JE", "JEQ", "JZ":
-		cond = c.loadFlag(c.flagsZSlot)
-	case "JNE", "JNZ":
-		z := c.loadFlag(c.flagsZSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, z)
-		cond = "%" + t
-	case "JL", "JLT":
-		cond = c.loadFlag(c.flagsSltSlot)
-	case "JGE":
-		slt := c.loadFlag(c.flagsSltSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, slt)
-		cond = "%" + t
-	case "JS":
-		cond = c.loadFlag(c.flagsSltSlot)
-	case "JNS":
-		slt := c.loadFlag(c.flagsSltSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, slt)
-		cond = "%" + t
-	case "JLE":
-		slt := c.loadFlag(c.flagsSltSlot)
-		z := c.loadFlag(c.flagsZSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, slt, z)
-		cond = "%" + t
-	case "JG", "JGT":
-		slt := c.loadFlag(c.flagsSltSlot)
-		z := c.loadFlag(c.flagsZSlot)
-		t1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, slt, z)
-		t2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-		cond = "%" + t2
-	case "JB", "JLO", "JC":
-		cond = c.loadFlag(c.flagsCFSlot)
-	case "JNC", "JCC":
-		cf := c.loadFlag(c.flagsCFSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, cf)
-		cond = "%" + t
-	case "JAE", "JHS":
-		cf := c.loadFlag(c.flagsCFSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, cf)
-		cond = "%" + t
-	case "JBE", "JLS", "JNA":
-		cf := c.loadFlag(c.flagsCFSlot)
-		z := c.loadFlag(c.flagsZSlot)
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, cf, z)
-		cond = "%" + t
-	case "JA", "JHI":
-		cf := c.loadFlag(c.flagsCFSlot)
-		z := c.loadFlag(c.flagsZSlot)
-		t1 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t1, cf, z)
-		t2 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
-		cond = "%" + t2
-	default:
+	cc, okCond := x86CondSuffix(op)
+	if !okCond {
+		return true, false, fmt.Errorf("amd64: unsupported branch %s", op)
+	}
+	cond, valid := c.x86CondValue(cc)
+	if !valid {
 		return true, false, fmt.Errorf("amd64: unsupported branch %s", op)
 	}
 
@@ -329,23 +269,24 @@ func (c *amd64Ctx) callSym(symOp asm.Operand) error {
 	callee = asm.FuncSigSymbol(callee, csig)
 
 	args := make([]string, 0, len(csig.Args))
-	useStackABI0 := c.goarch == "amd64" && c.localStackSlot != "" && len(csig.ArgRegs) == 0 && len(csig.Frame.Params) > 0 && c.hasOutgoingSPArgs()
+	useStackABI0 := c.goarch == "amd64" && c.localStackSlot != "" && len(csig.ArgRegs) == 0 && (len(csig.Frame.Params) > 0 || len(csig.Frame.Results) > 0) && c.hasOutgoingSPArgs()
 	if useStackABI0 {
 		spVal, err := c.loadReg(asm.SP)
 		if err != nil {
 			return err
 		}
+		spPtrTmp := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", spPtrTmp, spVal)
+		spPtr := "%" + spPtrTmp
 		loadFromSP := func(off int64, ty asm.LLVMType) (string, error) {
-			addr := spVal
+			p := spPtr
 			if off != 0 {
 				a := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", a, spVal, off)
-				addr = "%" + a
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %d\n", a, spPtr, off)
+				p = "%" + a
 			}
-			p := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p, addr)
 			v := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", v, ty, p)
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", v, ty, p)
 			return "%" + v, nil
 		}
 		for i, argTy := range csig.Args {
@@ -443,32 +384,55 @@ func (c *amd64Ctx) callSym(symOp asm.Operand) error {
 		if err != nil {
 			return err
 		}
+		spPtrTmp := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", spPtrTmp, spVal)
+		spPtr := "%" + spPtrTmp
 		storeToSP := func(off int64, ty asm.LLVMType, val string) {
-			addr := spVal
+			p := spPtr
 			if off != 0 {
 				a := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", a, spVal, off)
-				addr = "%" + a
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %d\n", a, spPtr, off)
+				p = "%" + a
 			}
-			p := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p, addr)
-			fmt.Fprintf(c.b, "  store %s %s, ptr %%%s, align 1\n", ty, val, p)
+			if ty == asm.I1 {
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", z, val)
+				fmt.Fprintf(c.b, "  store i8 %%%s, ptr %s, align 1\n", z, p)
+				return
+			}
+			fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", ty, val, p)
 		}
-		if len(csig.Frame.Results) == 1 && csig.Frame.Results[0].Field < 0 {
+		retIsStruct := strings.HasPrefix(strings.TrimSpace(string(csig.Ret)), "{")
+		if len(csig.Frame.Results) == 1 && !retIsStruct {
 			storeToSP(csig.Frame.Results[0].Offset, csig.Frame.Results[0].Type, "%"+t)
 		} else {
+			multiReturn := false
 			for _, rs := range csig.Frame.Results {
-				ex := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, %d\n", ex, csig.Ret, t, rs.Index)
-				val := "%" + ex
-				if rs.Field >= 0 {
-					ex2 := c.newTmp()
-					fmt.Fprintf(c.b, "  %%%s = extractvalue %s %s, %d\n", ex2, rs.Type, val, rs.Field)
-					val = "%" + ex2
+				if rs.Index > 0 {
+					multiReturn = true
+					break
 				}
-				storeToSP(rs.Offset, rs.Type, val)
+			}
+			for _, rs := range csig.Frame.Results {
+				var idxPath []string
+				if multiReturn {
+					idxPath = append(idxPath, fmt.Sprintf("%d", rs.Index))
+				}
+				if len(rs.Fields) > 0 {
+					for _, fi := range rs.Fields {
+						idxPath = append(idxPath, fmt.Sprintf("%d", fi))
+					}
+				} else if rs.Field >= 0 {
+					idxPath = append(idxPath, fmt.Sprintf("%d", rs.Field))
+				} else if !multiReturn {
+					idxPath = append(idxPath, fmt.Sprintf("%d", rs.Index))
+				}
+				ex := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, %s\n", ex, csig.Ret, t, strings.Join(idxPath, ", "))
+				storeToSP(rs.Offset, rs.Type, "%"+ex)
 			}
 		}
+		return nil
 	}
 	switch csig.Ret {
 	case asm.I64:

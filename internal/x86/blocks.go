@@ -17,14 +17,8 @@ func amd64SplitBlocks(fn asm.Func) []amd64Block {
 	anon := 0
 
 	isPCRelTarget := func(ins asm.Instr) (off int64, ok bool) {
-		op := strings.ToUpper(string(ins.Op))
-		switch asm.Op(op) {
-		case "JMP",
-			"JE", "JEQ", "JZ", "JNE", "JNZ",
-			"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS", "JNA",
-			"JNC", "JC", "JCC":
-		default:
+		op := asm.Op(strings.ToUpper(string(ins.Op)))
+		if op != "JMP" && !isX86FlagCondJumpOp(op) {
 			return 0, false
 		}
 		if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpMem {
@@ -46,17 +40,8 @@ func amd64SplitBlocks(fn asm.Func) []amd64Block {
 		if ins.Op == asm.OpRET {
 			return true
 		}
-		op := strings.ToUpper(string(ins.Op))
-		switch asm.Op(op) {
-		case "JMP",
-			"JE", "JEQ", "JZ", "JNE", "JNZ",
-			"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS", "JNA",
-			"JNC", "JC", "JCC":
-			return true
-		default:
-			return false
-		}
+		op := asm.Op(strings.ToUpper(string(ins.Op)))
+		return op == "JMP" || isX86FlagCondJumpOp(op)
 	}
 
 	linear := make([]asm.Instr, 0, len(fn.Instrs))

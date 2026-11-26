@@ -611,11 +611,18 @@ func (c *amd64Ctx) lowerX86ExtraShift(spec asm.OpSpec, ins asm.Instr) error {
 		if err := storeDst("%" + res); err != nil {
 			return err
 		}
-		zf, sf := c.newTmp(), c.newTmp()
+		// Intel SDM: effective shift count 0 preserves all status flags unchanged.
+		isZero := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", isZero, ty, cntM)
+		oldZF := c.loadFlag(c.flagsZSlot)
+		oldSF := c.loadFlag(c.flagsSltSlot)
+		zf, sf, selZF, selSF := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zf, ty, res)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %s, i1 %%%s\n", selZF, isZero, oldZF, zf)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selZF, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  %%%s = icmp slt %s %%%s, 0\n", sf, ty, res)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %s, i1 %%%s\n", selSF, isZero, oldSF, sf)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", selSF, c.flagsSltSlot)
 		return nil
 	case "rol", "ror":
 		intr := "fshl"

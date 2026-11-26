@@ -654,6 +654,24 @@ func (c *amd64Ctx) stackOffsetRange() (minOff, maxOff int64) {
 					maxOff = end
 				}
 			}
+			if strings.EqualFold(string(ins.Op), "CALL") && len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpSym && c.resolve != nil && c.sigs != nil {
+				raw := strings.TrimSpace(ins.Args[0].Sym)
+				if strings.HasSuffix(raw, "(SB)") {
+					callee := c.resolve(strings.TrimSuffix(raw, "(SB)"))
+					if csig, ok := c.sigs[callee]; ok && len(csig.ArgRegs) == 0 {
+						for _, slot := range csig.Frame.Params {
+							if end := slot.Offset + x86ABI0SlotBytes(slot.Type, c.goarch); end > maxOff {
+								maxOff = end
+							}
+						}
+						for _, slot := range csig.Frame.Results {
+							if end := slot.Offset + x86ABI0SlotBytes(slot.Type, c.goarch); end > maxOff {
+								maxOff = end
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 	return minOff, maxOff
@@ -1745,6 +1763,19 @@ func (c *amd64Ctx) addrFromPlainMem(mem asm.MemRef) (addrI64 string, err error) 
 }
 
 func (c *amd64Ctx) ptrFromMem(mem asm.MemRef) (ptr, ptrType string, err error) {
+	if mem.Segment == "" && mem.Base == asm.SP && mem.Index == "" && c.localStackSlot != "" {
+		spVal, err := c.loadReg(asm.SP)
+		if err != nil {
+			return "", "", err
+		}
+		p := c.ptrFromAddrI64(spVal)
+		if mem.Off != 0 {
+			g := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %d\n", g, p, mem.Off)
+			p = "%" + g
+		}
+		return p, "ptr", nil
+	}
 	addr, err := c.addrFromPlainMem(mem)
 	if err != nil {
 		return "", "", err

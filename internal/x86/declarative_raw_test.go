@@ -616,6 +616,80 @@ done:
 				},
 				ok: false,
 			},
+			{
+				name: "BTQ preserves ZF: CMPQ then BTQ then SETEQ accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nCMPQ AX, AX\nBTQ $0, AX\nSETEQ ret+8(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name:  "example.btzf",
+					Args:  []asm.LLVMType{asm.I64},
+					Ret:   asm.I8,
+					Frame: asm.FrameLayout{Params: []asm.FrameSlot{{Offset: 0, Type: asm.I64, Index: 0, Field: -1}}, Results: []asm.FrameSlot{{Offset: 8, Type: asm.I8, Index: 0, Field: -1}}},
+				},
+				ok: true,
+			},
+			{
+				name: "BTQ clears SF: CMPQ then BTQ then SETS rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nCMPQ AX, AX\nBTQ $0, AX\nSETS ret+8(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name:  "example.btsf",
+					Args:  []asm.LLVMType{asm.I64},
+					Ret:   asm.I8,
+					Frame: asm.FrameLayout{Params: []asm.FrameSlot{{Offset: 0, Type: asm.I64, Index: 0, Field: -1}}, Results: []asm.FrameSlot{{Offset: 8, Type: asm.I8, Index: 0, Field: -1}}},
+				},
+				ok: false,
+			},
+			{
+				name: "SHLQ $0 preserves uninit CF (SETCS rejected)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nSHLQ $0, AX\nSETCS ret+8(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name:  "example.shl0cf",
+					Args:  []asm.LLVMType{asm.I64},
+					Ret:   asm.I8,
+					Frame: asm.FrameLayout{Params: []asm.FrameSlot{{Offset: 0, Type: asm.I64, Index: 0, Field: -1}}, Results: []asm.FrameSlot{{Offset: 8, Type: asm.I8, Index: 0, Field: -1}}},
+				},
+				ok: false,
+			},
+			{
+				name: "SHLQ $64 masked count 0 preserves OF (ADOXQ accepted)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nCMPQ AX, AX\nSHLQ $64, AX\nADOXQ AX, AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "SHLL $32 masked count 0 preserves uninit CF (SETCS rejected)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nSHLL $32, AX\nSETCS ret+8(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name:  "example.shl32cf",
+					Args:  []asm.LLVMType{asm.I64},
+					Ret:   asm.I8,
+					Frame: asm.FrameLayout{Params: []asm.FrameSlot{{Offset: 0, Type: asm.I64, Index: 0, Field: -1}}, Results: []asm.FrameSlot{{Offset: 8, Type: asm.I8, Index: 0, Field: -1}}},
+				},
+				ok: false,
+			},
+			{
+				name: "RCLB $9 effective count 0 preserves OF and does not require CF",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nCMPQ AX, AX\nRCLB $9, AL\nADOXQ AX, AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "JE at entry reads uninitialized ZF (rejected)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nJE alt\nMOVQ $1, ret+8(FP)\nRET\nalt:\nMOVQ $2, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "BTQ preserves ZF for JE and invalidates SF/OF for JL",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nCMPQ AX, AX\nBTQ $0, AX\nJE alt\nMOVQ $1, ret+8(FP)\nRET\nalt:\nMOVQ $2, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "BTQ invalidates SF/OF for JL (rejected)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nCMPQ AX, AX\nBTQ $0, AX\nJL alt\nMOVQ $1, ret+8(FP)\nRET\nalt:\nMOVQ $2, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {

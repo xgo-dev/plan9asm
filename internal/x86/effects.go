@@ -30,13 +30,17 @@ type abi0State struct {
 	fpBytesInit map[int64]bool
 	// spBytesInit records initialized byte offsets in the private SP stack frame.
 	spBytesInit map[int64]bool
-	// Status flag definedness tracked independently:
-	//   - cfInit:     Carry Flag (CF) — set by STC/CLC/ADCX/BT/etc., cleared by TEST/AND/OR/XOR
-	//   - ofInit:     Overflow Flag (OF) — set by INC/DEC/ADOX/etc., cleared by TEST/AND/OR/XOR
-	//   - zfSfPfInit: Sign/Zero/Parity flags (SF/ZF/PF)
-	cfInit     bool
-	ofInit     bool
-	zfSfPfInit bool
+	// Architectural status flag definedness tracked independently:
+	//   - cfInit: Carry Flag (CF)
+	//   - ofInit: Overflow Flag (OF)
+	//   - zfInit: Zero Flag (ZF) — preserved by BT/BTS/BTR/BTC
+	//   - sfInit: Sign Flag (SF)
+	//   - pfInit: Parity Flag (PF)
+	cfInit bool
+	ofInit bool
+	zfInit bool
+	sfInit bool
+	pfInit bool
 }
 
 func (s *abi0State) clone() *abi0State {
@@ -49,7 +53,9 @@ func (s *abi0State) clone() *abi0State {
 		spBytesInit:  make(map[int64]bool, len(s.spBytesInit)),
 		cfInit:       s.cfInit,
 		ofInit:       s.ofInit,
-		zfSfPfInit:   s.zfSfPfInit,
+		zfInit:       s.zfInit,
+		sfInit:       s.sfInit,
+		pfInit:       s.pfInit,
 	}
 	for k, v := range s.gpBytesInit {
 		out.gpBytesInit[k] = v
@@ -121,8 +127,16 @@ func (s *abi0State) merge(other *abi0State) bool {
 		s.ofInit = false
 		changed = true
 	}
-	if s.zfSfPfInit && !other.zfSfPfInit {
-		s.zfSfPfInit = false
+	if s.zfInit && !other.zfInit {
+		s.zfInit = false
+		changed = true
+	}
+	if s.sfInit && !other.sfInit {
+		s.sfInit = false
+		changed = true
+	}
+	if s.pfInit && !other.pfInit {
+		s.pfInit = false
 		changed = true
 	}
 	for k, v := range other.gpTaintedSP {
@@ -600,6 +614,11 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				if err := checkGPRead(st, asm.CX, wordMask, ins.Raw); err != nil {
 					return nil, err
 				}
+				if (op == "LOOPEQ" || op == "LOOPNE") && !st.zfInit {
+					return nil, fmt.Errorf("%w: %s reads uninitialized flag ZF", asm.ErrProbeNeedsContext, ins.Raw)
+				}
+			} else if missing := missingCondFlag(st, op); missing != "" {
+				return nil, fmt.Errorf("%w: %s reads uninitialized flag %s", asm.ErrProbeNeedsContext, ins.Raw, missing)
 			}
 			target, isLocal, err := resolveJumpTarget(pc, ins.Args[0])
 			if err != nil {
@@ -651,7 +670,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				st.vecFromRaw = map[int]bool{}
 				st.cfInit = false
 				st.ofInit = false
-				st.zfSfPfInit = false
+				st.zfInit = false
+				st.sfInit = false
+				st.pfInit = false
 				if hasSig {
 					if len(csig.ArgRegs) == 0 {
 						for _, rs := range csig.Frame.Results {
@@ -681,7 +702,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				st.vecFromRaw = map[int]bool{}
 				st.cfInit = false
 				st.ofInit = false
-				st.zfSfPfInit = false
+				st.zfInit = false
+				st.sfInit = false
+				st.pfInit = false
 				st.gpBytesInit[asm.AX] = wordMask
 			} else {
 				st.gpBytesInit = map[asm.Reg]uint8{}
@@ -690,7 +713,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				st.vecFromRaw = map[int]bool{}
 				st.cfInit = false
 				st.ofInit = false
-				st.zfSfPfInit = false
+				st.zfInit = false
+				st.sfInit = false
+				st.pfInit = false
 			}
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
@@ -701,7 +726,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		}
 
 		if op == "CLC" || op == "STC" {
-			// CLC and STC define CF only; OF and SF/ZF/PF are unaffected.
+			// CLC and STC define CF only; OF/ZF/SF/PF are unaffected.
 			st.cfInit = true
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
@@ -738,7 +763,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			if isX86ClearCFOfOp(op) || isX86GPFlagWriter(op) {
 				st.cfInit = true
 				st.ofInit = true
-				st.zfSfPfInit = true
+				st.zfInit = true
+				st.sfInit = true
+				st.pfInit = true
 			}
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
@@ -768,13 +795,14 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		}
 
 		// Flag-consuming instructions require their exact consumed flag(s) to be initialized.
-		if needsCF(op) && !st.cfInit {
+		// For RCL/RCR with an immediate effective count of 0, CF is neither read nor modified.
+		if missingCondFlag(st, op) != "" {
 			allInputsInit = false
 		}
-		if needsOF(op) && !st.ofInit {
+		if needsNonCondCF(op, ins.Args) && !st.cfInit {
 			allInputsInit = false
 		}
-		if needsZFSFPF(op) && !st.zfSfPfInit {
+		if (op == "ADOXL" || op == "ADOXQ") && !st.ofInit {
 			allInputsInit = false
 		}
 
@@ -1093,9 +1121,11 @@ func isX86CondJumpOp(op asm.Op) bool {
 	switch op {
 	case "JE", "JEQ", "JZ", "JNE", "JNZ",
 		"JL", "JLT", "JLE", "JG", "JGT", "JGE",
-		"JB", "JLO", "JBE", "JNA", "JLS", "JA", "JHI", "JAE", "JHS",
+		"JB", "JLO", "JBE", "JNA", "JLS", "JA", "JHI", "JAE", "JHS", "JNB", "JNAE", "JNBE", "JNGE", "JNL", "JNG", "JNLE",
 		"JC", "JNC", "JCC", "JCS",
-		"JS", "JNS", "JO", "JNO", "JP", "JPE", "JNP", "JPO",
+		"JS", "JNS", "JMI", "JPL",
+		"JO", "JNO", "JOS", "JOC",
+		"JP", "JPE", "JNP", "JPO", "JPS", "JPC",
 		"JCXZ", "JECXZ", "JRCXZ", "LOOP", "LOOPEQ", "LOOPNE":
 		return true
 	default:
@@ -1548,85 +1578,204 @@ func isX86GPFlagWriter(op asm.Op) bool {
 	return false
 }
 
+func isX86FlagCondJumpOp(op asm.Op) bool {
+	if !isX86CondJumpOp(op) {
+		return false
+	}
+	switch op {
+	case "JCXZ", "JECXZ", "JRCXZ", "LOOP", "LOOPEQ", "LOOPNE":
+		return false
+	default:
+		return true
+	}
+}
+
+// x86ShiftEffectiveImmCount computes the architectural masked shift/rotate
+// count for an immediate or implicit-1 shift/rotate instruction. ok is false
+// when the count is dynamic (e.g., in CL).
+func x86ShiftEffectiveImmCount(op asm.Op, args []asm.Operand) (eff int64, ok bool) {
+	if len(args) == 1 {
+		// One-operand Plan 9 shift/rotate forms use an implicit count of 1.
+		return 1, true
+	}
+	if len(args) < 2 || args[0].Kind != asm.OpImm {
+		return 0, false
+	}
+	mask := int64(0x1f)
+	if strings.HasSuffix(string(op), "Q") {
+		mask = 0x3f
+	}
+	eff = args[0].Imm & mask
+	switch op {
+	case "RCLB", "RCRB":
+		eff %= 9
+	case "RCLW", "RCRW":
+		eff %= 17
+	}
+	return eff, true
+}
+
 func updateX86FlagsAfter(st *abi0State, op asm.Op, args []asm.Operand, allInputsInit bool) {
 	if isX86ClearCFOfOp(op) {
-		// TEST/AND/OR/XOR unconditionally clear CF=0 and OF=0, and set SF/ZF/PF from result.
+		// TEST/AND/OR/XOR unconditionally clear CF=0 and OF=0, and set ZF/SF/PF from result.
 		st.cfInit = true
 		st.ofInit = true
-		st.zfSfPfInit = allInputsInit
+		st.zfInit = allInputsInit
+		st.sfInit = allInputsInit
+		st.pfInit = allInputsInit
 		return
 	}
 	switch op {
+	case "SYSCALL":
+		// On Darwin/BSD amd64, SYSCALL returns error status in CF (tested via JCC).
+		st.cfInit = true
+		return
 	case "ADCXL", "ADCXQ":
-		// ADCX updates CF only; OF and SF/ZF/PF are preserved.
+		// ADCX updates CF only; OF/ZF/SF/PF are preserved.
 		st.cfInit = allInputsInit
 		return
 	case "ADOXL", "ADOXQ":
-		// ADOX updates OF only; CF and SF/ZF/PF are preserved.
+		// ADOX updates OF only; CF/ZF/SF/PF are preserved.
 		st.ofInit = allInputsInit
 		return
 	case "INCB", "INCW", "INCL", "INCQ", "DECB", "DECW", "DECL", "DECQ":
-		// INC/DEC preserve CF and update OF/SF/ZF/PF.
+		// INC/DEC preserve CF and update OF/ZF/SF/PF.
 		st.ofInit = allInputsInit
-		st.zfSfPfInit = allInputsInit
+		st.zfInit = allInputsInit
+		st.sfInit = allInputsInit
+		st.pfInit = allInputsInit
 		return
 	case "BTB", "BTW", "BTL", "BTQ",
 		"BTSW", "BTSL", "BTSQ", "BTRW", "BTRL", "BTRQ", "BTCW", "BTCL", "BTCQ":
-		// BT* sets CF; OF/SF/PF are undefined.
+		// Intel SDM: BT/BTS/BTR/BTC set CF from bit, preserve ZF, and leave OF/SF/AF/PF undefined.
 		st.cfInit = allInputsInit
 		st.ofInit = false
-		st.zfSfPfInit = false
+		st.sfInit = false
+		st.pfInit = false
 		return
 	case "SHLB", "SHLW", "SHLL", "SHLQ", "SALB", "SALW", "SALL", "SALQ",
 		"SHRB", "SHRW", "SHRL", "SHRQ", "SARB", "SARW", "SARL", "SARQ",
 		"SHLDW", "SHLDL", "SHLDQ", "SHRDW", "SHRDL", "SHRDQ":
-		st.cfInit = allInputsInit
-		st.ofInit = allInputsInit && len(args) >= 2 && args[0].Kind == asm.OpImm && args[0].Imm == 1
-		st.zfSfPfInit = allInputsInit
+		if eff, isImm := x86ShiftEffectiveImmCount(op, args); isImm {
+			if eff == 0 {
+				// Intel SDM: effective shift count 0 leaves all flags unaffected.
+				return
+			}
+			st.cfInit = allInputsInit
+			st.ofInit = allInputsInit && eff == 1
+			st.zfInit = allInputsInit
+			st.sfInit = allInputsInit
+			st.pfInit = allInputsInit
+			return
+		}
+		// Dynamic CL count may be 0 (preserving flags) or >1 (leaving OF undefined).
+		st.cfInit = st.cfInit && allInputsInit
+		st.ofInit = false
+		st.zfInit = st.zfInit && allInputsInit
+		st.sfInit = st.sfInit && allInputsInit
+		st.pfInit = st.pfInit && allInputsInit
 		return
 	case "ROLB", "ROLW", "ROLL", "ROLQ", "RORB", "RORW", "RORL", "RORQ",
 		"RCLB", "RCLW", "RCLL", "RCLQ", "RCRB", "RCRW", "RCRL", "RCRQ":
-		// Rotates update CF (and OF only for immediate count $1); SF/ZF/PF are preserved.
-		st.cfInit = allInputsInit
-		st.ofInit = allInputsInit && len(args) >= 2 && args[0].Kind == asm.OpImm && args[0].Imm == 1
+		if eff, isImm := x86ShiftEffectiveImmCount(op, args); isImm {
+			if eff == 0 {
+				// Intel SDM: effective rotate count 0 leaves all flags unaffected.
+				return
+			}
+			// Rotates update CF (and OF only for effective count 1); ZF/SF/PF are preserved.
+			st.cfInit = allInputsInit
+			st.ofInit = allInputsInit && eff == 1
+			return
+		}
+		st.cfInit = st.cfInit && allInputsInit
+		st.ofInit = false
 		return
 	case "MULB", "MULW", "MULL", "MULQ", "IMULB", "IMULW", "IMULL", "IMULQ":
 		st.cfInit = allInputsInit
 		st.ofInit = allInputsInit
-		st.zfSfPfInit = false
+		st.zfInit = false
+		st.sfInit = false
+		st.pfInit = false
 		return
 	case "BSFW", "BSFL", "BSFQ", "BSRW", "BSRL", "BSRQ":
 		st.cfInit = false
 		st.ofInit = false
-		st.zfSfPfInit = allInputsInit
+		st.zfInit = allInputsInit
+		st.sfInit = false
+		st.pfInit = false
 		return
-	case "RDRAND", "RDRANDW", "RDRANDL", "RDRANDQ",
-		"RDSEED", "RDSEEDW", "RDSEEDL", "RDSEEDQ":
-		// RDRAND/RDSEED define CF and clear OF/SF/ZF/AF/PF to 0.
+	case "TZCNTW", "TZCNTL", "TZCNTQ", "LZCNTW", "LZCNTL", "LZCNTQ":
+		st.cfInit = allInputsInit
+		st.ofInit = false
+		st.zfInit = allInputsInit
+		st.sfInit = false
+		st.pfInit = false
+		return
+	case "POPCNTW", "POPCNTL", "POPCNTQ":
+		// Intel SDM: POPCNT sets ZF from source==0 and clears OF/SF/AF/CF/PF to 0.
 		st.cfInit = true
 		st.ofInit = true
-		st.zfSfPfInit = true
+		st.zfInit = allInputsInit
+		st.sfInit = true
+		st.pfInit = true
+		return
+	case "ANDNL", "ANDNQ", "BLSIL", "BLSIQ", "BLSMSKL", "BLSMSKQ", "BLSRL", "BLSRQ", "BZHIL", "BZHIQ":
+		st.cfInit = allInputsInit
+		st.ofInit = true
+		st.zfInit = allInputsInit
+		st.sfInit = allInputsInit
+		st.pfInit = false
+		return
+	case "BEXTRL", "BEXTRQ":
+		st.cfInit = true
+		st.ofInit = true
+		st.zfInit = allInputsInit
+		st.sfInit = false
+		st.pfInit = false
+		return
+	case "RDRAND", "RDRANDW", "RDRANDL", "RDRANDQ",
+		"RDSEED", "RDSEEDW", "RDSEEDL", "RDSEEDQ",
+		"XTEST":
+		st.cfInit = true
+		st.ofInit = true
+		st.zfInit = true
+		st.sfInit = true
+		st.pfInit = true
 		return
 	case "COMISS", "COMISD", "UCOMISS", "UCOMISD",
 		"VCOMISS", "VCOMISD", "VUCOMISS", "VUCOMISD",
-		"FCOMI", "FCOMIP", "FUCOMI", "FUCOMIP",
-		"PTEST", "VPTEST",
-		"KORTESTB", "KORTESTW", "KORTESTD", "KORTESTQ",
-		"KTESTB", "KTESTW", "KTESTD", "KTESTQ":
+		"FCOMI", "FCOMIP", "FUCOMI", "FUCOMIP":
+		// Intel SDM: sets ZF/PF/CF from comparison and clears OF/SF/AF to 0.
 		st.cfInit = allInputsInit
 		st.ofInit = true
-		st.zfSfPfInit = allInputsInit
+		st.zfInit = allInputsInit
+		st.sfInit = true
+		st.pfInit = allInputsInit
+		return
+	case "PTEST", "VPTEST",
+		"KORTESTB", "KORTESTW", "KORTESTD", "KORTESTQ",
+		"KTESTB", "KTESTW", "KTESTD", "KTESTQ":
+		// Intel SDM: sets ZF/CF and clears OF/SF/AF/PF to 0.
+		st.cfInit = allInputsInit
+		st.ofInit = true
+		st.zfInit = allInputsInit
+		st.sfInit = true
+		st.pfInit = true
 		return
 	case "SAHF":
 		// SAHF loads SF/ZF/AF/PF/CF from AH; OF is preserved.
 		st.cfInit = allInputsInit
-		st.zfSfPfInit = allInputsInit
+		st.zfInit = allInputsInit
+		st.sfInit = allInputsInit
+		st.pfInit = allInputsInit
 		return
 	}
 	if isX86GPFlagWriter(op) {
 		st.cfInit = allInputsInit
 		st.ofInit = allInputsInit
-		st.zfSfPfInit = allInputsInit
+		st.zfInit = allInputsInit
+		st.sfInit = allInputsInit
+		st.pfInit = allInputsInit
 	}
 }
 
@@ -1640,51 +1789,76 @@ func x86CondSuffix(op asm.Op) (string, bool) {
 			return s[len(pfx):], true
 		}
 	}
+	if strings.HasPrefix(s, "J") && len(s) > 1 &&
+		op != "JMP" && op != "JCXZ" && op != "JECXZ" && op != "JRCXZ" && isX86CondJumpOp(op) {
+		return s[1:], true
+	}
 	return "", false
 }
 
-func needsCF(op asm.Op) bool {
+// x86CondRequiredFlags returns the exact set of architectural status flags
+// consumed by a condition-code suffix (shared across Jcc, SETcc, and CMOVcc).
+func x86CondRequiredFlags(cc string) (needCF, needOF, needZF, needSF, needPF bool) {
+	switch cc {
+	case "E", "EQ", "Z", "NE", "NZ":
+		return false, false, true, false, false
+	case "S", "NS", "MI", "PL":
+		return false, false, false, true, false
+	case "P", "PE", "NP", "PO", "PS", "PC":
+		return false, false, false, false, true
+	case "C", "NC", "CS", "CC", "B", "NB", "AE", "NAE", "LO", "HS":
+		return true, false, false, false, false
+	case "O", "NO", "OS", "OC":
+		return false, true, false, false, false
+	case "BE", "NA", "A", "NBE", "LS", "HI":
+		return true, false, true, false, false
+	case "L", "LT", "GE", "NGE", "NL":
+		return false, true, false, true, false
+	case "LE", "G", "GT", "NG", "NLE":
+		return false, true, true, true, false
+	default:
+		return false, false, false, false, false
+	}
+}
+
+// missingCondFlag checks whether any status flag required by a conditional
+// instruction (Jcc, SETcc, or CMOVcc) is uninitialized in st.
+func missingCondFlag(st *abi0State, op asm.Op) string {
+	cc, ok := x86CondSuffix(op)
+	if !ok {
+		return ""
+	}
+	needCF, needOF, needZF, needSF, needPF := x86CondRequiredFlags(cc)
+	if needCF && !st.cfInit {
+		return "CF"
+	}
+	if needOF && !st.ofInit {
+		return "OF"
+	}
+	if needZF && !st.zfInit {
+		return "ZF"
+	}
+	if needSF && !st.sfInit {
+		return "SF"
+	}
+	if needPF && !st.pfInit {
+		return "PF"
+	}
+	return ""
+}
+
+func needsNonCondCF(op asm.Op, args []asm.Operand) bool {
 	switch op {
 	case "ADCB", "ADCW", "ADCL", "ADCQ",
 		"SBBB", "SBBW", "SBBL", "SBBQ",
-		"RCLB", "RCLW", "RCLL", "RCLQ",
-		"RCRB", "RCRW", "RCRL", "RCRQ",
 		"ADCXL", "ADCXQ":
 		return true
-	}
-	if cc, ok := x86CondSuffix(op); ok {
-		switch cc {
-		case "C", "NC", "CS", "CC", "B", "NB", "AE", "NAE", "LO", "HS", "BE", "NA", "A", "NBE", "LS", "HI":
-			return true
+	case "RCLB", "RCLW", "RCLL", "RCLQ",
+		"RCRB", "RCRW", "RCRL", "RCRQ":
+		if eff, isImm := x86ShiftEffectiveImmCount(op, args); isImm && eff == 0 {
+			return false
 		}
-	}
-	return false
-}
-
-func needsOF(op asm.Op) bool {
-	switch op {
-	case "ADOXL", "ADOXQ":
 		return true
-	}
-	if cc, ok := x86CondSuffix(op); ok {
-		switch cc {
-		case "O", "NO", "OS", "OC", "L", "LT", "GE", "LE", "G", "GT", "NGE", "NL", "NG", "NLE":
-			return true
-		}
-	}
-	return false
-}
-
-func needsZFSFPF(op asm.Op) bool {
-	if cc, ok := x86CondSuffix(op); ok {
-		switch cc {
-		case "E", "EQ", "Z", "NE", "NZ",
-			"S", "NS", "MI", "PL",
-			"P", "PE", "NP", "PO", "PS", "PC",
-			"BE", "NA", "A", "NBE", "LS", "HI",
-			"L", "LT", "GE", "LE", "G", "GT", "NGE", "NL", "NG", "NLE":
-			return true
-		}
 	}
 	return false
 }

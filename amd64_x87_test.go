@@ -5,6 +5,7 @@ package plan9asm
 import (
 	"go/token"
 	"go/types"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -193,6 +194,76 @@ func TestTranslateGoModuleAMD64RejectsUnreachableResultInit(t *testing.T) {
 			body: "MOVB $1, AL\nMOVL AX, BX\nMOVQ BX, ret+0(FP)\nRET\n",
 			ok:   false,
 		},
+		{
+			name: "SHLQ $0 does not initialize CF (SETCS rejected)",
+			body: "MOVQ $1, AX\nSHLQ $0, AX\nSETCS AL\nMOVBQZX AL, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "SHLQ $64 masked count 0 does not initialize CF (SETCS rejected)",
+			body: "MOVQ $1, AX\nSHLQ $64, AX\nSETCS AL\nMOVBQZX AL, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "SHLL $32 masked count 0 does not initialize CF (SETCS rejected)",
+			body: "MOVL $1, AX\nSHLL $32, AX\nSETCS AL\nMOVBQZX AL, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "SHLQ $0 preserves defined OF for ADOXQ",
+			body: "MOVQ $1, AX\nCMPQ AX, AX\nSHLQ $0, AX\nADOXQ AX, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "SHLQ $64 masked count 0 preserves defined OF for ADOXQ",
+			body: "MOVQ $1, AX\nCMPQ AX, AX\nSHLQ $64, AX\nADOXQ AX, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "SHLQ $2 invalidates OF for ADOXQ",
+			body: "MOVQ $1, AX\nCMPQ AX, AX\nSHLQ $2, AX\nADOXQ AX, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "BTQ preserves ZF so SETEQ succeeds",
+			body: "MOVQ $1, AX\nCMPQ AX, AX\nBTQ $0, AX\nSETEQ AL\nMOVBQZX AL, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "BTQ leaves SF undefined so SETS is rejected",
+			body: "MOVQ $1, AX\nCMPQ AX, AX\nBTQ $0, AX\nSETS AL\nMOVBQZX AL, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "BTQ leaves OF undefined so SETO is rejected",
+			body: "MOVQ $1, AX\nCMPQ AX, AX\nBTQ $0, AX\nSETO AL\nMOVBQZX AL, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "JE at function entry reads uninitialized ZF (rejected)",
+			body: "JE alt\nMOVQ $1, ret+0(FP)\nRET\nalt:\nMOVQ $2, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "STC then JO reads uninitialized OF (rejected)",
+			body: "STC\nJO alt\nMOVQ $1, ret+0(FP)\nRET\nalt:\nMOVQ $2, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "STC then JC reads initialized CF (accepted)",
+			body: "STC\nJC alt\nMOVQ $1, ret+0(FP)\nRET\nalt:\nMOVQ $2, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "CMPQ then BTQ then JE reads preserved ZF (accepted)",
+			body: "MOVQ $1, AX\nCMPQ AX, AX\nBTQ $0, AX\nJE alt\nMOVQ $1, ret+0(FP)\nRET\nalt:\nMOVQ $2, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "CMPQ then BTQ then JL reads undefined SF/OF (rejected)",
+			body: "MOVQ $1, AX\nCMPQ AX, AX\nBTQ $0, AX\nJL alt\nMOVQ $1, ret+0(FP)\nRET\nalt:\nMOVQ $2, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
 	}
 
 	checkBoth := func(t *testing.T, label, header, body string, wantOK bool) {
@@ -244,30 +315,60 @@ func TestTranslateGoModuleAMD64RejectsUnreachableResultInit(t *testing.T) {
 
 // TestTranslateGoModuleAMD64ABI0CallResultSemantics verifies that outgoing ABI0
 // CALLs in TranslateGoModule:
-//  1. Mark stack result slots initialized even for zero-parameter callees (e.g. g() int64).
+//  1. Mark stack result slots initialized AND emit the stack store on (SP) even
+//     for zero-parameter callees (e.g. g() int64, pair() (int64, int64), f64() float64,
+//     flag() bool), verified end-to-end under LLVM 22 -O2 so caller folds to the
+//     exact return value rather than undef.
 //  2. Do NOT fabricate AX initialization after calling a void or ABI0-stack-return callee.
 //  3. Reject callers that omit required outgoing ABI0 parameter bytes or rely on AX
 //     surviving across an ABI0 CALL.
 func TestTranslateGoModuleAMD64ABI0CallResultSemantics(t *testing.T) {
 	pkg := types.NewPackage("example.com/abi0call", "abi0call")
 	i64 := types.Typ[types.Int64]
+	f64 := types.Typ[types.Float64]
+	boolTy := types.Typ[types.Bool]
 	resI64 := types.NewTuple(types.NewVar(token.NoPos, pkg, "ret", i64))
+	resPair := types.NewTuple(
+		types.NewVar(token.NoPos, pkg, "a", i64),
+		types.NewVar(token.NoPos, pkg, "b", i64),
+	)
+	resF64 := types.NewTuple(types.NewVar(token.NoPos, pkg, "ret", f64))
+	resBool := types.NewTuple(types.NewVar(token.NoPos, pkg, "ret", boolTy))
 	argI64 := types.NewTuple(types.NewVar(token.NoPos, pkg, "x", i64))
 	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "caller", types.NewSignatureType(nil, nil, nil, nil, resI64, false)))
 	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "g", types.NewSignatureType(nil, nil, nil, nil, resI64, false)))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "pair", types.NewSignatureType(nil, nil, nil, nil, resPair, false)))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "getf", types.NewSignatureType(nil, nil, nil, nil, resF64, false)))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "getb", types.NewSignatureType(nil, nil, nil, nil, resBool, false)))
 	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "noop", types.NewSignatureType(nil, nil, nil, nil, nil, false)))
 	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "inc", types.NewSignatureType(nil, nil, nil, argI64, resI64, false)))
 	pkg.MarkComplete()
 
 	gp := GoPackage{Path: pkg.Path(), Types: pkg}
 
+	optimizeIR := func(t *testing.T, ir string) string {
+		t.Helper()
+		opt := findLLVM22Tool("opt")
+		if opt == "" {
+			t.Fatal("LLVM 22 opt not found")
+		}
+		cmd := exec.Command(opt, "-passes=default<O2>", "-S", "-")
+		cmd.Stdin = strings.NewReader(ir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("opt -O2 failed: %v\n%s\nIR:\n%s", err, out, ir)
+		}
+		return string(out)
+	}
+
 	cases := []struct {
-		name string
-		src  string
-		ok   bool
+		name      string
+		src       string
+		ok        bool
+		wantO2Ret string
 	}{
 		{
-			name: "zero-param callee g() int64 initializes 0(SP)",
+			name: "zero-param callee g() int64 initializes and writes 0(SP)",
 			src: `TEXT ·g(SB),NOSPLIT,$0-8
 	MOVQ $42, ret+0(FP)
 	RET
@@ -277,7 +378,54 @@ TEXT ·caller(SB),NOSPLIT,$8-8
 	MOVQ AX, ret+0(FP)
 	RET
 `,
-			ok: true,
+			ok:        true,
+			wantO2Ret: "ret i64 42",
+		},
+		{
+			name: "zero-param multi-return callee pair() (int64, int64) writes 0(SP) and 8(SP)",
+			src: `TEXT ·pair(SB),NOSPLIT,$0-16
+	MOVQ $13, a+0(FP)
+	MOVQ $29, b+8(FP)
+	RET
+TEXT ·caller(SB),NOSPLIT,$16-8
+	CALL ·pair(SB)
+	MOVQ 0(SP), AX
+	ADDQ 8(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok:        true,
+			wantO2Ret: "ret i64 42",
+		},
+		{
+			name: "zero-param float64 callee getf() float64 writes 0(SP)",
+			src: `TEXT ·getf(SB),NOSPLIT,$0-8
+	MOVQ $0x4045000000000000, AX
+	MOVQ AX, X0
+	MOVSD X0, ret+0(FP)
+	RET
+TEXT ·caller(SB),NOSPLIT,$8-8
+	CALL ·getf(SB)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok:        true,
+			wantO2Ret: "ret i64 4631107791820423168",
+		},
+		{
+			name: "zero-param bool callee getb() bool writes 0(SP)",
+			src: `TEXT ·getb(SB),NOSPLIT,$0-1
+	MOVB $1, ret+0(FP)
+	RET
+TEXT ·caller(SB),NOSPLIT,$8-8
+	CALL ·getb(SB)
+	MOVBQZX 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok:        true,
+			wantO2Ret: "ret i64 1",
 		},
 		{
 			name: "zero-param callee g() int64 does not initialize AX",
@@ -327,7 +475,7 @@ TEXT ·caller(SB),NOSPLIT,$8-8
 			ok: false,
 		},
 		{
-			name: "one-param callee inc(x) int64 checks 0(SP) and marks 8(SP)",
+			name: "one-param callee inc(x) int64 checks 0(SP) and writes 8(SP)",
 			src: `TEXT ·inc(SB),NOSPLIT,$0-16
 	MOVQ x+0(FP), AX
 	ADDQ $1, AX
@@ -340,7 +488,8 @@ TEXT ·caller(SB),NOSPLIT,$16-8
 	MOVQ AX, ret+0(FP)
 	RET
 `,
-			ok: true,
+			ok:        true,
+			wantO2Ret: "ret i64 42",
 		},
 		{
 			name: "one-param callee inc(x) int64 rejects uninitialized 0(SP) arg",
@@ -366,7 +515,9 @@ TEXT ·caller(SB),NOSPLIT,$16-8
 				GOARCH:       "amd64",
 				TargetTriple: "x86_64-unknown-linux-gnu",
 			})
+			var ir string
 			if tr != nil {
+				ir = tr.Module.String()
 				tr.Module.Dispose()
 			}
 			if tc.ok && err != nil {
@@ -374,6 +525,121 @@ TEXT ·caller(SB),NOSPLIT,$16-8
 			}
 			if !tc.ok && err == nil {
 				t.Fatalf("TranslateGoModule expected error, got nil")
+			}
+			if tc.ok && tc.wantO2Ret != "" {
+				verifyLLVMWithTargetLLC(t, ir, "x86_64-unknown-linux-gnu")
+				optIR := optimizeIR(t, ir)
+				idx := strings.Index(optIR, `@"\C2\B7caller"`)
+				if idx < 0 {
+					idx = strings.Index(optIR, `@"example.com/abi0call.caller"`)
+				}
+				if idx < 0 {
+					t.Fatalf("optimized IR missing caller definition:\n%s", optIR)
+				}
+				callerIR := optIR[idx:]
+				if end := strings.Index(callerIR, "\n}"); end >= 0 {
+					callerIR = callerIR[:end+2]
+				}
+				if strings.Contains(callerIR, "undef") || strings.Contains(callerIR, "poison") {
+					t.Fatalf("caller optimized to undef/poison:\n%s\nraw IR:\n%s", callerIR, ir)
+				}
+				if !strings.Contains(callerIR, tc.wantO2Ret) {
+					t.Fatalf("caller -O2 IR missing %q:\n%s\nraw IR:\n%s", tc.wantO2Ret, callerIR, ir)
+				}
+			}
+		})
+	}
+}
+
+// TestTranslateGoModuleAMD64ShiftZeroAndBTFlagSemantics verifies under LLVM 22
+// -O2 that effective-count-zero shifts preserve OF and BTQ preserves ZF in the
+// lowered LLVM IR (not only in static checking).
+func TestTranslateGoModuleAMD64ShiftZeroAndBTFlagSemantics(t *testing.T) {
+	pkg := types.NewPackage("example.com/flagsem", "flagsem")
+	i64 := types.Typ[types.Int64]
+	resI64 := types.NewTuple(types.NewVar(token.NoPos, pkg, "ret", i64))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "f", types.NewSignatureType(nil, nil, nil, nil, resI64, false)))
+	pkg.MarkComplete()
+	gp := GoPackage{Path: pkg.Path(), Types: pkg}
+
+	opt := findLLVM22Tool("opt")
+	if opt == "" {
+		t.Fatal("LLVM 22 opt not found")
+	}
+
+	cases := []struct {
+		name      string
+		src       string
+		wantO2Ret string
+	}{
+		{
+			name: "SHLQ $0 preserves OF=0 from CMPQ AX, AX into ADOXQ",
+			src: `TEXT ·f(SB),NOSPLIT,$0-8
+	MOVQ $21, AX
+	CMPQ AX, AX
+	SHLQ $0, AX
+	ADOXQ AX, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2Ret: "ret i64 42",
+		},
+		{
+			name: "SHLQ $64 preserves OF=1 from signed overflow CMPQ into ADOXQ",
+			src: `TEXT ·f(SB),NOSPLIT,$0-8
+	MOVQ $-9223372036854775808, AX
+	MOVQ $1, BX
+	CMPQ AX, BX
+	MOVQ $20, CX
+	SHLQ $64, CX
+	ADOXQ CX, CX
+	MOVQ CX, ret+0(FP)
+	RET
+`,
+			wantO2Ret: "ret i64 41",
+		},
+		{
+			name: "BTQ preserves ZF=1 from CMPQ AX, AX into SETEQ and JE",
+			src: `TEXT ·f(SB),NOSPLIT,$0-8
+	MOVQ $1, AX
+	CMPQ AX, AX
+	BTQ $0, AX
+	SETEQ AL
+	MOVBQZX AL, AX
+	JE taken
+	MOVQ $0, ret+0(FP)
+	RET
+taken:
+	ADDQ $41, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2Ret: "ret i64 42",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := TranslateGoModule(gp, []byte(tc.src), GoModuleOptions{
+				GOOS:         "linux",
+				GOARCH:       "amd64",
+				TargetTriple: "x86_64-unknown-linux-gnu",
+			})
+			if err != nil {
+				t.Fatalf("TranslateGoModule failed: %v", err)
+			}
+			ir := tr.Module.String()
+			tr.Module.Dispose()
+			verifyLLVMWithTargetLLC(t, ir, "x86_64-unknown-linux-gnu")
+			cmd := exec.Command(opt, "-passes=default<O2>", "-S", "-")
+			cmd.Stdin = strings.NewReader(ir)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("opt -O2 failed: %v\n%s", err, out)
+			}
+			optIR := string(out)
+			if !strings.Contains(optIR, tc.wantO2Ret) {
+				t.Fatalf("optimized IR missing %q:\n%s\nraw IR:\n%s", tc.wantO2Ret, optIR, ir)
 			}
 		})
 	}

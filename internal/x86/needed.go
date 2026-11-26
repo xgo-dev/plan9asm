@@ -13,10 +13,7 @@ func FuncNeedsCFG(fn asm.Func) bool {
 			return true
 		}
 		op := strings.ToUpper(string(ins.Op))
-		switch asm.Op(op) {
-		case "JMP", "JL", "JLT", "JLE", "JG", "JGT", "JGE",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS",
-			"JZ", "JE", "JEQ", "JNZ", "JNE", "JNC", "JC", "JCC", "JLS", "JNA", "JS", "JNS":
+		if op == "JMP" || isX86CondJumpOp(asm.Op(op)) {
 			return true
 		}
 		// A handful of amd64 stdlib asm functions are straight-line, but if we
