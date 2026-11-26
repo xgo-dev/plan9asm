@@ -153,6 +153,21 @@ func TestTranslateGoModuleAMD64RejectsUnreachableResultInit(t *testing.T) {
 			body: "MOVL $42, AX\nMOVQ AX, ret+0(FP)\nRET\n",
 			ok:   true,
 		},
+		{
+			name: "dead scratch ADDQ DI (hash/crc32 ieeeCLMUL idiom)",
+			body: "ADDQ $0x40, DI\nMOVQ $42, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "TESTQ uninit AX clears CF/OF for ADCXQ (math/big idiom)",
+			body: "MOVQ $40, BX\nMOVQ $2, CX\nTESTQ AX, AX\nADCXQ CX, BX\nMOVQ BX, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "MOVB AL then MOVL AX->BX then MOVQ BX",
+			body: "MOVB $1, AL\nMOVL AX, BX\nMOVQ BX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
 	}
 
 	checkBoth := func(t *testing.T, label, header, body string, wantOK bool) {

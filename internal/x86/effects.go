@@ -30,6 +30,11 @@ type abi0State struct {
 	fpBytesInit map[int64]bool
 	// spBytesInit records initialized byte offsets in the private SP stack frame.
 	spBytesInit map[int64]bool
+	// flagsInit tracks whether all status flags (ZF/SF/PF/CF/OF) are defined.
+	// cfOfInit tracks whether CF and OF are defined (unconditionally cleared by
+	// TEST reg, reg / XOR reg, reg / CLC / STC, as used in math/big ADX chains).
+	flagsInit bool
+	cfOfInit  bool
 }
 
 func (s *abi0State) clone() *abi0State {
@@ -40,6 +45,8 @@ func (s *abi0State) clone() *abi0State {
 		vecFromRaw:   make(map[int]bool, len(s.vecFromRaw)),
 		fpBytesInit:  make(map[int64]bool, len(s.fpBytesInit)),
 		spBytesInit:  make(map[int64]bool, len(s.spBytesInit)),
+		flagsInit:    s.flagsInit,
+		cfOfInit:     s.cfOfInit,
 	}
 	for k, v := range s.gpBytesInit {
 		out.gpBytesInit[k] = v
@@ -102,6 +109,14 @@ func (s *abi0State) merge(other *abi0State) bool {
 			delete(s.spBytesInit, k)
 			changed = true
 		}
+	}
+	if s.flagsInit && !other.flagsInit {
+		s.flagsInit = false
+		changed = true
+	}
+	if s.cfOfInit && !other.cfOfInit {
+		s.cfOfInit = false
+		changed = true
 	}
 	for k, v := range other.gpTaintedSP {
 		if v && !s.gpTaintedSP[k] {
@@ -271,29 +286,39 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		return nil
 	}
 
-	checkRead := func(st *abi0State, op asm.Operand, readBytes int64, isLEA bool, opName asm.Op, raw string) error {
+	// evalOperand evaluates the exact byte-level definedness bitmask of an input
+	// operand while enforcing hard safety checks on memory dereferences, FP slot
+	// reads, and private SP stack reads. Pure GP/vector register reads propagate
+	// exact byte-level definedness rather than rejecting dead scratch arithmetic
+	// (e.g., Go stdlib hash/crc32's dead ADDQ $0x40, DI or math/big's TESTQ AX, AX).
+	evalOperand := func(st *abi0State, op asm.Operand, readBytes int64, isLEA bool, opName asm.Op, raw string) (mask uint64, allInit bool, err error) {
 		switch op.Kind {
+		case asm.OpImm, asm.OpSym:
+			full := abi0ByteMaskN(readBytes)
+			return full, true, nil
+
 		case asm.OpReg:
-			if op.Reg == asm.SP {
-				return nil
-			}
-			if isAMD64KReg(op.Reg) || isAMD64MReg(op.Reg) {
-				return nil
+			if op.Reg == asm.SP || isAMD64KReg(op.Reg) || isAMD64MReg(op.Reg) {
+				full := abi0ByteMaskN(readBytes)
+				return full, true, nil
 			}
 			if idx, ok := anyVecRegIndex(op.Reg); ok {
 				req := vecRegReadByteMask(op.Reg, opName, readBytes)
-				if (st.vecBytesInit[idx] & req) != req {
-					return fmt.Errorf("%w: %s reads uninitialized vector register %s (have=0x%x want=0x%x)",
-						asm.ErrProbeNeedsContext, raw, op.Reg, st.vecBytesInit[idx], req)
-				}
-				return nil
+				have := st.vecBytesInit[idx] & req
+				return have, have == req, nil
 			}
 			req := gpRegReadByteMask(op.Reg, readBytes, wordMask)
-			return checkGPRead(st, op.Reg, req, raw)
+			have := st.gpBytesInit[canonicalGP(op.Reg)] & req
+			aligned := uint64(have)
+			if req == 0x02 {
+				aligned = uint64((have >> 1) & 0x01)
+			}
+			return aligned, have == req, nil
 
 		case asm.OpFP:
 			if isLEA {
-				return nil
+				full := abi0ByteMaskN(ptrBytes)
+				return full, true, nil
 			}
 			nBytes := readBytes
 			if nBytes <= 0 {
@@ -301,22 +326,32 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 			for off := op.FPOffset; off < op.FPOffset+nBytes; off++ {
 				if !st.fpBytesInit[off] {
-					return fmt.Errorf("%w: %s reads uninitialized FP byte +%d(FP) (read +%d(FP) width %d)",
+					return 0, false, fmt.Errorf("%w: %s reads uninitialized FP byte +%d(FP) (read +%d(FP) width %d)",
 						asm.ErrProbeNeedsContext, raw, off, op.FPOffset, nBytes)
 				}
 			}
-			return nil
+			return abi0ByteMaskN(nBytes), true, nil
 
 		case asm.OpMem:
 			if op.Mem.Base == asm.SP {
 				if isLEA {
 					if op.Mem.Index != "" {
-						return checkGPRead(st, op.Mem.Index, wordMask, raw)
+						r := canonicalGP(op.Mem.Index)
+						if (st.gpBytesInit[r] & wordMask) != wordMask {
+							return 0, false, nil
+						}
 					}
-					return nil
+					return abi0ByteMaskN(ptrBytes), true, nil
 				}
-				if op.Mem.Index != "" || op.Mem.Off < 0 {
-					return fmt.Errorf("%w: %s performs unprovable stack read %s", asm.ErrProbeNeedsContext, raw, op.String())
+				if op.Mem.Index != "" {
+					// Indexed stack read (e.g. sha256block_amd64.s (SP)(SI*1)):
+					// index register must be initialized, and the loaded bytes are
+					// conservatively treated as uninitialized so they cannot satisfy
+					// an ABI0 result slot or be dereferenced as a pointer.
+					if err := checkGPRead(st, op.Mem.Index, wordMask, raw); err != nil {
+						return 0, false, err
+					}
+					return 0, false, nil
 				}
 				nBytes := readBytes
 				if nBytes <= 0 {
@@ -324,48 +359,115 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				}
 				for off := op.Mem.Off; off < op.Mem.Off+nBytes; off++ {
 					if !st.spBytesInit[off] {
-						return fmt.Errorf("%w: %s reads uninitialized stack byte %d(SP) (read %d(SP) width %d)",
+						return 0, false, fmt.Errorf("%w: %s reads uninitialized stack byte %d(SP) (read %d(SP) width %d)",
 							asm.ErrProbeNeedsContext, raw, off, op.Mem.Off, nBytes)
 					}
 				}
-				return nil
+				return abi0ByteMaskN(nBytes), true, nil
+			}
+			if isLEA {
+				ok := true
+				if op.Mem.Base != "" && op.Mem.Base != asm.PC {
+					r := canonicalGP(op.Mem.Base)
+					if (st.gpBytesInit[r] & wordMask) != wordMask {
+						ok = false
+					}
+				}
+				if op.Mem.Index != "" {
+					r := canonicalGP(op.Mem.Index)
+					if (st.gpBytesInit[r] & wordMask) != wordMask {
+						ok = false
+					}
+				}
+				if !ok {
+					return 0, false, nil
+				}
+				return abi0ByteMaskN(ptrBytes), true, nil
 			}
 			if op.Mem.Base != "" && op.Mem.Base != asm.SP && op.Mem.Base != asm.PC {
 				if err := checkGPRead(st, op.Mem.Base, wordMask, raw); err != nil {
-					return err
+					return 0, false, err
 				}
 			}
 			if op.Mem.Index != "" {
 				if err := checkGPRead(st, op.Mem.Index, wordMask, raw); err != nil {
-					return err
+					return 0, false, err
 				}
 			}
+			return abi0ByteMaskN(readBytes), true, nil
 		}
-		return nil
+		return abi0ByteMaskN(readBytes), true, nil
 	}
 
-	markWrite := func(st *abi0State, op asm.Operand, writeBytes int64, opName asm.Op, fromRaw bool, taintSP bool, srcIsReg bool) error {
+	writeDstMask := func(st *abi0State, op asm.Operand, writeBytes int64, valMask uint64, opName asm.Op, spec asm.OpSpec, pureCopy bool, fromRaw bool, taintSP bool, srcIsReg bool) error {
 		switch op.Kind {
 		case asm.OpReg:
 			if op.Reg == asm.SP || isAMD64KReg(op.Reg) || isAMD64MReg(op.Reg) {
 				return nil
 			}
 			if idx, ok := anyVecRegIndex(op.Reg); ok {
+				name := strings.ToUpper(string(opName))
+				if dot := strings.IndexByte(name, '.'); dot >= 0 {
+					name = name[:dot]
+				}
 				wMask, zeroUpper := vecRegWriteByteMask(op.Reg, opName, writeBytes, srcIsReg)
-				if zeroUpper {
-					st.vecBytesInit[idx] = ^uint64(0)
+				if pureCopy {
+					lowWidth := vecCopyWidth(op.Reg, name, writeBytes)
+					lowMask := abi0ByteMaskN(lowWidth)
+					lowBits := valMask & lowMask
+					if zeroUpper {
+						st.vecBytesInit[idx] = lowBits | ^lowMask
+					} else if (name == "MOVSS" || name == "MOVSD") && srcIsReg {
+						st.vecBytesInit[idx] = (st.vecBytesInit[idx] &^ lowMask) | lowBits
+					} else {
+						// Legacy SSE write into XMM zeroes bytes [lowWidth..15] and preserves [16..63].
+						st.vecBytesInit[idx] = (st.vecBytesInit[idx] &^ uint64(0xffff)) | lowBits | (uint64(0xffff) &^ lowMask)
+					}
+				} else if spec.Effect == asm.EffectPreserveUpper {
+					lowWidth := int64(8)
+					if strings.HasSuffix(name, "SS") {
+						lowWidth = 4
+					}
+					lowMask := abi0ByteMaskN(lowWidth)
+					if (valMask & lowMask) == lowMask {
+						st.vecBytesInit[idx] |= lowMask
+					} else {
+						st.vecBytesInit[idx] &^= lowMask
+					}
 				} else {
-					st.vecBytesInit[idx] |= wMask
+					allInit := writeBytes <= 0 || (valMask&abi0ByteMaskN(writeBytes)) == abi0ByteMaskN(writeBytes)
+					if zeroUpper {
+						regMask := vecRegFullByteMask(op.Reg)
+						if allInit {
+							st.vecBytesInit[idx] = ^uint64(0)
+						} else {
+							st.vecBytesInit[idx] = ^regMask
+						}
+					} else {
+						if allInit {
+							st.vecBytesInit[idx] |= wMask
+						} else {
+							st.vecBytesInit[idx] &^= wMask
+						}
+					}
 				}
 				st.vecFromRaw[idx] = fromRaw
 				return nil
 			}
 			r := canonicalGP(op.Reg)
 			wMask, clearsUpper := gpRegWriteByteMask(op.Reg, writeBytes, goarch)
-			if clearsUpper {
-				st.gpBytesInit[r] = wordMask
+			var placed uint8
+			if wMask == 0x02 {
+				placed = uint8((valMask & 0x01) << 1)
 			} else {
-				st.gpBytesInit[r] |= wMask
+				placed = uint8(valMask) & wMask
+			}
+			if clearsUpper {
+				// 32-bit GP writes on amd64 zero-extend upper 4 bytes (known zero = initialized).
+				upperZero := wordMask &^ wMask
+				st.gpBytesInit[r] = placed | upperZero
+			} else {
+				st.gpBytesInit[r] = (st.gpBytesInit[r] &^ wMask) | placed
 			}
 			if taintSP {
 				st.gpTaintedSP[r] = true
@@ -392,12 +494,17 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					return fmt.Errorf("%w: raw-decoded value written to result slot +%d(FP)", asm.ErrProbeNeedsContext, op.FPOffset)
 				}
 			}
-			for off := op.FPOffset; off < op.FPOffset+writeBytes; off++ {
-				st.fpBytesInit[off] = true
+			for b := int64(0); b < writeBytes; b++ {
+				off := op.FPOffset + b
+				if b < 64 && (valMask&(uint64(1)<<uint(b))) != 0 {
+					st.fpBytesInit[off] = true
+				} else {
+					delete(st.fpBytesInit, off)
+				}
 			}
 
 		case asm.OpMem:
-			if op.Mem.Base == asm.SP && op.Mem.Index == "" && op.Mem.Off >= 0 {
+			if op.Mem.Base == asm.SP && op.Mem.Index == "" {
 				if taintSP {
 					return fmt.Errorf("%w: private frame address escapes to stack slot %d(SP)", asm.ErrProbeNeedsContext, op.Mem.Off)
 				}
@@ -405,8 +512,13 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				if nBytes <= 0 {
 					return nil
 				}
-				for off := op.Mem.Off; off < op.Mem.Off+nBytes; off++ {
-					st.spBytesInit[off] = true
+				for b := int64(0); b < nBytes; b++ {
+					off := op.Mem.Off + b
+					if b < 64 && (valMask&(uint64(1)<<uint(b))) != 0 {
+						st.spBytesInit[off] = true
+					} else {
+						delete(st.spBytesInit, off)
+					}
 				}
 			}
 		}
@@ -521,6 +633,18 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 			st.gpBytesInit[asm.AX] = wordMask
 			st.gpTaintedSP[asm.AX] = false
+			st.flagsInit = false
+			st.cfOfInit = false
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		}
+
+		if op == "CLC" || op == "STC" {
+			st.cfOfInit = true
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
 			} else {
@@ -540,8 +664,12 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		// Self-XOR / self-SUB / self-PCMPEQ idioms materialize a known constant
 		// (0 or all-ones) without depending on prior contents of dst.
 		if isZeroingIdiom(op, ins.Args) {
-			if err := markWrite(st, ins.Args[len(ins.Args)-1], writeBytes, op, false, false, true); err != nil {
+			if err := writeDstMask(st, ins.Args[len(ins.Args)-1], writeBytes, abi0ByteMaskN(writeBytes), op, spec, false, false, false, true); err != nil {
 				return nil, err
+			}
+			if isX86ClearCFOfOp(op) || isX86GPFlagWriter(op) {
+				st.flagsInit = true
+				st.cfOfInit = true
 			}
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
@@ -551,16 +679,35 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			continue
 		}
 
-		// Check implicit architectural register reads (with exact byte masks).
+		// Check implicit architectural register reads. Memory/trapping ops (string
+		// ops, DIV/IDIV, SYSCALL, XLAT) hard-require initialized implicit inputs;
+		// nontrapping ALU ops propagate definedness to their outputs.
 		impReads, impWrites := implicitRegByteEffects(op, spec, curRep, wordMask)
+		allInputsInit := true
+		hardImplicit := spec.Family == asm.FamilyString ||
+			op == "DIVB" || op == "IDIVB" || op == "DIVW" || op == "IDIVW" ||
+			op == "DIVL" || op == "IDIVL" || op == "DIVQ" || op == "IDIVQ" ||
+			op == "SYSCALL" || op == "XLAT"
 		for _, ir := range impReads {
-			if err := checkGPRead(st, ir.reg, ir.mask, ins.Raw); err != nil {
-				return nil, err
+			if hardImplicit {
+				if err := checkGPRead(st, ir.reg, ir.mask, ins.Raw); err != nil {
+					return nil, err
+				}
+			} else if (st.gpBytesInit[ir.reg] & ir.mask) != ir.mask {
+				allInputsInit = false
 			}
 		}
 
+		// Flag-consuming instructions require the relevant flags to be initialized.
+		if needsCFOfFlag(op) && !st.cfOfInit {
+			allInputsInit = false
+		} else if needsCondFlags(op) && !st.flagsInit {
+			allInputsInit = false
+		}
+
 		// Check source operands. EffectPreserveUpper preserves upper lanes of the
-		// destination register, so the destination is also read.
+		// destination register; for pure byte-preserving moves we propagate exact
+		// per-byte definedness masks.
 		n := len(ins.Args)
 		readEnd := n - 1
 		if spec.Effect == asm.EffectReadOnly || spec.Effect == asm.EffectReadWrite ||
@@ -571,8 +718,6 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			// MULXL/MULXQ src, hi, lo reads only src (args[0]) and writes both hi and lo.
 			readEnd = 1
 		}
-		// Legacy SSE MOVSS/MOVSD reg, reg preserves upper bytes of dst, whereas
-		// memory-to-reg zeroes upper bytes of XMM.
 		if (op == "MOVSS" || op == "MOVSD") && n == 2 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpReg {
 			readEnd = 1
 		}
@@ -590,6 +735,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				}
 			}
 		}
+
+		pureCopy := isPureByteCopyOp(op, ins.Args)
+		var copyMask uint64
 
 		srcTaintSP := false
 		srcFromRaw := false
@@ -618,29 +766,71 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				// Shift/rotate count in CL/CX only reads byte 0.
 				argReadBytes = 1
 			}
-			if err := checkRead(st, a, argReadBytes, isLEA, op, ins.Raw); err != nil {
+			// EffectPreserveUpper only reads the low scalar lane of src and preserves
+			// upper lanes of dst (which should not poison the low lane).
+			if spec.Effect == asm.EffectPreserveUpper && i == n-1 && a.Kind == asm.OpReg {
+				continue
+			}
+			m, okInit, err := evalOperand(st, a, argReadBytes, isLEA, op, ins.Raw)
+			if err != nil {
 				return nil, err
 			}
+			if pureCopy && i == 0 {
+				copyMask = m
+			}
+			if !okInit {
+				allInputsInit = false
+			}
+		}
+
+		// Apply destination writes with exact byte-level definedness masks.
+		var dstValMask uint64
+		if pureCopy {
+			dstValMask = copyMask
+		} else if allInputsInit {
+			dstValMask = abi0ByteMaskN(writeBytes)
+		} else {
+			dstValMask = 0
 		}
 
 		srcIsReg := n >= 2 && ins.Args[0].Kind == asm.OpReg
 		if spec.ThreeOp && spec.Effect == asm.EffectImplicit && n == 3 {
 			for i := 1; i < n; i++ {
-				if err := markWrite(st, ins.Args[i], writeBytes, op, srcFromRaw, srcTaintSP, srcIsReg); err != nil {
+				if err := writeDstMask(st, ins.Args[i], writeBytes, dstValMask, op, spec, false, srcFromRaw, srcTaintSP, srcIsReg); err != nil {
 					return nil, err
 				}
 			}
 		} else if n > 0 && spec.Effect != asm.EffectReadOnly && spec.Effect != asm.EffectNone && spec.Effect != asm.EffectImplicit {
-			if err := markWrite(st, ins.Args[n-1], writeBytes, op, srcFromRaw, srcTaintSP, srcIsReg); err != nil {
+			if err := writeDstMask(st, ins.Args[n-1], writeBytes, dstValMask, op, spec, pureCopy, srcFromRaw, srcTaintSP, srcIsReg); err != nil {
 				return nil, err
 			}
 		}
 		for _, iw := range impWrites {
-			if iw.clearsUpper {
-				st.gpBytesInit[iw.reg] = wordMask
-				st.gpTaintedSP[iw.reg] = false
+			if allInputsInit {
+				if iw.clearsUpper {
+					st.gpBytesInit[iw.reg] = wordMask
+					st.gpTaintedSP[iw.reg] = false
+				} else {
+					st.gpBytesInit[iw.reg] |= iw.mask
+				}
 			} else {
-				st.gpBytesInit[iw.reg] |= iw.mask
+				if iw.clearsUpper {
+					st.gpBytesInit[iw.reg] = wordMask &^ iw.mask
+				} else {
+					st.gpBytesInit[iw.reg] &^= iw.mask
+				}
+			}
+		}
+		// Update status flags.
+		if isX86ClearCFOfOp(op) {
+			st.cfOfInit = true
+			st.flagsInit = allInputsInit
+		} else if op == "ADCXQ" || op == "ADCXL" || op == "ADOXQ" || op == "ADOXL" {
+			st.cfOfInit = allInputsInit
+		} else if isX86GPFlagWriter(op) {
+			st.flagsInit = allInputsInit
+			if !strings.HasPrefix(string(op), "INC") && !strings.HasPrefix(string(op), "DEC") {
+				st.cfOfInit = allInputsInit
 			}
 		}
 		if pc+1 < len(instrs) {
@@ -1157,4 +1347,122 @@ func canonicalGP(r asm.Reg) asm.Reg {
 		return parsed
 	}
 	return up
+}
+
+func abi0ByteMaskN(n int64) uint64 {
+	if n <= 0 {
+		return 0
+	}
+	if n >= 64 {
+		return ^uint64(0)
+	}
+	return (uint64(1) << uint(n)) - 1
+}
+
+func vecRegFullByteMask(r asm.Reg) uint64 {
+	if isAMD64ZReg(r) {
+		return ^uint64(0)
+	}
+	if isAMD64YReg(r) {
+		return 0xffffffff
+	}
+	return 0xffff
+}
+
+func vecCopyWidth(r asm.Reg, name string, writeBytes int64) int64 {
+	switch name {
+	case "MOVSS", "VMOVSS", "MOVD", "VMOVD", "MOVL":
+		return 4
+	case "MOVSD", "VMOVSD", "MOVQ", "VMOVQ":
+		return 8
+	}
+	if isAMD64ZReg(r) {
+		return 64
+	}
+	if isAMD64YReg(r) {
+		return 32
+	}
+	if writeBytes > 0 && writeBytes <= 64 {
+		return writeBytes
+	}
+	return 16
+}
+
+func isPureByteCopyOp(op asm.Op, args []asm.Operand) bool {
+	if len(args) != 2 {
+		return false
+	}
+	name := strings.ToUpper(string(op))
+	if dot := strings.IndexByte(name, '.'); dot >= 0 {
+		name = name[:dot]
+	}
+	switch name {
+	case "MOVB", "MOVW", "MOVL", "MOVQ", "MOVD",
+		"MOVO", "MOVOU", "MOVOA", "MOVUPS", "MOVUPD", "MOVAPS", "MOVAPD",
+		"MOVDQU", "MOVDQA", "MOVNTDQ", "MOVNTDQA", "MOVNTPS", "MOVNTPD",
+		"MOVSS", "MOVSD",
+		"VMOVD", "VMOVQ", "VMOVSS", "VMOVSD",
+		"VMOVUPS", "VMOVUPD", "VMOVAPS", "VMOVAPD",
+		"VMOVDQU", "VMOVDQA", "VMOVDQU8", "VMOVDQU16", "VMOVDQU32", "VMOVDQU64",
+		"VMOVDQA32", "VMOVDQA64":
+		return true
+	}
+	return false
+}
+
+func isX86ClearCFOfOp(op asm.Op) bool {
+	switch op {
+	case "TESTB", "TESTW", "TESTL", "TESTQ",
+		"ANDB", "ANDW", "ANDL", "ANDQ",
+		"ORB", "ORW", "ORL", "ORQ",
+		"XORB", "XORW", "XORL", "XORQ":
+		return true
+	}
+	return false
+}
+
+func isX86GPFlagWriter(op asm.Op) bool {
+	switch op {
+	case "ADDB", "ADDW", "ADDL", "ADDQ",
+		"SUBB", "SUBW", "SUBL", "SUBQ",
+		"ADCB", "ADCW", "ADCL", "ADCQ",
+		"SBBB", "SBBW", "SBBL", "SBBQ",
+		"CMPB", "CMPW", "CMPL", "CMPQ",
+		"INCB", "INCW", "INCL", "INCQ",
+		"DECB", "DECW", "DECL", "DECQ",
+		"NEGB", "NEGW", "NEGL", "NEGQ",
+		"BTB", "BTW", "BTL", "BTQ",
+		"BTSW", "BTSL", "BTSQ", "BTRW", "BTRL", "BTRQ", "BTCW", "BTCL", "BTCQ",
+		"SHLB", "SHLW", "SHLL", "SHLQ", "SALB", "SALW", "SALL", "SALQ",
+		"SHRB", "SHRW", "SHRL", "SHRQ", "SARB", "SARW", "SARL", "SARQ",
+		"ROLB", "ROLW", "ROLL", "ROLQ", "RORB", "RORW", "RORL", "RORQ",
+		"RCLB", "RCLW", "RCLL", "RCLQ", "RCRB", "RCRW", "RCRL", "RCRQ",
+		"BSFW", "BSFL", "BSFQ", "BSRW", "BSRL", "BSRQ",
+		"TZCNTW", "TZCNTL", "TZCNTQ", "LZCNTW", "LZCNTL", "LZCNTQ",
+		"POPCNTW", "POPCNTL", "POPCNTQ",
+		"COMISS", "COMISD", "UCOMISS", "UCOMISD", "PTEST",
+		"VCOMISS", "VCOMISD", "VUCOMISS", "VUCOMISD", "VPTEST":
+		return true
+	}
+	return false
+}
+
+func needsCFOfFlag(op asm.Op) bool {
+	switch op {
+	case "ADCB", "ADCW", "ADCL", "ADCQ",
+		"SBBB", "SBBW", "SBBL", "SBBQ",
+		"RCLB", "RCLW", "RCLL", "RCLQ",
+		"RCRB", "RCRW", "RCRL", "RCRQ",
+		"ADCXL", "ADCXQ", "ADOXL", "ADOXQ",
+		"SETCS", "SETCC", "SETC", "SETNC", "SETO", "SETNO",
+		"CMOVWCS", "CMOVLCS", "CMOVQCS", "CMOVWCC", "CMOVLCC", "CMOVQCC",
+		"CMOVWOS", "CMOVLOS", "CMOVQOS", "CMOVWOC", "CMOVLOC", "CMOVQOC":
+		return true
+	}
+	return false
+}
+
+func needsCondFlags(op asm.Op) bool {
+	name := string(op)
+	return strings.HasPrefix(name, "SET") || strings.HasPrefix(name, "CMOV")
 }

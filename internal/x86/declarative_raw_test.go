@@ -377,11 +377,13 @@ done:
 			t.Fatalf("full implicit matrix rejected: %v", err)
 		}
 
-		// EffectPreserveUpper (e.g. ROUNDSD into uninitialized X1) must fail.
+		// EffectPreserveUpper (e.g. ROUNDSD into uninitialized X1) defines only the low
+		// 8 bytes of X1; reading the full 16-byte X1 (via PEXTRQ $1) into result must fail,
+		// while reading only the defined low 8 bytes (MOVQ X1) succeeds.
 		badPreserve, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
 	PXOR X0, X0
 	ROUNDSD $0, X0, X1
-	MOVQ a+0(FP), AX
+	PEXTRQ $1, X1, AX
 	MOVQ AX, ret+8(FP)
 	RET
 `)
@@ -389,7 +391,20 @@ done:
 			t.Fatal(err)
 		}
 		if _, err := CheckABI0ResultInit(badPreserve.Funcs[0], sig, "amd64"); !errors.Is(err, asm.ErrProbeNeedsContext) {
-			t.Fatalf("EffectPreserveUpper uninit dst err = %v, want ErrProbeNeedsContext", err)
+			t.Fatalf("EffectPreserveUpper uninit upper bytes err = %v, want ErrProbeNeedsContext", err)
+		}
+
+		okPreserveLow, err := asm.Parse(asm.ArchAMD64, `TEXT ·f(SB),NOSPLIT,$0-16
+	PXOR X0, X0
+	ROUNDSD $0, X0, X1
+	MOVQ X1, ret+8(FP)
+	RET
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckABI0ResultInit(okPreserveLow.Funcs[0], sig, "amd64"); err != nil {
+			t.Fatalf("EffectPreserveUpper defined low 8 bytes rejected: %v", err)
 		}
 	})
 
@@ -473,6 +488,74 @@ done:
 					},
 				},
 				ok: true,
+			},
+			{
+				name: "MOVB AL then MOVL AX->BX then MOVQ BX rejected (bytes 1..3 uninit)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVB $1, AL\nMOVL AX, BX\nMOVQ BX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "overwriting initialized result with partially initialized AX rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ $0, ret+8(FP)\nMOVB $1, AL\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "MOVB AL then ADDQ $0, AX then MOVB AL rejected for uint8",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-1\nMOVB $1, AL\nADDQ $0, AX\nMOVB AL, ret+0(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name:  "example.u8out",
+					Ret:   asm.I8,
+					Frame: asm.FrameLayout{Results: []asm.FrameSlot{{Offset: 0, Type: asm.I8, Index: 0, Field: -1}}},
+				},
+				ok: false,
+			},
+			{
+				name: "dead scratch ADDQ on uninit DI (Go stdlib hash/crc32 idiom) accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nADDQ $0x40, DI\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "TESTQ uninit AX clears CF/OF for ADCXQ/ADOXQ (Go stdlib math/big idiom) accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), BX\nXORQ DI, DI\nTESTQ AX, AX\nADCXQ DI, BX\nADOXQ DI, BX\nMOVQ BX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "TESTQ uninit AX then SETEQ AL rejected (ZF undefined)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-1\nTESTQ AX, AX\nSETEQ AL\nMOVB AL, ret+0(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name:  "example.u8zf",
+					Ret:   asm.I8,
+					Frame: asm.FrameLayout{Results: []asm.FrameSlot{{Offset: 0, Type: asm.I8, Index: 0, Field: -1}}},
+				},
+				ok: false,
+			},
+			{
+				name: "stacked labels without spaces (math/big preprocessed idiom) accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), BX\nl1:l2:TESTQ BX,BX\nMOVQ BX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "Plan 9 AUTO negative SP partial write rejected and full write accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$16-16\nMOVB $1, tmp-8(SP)\nMOVQ tmp-8(SP), AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "Plan 9 AUTO negative SP full write accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$16-16\nMOVQ $1, tmp-8(SP)\nMOVQ tmp-8(SP), AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "indexed SP read cannot satisfy ABI0 result slot",
+				src:  "TEXT ·f(SB),NOSPLIT,$64-16\nXORQ SI, SI\nMOVQ $1, 0(SP)\nMOVQ (SP)(SI*1), AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
 			},
 		}
 		for _, tc := range cases {

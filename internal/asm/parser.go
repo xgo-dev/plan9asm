@@ -92,21 +92,33 @@ func ParsePreprocessed(arch Arch, pp string) (*File, error) {
 				})
 				continue
 			}
-			// Support "label: INSTR ..." on one statement.
-			if c := strings.IndexByte(stmt, ':'); c >= 0 {
+			// Support one or more "label: label2: INSTR ..." prefixes on one statement
+			// (C-preprocessed macros can emit stacked labels without whitespace, e.g. "loop1done:loop4:TESTQ BX,BX").
+			for {
+				c := strings.IndexByte(stmt, ':')
+				if c < 0 {
+					break
+				}
 				left := strings.TrimSpace(stmt[:c])
 				right := strings.TrimSpace(stmt[c+1:])
-				if left != "" && right != "" && !strings.ContainsAny(left, " \t") {
-					if cur == nil {
-						return nil, fmt.Errorf("line %d: label outside TEXT: %q", lineno, stmt)
-					}
-					cur.Instrs = append(cur.Instrs, Instr{
-						Op:   OpLABEL,
-						Args: []Operand{{Kind: OpLabel, Sym: left}},
-						Raw:  left + ":",
-					})
-					stmt = right
+				if left == "" || strings.ContainsAny(left, " \t,\"'$()+-*/") {
+					break
 				}
+				if cur == nil {
+					return nil, fmt.Errorf("line %d: label outside TEXT: %q", lineno, stmt)
+				}
+				cur.Instrs = append(cur.Instrs, Instr{
+					Op:   OpLABEL,
+					Args: []Operand{{Kind: OpLabel, Sym: left}},
+					Raw:  left + ":",
+				})
+				stmt = right
+				if stmt == "" {
+					break
+				}
+			}
+			if stmt == "" {
+				continue
 			}
 
 			opStr, rest := SplitOpcode(stmt)
