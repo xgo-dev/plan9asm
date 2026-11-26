@@ -11,20 +11,22 @@ import (
 
 func verifyLLVMWithTargetLLC(t *testing.T, ir string, triple string, extraLLCArgs ...string) {
 	t.Helper()
-	if opt := findLLVM22Tool("opt"); opt != "" {
-		cmd := exec.Command(opt, "-passes=verify", "-disable-output", "-")
-		cmd.Stdin = strings.NewReader(ir)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("opt verify (%s) failed: %v\n%s\nIR:\n%s", triple, err, out, ir)
-		}
+	opt := findLLVM22Tool("opt")
+	if opt == "" {
+		t.Fatal("LLVM 22 opt not found")
+	}
+	cmd := exec.Command(opt, "-passes=verify", "-disable-output", "-")
+	cmd.Stdin = strings.NewReader(ir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("opt verify (%s) failed: %v\n%s\nIR:\n%s", triple, err, out, ir)
 	}
 	llc := findLLVM22Tool("llc")
 	if llc == "" {
-		return
+		t.Fatal("LLVM 22 llc not found")
 	}
 	args := []string{"-mtriple=" + triple, "-filetype=null", "-"}
 	args = append(args, extraLLCArgs...)
-	cmd := exec.Command(llc, args...)
+	cmd = exec.Command(llc, args...)
 	cmd.Stdin = strings.NewReader(ir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("llc (%s) failed: %v\n%s\nIR:\n%s", triple, err, out, ir)
@@ -389,18 +391,20 @@ TEXT ·sveKernel(SB),NOSPLIT,$0-16
 	}
 	verifyLLVMWithTargetLLC(t, ll, "aarch64-unknown-linux-gnu")
 	verifyLLVMWithTargetLLC(t, ll, "arm64-apple-darwin")
-	if llc := findLLVM22Tool("llc"); llc != "" {
-		cmd := exec.Command(llc, "-mtriple=aarch64-unknown-linux-gnu", "-filetype=asm", "-o", "-")
-		cmd.Stdin = strings.NewReader(ll)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("llc asm failed: %v\n%s", err, out)
-		}
-		asmOut := string(out)
-		for _, wantAsm := range []string{"rdvl", "addvl", "whilelt", "cntp", "ld1w", "st1w"} {
-			if !strings.Contains(asmOut, wantAsm) {
-				t.Errorf("missing hardware SVE mnemonic %q in llc output:\n%s", wantAsm, asmOut)
-			}
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
+	}
+	cmd := exec.Command(llc, "-mtriple=aarch64-unknown-linux-gnu", "-filetype=asm", "-o", "-")
+	cmd.Stdin = strings.NewReader(ll)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("llc asm failed: %v\n%s", err, out)
+	}
+	asmOut := string(out)
+	for _, wantAsm := range []string{"rdvl", "addvl", "whilelt", "cntp", "ld1w", "st1w"} {
+		if !strings.Contains(asmOut, wantAsm) {
+			t.Errorf("missing hardware SVE mnemonic %q in llc output:\n%s", wantAsm, asmOut)
 		}
 	}
 }

@@ -164,6 +164,31 @@ func TestTranslateGoModuleAMD64RejectsUnreachableResultInit(t *testing.T) {
 			ok:   true,
 		},
 		{
+			name: "STC sets CF only so ADCXQ succeeds",
+			body: "MOVQ $40, AX\nMOVQ $2, BX\nSTC\nADCXQ BX, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "STC does not initialize OF so ADOXQ is rejected",
+			body: "MOVQ $40, AX\nMOVQ $2, BX\nSTC\nADOXQ BX, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "CLC does not initialize OF so ADOXQ is rejected",
+			body: "MOVQ $40, AX\nMOVQ $2, BX\nCLC\nADOXQ BX, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
+			name: "INCQ sets OF only so ADOXQ succeeds",
+			body: "MOVQ $40, AX\nMOVQ $2, BX\nINCQ BX\nADOXQ BX, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   true,
+		},
+		{
+			name: "INCQ preserves uninit CF so ADCXQ is rejected",
+			body: "MOVQ $40, AX\nMOVQ $2, BX\nINCQ BX\nADCXQ BX, AX\nMOVQ AX, ret+0(FP)\nRET\n",
+			ok:   false,
+		},
+		{
 			name: "MOVB AL then MOVL AX->BX then MOVQ BX",
 			body: "MOVB $1, AL\nMOVL AX, BX\nMOVQ BX, ret+0(FP)\nRET\n",
 			ok:   false,
@@ -212,6 +237,143 @@ func TestTranslateGoModuleAMD64RejectsUnreachableResultInit(t *testing.T) {
 					body = "MOVQ $0, 8(SP)\n" + body
 				}
 				checkBoth(t, "physical-$16-8", "TEXT ·f(SB),NOSPLIT,$16-8", body, tc.ok)
+			}
+		})
+	}
+}
+
+// TestTranslateGoModuleAMD64ABI0CallResultSemantics verifies that outgoing ABI0
+// CALLs in TranslateGoModule:
+//  1. Mark stack result slots initialized even for zero-parameter callees (e.g. g() int64).
+//  2. Do NOT fabricate AX initialization after calling a void or ABI0-stack-return callee.
+//  3. Reject callers that omit required outgoing ABI0 parameter bytes or rely on AX
+//     surviving across an ABI0 CALL.
+func TestTranslateGoModuleAMD64ABI0CallResultSemantics(t *testing.T) {
+	pkg := types.NewPackage("example.com/abi0call", "abi0call")
+	i64 := types.Typ[types.Int64]
+	resI64 := types.NewTuple(types.NewVar(token.NoPos, pkg, "ret", i64))
+	argI64 := types.NewTuple(types.NewVar(token.NoPos, pkg, "x", i64))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "caller", types.NewSignatureType(nil, nil, nil, nil, resI64, false)))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "g", types.NewSignatureType(nil, nil, nil, nil, resI64, false)))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "noop", types.NewSignatureType(nil, nil, nil, nil, nil, false)))
+	pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, "inc", types.NewSignatureType(nil, nil, nil, argI64, resI64, false)))
+	pkg.MarkComplete()
+
+	gp := GoPackage{Path: pkg.Path(), Types: pkg}
+
+	cases := []struct {
+		name string
+		src  string
+		ok   bool
+	}{
+		{
+			name: "zero-param callee g() int64 initializes 0(SP)",
+			src: `TEXT ·g(SB),NOSPLIT,$0-8
+	MOVQ $42, ret+0(FP)
+	RET
+TEXT ·caller(SB),NOSPLIT,$8-8
+	CALL ·g(SB)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok: true,
+		},
+		{
+			name: "zero-param callee g() int64 does not initialize AX",
+			src: `TEXT ·g(SB),NOSPLIT,$0-8
+	MOVQ $42, ret+0(FP)
+	RET
+TEXT ·caller(SB),NOSPLIT,$8-8
+	CALL ·g(SB)
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok: false,
+		},
+		{
+			name: "void callee noop() does not initialize AX",
+			src: `TEXT ·noop(SB),NOSPLIT,$0-0
+	RET
+TEXT ·caller(SB),NOSPLIT,$0-8
+	CALL ·noop(SB)
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok: false,
+		},
+		{
+			name: "void callee noop() clobbers prior AX",
+			src: `TEXT ·noop(SB),NOSPLIT,$0-0
+	RET
+TEXT ·caller(SB),NOSPLIT,$0-8
+	MOVQ $7, AX
+	CALL ·noop(SB)
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok: false,
+		},
+		{
+			name: "void callee noop() does not initialize 0(SP)",
+			src: `TEXT ·noop(SB),NOSPLIT,$0-0
+	RET
+TEXT ·caller(SB),NOSPLIT,$8-8
+	CALL ·noop(SB)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok: false,
+		},
+		{
+			name: "one-param callee inc(x) int64 checks 0(SP) and marks 8(SP)",
+			src: `TEXT ·inc(SB),NOSPLIT,$0-16
+	MOVQ x+0(FP), AX
+	ADDQ $1, AX
+	MOVQ AX, ret+8(FP)
+	RET
+TEXT ·caller(SB),NOSPLIT,$16-8
+	MOVQ $41, 0(SP)
+	CALL ·inc(SB)
+	MOVQ 8(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok: true,
+		},
+		{
+			name: "one-param callee inc(x) int64 rejects uninitialized 0(SP) arg",
+			src: `TEXT ·inc(SB),NOSPLIT,$0-16
+	MOVQ x+0(FP), AX
+	ADDQ $1, AX
+	MOVQ AX, ret+8(FP)
+	RET
+TEXT ·caller(SB),NOSPLIT,$16-8
+	CALL ·inc(SB)
+	MOVQ 8(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			ok: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := TranslateGoModule(gp, []byte(tc.src), GoModuleOptions{
+				GOOS:         "linux",
+				GOARCH:       "amd64",
+				TargetTriple: "x86_64-unknown-linux-gnu",
+			})
+			if tr != nil {
+				tr.Module.Dispose()
+			}
+			if tc.ok && err != nil {
+				t.Fatalf("TranslateGoModule expected success, got: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatalf("TranslateGoModule expected error, got nil")
 			}
 		})
 	}

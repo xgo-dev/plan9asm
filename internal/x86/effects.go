@@ -30,11 +30,13 @@ type abi0State struct {
 	fpBytesInit map[int64]bool
 	// spBytesInit records initialized byte offsets in the private SP stack frame.
 	spBytesInit map[int64]bool
-	// flagsInit tracks whether all status flags (ZF/SF/PF/CF/OF) are defined.
-	// cfOfInit tracks whether CF and OF are defined (unconditionally cleared by
-	// TEST reg, reg / XOR reg, reg / CLC / STC, as used in math/big ADX chains).
-	flagsInit bool
-	cfOfInit  bool
+	// Status flag definedness tracked independently:
+	//   - cfInit:     Carry Flag (CF) — set by STC/CLC/ADCX/BT/etc., cleared by TEST/AND/OR/XOR
+	//   - ofInit:     Overflow Flag (OF) — set by INC/DEC/ADOX/etc., cleared by TEST/AND/OR/XOR
+	//   - zfSfPfInit: Sign/Zero/Parity flags (SF/ZF/PF)
+	cfInit     bool
+	ofInit     bool
+	zfSfPfInit bool
 }
 
 func (s *abi0State) clone() *abi0State {
@@ -45,8 +47,9 @@ func (s *abi0State) clone() *abi0State {
 		vecFromRaw:   make(map[int]bool, len(s.vecFromRaw)),
 		fpBytesInit:  make(map[int64]bool, len(s.fpBytesInit)),
 		spBytesInit:  make(map[int64]bool, len(s.spBytesInit)),
-		flagsInit:    s.flagsInit,
-		cfOfInit:     s.cfOfInit,
+		cfInit:       s.cfInit,
+		ofInit:       s.ofInit,
+		zfSfPfInit:   s.zfSfPfInit,
 	}
 	for k, v := range s.gpBytesInit {
 		out.gpBytesInit[k] = v
@@ -110,12 +113,16 @@ func (s *abi0State) merge(other *abi0State) bool {
 			changed = true
 		}
 	}
-	if s.flagsInit && !other.flagsInit {
-		s.flagsInit = false
+	if s.cfInit && !other.cfInit {
+		s.cfInit = false
 		changed = true
 	}
-	if s.cfOfInit && !other.cfOfInit {
-		s.cfOfInit = false
+	if s.ofInit && !other.ofInit {
+		s.ofInit = false
+		changed = true
+	}
+	if s.zfSfPfInit && !other.zfSfPfInit {
+		s.zfSfPfInit = false
 		changed = true
 	}
 	for k, v := range other.gpTaintedSP {
@@ -608,33 +615,83 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		}
 
 		if op == "CALL" {
-			// Outgoing ABI0 call: if callee ABI0 frame layout is known, verify
-			// EVERY byte of its incoming stack parameters and mark EVERY byte of
-			// its stack result slots initialized.
-			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpSym && resolve != nil && sigs != nil {
-				raw := strings.TrimSuffix(strings.TrimSpace(ins.Args[0].Sym), "(SB)")
-				callee := resolve(raw)
-				if csig, ok := sigs[callee]; ok && len(csig.ArgRegs) == 0 && len(csig.Frame.Params) > 0 {
-					for _, ps := range csig.Frame.Params {
-						sz := x86ABI0SlotBytes(ps.Type, goarch)
-						for off := ps.Offset; off < ps.Offset+sz; off++ {
-							if !st.spBytesInit[off] {
-								return nil, fmt.Errorf("%w: %s reads uninitialized outgoing ABI0 arg byte %d(SP)", asm.ErrProbeNeedsContext, ins.Raw, off)
+			// Outgoing call: validate parameters and mark return slots strictly
+			// according to the callee signature. Caller-saved registers and flags
+			// are clobbered across CALL; ABI0 callees return via Frame.Results on
+			// (SP) (including zero-parameter callees), never via AX.
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpSym {
+				var csig asm.FuncSig
+				var hasSig bool
+				if resolve != nil && sigs != nil {
+					raw := strings.TrimSuffix(strings.TrimSpace(ins.Args[0].Sym), "(SB)")
+					callee := resolve(raw)
+					csig, hasSig = sigs[callee]
+				}
+				if hasSig {
+					if len(csig.ArgRegs) == 0 {
+						for _, ps := range csig.Frame.Params {
+							sz := x86ABI0SlotBytes(ps.Type, goarch)
+							for off := ps.Offset; off < ps.Offset+sz; off++ {
+								if !st.spBytesInit[off] {
+									return nil, fmt.Errorf("%w: %s reads uninitialized outgoing ABI0 arg byte %d(SP)", asm.ErrProbeNeedsContext, ins.Raw, off)
+								}
+							}
+						}
+					} else {
+						for _, r := range csig.ArgRegs {
+							if err := checkGPRead(st, r, wordMask, ins.Raw); err != nil {
+								return nil, err
 							}
 						}
 					}
-					for _, rs := range csig.Frame.Results {
-						sz := x86ABI0SlotBytes(rs.Type, goarch)
-						for off := rs.Offset; off < rs.Offset+sz; off++ {
-							st.spBytesInit[off] = true
+				}
+				st.gpBytesInit = map[asm.Reg]uint8{}
+				st.gpTaintedSP = map[asm.Reg]bool{}
+				st.vecBytesInit = map[int]uint64{}
+				st.vecFromRaw = map[int]bool{}
+				st.cfInit = false
+				st.ofInit = false
+				st.zfSfPfInit = false
+				if hasSig {
+					if len(csig.ArgRegs) == 0 {
+						for _, rs := range csig.Frame.Results {
+							sz := x86ABI0SlotBytes(rs.Type, goarch)
+							for off := rs.Offset; off < rs.Offset+sz; off++ {
+								st.spBytesInit[off] = true
+							}
+						}
+					} else if csig.Ret != "" && csig.Ret != asm.Void {
+						sz := x86ABI0SlotBytes(csig.Ret, goarch)
+						wMask, clearsUpper := gpRegWriteByteMask(asm.AX, sz, goarch)
+						if clearsUpper {
+							st.gpBytesInit[asm.AX] = wordMask
+						} else if wMask != 0 {
+							st.gpBytesInit[asm.AX] = wMask
 						}
 					}
 				}
+			} else if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpReg {
+				// Indirect C-ABI/vDSO call (e.g. syscall/asm_linux_amd64.s CALL AX).
+				if err := checkGPRead(st, ins.Args[0].Reg, wordMask, ins.Raw); err != nil {
+					return nil, err
+				}
+				st.gpBytesInit = map[asm.Reg]uint8{}
+				st.gpTaintedSP = map[asm.Reg]bool{}
+				st.vecBytesInit = map[int]uint64{}
+				st.vecFromRaw = map[int]bool{}
+				st.cfInit = false
+				st.ofInit = false
+				st.zfSfPfInit = false
+				st.gpBytesInit[asm.AX] = wordMask
+			} else {
+				st.gpBytesInit = map[asm.Reg]uint8{}
+				st.gpTaintedSP = map[asm.Reg]bool{}
+				st.vecBytesInit = map[int]uint64{}
+				st.vecFromRaw = map[int]bool{}
+				st.cfInit = false
+				st.ofInit = false
+				st.zfSfPfInit = false
 			}
-			st.gpBytesInit[asm.AX] = wordMask
-			st.gpTaintedSP[asm.AX] = false
-			st.flagsInit = false
-			st.cfOfInit = false
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
 			} else {
@@ -644,7 +701,18 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		}
 
 		if op == "CLC" || op == "STC" {
-			st.cfOfInit = true
+			// CLC and STC define CF only; OF and SF/ZF/PF are unaffected.
+			st.cfInit = true
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		}
+
+		if op == "CMC" {
+			// CMC complements CF in place; CF remains defined iff it was already defined.
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
 			} else {
@@ -668,8 +736,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				return nil, err
 			}
 			if isX86ClearCFOfOp(op) || isX86GPFlagWriter(op) {
-				st.flagsInit = true
-				st.cfOfInit = true
+				st.cfInit = true
+				st.ofInit = true
+				st.zfSfPfInit = true
 			}
 			if pc+1 < len(instrs) {
 				enqueue(pc+1, st, false)
@@ -698,10 +767,14 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 		}
 
-		// Flag-consuming instructions require the relevant flags to be initialized.
-		if needsCFOfFlag(op) && !st.cfOfInit {
+		// Flag-consuming instructions require their exact consumed flag(s) to be initialized.
+		if needsCF(op) && !st.cfInit {
 			allInputsInit = false
-		} else if needsCondFlags(op) && !st.flagsInit {
+		}
+		if needsOF(op) && !st.ofInit {
+			allInputsInit = false
+		}
+		if needsZFSFPF(op) && !st.zfSfPfInit {
 			allInputsInit = false
 		}
 
@@ -821,18 +894,8 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				}
 			}
 		}
-		// Update status flags.
-		if isX86ClearCFOfOp(op) {
-			st.cfOfInit = true
-			st.flagsInit = allInputsInit
-		} else if op == "ADCXQ" || op == "ADCXL" || op == "ADOXQ" || op == "ADOXL" {
-			st.cfOfInit = allInputsInit
-		} else if isX86GPFlagWriter(op) {
-			st.flagsInit = allInputsInit
-			if !strings.HasPrefix(string(op), "INC") && !strings.HasPrefix(string(op), "DEC") {
-				st.cfOfInit = allInputsInit
-			}
-		}
+		// Update status flags independently per architectural semantics.
+		updateX86FlagsAfter(st, op, ins.Args, allInputsInit)
 		if pc+1 < len(instrs) {
 			enqueue(pc+1, st, false)
 		} else {
@@ -1485,22 +1548,143 @@ func isX86GPFlagWriter(op asm.Op) bool {
 	return false
 }
 
-func needsCFOfFlag(op asm.Op) bool {
+func updateX86FlagsAfter(st *abi0State, op asm.Op, args []asm.Operand, allInputsInit bool) {
+	if isX86ClearCFOfOp(op) {
+		// TEST/AND/OR/XOR unconditionally clear CF=0 and OF=0, and set SF/ZF/PF from result.
+		st.cfInit = true
+		st.ofInit = true
+		st.zfSfPfInit = allInputsInit
+		return
+	}
+	switch op {
+	case "ADCXL", "ADCXQ":
+		// ADCX updates CF only; OF and SF/ZF/PF are preserved.
+		st.cfInit = allInputsInit
+		return
+	case "ADOXL", "ADOXQ":
+		// ADOX updates OF only; CF and SF/ZF/PF are preserved.
+		st.ofInit = allInputsInit
+		return
+	case "INCB", "INCW", "INCL", "INCQ", "DECB", "DECW", "DECL", "DECQ":
+		// INC/DEC preserve CF and update OF/SF/ZF/PF.
+		st.ofInit = allInputsInit
+		st.zfSfPfInit = allInputsInit
+		return
+	case "BTB", "BTW", "BTL", "BTQ",
+		"BTSW", "BTSL", "BTSQ", "BTRW", "BTRL", "BTRQ", "BTCW", "BTCL", "BTCQ":
+		// BT* sets CF; OF/SF/PF are undefined.
+		st.cfInit = allInputsInit
+		st.ofInit = false
+		st.zfSfPfInit = false
+		return
+	case "SHLB", "SHLW", "SHLL", "SHLQ", "SALB", "SALW", "SALL", "SALQ",
+		"SHRB", "SHRW", "SHRL", "SHRQ", "SARB", "SARW", "SARL", "SARQ",
+		"SHLDW", "SHLDL", "SHLDQ", "SHRDW", "SHRDL", "SHRDQ":
+		st.cfInit = allInputsInit
+		st.ofInit = allInputsInit && len(args) >= 2 && args[0].Kind == asm.OpImm && args[0].Imm == 1
+		st.zfSfPfInit = allInputsInit
+		return
+	case "ROLB", "ROLW", "ROLL", "ROLQ", "RORB", "RORW", "RORL", "RORQ",
+		"RCLB", "RCLW", "RCLL", "RCLQ", "RCRB", "RCRW", "RCRL", "RCRQ":
+		// Rotates update CF (and OF only for immediate count $1); SF/ZF/PF are preserved.
+		st.cfInit = allInputsInit
+		st.ofInit = allInputsInit && len(args) >= 2 && args[0].Kind == asm.OpImm && args[0].Imm == 1
+		return
+	case "MULB", "MULW", "MULL", "MULQ", "IMULB", "IMULW", "IMULL", "IMULQ":
+		st.cfInit = allInputsInit
+		st.ofInit = allInputsInit
+		st.zfSfPfInit = false
+		return
+	case "BSFW", "BSFL", "BSFQ", "BSRW", "BSRL", "BSRQ":
+		st.cfInit = false
+		st.ofInit = false
+		st.zfSfPfInit = allInputsInit
+		return
+	case "RDRAND", "RDRANDW", "RDRANDL", "RDRANDQ",
+		"RDSEED", "RDSEEDW", "RDSEEDL", "RDSEEDQ":
+		// RDRAND/RDSEED define CF and clear OF/SF/ZF/AF/PF to 0.
+		st.cfInit = true
+		st.ofInit = true
+		st.zfSfPfInit = true
+		return
+	case "COMISS", "COMISD", "UCOMISS", "UCOMISD",
+		"VCOMISS", "VCOMISD", "VUCOMISS", "VUCOMISD",
+		"FCOMI", "FCOMIP", "FUCOMI", "FUCOMIP",
+		"PTEST", "VPTEST",
+		"KORTESTB", "KORTESTW", "KORTESTD", "KORTESTQ",
+		"KTESTB", "KTESTW", "KTESTD", "KTESTQ":
+		st.cfInit = allInputsInit
+		st.ofInit = true
+		st.zfSfPfInit = allInputsInit
+		return
+	case "SAHF":
+		// SAHF loads SF/ZF/AF/PF/CF from AH; OF is preserved.
+		st.cfInit = allInputsInit
+		st.zfSfPfInit = allInputsInit
+		return
+	}
+	if isX86GPFlagWriter(op) {
+		st.cfInit = allInputsInit
+		st.ofInit = allInputsInit
+		st.zfSfPfInit = allInputsInit
+	}
+}
+
+func x86CondSuffix(op asm.Op) (string, bool) {
+	s := string(op)
+	if strings.HasPrefix(s, "SET") && len(s) > 3 {
+		return s[3:], true
+	}
+	for _, pfx := range []string{"CMOVW", "CMOVL", "CMOVQ"} {
+		if strings.HasPrefix(s, pfx) && len(s) > len(pfx) {
+			return s[len(pfx):], true
+		}
+	}
+	return "", false
+}
+
+func needsCF(op asm.Op) bool {
 	switch op {
 	case "ADCB", "ADCW", "ADCL", "ADCQ",
 		"SBBB", "SBBW", "SBBL", "SBBQ",
 		"RCLB", "RCLW", "RCLL", "RCLQ",
 		"RCRB", "RCRW", "RCRL", "RCRQ",
-		"ADCXL", "ADCXQ", "ADOXL", "ADOXQ",
-		"SETCS", "SETCC", "SETC", "SETNC", "SETO", "SETNO",
-		"CMOVWCS", "CMOVLCS", "CMOVQCS", "CMOVWCC", "CMOVLCC", "CMOVQCC",
-		"CMOVWOS", "CMOVLOS", "CMOVQOS", "CMOVWOC", "CMOVLOC", "CMOVQOC":
+		"ADCXL", "ADCXQ":
 		return true
+	}
+	if cc, ok := x86CondSuffix(op); ok {
+		switch cc {
+		case "C", "NC", "CS", "CC", "B", "NB", "AE", "NAE", "LO", "HS", "BE", "NA", "A", "NBE", "LS", "HI":
+			return true
+		}
 	}
 	return false
 }
 
-func needsCondFlags(op asm.Op) bool {
-	name := string(op)
-	return strings.HasPrefix(name, "SET") || strings.HasPrefix(name, "CMOV")
+func needsOF(op asm.Op) bool {
+	switch op {
+	case "ADOXL", "ADOXQ":
+		return true
+	}
+	if cc, ok := x86CondSuffix(op); ok {
+		switch cc {
+		case "O", "NO", "OS", "OC", "L", "LT", "GE", "LE", "G", "GT", "NGE", "NL", "NG", "NLE":
+			return true
+		}
+	}
+	return false
+}
+
+func needsZFSFPF(op asm.Op) bool {
+	if cc, ok := x86CondSuffix(op); ok {
+		switch cc {
+		case "E", "EQ", "Z", "NE", "NZ",
+			"S", "NS", "MI", "PL",
+			"P", "PE", "NP", "PO", "PS", "PC",
+			"BE", "NA", "A", "NBE", "LS", "HI",
+			"L", "LT", "GE", "LE", "G", "GT", "NGE", "NL", "NG", "NLE":
+			return true
+		}
+	}
+	return false
 }

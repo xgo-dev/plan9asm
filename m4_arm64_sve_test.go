@@ -9,9 +9,9 @@ import (
 func verifyARM64LLVMAndLLC(t *testing.T, ir string) string {
 	t.Helper()
 	verifyLLVMIRWithOpt(t, ir)
-	llc, err := exec.LookPath("llc")
-	if err != nil {
-		return ""
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
 	}
 	var linuxAsm string
 	for _, triple := range []string{"aarch64-unknown-linux-gnu", "arm64-apple-darwin"} {
@@ -393,5 +393,45 @@ TEXT ·bcastAllFalse(SB),NOSPLIT,$0-0
 			t.Errorf("broadcast load emitted unconditional scalar load i8:\n%s", ir)
 		}
 		verifyARM64LLVMAndLLC(t, ir)
+	})
+
+	t.Run("widening SVE loads and stores scale MUL VL by memory bytes per vector", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			instr   string
+			wantMul string
+		}{
+			{name: "ZLD1B into .B (-VL*2 = -32*vscale)", instr: "ZLD1B (-VL*2)(R14), P4.Z, [Z13.B]", wantMul: ", -32\n"},
+			{name: "ZLD1B into .H (-VL*2 = -16*vscale)", instr: "ZLD1B (-VL*2)(R14), P4.Z, [Z13.H]", wantMul: ", -16\n"},
+			{name: "ZLD1B into .S (-VL*2 = -8*vscale)", instr: "ZLD1B (-VL*2)(R14), P4.Z, [Z13.S]", wantMul: ", -8\n"},
+			{name: "ZLD1B into .D (-VL*2 = -4*vscale)", instr: "ZLD1B (-VL*2)(R14), P4.Z, [Z13.D]", wantMul: ", -4\n"},
+			{name: "ZLD1SB into .D (-VL*2 = -4*vscale)", instr: "ZLD1SB (-VL*2)(R14), P4.Z, [Z13.D]", wantMul: ", -4\n"},
+			{name: "ZLD1H into .D (-VL*2 = -8*vscale)", instr: "ZLD1H (-VL*2)(R14), P4.Z, [Z13.D]", wantMul: ", -8\n"},
+			{name: "ZLD1W into .D (-VL*2 = -16*vscale)", instr: "ZLD1W (-VL*2)(R14), P4.Z, [Z13.D]", wantMul: ", -16\n"},
+			{name: "ZLD1D into .D (-VL*2 = -32*vscale)", instr: "ZLD1D (-VL*2)(R14), P4.Z, [Z13.D]", wantMul: ", -32\n"},
+			{name: "ZST1B from .D (-VL*2 = -4*vscale)", instr: "ZST1B [Z13.D], P4, (-VL*2)(R14)", wantMul: ", -4\n"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				src := "TEXT ·vlScale(SB),NOSPLIT,$0-0\n\t" + tc.instr + "\n\tRET\n"
+				file, err := Parse(ArchARM64, src)
+				if err != nil {
+					t.Fatalf("Parse failed: %v", err)
+				}
+				ir, err := Translate(file, Options{
+					TargetTriple: "aarch64-unknown-linux-gnu",
+					Goarch:       "arm64",
+					ResolveSym:   func(s string) string { return "m4." + strings.TrimPrefix(s, "·") },
+					Sigs:         map[string]FuncSig{"m4.vlScale": {Name: "m4.vlScale", Ret: Void}},
+				})
+				if err != nil {
+					t.Fatalf("Translate failed: %v", err)
+				}
+				if !strings.Contains(ir, " = mul i64 ") || !strings.Contains(ir, tc.wantMul) {
+					t.Fatalf("expected vscale multiplier %q in IR:\n%s", strings.TrimSpace(tc.wantMul), ir)
+				}
+				verifyARM64LLVMAndLLC(t, ir)
+			})
+		}
 	})
 }

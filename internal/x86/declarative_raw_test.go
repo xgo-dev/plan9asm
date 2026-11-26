@@ -581,6 +581,41 @@ done:
 				sig:  sig,
 				ok:   true,
 			},
+			{
+				name: "STC sets CF only: ADCXQ accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nMOVQ $2, BX\nSTC\nADCXQ BX, AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "STC sets CF only: ADOXQ rejected (OF uninitialized)",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nMOVQ $2, BX\nSTC\nADOXQ BX, AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "INCQ sets OF only: ADOXQ accepted",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nMOVQ $2, BX\nINCQ BX\nADOXQ BX, AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   true,
+			},
+			{
+				name: "INCQ preserves uninit CF: ADCXQ rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nMOVQ $2, BX\nINCQ BX\nADCXQ BX, AX\nMOVQ AX, ret+8(FP)\nRET\n",
+				sig:  sig,
+				ok:   false,
+			},
+			{
+				name: "BTQ sets CF only: SETCS accepted and SETO rejected",
+				src:  "TEXT ·f(SB),NOSPLIT,$0-16\nMOVQ a+0(FP), AX\nBTQ $0, AX\nSETO ret+8(FP)\nRET\n",
+				sig: asm.FuncSig{
+					Name:  "example.bto",
+					Args:  []asm.LLVMType{asm.I64},
+					Ret:   asm.I8,
+					Frame: asm.FrameLayout{Params: []asm.FrameSlot{{Offset: 0, Type: asm.I64, Index: 0, Field: -1}}, Results: []asm.FrameSlot{{Offset: 8, Type: asm.I8, Index: 0, Field: -1}}},
+				},
+				ok: false,
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {

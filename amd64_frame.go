@@ -407,23 +407,21 @@ func (s *GoAMD64FrameSource) BindFixedLocal(ctx context.Context, pkg GoPackage, 
 
 	leaseCheck := func() error { return s.Verify(context.Background()) }
 
+	resolveCallee := func(s string) string { return resolve(goStripABISuffix(s)) }
 	for _, fn := range file.Funcs {
 		name := resolve(goTextSymbolForResolution(fn.Sym))
 		sig, ok := out.Sigs[name]
 		if !ok {
 			return Options{}, fmt.Errorf("%w: missing caller signature for physical frame function %q", ErrProbeNeedsContext, name)
 		}
-		// Verify register initialization, private SP confinement, and result init.
-		if _, err := x86.CheckABI0ResultInit(fn, sig, "amd64"); err != nil {
-			return Options{}, err
-		}
-		// Resolve outgoing ABI0 CALL targets (e.g. runtime·memmove(SB)).
+		// Resolve outgoing ABI0 CALL targets (e.g. runtime·memmove(SB)) before
+		// checking ABI0 call argument and result slot initialization.
 		for _, ins := range fn.Instrs {
 			if strings.ToUpper(string(ins.Op)) != "CALL" || len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
 				continue
 			}
 			rawSym := strings.TrimSuffix(strings.TrimSpace(ins.Args[0].Sym), "(SB)")
-			callee := resolve(goStripABISuffix(rawSym))
+			callee := resolveCallee(rawSym)
 			if _, exists := out.Sigs[callee]; exists {
 				continue
 			}
@@ -433,6 +431,10 @@ func (s *GoAMD64FrameSource) BindFixedLocal(ctx context.Context, pkg GoPackage, 
 			}
 			csig.FrameLease = leaseCheck
 			out.Sigs[callee] = csig
+		}
+		// Verify register initialization, private SP confinement, outgoing CALLs, and result init.
+		if _, err := x86.CheckABI0ResultInitWithSigs(fn, sig, "amd64", resolveCallee, out.Sigs); err != nil {
+			return Options{}, err
 		}
 		sig.FrameLease = leaseCheck
 		out.Sigs[name] = sig

@@ -8,9 +8,9 @@ import (
 
 func verifyLLVMIRWithOpt(t *testing.T, ir string) {
 	t.Helper()
-	opt, err := exec.LookPath("opt")
-	if err != nil {
-		return
+	opt := findLLVM22Tool("opt")
+	if opt == "" {
+		t.Fatal("LLVM 22 opt not found")
 	}
 	cmd := exec.Command(opt, "-passes=verify", "-disable-output")
 	cmd.Stdin = strings.NewReader(ir)
@@ -251,9 +251,9 @@ TEXT ·simdForms(SB),NOSPLIT,$0-0
 
 func verifyLLVMIRWithHaswellLLC(t *testing.T, ir string) {
 	t.Helper()
-	llc, err := exec.LookPath("llc")
-	if err != nil {
-		return
+	llc := findLLVM22Tool("llc")
+	if llc == "" {
+		t.Fatal("LLVM 22 llc not found")
 	}
 	cmd := exec.Command(llc,
 		"-mtriple=x86_64-unknown-linux-gnu",

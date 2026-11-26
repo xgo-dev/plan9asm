@@ -1228,12 +1228,12 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 	if name != "ZLDR" && name != "ZSTR" && pIdx < 0 {
 		return fmt.Errorf("arm64 %s requires predicate register P0..P15: %q", name, ins.Raw)
 	}
-	me, err := c.sveEvalMemPtr(memOp, 16)
-	if err != nil {
-		return err
-	}
-	ptr := me.ptr
 	if name == "ZLDR" || name == "ZSTR" {
+		me, err := c.sveEvalMemPtr(memOp, 16)
+		if err != nil {
+			return err
+		}
+		ptr := me.ptr
 		if isStore {
 			srcB, _ := c.loadZIdx(zRegs[0])
 			fmt.Fprintf(c.b, "  store <vscale x 16 x i8> %s, ptr %s, align 1\n", srcB, ptr)
@@ -1250,6 +1250,17 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 		laneBits = memBits
 	}
 	baseLanes := 16 / (laneBits / 8)
+	// For contiguous widening/narrowing SVE loads and stores (LD1B/H/W/D, ST1B/H/W/D),
+	// the MUL VL immediate unit is the number of memory bytes accessed per vector:
+	// (baseLanes * vscale) * (memBits / 8). For example, ZLD1B (-VL*2)(R14), P, [Z13.D]
+	// has baseLanes=2 and memBits=8, so each VL step is 2*vscale bytes (-4*vscale total),
+	// whereas ZLD1B (-VL*2)(R14), P, [Z13.B] has baseLanes=16 -> 16*vscale (-32*vscale).
+	memBytesPerVec := int64(baseLanes * (memBits / 8))
+	me, err := c.sveEvalMemPtr(memOp, memBytesPerVec)
+	if err != nil {
+		return err
+	}
+	ptr := me.ptr
 	vecTy := fmt.Sprintf("<vscale x %d x i%d>", baseLanes, laneBits)
 	memVecTy := fmt.Sprintf("<vscale x %d x i%d>", baseLanes, memBits)
 	predTy := fmt.Sprintf("<vscale x %d x i1>", baseLanes)
@@ -1393,11 +1404,11 @@ func (c *arm64Ctx) lowerARM64SVEMem(op asm.Op, ins asm.Instr) error {
 		return c.storeZIdx(zRegs[0], "%"+out)
 	}
 
-	// Scalable contiguous & multi-vector loads/stores (stepping by runtime VL bytes)
+	// Scalable contiguous & multi-vector loads/stores (stepping by runtime memory bytes per vector)
 	for ri, zi := range zRegs {
 		curPtr := ptr
 		if ri > 0 {
-			step := c.sveScaledVLBytes(int64(ri), 16)
+			step := c.sveScaledVLBytes(int64(ri), memBytesPerVec)
 			gp := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %s\n", gp, ptr, step)
 			curPtr = "%" + gp
