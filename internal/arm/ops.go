@@ -336,9 +336,43 @@ func (c *armCtx) lowerARMShiftOp(spec asm.OpSpec, cond string, setFlags bool, in
 	if len(ins.Args) != 2 && len(ins.Args) != 3 {
 		return fmt.Errorf("arm %s expects 2 or 3 operands: %q", spec.Op, ins.Raw)
 	}
-	amt, err := c.eval32(ins.Args[0], false)
-	if err != nil {
-		return err
+	shiftOp := asm.ShiftLeft
+	switch spec.LLVMOp {
+	case "lshr":
+		shiftOp = asm.ShiftRight
+	case "ashr":
+		shiftOp = asm.ShiftArith
+	}
+	var amt string
+	var err error
+	if ins.Args[0].Kind == asm.OpImm && ins.Args[0].ImmRaw == "" {
+		// Match Go's cmd/internal/obj/arm/asm5.go immediate shift encoding:
+		//   - $0 is rewritten to SLL $0 (MOV): shift=0, C unchanged.
+		//   - Non-zero immediates are masked to 5 bits (imm & 31):
+		//     * SLL with (imm&31)==0 ($32/$64) encodes LSL #0 (MOV): shift=0, C unchanged.
+		//     * SRL/SRA with (imm&31)==0 ($32/$64) encode LSR #0/ASR #0 => shift by 32.
+		//     * Otherwise shift by (imm & 31) in 1..31 (e.g. $33 => shift by 1).
+		raw := ins.Args[0].Imm
+		imm5 := raw & 31
+		var eff int64
+		switch {
+		case raw == 0:
+			eff = 0
+		case imm5 == 0:
+			if shiftOp == asm.ShiftLeft {
+				eff = 0
+			} else {
+				eff = 32
+			}
+		default:
+			eff = imm5
+		}
+		amt = c.imm32(eff)
+	} else {
+		amt, err = c.eval32(ins.Args[0], false)
+		if err != nil {
+			return err
+		}
 	}
 	var src string
 	var dst asm.Operand
@@ -357,13 +391,6 @@ func (c *armCtx) lowerARMShiftOp(spec asm.OpSpec, cond string, setFlags bool, in
 	}
 	if err != nil {
 		return err
-	}
-	shiftOp := asm.ShiftLeft
-	switch spec.LLVMOp {
-	case "lshr":
-		shiftOp = asm.ShiftRight
-	case "ashr":
-		shiftOp = asm.ShiftArith
 	}
 	out, carryOut, err := c.evalARMShift(shiftOp, src, amt, setFlags)
 	if err != nil {

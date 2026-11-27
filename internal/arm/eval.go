@@ -198,6 +198,51 @@ func (c *armCtx) eval32(op asm.Operand, postInc bool) (string, error) {
 	}
 }
 
+// armImmRot mirrors Go's cmd/internal/obj/arm/asm5.go immrot(v): returns the
+// smallest 4-bit even rotate (0..15) encoding v as an ARMv7 modified immediate,
+// or ok=false if v cannot be represented in imm12.
+func armImmRot(v uint32) (rot int, ok bool) {
+	for i := 0; i < 16; i++ {
+		if v&^0xff == 0 {
+			return i, true
+		}
+		v = v<<2 | v>>30
+	}
+	return 0, false
+}
+
+// armImmLogicalCarry returns the constant ARMv7 ARMExpandImm_C shifter carry-out
+// ("true" or "false") when Go's ARM assembler encodes op $imm as a single
+// rotated-immediate instruction with rot != 0. When rot == 0 or Go synthesizes
+// the constant into R11 and executes a register instruction, C is unchanged
+// (ok == false). For AND, Go rewrites C_NCON ($v where immrot(^v)!=0) to
+// BIC $^v, so carry comes from ^v's rotated encoding.
+func armImmLogicalCarry(op string, imm int64) (string, bool) {
+	u := uint32(imm)
+	if rot, ok := armImmRot(u); ok {
+		if rot == 0 {
+			return "", false
+		}
+		if (u & (1 << 31)) != 0 {
+			return "true", true
+		}
+		return "false", true
+	}
+	if op == "AND" {
+		inv := ^u
+		if rot, ok := armImmRot(inv); ok {
+			if rot == 0 {
+				return "", false
+			}
+			if (inv & (1 << 31)) != 0 {
+				return "true", true
+			}
+			return "false", true
+		}
+	}
+	return "", false
+}
+
 func (c *armCtx) evalShift(op asm.Operand) (string, error) {
 	out, _, err := c.evalShiftWithCarry(op, false)
 	return out, err

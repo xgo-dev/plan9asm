@@ -163,10 +163,20 @@ func TestAMD64MachineCodeDifferentialGate(t *testing.T) {
 		t.Fatalf("llc x86_64 object compile failed: %v\n%s", err, out)
 	}
 
-	// Step B: Re-target the -O2 optimized target-independent IR to the host
-	// triple (identical on amd64; executes natively even on arm64!), link with
-	// a single batched C harness, and capture the complete transcript.
+	// Step B: Re-target the -O2 optimized IR to the host triple (identical on
+	// amd64, preserving real x86 #DE inline asm; on non-amd64 hosts like
+	// arm64-apple-darwin, substitute the x86 #DE inline asm trap with portable
+	// @llvm.trap() after X86TTI -O2 has folded constant x86 intrinsics).
 	hostIR := strings.Replace(optIR, `target triple = "x86_64-unknown-linux-gnu"`, `target triple = "`+hostTriple+`"`, 1)
+	if runtime.GOARCH != "amd64" {
+		const deAsm = `call void asm sideeffect "xorl %eax, %eax; divl %eax", "~{eax},~{edx},~{flags}"()`
+		if strings.Contains(hostIR, deAsm) {
+			hostIR = strings.ReplaceAll(hostIR, deAsm, "call void @llvm.trap()")
+			if !strings.Contains(hostIR, "declare void @llvm.trap()") {
+				hostIR += "\ndeclare void @llvm.trap()\n"
+			}
+		}
+	}
 	hostIRPath := filepath.Join(tmp, "diff_gate_host.ll")
 	hostObjPath := filepath.Join(tmp, "diff_gate_host.o")
 	if err := os.WriteFile(hostIRPath, []byte(hostIR), 0o600); err != nil {

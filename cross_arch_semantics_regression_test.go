@@ -571,6 +571,241 @@ TEXT ·mvnShiftCarry1(SB),NOSPLIT,$0-4
 	MOVW R0, ret+0(FP)
 	RET
 
+// Immediate shift edge cases matching Go cmd/internal/obj/arm/asm5.go encoding
+// (imm & 31, distinct from register shifts Rs & 255):
+//   - SLL.S $32 (entry C=0, R1=-1) => encoded as MOV.S R1, R2 => res=-1, C=0!
+//   - SLL.S $33 (entry C=0, R1=-1) => encoded as LSL.S $1 => res=-2, C=1!
+//   - SLL.S $64 (entry C=0, R1=-1) => encoded as MOV.S R1, R2 => res=-1, C=0!
+//   - SRL.S $32 (entry C=0, R1=-1) => encoded as LSR.S $32 => res=0, C=1!
+//   - SRL.S $33 (entry C=0, R1=-1) => encoded as LSR.S $1 => res=0x7fffffff, C=1!
+//   - SRA.S $32 (entry C=0, R1=-1) => encoded as ASR.S $32 => res=-1, C=1!
+//   - SRA.S $33 (entry C=1, R1=-2) => encoded as ASR.S $1 => res=-1, C=0!
+TEXT ·immSll32PreservesC0(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $-1, R1
+	SLL.S $32, R1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immSll32Value(SB),NOSPLIT,$0-4
+	MOVW $-1, R1
+	SLL.S $32, R1, R2
+	MOVW R2, ret+0(FP)
+	RET
+
+TEXT ·immSll33SetsC1(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $-1, R1
+	SLL.S $33, R1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immSll64PreservesC0(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $-1, R1
+	SLL.S $64, R1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immSrl32SetsC1(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $-1, R1
+	SRL.S $32, R1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immSrl33ValueAndC1(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $-1, R1
+	SRL.S $33, R1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	ORR R2, R0, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immSra32SetsC1(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $-1, R1
+	SRA.S $32, R1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immSra33ClearsC(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $-2, R1
+	SRA.S $33, R1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+// Rotated-immediate logical ops (ARMv7 ARMExpandImm_C):
+// Entry C=1 + $0x40000000 (rot=1, bit31=0) => C=0 across all 6 ops.
+TEXT ·immTstRot0(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	TST $0x40000000, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immTeqRot0(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	TEQ $0x40000000, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immAndRot0(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	AND.S $0x40000000, R2, R4
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immOrrRot0(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	ORR.S $0x40000000, R2, R4
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immEorRot0(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	EOR.S $0x40000000, R2, R4
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immBicRot0(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	BIC.S $0x40000000, R2, R4
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+// Controls:
+//   - TST $1 (rot=0): preserves C=1
+//   - TST $0x80000000 (rot=1, bit31=1): sets C=1 from C=0
+//   - TST $0x12345678 (literal pool via R11): preserves C=1
+//   - AND.S $~0x40000000 (Go rewrites to BIC.S $0x40000000, rot=1, bit31=0): sets C=0 from C=1
+//   - AND.S $-1 (Go rewrites to BIC.S $0, rot=0): preserves C=1
+//   - BIC.S $~0x40000000 (MVN R11; BIC.S R11): preserves C=1
+TEXT ·immTstUnrotPreservesC1(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	TST $1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immTstRot1SetsC1(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $0, R2
+	TST $0x80000000, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immTstPoolPreservesC1(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	TST $0x12345678, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immAndNconRot0(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	AND.S $-1073741825, R2, R4
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immAndNconUnrotPreservesC1(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	AND.S $-1, R2, R4
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immBicNconPreservesC1(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $0, R2
+	BIC.S $-1073741825, R2, R4
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immSll0PreservesC1(SB),NOSPLIT,$0-4
+	MOVW $1, R3
+	CMP $1, R3
+	MOVW $-1, R1
+	SLL.S $0, R1, R2
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·immAndNconRot1SetsC1(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $0, R2
+	AND.S $2147483647, R2, R4
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
 // Runtime-input shift function to verify non-constant armv7 backend codegen.
 TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 	MOVW x+0(FP), R1
@@ -593,21 +828,43 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 		}
 	}
 	wantConst := map[string]int{
-		"sllCarry1":         1,
-		"sllCarry0":         0,
-		"srlCarry1":         1,
-		"srlCarry0":         0,
-		"sraCarry1":         1,
-		"sraCarry0":         0,
-		"sllZeroPreservesC": 1,
-		"sll32Bit0":         1,
-		"sll33Zero":         0,
-		"srl32Bit31":        1,
-		"sra33Sign":         1,
-		"movwShiftCarry1":   1,
-		"andShiftCarry1":    1,
-		"tstRotateCarry1":   1,
-		"mvnShiftCarry1":    1,
+		"sllCarry1":                  1,
+		"sllCarry0":                  0,
+		"srlCarry1":                  1,
+		"srlCarry0":                  0,
+		"sraCarry1":                  1,
+		"sraCarry0":                  0,
+		"sllZeroPreservesC":          1,
+		"sll32Bit0":                  1,
+		"sll33Zero":                  0,
+		"srl32Bit31":                 1,
+		"sra33Sign":                  1,
+		"movwShiftCarry1":            1,
+		"andShiftCarry1":             1,
+		"tstRotateCarry1":            1,
+		"mvnShiftCarry1":             1,
+		"immSll32PreservesC0":        0,
+		"immSll32Value":              -1,
+		"immSll33SetsC1":             1,
+		"immSll64PreservesC0":        0,
+		"immSrl32SetsC1":             1,
+		"immSrl33ValueAndC1":         0x7fffffff,
+		"immSra32SetsC1":             1,
+		"immSra33ClearsC":            0,
+		"immTstRot0":                 0,
+		"immTeqRot0":                 0,
+		"immAndRot0":                 0,
+		"immOrrRot0":                 0,
+		"immEorRot0":                 0,
+		"immBicRot0":                 0,
+		"immTstUnrotPreservesC1":     1,
+		"immTstRot1SetsC1":           1,
+		"immTstPoolPreservesC1":      1,
+		"immAndNconRot0":             0,
+		"immAndNconUnrotPreservesC1": 1,
+		"immBicNconPreservesC1":      1,
+		"immSll0PreservesC1":         1,
+		"immAndNconRot1SetsC1":       1,
 	}
 	sigs := map[string]FuncSig{
 		"runtimeShiftCarry": {
@@ -775,16 +1032,42 @@ TEXT ·divlRuntime(SB),NOSPLIT,$0-16
 	}
 	verifyLLVMWithTargetLLC(t, ll386, "i386-unknown-linux-gnu")
 	verifyLLVMWithTargetLLC(t, ll386, "i686-pc-windows-msvc")
+	verifyLLVMWithTargetLLC(t, ll386, "i686-pc-windows-gnu")
 
 	opt386 := runOptO2(t, ll386)
+	// Verify Windows 32-bit MSVC & MinGW assembly contain real #DE divl and
+	// ZERO __chkstk / ___chkstk_ms references.
+	llcTool := findLLVM22Tool("llc")
+	if llcTool == "" {
+		t.Fatal("LLVM 22 llc not found")
+	}
+	assertNoWindowsChkstk := func(ir, triple string) {
+		t.Helper()
+		cmd := exec.Command(llcTool, "-mtriple="+triple, "-O2", "-o", "-", "-")
+		cmd.Stdin = strings.NewReader(ir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("llc (%s) asm emission failed: %v\n%s", triple, err, out)
+		}
+		asmText := string(out)
+		if strings.Contains(asmText, "__chkstk") {
+			t.Fatalf("llc (%s) emitted unexpected __chkstk reference:\n%s", triple, asmText)
+		}
+		if !strings.Contains(asmText, "divl") {
+			t.Fatalf("llc (%s) missing #DE divl instruction:\n%s", triple, asmText)
+		}
+	}
+	assertNoWindowsChkstk(opt386, "i686-pc-windows-msvc")
+	assertNoWindowsChkstk(opt386, "i686-pc-windows-gnu")
+
 	// 43 / 5 = 8 rem 3 => (3<<8) | 8 = 776
 	if body := extractLLVMFuncBody(t, opt386, "divbOk"); !strings.Contains(body, "ret i32 776") {
 		t.Errorf("386 divbOk expected ret i32 776, got:\n%s", body)
 	}
 	for _, trapFn := range []string{"divbOverflow", "divbZero", "divbOverflowDead", "idivbOverflow", "idivbWideMinNeg1", "divwOverflow", "divlOverflow"} {
 		body := extractLLVMFuncBody(t, opt386, trapFn)
-		if !strings.Contains(body, "udiv i32 7") || !strings.Contains(body, "@llvm.trap()") || !strings.Contains(body, "unreachable") {
-			t.Errorf("386 %s expected #DE trap + unreachable after -O2, got:\n%s", trapFn, body)
+		if !strings.Contains(body, "divl %eax") || !strings.Contains(body, "unreachable") {
+			t.Errorf("386 %s expected #DE inline asm trap + unreachable after -O2, got:\n%s", trapFn, body)
 		}
 		if strings.Contains(body, "ret i32") {
 			t.Errorf("386 %s must not return normally after #DE trap:\n%s", trapFn, body)
@@ -854,49 +1137,97 @@ TEXT ·divbRuntime64(SB),NOSPLIT,$0-24
 			Frame: FrameLayout{Results: []FrameSlot{{Offset: 0, Type: I64, Index: 0, Field: -1}}},
 		}
 	}
+	sigs64 := map[string]FuncSig{
+		"divbZero64":   sig64("divbZero64"),
+		"divbOvf64":    sig64("divbOvf64"),
+		"divqOk64":     sig64("divqOk64"),
+		"divqOvf64":    sig64("divqOvf64"),
+		"idivqMinNeg1": sig64("idivqMinNeg1"),
+		"divbRuntime64": {
+			Name: "divbRuntime64",
+			Args: []LLVMType{I64, I64},
+			Ret:  I64,
+			Frame: FrameLayout{
+				Params: []FrameSlot{
+					{Offset: 0, Type: I64, Index: 0, Field: -1},
+					{Offset: 8, Type: I64, Index: 1, Field: -1},
+				},
+				Results: []FrameSlot{{Offset: 16, Type: I64, Index: 0, Field: -1}},
+			},
+		},
+	}
 	ll64, err := Translate(file64, Options{
 		TargetTriple: "x86_64-unknown-linux-gnu",
 		Goarch:       "amd64",
 		ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
-		Sigs: map[string]FuncSig{
-			"divbZero64":   sig64("divbZero64"),
-			"divbOvf64":    sig64("divbOvf64"),
-			"divqOk64":     sig64("divqOk64"),
-			"divqOvf64":    sig64("divqOvf64"),
-			"idivqMinNeg1": sig64("idivqMinNeg1"),
-			"divbRuntime64": {
-				Name: "divbRuntime64",
-				Args: []LLVMType{I64, I64},
-				Ret:  I64,
-				Frame: FrameLayout{
-					Params: []FrameSlot{
-						{Offset: 0, Type: I64, Index: 0, Field: -1},
-						{Offset: 8, Type: I64, Index: 1, Field: -1},
-					},
-					Results: []FrameSlot{{Offset: 16, Type: I64, Index: 0, Field: -1}},
-				},
-			},
-		},
+		Sigs:         sigs64,
 	})
 	if err != nil {
 		t.Fatalf("Translate amd64 div failed: %v", err)
 	}
 	verifyLLVMWithTargetLLC(t, ll64, "x86_64-unknown-linux-gnu")
 	verifyLLVMWithTargetLLC(t, ll64, "x86_64-pc-windows-msvc")
+	verifyLLVMWithTargetLLC(t, ll64, "x86_64-pc-windows-gnu")
+
+	// Also verify non-x86 target-triple lowering emits portable @llvm.trap()
+	// without x86 inline asm (used for cross-host target-independent checks).
+	llNonX86, err := Translate(file64, Options{
+		TargetTriple: "arm64-apple-darwin",
+		Goarch:       "amd64",
+		ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		Sigs:         sigs64,
+	})
+	if err != nil {
+		t.Fatalf("Translate amd64 div for non-x86 triple failed: %v", err)
+	}
+	if !strings.Contains(llNonX86, "@llvm.trap()") || strings.Contains(llNonX86, "divl %eax") {
+		t.Fatalf("non-x86 triple div trap expected @llvm.trap() without x86 inline asm:\n%s", llNonX86)
+	}
+	verifyLLVMWithTargetLLC(t, llNonX86, "arm64-apple-darwin")
 
 	opt64 := runOptO2(t, ll64)
+	assertNoWindowsChkstk(opt64, "x86_64-pc-windows-msvc")
+	assertNoWindowsChkstk(opt64, "x86_64-pc-windows-gnu")
+
 	// 100 / 7 = 14 rem 2 => (2<<8) | 14 = 526
 	if body := extractLLVMFuncBody(t, opt64, "divqOk64"); !strings.Contains(body, "ret i64 526") {
 		t.Errorf("amd64 divqOk64 expected ret i64 526, got:\n%s", body)
 	}
 	for _, trapFn := range []string{"divbZero64", "divbOvf64", "divqOvf64", "idivqMinNeg1"} {
 		body := extractLLVMFuncBody(t, opt64, trapFn)
-		if !strings.Contains(body, "udiv i32 7") || !strings.Contains(body, "@llvm.trap()") || !strings.Contains(body, "unreachable") {
-			t.Errorf("amd64 %s expected #DE trap + unreachable after -O2, got:\n%s", trapFn, body)
+		if !strings.Contains(body, "divl %eax") || !strings.Contains(body, "unreachable") {
+			t.Errorf("amd64 %s expected #DE inline asm trap + unreachable after -O2, got:\n%s", trapFn, body)
 		}
 		if strings.Contains(body, "ret i64") {
 			t.Errorf("amd64 %s must not return normally after #DE trap:\n%s", trapFn, body)
 		}
+	}
+
+	// On Windows/amd64, verify real object compilation & linking succeeds with
+	// zero __chkstk / ___chkstk_ms link errors.
+	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
+		llc, clang, ok := findLlcAndClang(t)
+		if !ok {
+			t.Skip("llc/clang not found")
+		}
+		winTriple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
+		winC := `
+#include <stdint.h>
+#include <stdio.h>
+#ifdef __MINGW32__
+int _fltused = 0;
+#endif
+extern uint64_t divbRuntime64(uint64_t a, uint64_t b);
+int main(void) {
+	uint64_t got = divbRuntime64(42, 2);
+	if (got != 21) {
+		fprintf(stderr, "FAIL windows divb: got=%llu want=21\n", (unsigned long long)got);
+		return 1;
+	}
+	return 0;
+}
+`
+		compileAndRunRuntimeTestWithCompiler(t, llc, []string{clang}, "windows_div_link", winTriple, ll64, winC, nil)
 	}
 
 	// On native Linux/amd64, fork-test actual SIGFPE (#DE) delivery!
@@ -1113,45 +1444,60 @@ TEXT ·rtDropI32F64S(SB),NOSPLIT,$0-12
 	verifyLLVMWithTargetLLC(t, ll, "wasm32-unknown-unknown")
 
 	optIR := runOptO2(t, ll)
-	for _, name := range dropFns {
-		body := extractLLVMFuncBody(t, optIR, name)
-		if !strings.Contains(body, "@llvm.trap()") || !strings.Contains(body, "unreachable") {
-			t.Errorf("wasm %s dropped NaN trap was eliminated by -O2:\n%s", name, body)
+	t.Run("IRAndOptO2", func(t *testing.T) {
+		for _, name := range dropFns {
+			body := extractLLVMFuncBody(t, optIR, name)
+			if !strings.Contains(body, "@llvm.trap()") || !strings.Contains(body, "unreachable") {
+				t.Errorf("wasm %s dropped NaN trap was eliminated by -O2:\n%s", name, body)
+			}
+			if strings.Contains(body, "ret i32 42") {
+				t.Errorf("wasm %s must not return 42 after dropped NaN trap:\n%s", name, body)
+			}
 		}
-		if strings.Contains(body, "ret i32 42") {
-			t.Errorf("wasm %s must not return 42 after dropped NaN trap:\n%s", name, body)
-		}
-	}
+	})
 
-	// Execute real Wasm bytecode in Node.js when wasm-ld & node are installed.
-	wasmLD, errLD := exec.LookPath("wasm-ld")
-	nodeBin, errNode := exec.LookPath("node")
-	if errLD != nil || errNode != nil {
-		return
-	}
-	llc := findLLVM22Tool("llc")
-	if llc == "" {
-		return
-	}
-	tmpDir := t.TempDir()
-	llPath := filepath.Join(tmpDir, "trunc.ll")
-	objPath := filepath.Join(tmpDir, "trunc.o")
-	wasmPath := filepath.Join(tmpDir, "trunc.wasm")
-	if err := os.WriteFile(llPath, []byte(optIR), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command(llc, "-mtriple=wasm32-unknown-unknown", "-O2", "-filetype=obj", "-o", objPath, llPath).CombinedOutput(); err != nil {
-		t.Fatalf("llc wasm32 obj failed: %v\n%s", err, out)
-	}
-	if out, err := exec.Command(wasmLD, "--no-entry", "--export-all", "-o", wasmPath, objPath).CombinedOutput(); err != nil {
-		t.Fatalf("wasm-ld failed: %v\n%s", err, out)
-	}
-	js := fmt.Sprintf(`
+	t.Run("NodeWasmExec", func(t *testing.T) {
+		requireExec := os.Getenv("PLAN9ASM_REQUIRE_WASM_EXEC") == "1" || os.Getenv("PLAN9ASM_REQUIRE_AMD64_DIFF") == "1"
+		wasmLD := findLLVM22Tool("wasm-ld")
+		if wasmLD == "" {
+			if p, err := exec.LookPath("wasm-ld"); err == nil {
+				wasmLD = p
+			}
+		}
+		nodeBin, _ := exec.LookPath("node")
+		llc := findLLVM22Tool("llc")
+		if wasmLD == "" || nodeBin == "" || llc == "" {
+			msg := fmt.Sprintf("Wasm execution prerequisites missing (wasm-ld=%q node=%q llc=%q)", wasmLD, nodeBin, llc)
+			if requireExec {
+				t.Fatal("PLAN9ASM_REQUIRE_WASM_EXEC=1: " + msg)
+			}
+			t.Skip(msg)
+		}
+		tmpDir := t.TempDir()
+		llPath := filepath.Join(tmpDir, "trunc.ll")
+		objPath := filepath.Join(tmpDir, "trunc.o")
+		wasmPath := filepath.Join(tmpDir, "trunc.wasm")
+		if err := os.WriteFile(llPath, []byte(optIR), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(llc, "-mtriple=wasm32-unknown-unknown", "-O2", "-filetype=obj", "-o", objPath, llPath).CombinedOutput(); err != nil {
+			t.Fatalf("llc wasm32 obj failed: %v\n%s", err, out)
+		}
+		if out, err := exec.Command(wasmLD, "--no-entry", "--export-all", "-o", wasmPath, objPath).CombinedOutput(); err != nil {
+			t.Fatalf("wasm-ld failed: %v\n%s", err, out)
+		}
+		js := fmt.Sprintf(`
 const fs = require("fs");
 const assert = require("assert");
 const bytes = fs.readFileSync(%q);
 const mod = new WebAssembly.Module(bytes);
 const e = new WebAssembly.Instance(mod).exports;
+let executed = 0;
+
+function expectEq(name, got, want) {
+  assert.strictEqual(got, want, name + ": got=" + got + " want=" + want);
+  executed++;
+}
 
 function expectTrap(name, fn) {
   let trapped = false;
@@ -1160,6 +1506,7 @@ function expectTrap(name, fn) {
     trapped = true;
   }
   assert(trapped, name + ": expected WebAssembly trap, but returned normally");
+  executed++;
 }
 
 // All 8 dropped NaN functions must trap even after -O2!
@@ -1168,58 +1515,68 @@ for (const name of %q.split(",")) {
 }
 
 // Dropped runtime f64->i32s: valid returns 77, NaN/overflow traps!
-assert.strictEqual(e.rtDropI32F64S(1.5), 77);
-assert.strictEqual(e.rtDropI32F64S(-2147483648.9), 77);
+expectEq("rtDropI32F64S(1.5)", e.rtDropI32F64S(1.5), 77);
+expectEq("rtDropI32F64S(-2^31-0.9)", e.rtDropI32F64S(-2147483648.9), 77);
 expectTrap("rtDropI32F64S(NaN)", () => e.rtDropI32F64S(NaN));
 expectTrap("rtDropI32F64S(2^31)", () => e.rtDropI32F64S(2147483648.0));
 expectTrap("rtDropI32F64S(-2^31-1)", () => e.rtDropI32F64S(-2147483649.0));
 
 // i32.trunc_f32_s
-assert.strictEqual(e.rtI32F32S(-2147483648.0), -2147483648);
-assert.strictEqual(e.rtI32F32S(2147483520.0), 2147483520);
+expectEq("i32f32s(-2^31)", e.rtI32F32S(-2147483648.0), -2147483648);
+expectEq("i32f32s(max)", e.rtI32F32S(2147483520.0), 2147483520);
 expectTrap("i32f32s(NaN)", () => e.rtI32F32S(NaN));
 expectTrap("i32f32s(+2^31)", () => e.rtI32F32S(2147483648.0));
 expectTrap("i32f32s(-Inf)", () => e.rtI32F32S(-Infinity));
 
 // i32.trunc_f32_u
-assert.strictEqual(e.rtI32F32U(-0.5) >>> 0, 0);
-assert.strictEqual(e.rtI32F32U(4294967040.0) >>> 0, 4294967040);
+expectEq("i32f32u(-0.5)", e.rtI32F32U(-0.5) >>> 0, 0);
+expectEq("i32f32u(max)", e.rtI32F32U(4294967040.0) >>> 0, 4294967040);
 expectTrap("i32f32u(-1)", () => e.rtI32F32U(-1.0));
 expectTrap("i32f32u(2^32)", () => e.rtI32F32U(4294967296.0));
 expectTrap("i32f32u(NaN)", () => e.rtI32F32U(NaN));
 
 // i32.trunc_f64_s
-assert.strictEqual(e.rtI32F64S(-2147483648.9), -2147483648);
-assert.strictEqual(e.rtI32F64S(2147483647.9), 2147483647);
+expectEq("i32f64s(-2^31-0.9)", e.rtI32F64S(-2147483648.9), -2147483648);
+expectEq("i32f64s(max)", e.rtI32F64S(2147483647.9), 2147483647);
 expectTrap("i32f64s(-2^31-1)", () => e.rtI32F64S(-2147483649.0));
 expectTrap("i32f64s(+2^31)", () => e.rtI32F64S(2147483648.0));
 expectTrap("i32f64s(NaN)", () => e.rtI32F64S(NaN));
 
 // i32.trunc_f64_u
-assert.strictEqual(e.rtI32F64U(-0.999999) >>> 0, 0);
-assert.strictEqual(e.rtI32F64U(4294967295.9) >>> 0, 4294967295);
+expectEq("i32f64u(-0.999999)", e.rtI32F64U(-0.999999) >>> 0, 0);
+expectEq("i32f64u(max)", e.rtI32F64U(4294967295.9) >>> 0, 4294967295);
 expectTrap("i32f64u(-1)", () => e.rtI32F64U(-1.0));
 expectTrap("i32f64u(2^32)", () => e.rtI32F64U(4294967296.0));
 
 // i64.trunc_f32_s & u
-assert.strictEqual(e.rtI64F32S(-9223372036854775808.0), -9223372036854775808n);
+expectEq("i64f32s(-2^63)", e.rtI64F32S(-9223372036854775808.0), -9223372036854775808n);
 expectTrap("i64f32s(+2^63)", () => e.rtI64F32S(9223372036854775808.0));
 expectTrap("i64f32s(NaN)", () => e.rtI64F32S(NaN));
-assert.strictEqual(e.rtI64F32U(-0.5), 0n);
+expectEq("i64f32u(-0.5)", e.rtI64F32U(-0.5), 0n);
 expectTrap("i64f32u(-1)", () => e.rtI64F32U(-1.0));
 expectTrap("i64f32u(2^64)", () => e.rtI64F32U(18446744073709551616.0));
 
 // i64.trunc_f64_s & u
-assert.strictEqual(e.rtI64F64S(-9223372036854775808.0), -9223372036854775808n);
+expectEq("i64f64s(-2^63)", e.rtI64F64S(-9223372036854775808.0), -9223372036854775808n);
 expectTrap("i64f64s(+2^63)", () => e.rtI64F64S(9223372036854775808.0));
 expectTrap("i64f64s(NaN)", () => e.rtI64F64S(NaN));
-assert.strictEqual(e.rtI64F64U(-0.999999), 0n);
+expectEq("i64f64u(-0.999999)", e.rtI64F64U(-0.999999), 0n);
 expectTrap("i64f64u(-1)", () => e.rtI64F64U(-1.0));
 expectTrap("i64f64u(2^64)", () => e.rtI64F64U(18446744073709551616.0));
+
+console.log("wasm_trunc_executed_cases=" + executed);
 `, wasmPath, strings.Join(dropFns, ","))
-	if out, err := exec.Command(nodeBin, "-e", js).CombinedOutput(); err != nil {
-		t.Fatalf("node wasm32 trunc execution failed: %v\n%s", err, out)
-	}
+		out, err := exec.Command(nodeBin, "-e", js).CombinedOutput()
+		if err != nil {
+			t.Fatalf("node wasm32 trunc execution failed: %v\n%s", err, out)
+		}
+		const wantCases = 44
+		wantMarker := fmt.Sprintf("wasm_trunc_executed_cases=%d", wantCases)
+		if !strings.Contains(string(out), wantMarker) {
+			t.Fatalf("expected %q in Node output, got:\n%s", wantMarker, out)
+		}
+		t.Log(wantMarker)
+	})
 }
 
 // BenchmarkAMD64PureInt1024ADDQ tracks ABI0 validation allocations on a

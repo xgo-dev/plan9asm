@@ -747,16 +747,15 @@ func (c *amd64Ctx) emitX86Div(width uint16, signed bool, numerW, divW string) (s
 	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, %%%s\n", ovf, wTy, qExt, qW)
 	fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", ovf, trapLbl, okLbl)
 	fmt.Fprintf(c.b, "%s:\n", trapLbl)
-	// Trigger architectural #DE (SIGFPE on x86/386) via a volatile divide-by-zero
-	// followed by @llvm.trap() so the IR remains 100% target-independent (compiles
-	// on non-x86 hosts too), cannot be DCE'd by -O2, and raises real #DE on x86.
-	zSlot, zVal, zQuot := c.newTmp(), c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = alloca i32, align 4\n", zSlot)
-	fmt.Fprintf(c.b, "  store volatile i32 0, ptr %%%s, align 4\n", zSlot)
-	fmt.Fprintf(c.b, "  %%%s = load volatile i32, ptr %%%s, align 4\n", zVal, zSlot)
-	fmt.Fprintf(c.b, "  %%%s = udiv i32 7, %%%s\n", zQuot, zVal)
-	fmt.Fprintf(c.b, "  store volatile i32 %%%s, ptr %%%s, align 4\n", zQuot, zSlot)
-	c.b.WriteString("  call void @llvm.trap()\n")
+	if c.isX86TargetTriple() {
+		// Raise architectural x86 #DE (SIGFPE on Unix, EXCEPTION_INT_DIVIDE_BY_ZERO
+		// on Windows) with defined inline asm: no LLVM udiv-by-zero UB and no
+		// non-entry dynamic alloca (which would emit __chkstk / ___chkstk_ms on Windows).
+		c.b.WriteString("  call void asm sideeffect \"xorl %eax, %eax; divl %eax\", \"~{eax},~{edx},~{flags}\"()\n")
+	} else {
+		// Target-independent fallback when lowering x86 IR for a non-x86 host triple.
+		c.b.WriteString("  call void @llvm.trap()\n")
+	}
 	c.b.WriteString("  unreachable\n")
 	fmt.Fprintf(c.b, "%s:\n", okLbl)
 	r := c.newTmp()

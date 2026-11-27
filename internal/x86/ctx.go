@@ -133,6 +133,17 @@ func (c *amd64Ctx) useHardwareX87() bool {
 	return (c.goarch == "386" || c.goarch == "amd64") && c.x87Mode != asm.X87Software
 }
 
+func (c *amd64Ctx) isX86TargetTriple() bool {
+	t := strings.ToLower(strings.TrimSpace(c.targetTriple))
+	return t == "" ||
+		strings.HasPrefix(t, "x86_64") ||
+		strings.HasPrefix(t, "amd64") ||
+		strings.HasPrefix(t, "i386") ||
+		strings.HasPrefix(t, "i486") ||
+		strings.HasPrefix(t, "i586") ||
+		strings.HasPrefix(t, "i686")
+}
+
 func (c *amd64Ctx) emitSourceComment(ins asm.Instr) {
 	if !c.annotate {
 		return

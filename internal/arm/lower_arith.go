@@ -45,10 +45,19 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins asm.Instr) erro
 	var err error
 	isLogicOp := op == "AND" || op == "ORR" || op == "EOR" || op == "BIC"
 	evalSrc := func(arg asm.Operand) (string, error) {
-		if setFlags && isLogicOp && arg.Kind == asm.OpRegShift {
-			v, cf, serr := c.evalShiftWithCarry(arg, true)
-			shiftCarry = cf
-			return v, serr
+		if setFlags && isLogicOp {
+			switch arg.Kind {
+			case asm.OpRegShift:
+				v, cf, serr := c.evalShiftWithCarry(arg, true)
+				shiftCarry = cf
+				return v, serr
+			case asm.OpImm:
+				if arg.ImmRaw == "" {
+					if cf, ok := armImmLogicalCarry(op, arg.Imm); ok {
+						shiftCarry = cf
+					}
+				}
+			}
 		}
 		return c.eval32(arg, false)
 	}
@@ -124,8 +133,20 @@ func (c *armCtx) lowerARMCompare(op string, ins asm.Instr) error {
 	}
 	var src, shiftCarry string
 	var err error
-	if (op == "TST" || op == "TEQ") && ins.Args[0].Kind == asm.OpRegShift {
-		src, shiftCarry, err = c.evalShiftWithCarry(ins.Args[0], true)
+	if op == "TST" || op == "TEQ" {
+		switch ins.Args[0].Kind {
+		case asm.OpRegShift:
+			src, shiftCarry, err = c.evalShiftWithCarry(ins.Args[0], true)
+		case asm.OpImm:
+			if ins.Args[0].ImmRaw == "" {
+				if cf, ok := armImmLogicalCarry(op, ins.Args[0].Imm); ok {
+					shiftCarry = cf
+				}
+			}
+			src, err = c.eval32(ins.Args[0], false)
+		default:
+			src, err = c.eval32(ins.Args[0], false)
+		}
 	} else {
 		src, err = c.eval32(ins.Args[0], false)
 	}
