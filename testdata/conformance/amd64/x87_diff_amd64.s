@@ -1180,3 +1180,82 @@ mmx_dyn_skip:
 	EMMS
 	FINIT
 	RET
+
+TEXT ·diffX87ResetHelper(SB), NOSPLIT, $0-0
+	FINIT
+	RET
+
+// diffX87CallAndMergeAlias verifies Round 16 P1 (inline FINIT vs CALL reset +
+// caller FINIT / MMX+EMMS TOP re-sync) and Round 16 P2 (CFG join with differing
+// TOP depths where physical R7/M7 is written at different instruction positions
+// across branches, in both branch polarities and with distinct per-branch values).
+TEXT ·diffX87CallAndMergeAlias(SB), NOSPLIT, $8-16
+	// [0] Inline FINIT baseline: M7=123 -> FDECSTP -> FINIT -> FLD1 -> M7 == 0x8000000000000000
+	MOVQ $123, AX
+	MOVQ AX, M7
+	FDECSTP
+	FINIT
+	FLD1
+	MOVQ M7, AX
+	MOVQ out+8(FP), DI
+	MOVQ AX, 0(DI)
+
+	// [1] CALL reset + caller FINIT: identical result 0x8000000000000000
+	MOVQ $123, AX
+	MOVQ AX, M7
+	FDECSTP
+	CALL ·diffX87ResetHelper(SB)
+	FINIT
+	FLD1
+	MOVQ M7, AX
+	MOVQ out+8(FP), DI
+	MOVQ AX, 8(DI)
+
+	// [2] Round 16 P2 exact repro: FINIT -> (if x!=0 FLD1) -> join: FLD1 -> M7 == 0x8000000000000000
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE p2_skip1
+	FLD1
+p2_skip1:
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, 16(DI)
+
+	// [3] Round 16 P2 swapped branch polarity: FINIT -> (if x==0 FLD1) -> join: FLD1 -> M7 == 0x8000000000000000
+	FINIT
+	CMPQ CX, $0
+	JNE p2_skip2
+	FLD1
+p2_skip2:
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, 24(DI)
+
+	// [4] Round 16 P2 distinct values at different positions: FINIT -> (if x!=0 FLDPI) -> join: FLD1 -> M7
+	//     x == 0: FLD1 writes R7 -> 0x8000000000000000 (1.0)
+	//     x != 0: FLDPI writes R7, FLD1 writes R6 -> 0xc90fdaa22168c235 (pi)
+	FINIT
+	CMPQ CX, $0
+	JE p2_skip3
+	FLDPI
+p2_skip3:
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, 32(DI)
+
+	// [5] CALL reset + caller MMX+EMMS TOP re-sync -> TOP == 7 (0x3800)
+	CALL ·diffX87ResetHelper(SB)
+	MOVQ $1, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ out+8(FP), DI
+	MOVQ AX, 40(DI)
+
+	EMMS
+	FINIT
+	RET

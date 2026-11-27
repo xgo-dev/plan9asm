@@ -303,9 +303,15 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q()\n", strings.ToLower(string(op)), "~{memory}")
 		}
 		return true, false, nil
-	case "PREFETCHNTA", "EMMS":
-		// Prefetch does not change SSA-visible values. MMX registers are modeled
-		// as ordinary integers, so there is no hardware x87 tag state to clear.
+	case "PREFETCHNTA":
+		// Prefetch does not change SSA-visible values.
+		return true, false, nil
+	case "EMMS":
+		// Clear hardware x87 tag word when x87 hardware inline asm is active so
+		// any preceding native MMX callee state cannot fault subsequent x87 ops.
+		if c.usedX87 && c.useHardwareX87() {
+			fmt.Fprintln(c.b, `  call void asm sideeffect "emms", "~{st},~{st(1)},~{st(2)},~{st(3)},~{st(4)},~{st(5)},~{st(6)},~{st(7)},~{fpsr}"()`)
+		}
 		return true, false, nil
 	case "UNDEF":
 		c.emitX86Trap()

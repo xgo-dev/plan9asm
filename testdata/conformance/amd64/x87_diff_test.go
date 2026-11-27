@@ -279,6 +279,11 @@ func runX87DiffOracleLines() []string {
 		diffX87MMXAliasAndTop(x, &out)
 		lines = append(lines, fmt.Sprintf("x87_mmx_alias[%d]=%s", x, formatU64Slice(out[:])))
 	}
+	for x := uint64(0); x <= 1; x++ {
+		var out [6]uint64
+		diffX87CallAndMergeAlias(x, &out)
+		lines = append(lines, fmt.Sprintf("x87_call_merge[%d]=%s", x, formatU64Slice(out[:])))
+	}
 
 	return lines
 }
@@ -424,6 +429,19 @@ func TestAMD64X87NativeSanity(t *testing.T) {
 	}
 	if mmx1 != wantMMX1 {
 		t.Fatalf("diffX87MMXAliasAndTop(1) = %#x, want %#x", mmx1, wantMMX1)
+	}
+
+	// Verify Round 16 P1/P2 CALL+FINIT/EMMS re-sync and differing-TOP CFG join M7 aliasing.
+	var cm0, cm1 [6]uint64
+	diffX87CallAndMergeAlias(0, &cm0)
+	diffX87CallAndMergeAlias(1, &cm1)
+	wantCM0 := [6]uint64{0x8000000000000000, 0x8000000000000000, 0x8000000000000000, 0x8000000000000000, 0x8000000000000000, 0x3800}
+	wantCM1 := [6]uint64{0x8000000000000000, 0x8000000000000000, 0x8000000000000000, 0x8000000000000000, 0xc90fdaa22168c235, 0x3800}
+	if cm0 != wantCM0 {
+		t.Fatalf("diffX87CallAndMergeAlias(0) = %#x, want %#x", cm0, wantCM0)
+	}
+	if cm1 != wantCM1 {
+		t.Fatalf("diffX87CallAndMergeAlias(1) = %#x, want %#x", cm1, wantCM1)
 	}
 }
 

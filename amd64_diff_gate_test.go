@@ -1804,6 +1804,7 @@ func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
 	}
 	const defaultGoSrc = "package p\nfunc f() int64\n"
 	const paramGoSrc = "package p\nfunc f(x uint64) int64\n"
+	const helperGoSrc = "package p\nfunc f() int64\nfunc helper()\n"
 
 	const divUndefPrefix = `
 	PUSHFQ
@@ -2442,6 +2443,342 @@ join:
 	MOVQ $123, AX
 	MOVQ AX, M0
 	FMOVVP F0, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		// Round 16 P1: cross-CALL x87/MMX state is unmodeled across function-local
+		// x87 slots, so opaque CALL targets (reset, nop, divZero, setRD) invalidate
+		// post-CALL x87 SW/CW/TOP/tag state until caller explicitly re-establishes it.
+		{
+			name:  "round16-p1-call-reset-without-caller-finit-rejected",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $0-0
+	FINIT
+	RET
+TEXT ·f(SB), NOSPLIT, $8-8
+	MOVQ $123, AX
+	MOVQ AX, M7
+	FDECSTP
+	CALL ·helper(SB)
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round16-p1-call-nop-without-caller-finit-rejected",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $0-0
+	RET
+TEXT ·f(SB), NOSPLIT, $8-8
+	MOVQ $123, AX
+	MOVQ AX, M7
+	FDECSTP
+	CALL ·helper(SB)
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round16-p1-call-nop-empty-top-without-caller-finit-rejected",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $0-0
+	RET
+TEXT ·f(SB), NOSPLIT, $8-8
+	FINIT
+	FDECSTP
+	CALL ·helper(SB)
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round16-p1-call-divzero-read-ze-rejected",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $0-0
+	FINIT
+	FLD1
+	FLDZ
+	FDIVDP F0, F1
+	FMOVDP F0, F0
+	RET
+TEXT ·f(SB), NOSPLIT, $8-8
+	FINIT
+	CALL ·helper(SB)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $4, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round16-p1-call-setrd-fldpi-rejected",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $8-0
+	FINIT
+	MOVW $0x077f, 0(SP)
+	FLDCW 0(SP)
+	RET
+TEXT ·f(SB), NOSPLIT, $16-8
+	FINIT
+	CALL ·helper(SB)
+	EMMS
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round16-p1-call-reset-emms-read-top-rejected",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $0-0
+	FINIT
+	RET
+TEXT ·f(SB), NOSPLIT, $8-8
+	FINIT
+	FDECSTP
+	CALL ·helper(SB)
+	EMMS
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round16-p1-inline-finit-m7-overwritten",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $123, AX
+	MOVQ AX, M7
+	FDECSTP
+	FINIT
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 -9223372036854775808",
+		},
+		{
+			name:  "round16-p1-call-reset-then-finit-m7-overwritten",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $0-0
+	FINIT
+	RET
+TEXT ·f(SB), NOSPLIT, $8-8
+	MOVQ $123, AX
+	MOVQ AX, M7
+	FDECSTP
+	CALL ·helper(SB)
+	FINIT
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 -9223372036854775808",
+		},
+		{
+			name:  "round16-p1-call-reset-then-mmx-emms-top-0x3800",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $0-0
+	FINIT
+	RET
+TEXT ·f(SB), NOSPLIT, $8-8
+	CALL ·helper(SB)
+	MOVQ $1, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 14336",
+		},
+		{
+			name:  "round16-p1-call-reset-then-finit-m0-clobbered-rejected",
+			goSrc: helperGoSrc,
+			asm: `TEXT ·helper(SB), NOSPLIT, $0-0
+	FINIT
+	RET
+TEXT ·f(SB), NOSPLIT, $8-8
+	MOVQ $123, AX
+	MOVQ AX, M0
+	CALL ·helper(SB)
+	FINIT
+	FLD1
+	MOVQ M0, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round16-p1-entry-read-ze-without-finit-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $4, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round16-p1-entry-read-top-without-finit-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round16-p1-entry-read-m7-without-finit-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		// Round 16 P2: per-reachable-TOP physical slot tracking preserves M7/R7
+		// definedness across CFG joins with differing TOP values (including when
+		// M7 is written at different instruction positions on each path), while
+		// still rejecting uninitialized M6 or undef/SP-tainted first pushes.
+		{
+			name:  "round16-p2-branch-1or2-pushes-m7-accepted",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE skip
+	FLD1
+skip:
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantO2: "store i64 -9223372036854775808",
+		},
+		{
+			name:  "round16-p2-branch-1or2-pushes-swapped-m7-accepted",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JNE skip
+	FLD1
+skip:
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantO2: "store i64 -9223372036854775808",
+		},
+		{
+			name:  "round16-p2-branch-1or2-pushes-before-join-m7-accepted",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE one
+	FLD1
+	FLD1
+	JMP done
+one:
+	FLD1
+done:
+	MOVQ M7, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantO2: "ret i64 -9223372036854775808",
+		},
+		{
+			name:  "round16-p2-branch-1or2-pushes-m6-uninit-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE skip
+	FLD1
+skip:
+	FLD1
+	MOVQ M6, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round16-p2-branch-1or2-pushes-undef-first-push-m7-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $16-16
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ AX, 0(SP)
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE skip
+	FMOVV 0(SP), F0
+skip:
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round16-p2-branch-1or2-pushes-sptaint-first-push-m7-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $16-16
+	LEAQ 0(SP), AX
+	MOVQ AX, 0(SP)
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE skip
+	FMOVV 0(SP), F0
+skip:
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+8(FP)
 	RET
 `,
 			wantErr: true,

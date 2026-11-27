@@ -21,3 +21,5 @@ func diffX87ArithPC(cw uint64, aRaw80 *[10]byte, bRaw80 *[10]byte, outRaw80 *[50
 func diffX87Cmp(aRaw80 *[10]byte, bRaw80 *[10]byte, outCC *[5]uint64, outExc *[5]uint64)
 func diffX87DynamicStackBranch(x uint64, out *[4]uint64)
 func diffX87MMXAliasAndTop(x uint64, out *[8]uint64)
+func diffX87ResetHelper()
+func diffX87CallAndMergeAlias(x uint64, out *[6]uint64)
