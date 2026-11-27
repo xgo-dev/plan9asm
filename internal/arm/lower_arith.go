@@ -40,15 +40,24 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins asm.Instr) erro
 	if len(ins.Args) != 2 && len(ins.Args) != 3 {
 		return fmt.Errorf("arm %s expects 2 or 3 operands: %q", op, ins.Raw)
 	}
-	var src, lhs string
+	var src, lhs, shiftCarry string
 	dst := asm.Operand{}
 	var err error
+	isLogicOp := op == "AND" || op == "ORR" || op == "EOR" || op == "BIC"
+	evalSrc := func(arg asm.Operand) (string, error) {
+		if setFlags && isLogicOp && arg.Kind == asm.OpRegShift {
+			v, cf, serr := c.evalShiftWithCarry(arg, true)
+			shiftCarry = cf
+			return v, serr
+		}
+		return c.eval32(arg, false)
+	}
 	if len(ins.Args) == 2 {
 		dst = ins.Args[1]
 		if dst.Kind != asm.OpReg {
 			return fmt.Errorf("arm %s dst must be reg: %q", op, ins.Raw)
 		}
-		src, err = c.eval32(ins.Args[0], false)
+		src, err = evalSrc(ins.Args[0])
 		if err != nil {
 			return err
 		}
@@ -61,7 +70,7 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins asm.Instr) erro
 		if dst.Kind != asm.OpReg {
 			return fmt.Errorf("arm %s dst must be reg: %q", op, ins.Raw)
 		}
-		src, err = c.eval32(ins.Args[0], false)
+		src, err = evalSrc(ins.Args[0])
 		if err != nil {
 			return err
 		}
@@ -103,7 +112,7 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins asm.Instr) erro
 	case "RSB":
 		return c.setFlagsSub(cond, src, lhs, "%"+t)
 	case "AND", "ORR", "EOR", "BIC":
-		return c.setFlagsLogic(cond, "%"+t)
+		return c.setFlagsLogicCarry(cond, "%"+t, shiftCarry)
 	default:
 		return nil
 	}
@@ -113,7 +122,13 @@ func (c *armCtx) lowerARMCompare(op string, ins asm.Instr) error {
 	if len(ins.Args) != 2 {
 		return fmt.Errorf("arm %s expects 2 operands: %q", op, ins.Raw)
 	}
-	src, err := c.eval32(ins.Args[0], false)
+	var src, shiftCarry string
+	var err error
+	if (op == "TST" || op == "TEQ") && ins.Args[0].Kind == asm.OpRegShift {
+		src, shiftCarry, err = c.evalShiftWithCarry(ins.Args[0], true)
+	} else {
+		src, err = c.eval32(ins.Args[0], false)
+	}
 	if err != nil {
 		return err
 	}
@@ -135,12 +150,12 @@ func (c *armCtx) lowerARMCompare(op string, ins asm.Instr) error {
 		}
 	case "TST":
 		fmt.Fprintf(c.b, "  %%%s = and i32 %s, %s\n", res, lhs, src)
-		if err := c.setFlagsLogic("", "%"+res); err != nil {
+		if err := c.setFlagsLogicCarry("", "%"+res, shiftCarry); err != nil {
 			return err
 		}
 	case "TEQ":
 		fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", res, lhs, src)
-		if err := c.setFlagsLogic("", "%"+res); err != nil {
+		if err := c.setFlagsLogicCarry("", "%"+res, shiftCarry); err != nil {
 			return err
 		}
 	}
@@ -151,21 +166,23 @@ func (c *armCtx) lowerARMMVN(cond string, setFlags bool, ins asm.Instr) error {
 	if len(ins.Args) != 2 && len(ins.Args) != 3 {
 		return fmt.Errorf("arm MVN expects 2 or 3 operands: %q", ins.Raw)
 	}
-	var src string
+	var src, shiftCarry string
 	var dst asm.Operand
 	var err error
+	srcArg := ins.Args[0]
 	if len(ins.Args) == 2 {
-		src, err = c.eval32(ins.Args[0], false)
-		if err != nil {
-			return err
-		}
 		dst = ins.Args[1]
 	} else {
-		src, err = c.eval32(ins.Args[1], false)
-		if err != nil {
-			return err
-		}
+		srcArg = ins.Args[1]
 		dst = ins.Args[2]
+	}
+	if setFlags && srcArg.Kind == asm.OpRegShift {
+		src, shiftCarry, err = c.evalShiftWithCarry(srcArg, true)
+	} else {
+		src, err = c.eval32(srcArg, false)
+	}
+	if err != nil {
+		return err
 	}
 	if dst.Kind != asm.OpReg {
 		return fmt.Errorf("arm MVN dst must be reg: %q", ins.Raw)
@@ -176,7 +193,7 @@ func (c *armCtx) lowerARMMVN(cond string, setFlags bool, ins asm.Instr) error {
 		return err
 	}
 	if setFlags {
-		return c.setFlagsLogic(cond, "%"+t)
+		return c.setFlagsLogicCarry(cond, "%"+t, shiftCarry)
 	}
 	return nil
 }

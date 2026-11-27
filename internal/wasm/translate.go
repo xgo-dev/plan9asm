@@ -1378,14 +1378,9 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if v.typ != asm.LLVMType("double") {
 				return fmt.Errorf("%s expects an f64 value", ins.Op)
 			}
-			llvmOp := "fptosi"
-			if op == "I64TRUNCF64U" {
-				llvmOp = "fptoui"
-			}
-			name := newTmp()
-			fmt.Fprintf(b, "  %%%s = %s double %s to i64\n", name, llvmOp, v.val)
-			push(wasmValue{typ: asm.I64, val: "%" + name})
-		case "F64LOAD":
+			res := emitWasmCheckedFloatTrunc(b, newTmp, asm.LLVMType("double"), asm.I64, op == "I64TRUNCF64S", v.val)
+			push(wasmValue{typ: asm.I64, val: res})
+		case "F32LOAD", "F64LOAD":
 			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm {
 				ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: addressPtr}
 				if _, err := ext.lowerExtOp(op, ins); err != nil {
@@ -1394,9 +1389,13 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 				continue
 			}
 			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpFP {
-				return fmt.Errorf("F64Load expects an FP slot or offset")
+				return fmt.Errorf("%s expects an FP slot or offset", ins.Op)
 			}
-			v, err := loadOperand(ins.Args[0], asm.LLVMType("double"))
+			loadTy := asm.LLVMType("double")
+			if op == "F32LOAD" {
+				loadTy = asm.LLVMType("float")
+			}
+			v, err := loadOperand(ins.Args[0], loadTy)
 			if err != nil {
 				return err
 			}

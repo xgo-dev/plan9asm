@@ -39,24 +39,39 @@ func (c *armCtx) storeFlagsFromStatus(status string) {
 	c.flagsWritten = true
 }
 
-func (c *armCtx) storeFlagCond(cond, slot, v string) error {
-	if cond == "" || strings.EqualFold(cond, "AL") {
+func (c *armCtx) storeFlagPred(pred, slot, v string) {
+	if pred == "" {
 		c.storeFlag(slot, v)
-		return nil
-	}
-	cv, err := c.condValue(cond)
-	if err != nil {
-		return err
+		return
 	}
 	oldV := c.newTmp()
 	sel := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", oldV, slot)
-	fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", sel, cv, v, oldV)
+	fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", sel, pred, v, oldV)
 	c.storeFlag(slot, "%"+sel)
+}
+
+func (c *armCtx) evalFlagPred(cond string) (string, error) {
+	if cond == "" || strings.EqualFold(cond, "AL") {
+		return "", nil
+	}
+	return c.condValue(cond)
+}
+
+func (c *armCtx) storeFlagCond(cond, slot, v string) error {
+	pred, err := c.evalFlagPred(cond)
+	if err != nil {
+		return err
+	}
+	c.storeFlagPred(pred, slot, v)
 	return nil
 }
 
 func (c *armCtx) setFlagsSub(cond, dst, src, res string) error {
+	pred, err := c.evalFlagPred(cond)
+	if err != nil {
+		return err
+	}
 	c.flagsWritten = true
 	z := c.newTmp()
 	n := c.newTmp()
@@ -72,19 +87,18 @@ func (c *armCtx) setFlagsSub(cond, dst, src, res string) error {
 	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x2, dst, res)
 	fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", x3, x1, x2)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", ov, x3)
-	if err := c.storeFlagCond(cond, c.flagsZSlot, "%"+z); err != nil {
-		return err
-	}
-	if err := c.storeFlagCond(cond, c.flagsNSlot, "%"+n); err != nil {
-		return err
-	}
-	if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+carry); err != nil {
-		return err
-	}
-	return c.storeFlagCond(cond, c.flagsVSlot, "%"+ov)
+	c.storeFlagPred(pred, c.flagsZSlot, "%"+z)
+	c.storeFlagPred(pred, c.flagsNSlot, "%"+n)
+	c.storeFlagPred(pred, c.flagsCSlot, "%"+carry)
+	c.storeFlagPred(pred, c.flagsVSlot, "%"+ov)
+	return nil
 }
 
 func (c *armCtx) setFlagsAdd(cond, dst, src, res string) error {
+	pred, err := c.evalFlagPred(cond)
+	if err != nil {
+		return err
+	}
 	c.flagsWritten = true
 	z := c.newTmp()
 	n := c.newTmp()
@@ -102,28 +116,33 @@ func (c *armCtx) setFlagsAdd(cond, dst, src, res string) error {
 	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x2, dst, res)
 	fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", x3, nx1, x2)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", ov, x3)
-	if err := c.storeFlagCond(cond, c.flagsZSlot, "%"+z); err != nil {
-		return err
-	}
-	if err := c.storeFlagCond(cond, c.flagsNSlot, "%"+n); err != nil {
-		return err
-	}
-	if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+carry); err != nil {
-		return err
-	}
-	return c.storeFlagCond(cond, c.flagsVSlot, "%"+ov)
+	c.storeFlagPred(pred, c.flagsZSlot, "%"+z)
+	c.storeFlagPred(pred, c.flagsNSlot, "%"+n)
+	c.storeFlagPred(pred, c.flagsCSlot, "%"+carry)
+	c.storeFlagPred(pred, c.flagsVSlot, "%"+ov)
+	return nil
 }
 
 func (c *armCtx) setFlagsLogic(cond, res string) error {
+	return c.setFlagsLogicCarry(cond, res, "")
+}
+
+func (c *armCtx) setFlagsLogicCarry(cond, res, carryOut string) error {
+	pred, err := c.evalFlagPred(cond)
+	if err != nil {
+		return err
+	}
 	c.flagsWritten = true
 	z := c.newTmp()
 	n := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", n, res)
-	if err := c.storeFlagCond(cond, c.flagsZSlot, "%"+z); err != nil {
-		return err
+	c.storeFlagPred(pred, c.flagsZSlot, "%"+z)
+	c.storeFlagPred(pred, c.flagsNSlot, "%"+n)
+	if carryOut != "" {
+		c.storeFlagPred(pred, c.flagsCSlot, carryOut)
 	}
-	return c.storeFlagCond(cond, c.flagsNSlot, "%"+n)
+	return nil
 }
 
 func (c *armCtx) condValue(cond string) (string, error) {

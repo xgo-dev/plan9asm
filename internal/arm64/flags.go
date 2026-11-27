@@ -127,6 +127,44 @@ func (c *arm64Ctx) setFlagsAdd32(dst, src, res string) {
 	c.storeFlag(c.flagsVSlot, "%"+ov)
 }
 
+// setFlagsAddWithCarry computes exact AArch64 AddWithCarry(x, y, cIn) NZCV flags
+// for ADCS/ADCSW (y=src), SBCS/SBCSW (y=~src), and NGCS/NGCSW (x=0, y=~src).
+func (c *arm64Ctx) setFlagsAddWithCarry(width uint16, x, y, cIn, res string) {
+	c.flagsWritten = true
+
+	ty, wideTy, shift := "i64", "i128", 64
+	if width == 32 {
+		ty, wideTy, shift = "i32", "i64", 32
+	}
+
+	z := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", z, ty, res)
+	n := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, 0\n", n, ty, res)
+
+	xu, yu, cu, u1, u2, ush, carry := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", xu, ty, x, wideTy)
+	fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", yu, ty, y, wideTy)
+	fmt.Fprintf(c.b, "  %%%s = zext i1 %s to %s\n", cu, cIn, wideTy)
+	fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", u1, wideTy, xu, yu)
+	fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", u2, wideTy, u1, cu)
+	fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %d\n", ush, wideTy, u2, shift)
+	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, 0\n", carry, wideTy, ush)
+
+	xs, ys, s1, s2, rs, ov := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = sext %s %s to %s\n", xs, ty, x, wideTy)
+	fmt.Fprintf(c.b, "  %%%s = sext %s %s to %s\n", ys, ty, y, wideTy)
+	fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", s1, wideTy, xs, ys)
+	fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", s2, wideTy, s1, cu)
+	fmt.Fprintf(c.b, "  %%%s = sext %s %s to %s\n", rs, ty, res, wideTy)
+	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, %%%s\n", ov, wideTy, s2, rs)
+
+	c.storeFlag(c.flagsZSlot, "%"+z)
+	c.storeFlag(c.flagsNSlot, "%"+n)
+	c.storeFlag(c.flagsCSlot, "%"+carry)
+	c.storeFlag(c.flagsVSlot, "%"+ov)
+}
+
 func (c *arm64Ctx) setConditionalCompareFlags(cond, lhs, rhs string, nzcv int64, word, add bool) error {
 	predicate, err := c.condValue(cond)
 	if err != nil {

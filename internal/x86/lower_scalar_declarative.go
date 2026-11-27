@@ -702,6 +702,68 @@ func (c *amd64Ctx) lowerX86ExtraShift(spec asm.OpSpec, ins asm.Instr) error {
 	return fmt.Errorf("amd64: unhandled shift %s", spec.Op)
 }
 
+// emitX86Div lowers architectural x86 DIV/IDIV with explicit #DE checks for
+// divide-by-zero, signed wide-dividend INT_MIN/-1, and quotient overflow into
+// the narrow result width (8/16/32/64 bits).
+func (c *amd64Ctx) emitX86Div(width uint16, signed bool, numerW, divW string) (string, string) {
+	ty := x86LLVMIntType(width)
+	wTy := fmt.Sprintf("i%d", int(width)*2)
+	divOp, remOp, extOp := "udiv", "urem", "zext"
+	if signed {
+		divOp, remOp, extOp = "sdiv", "srem", "sext"
+	}
+
+	isZero := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", isZero, wTy, divW)
+	preTrap := "%" + isZero
+	if signed {
+		minWide := "-32768"
+		switch width {
+		case 16:
+			minWide = "-2147483648"
+		case 32:
+			minWide = "-9223372036854775808"
+		case 64:
+			minWide = "-170141183460469231731687303715884105728"
+		}
+		isMin, isNeg1, minNeg1, pre := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", isMin, wTy, numerW, minWide)
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, -1\n", isNeg1, wTy, divW)
+		fmt.Fprintf(c.b, "  %%%s = and i1 %%%s, %%%s\n", minNeg1, isMin, isNeg1)
+		fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", pre, isZero, minNeg1)
+		preTrap = "%" + pre
+	}
+
+	trapLbl := c.newTmp() + "_div_trap"
+	divLbl := c.newTmp() + "_div_nz"
+	okLbl := c.newTmp() + "_div_ok"
+	fmt.Fprintf(c.b, "  br i1 %s, label %%%s, label %%%s\n", preTrap, trapLbl, divLbl)
+	fmt.Fprintf(c.b, "%s:\n", divLbl)
+	qW, rW, q, qExt, ovf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", qW, divOp, wTy, numerW, divW)
+	fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", rW, remOp, wTy, numerW, divW)
+	fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", q, wTy, qW, ty)
+	fmt.Fprintf(c.b, "  %%%s = %s %s %%%s to %s\n", qExt, extOp, ty, q, wTy)
+	fmt.Fprintf(c.b, "  %%%s = icmp ne %s %%%s, %%%s\n", ovf, wTy, qExt, qW)
+	fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", ovf, trapLbl, okLbl)
+	fmt.Fprintf(c.b, "%s:\n", trapLbl)
+	// Trigger architectural #DE (SIGFPE on x86/386) via a volatile divide-by-zero
+	// followed by @llvm.trap() so the IR remains 100% target-independent (compiles
+	// on non-x86 hosts too), cannot be DCE'd by -O2, and raises real #DE on x86.
+	zSlot, zVal, zQuot := c.newTmp(), c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = alloca i32, align 4\n", zSlot)
+	fmt.Fprintf(c.b, "  store volatile i32 0, ptr %%%s, align 4\n", zSlot)
+	fmt.Fprintf(c.b, "  %%%s = load volatile i32, ptr %%%s, align 4\n", zVal, zSlot)
+	fmt.Fprintf(c.b, "  %%%s = udiv i32 7, %%%s\n", zQuot, zVal)
+	fmt.Fprintf(c.b, "  store volatile i32 %%%s, ptr %%%s, align 4\n", zQuot, zSlot)
+	c.b.WriteString("  call void @llvm.trap()\n")
+	c.b.WriteString("  unreachable\n")
+	fmt.Fprintf(c.b, "%s:\n", okLbl)
+	r := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", r, wTy, rW, ty)
+	return "%" + q, "%" + r
+}
+
 func (c *amd64Ctx) lowerX86ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 	ty := x86LLVMIntType(spec.Width)
 	switch spec.LLVMOp {
@@ -830,9 +892,9 @@ func (c *amd64Ctx) lowerX86ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
-		ext, divOp, remOp := "zext", "udiv", "urem"
+		ext := "zext"
 		if spec.Signed {
-			ext, divOp, remOp = "sext", "sdiv", "srem"
+			ext = "sext"
 		}
 		divW := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", divW, ext, ty, divS, wTy)
@@ -859,23 +921,17 @@ func (c *amd64Ctx) lowerX86ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = or i32 %%%s, %%%s\n", comb, hiSh, lo32)
 			numerW = "%" + comb
 		}
-		zero, safeDiv, qW, rW, q, r := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %%%s, 0\n", zero, wTy, divW)
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s 1, %s %%%s\n", safeDiv, zero, wTy, wTy, divW)
-		fmt.Fprintf(c.b, "  %%%s = %s %s %s, %%%s\n", qW, divOp, wTy, numerW, safeDiv)
-		fmt.Fprintf(c.b, "  %%%s = %s %s %s, %%%s\n", rW, remOp, wTy, numerW, safeDiv)
-		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", q, wTy, qW, ty)
-		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", r, wTy, rW, ty)
+		q, r := c.emitX86Div(spec.Width, spec.Signed, numerW, "%"+divW)
 		if spec.Width == 8 {
-			if err := c.storeRegSized(asm.AL, asm.I8, "%"+q); err != nil {
+			if err := c.storeRegSized(asm.AL, asm.I8, q); err != nil {
 				return err
 			}
-			return c.storeRegSized(asm.AH, asm.I8, "%"+r)
+			return c.storeRegSized(asm.AH, asm.I8, r)
 		}
-		if err := c.storeRegSized(asm.AX, asm.I16, "%"+q); err != nil {
+		if err := c.storeRegSized(asm.AX, asm.I16, q); err != nil {
 			return err
 		}
-		return c.storeRegSized(asm.DX, asm.I16, "%"+r)
+		return c.storeRegSized(asm.DX, asm.I16, r)
 
 	case "mulx":
 		// Plan 9 MULXL src, hiReg, loReg => hi:lo = EDX * src

@@ -358,32 +358,22 @@ func (c *armCtx) lowerARMShiftOp(spec asm.OpSpec, cond string, setFlags bool, in
 	if err != nil {
 		return err
 	}
-	// ARM register/imm shift clamps counts >= 32 (masking byte count first).
-	amt8 := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = and i32 %s, 255\n", amt8, amt)
-	big := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp uge i32 %%%s, 32\n", big, amt8)
-	clamped := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 31, i32 %%%s\n", clamped, big, amt8)
-	shifted := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = %s i32 %s, %%%s\n", shifted, spec.LLVMOp, src, clamped)
-	var out string
-	if spec.LLVMOp == "ashr" {
-		sign := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = ashr i32 %s, 31\n", sign, src)
-		sel := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 %%%s, i32 %%%s\n", sel, big, sign, shifted)
-		out = "%" + sel
-	} else {
-		sel := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 0, i32 %%%s\n", sel, big, shifted)
-		out = "%" + sel
+	shiftOp := asm.ShiftLeft
+	switch spec.LLVMOp {
+	case "lshr":
+		shiftOp = asm.ShiftRight
+	case "ashr":
+		shiftOp = asm.ShiftArith
+	}
+	out, carryOut, err := c.evalARMShift(shiftOp, src, amt, setFlags)
+	if err != nil {
+		return err
 	}
 	if err := c.selectRegWrite(dst.Reg, cond, out); err != nil {
 		return err
 	}
 	if setFlags {
-		return c.setFlagsLogic(cond, out)
+		return c.setFlagsLogicCarry(cond, out, carryOut)
 	}
 	return nil
 }

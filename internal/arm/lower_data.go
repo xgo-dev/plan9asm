@@ -7,6 +7,10 @@ import (
 )
 
 func (c *armCtx) lowerData(op, cond string, postInc bool, ins asm.Instr) (ok bool, terminated bool, err error) {
+	return c.lowerDataWithFlags(op, cond, postInc, false, ins)
+}
+
+func (c *armCtx) lowerDataWithFlags(op, cond string, postInc, setFlags bool, ins asm.Instr) (ok bool, terminated bool, err error) {
 	switch op {
 	case "MOVD", "MOVF":
 		return true, false, c.lowerARMMOVFOrD(op, cond, postInc, ins)
@@ -17,12 +21,13 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins asm.Instr) (ok boo
 		src, dst := ins.Args[0], ins.Args[1]
 		if cond != "" && (dst.Kind == asm.OpMem || dst.Kind == asm.OpFP || dst.Kind == asm.OpSym || dst.Kind == asm.OpIdent) {
 			err := c.emitConditionalEffect(cond, func() error {
-				_, _, err := c.lowerData(op, "", postInc, ins)
+				_, _, err := c.lowerDataWithFlags(op, "", postInc, setFlags, ins)
 				return err
 			})
 			return true, false, err
 		}
 		v := ""
+		shiftCarry := ""
 		if src.Kind == asm.OpMem {
 			v, err = c.loadMem(src.Mem, 32, postInc, false)
 		} else if src.Kind == asm.OpReg && strings.HasPrefix(string(src.Reg), "F") {
@@ -33,6 +38,8 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins asm.Instr) (ok boo
 			tr := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, raw)
 			v = "%" + tr
+		} else if setFlags && src.Kind == asm.OpRegShift {
+			v, shiftCarry, err = c.evalShiftWithCarry(src, true)
 		} else {
 			v, err = c.eval32(src, false)
 		}
@@ -58,7 +65,13 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins asm.Instr) (ok boo
 			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i64 %s, i64 %s\n", sel, cv, v64, oldV)
 			return true, false, c.storeFReg(dst.Reg, "%"+sel)
 		}
-		return true, false, c.storeARMValue(dst, v, 32, cond, postInc, ins.Raw)
+		if err := c.storeARMValue(dst, v, 32, cond, postInc, ins.Raw); err != nil {
+			return true, false, err
+		}
+		if setFlags && dst.Kind == asm.OpReg {
+			return true, false, c.setFlagsLogicCarry(cond, v, shiftCarry)
+		}
+		return true, false, nil
 	case "MOVB", "MOVBS", "MOVBU", "MOVH", "MOVHS", "MOVHU":
 		if len(ins.Args) != 2 {
 			return true, false, fmt.Errorf("arm %s expects 2 operands: %q", op, ins.Raw)

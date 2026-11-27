@@ -892,9 +892,9 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 		bits := int(spec.Width)
 		ty := x86LLVMIntType(spec.Width)
 		wideTy := fmt.Sprintf("i%d", bits*2)
-		divOp, remOp, extOp := "udiv", "urem", "zext"
+		extOp := "zext"
 		if spec.Signed {
-			divOp, remOp, extOp = "sdiv", "srem", "sext"
+			extOp = "sext"
 		}
 		dv, err := c.evalIntSized(ins.Args[0], ty)
 		if err != nil {
@@ -915,20 +915,17 @@ func (c *amd64Ctx) lowerX86M3Scalar(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", td, dx64)
 			axVal, dxVal = "%"+ta, "%"+td
 		}
-		hiW, hiSh, loW, num, den, qW, rW, q, r := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		hiW, hiSh, loW, num, den := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", hiW, ty, dxVal, wideTy)
 		fmt.Fprintf(c.b, "  %%%s = shl %s %%%s, %d\n", hiSh, wideTy, hiW, bits)
 		fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", loW, ty, axVal, wideTy)
 		fmt.Fprintf(c.b, "  %%%s = or %s %%%s, %%%s\n", num, wideTy, hiSh, loW)
 		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", den, extOp, ty, dv, wideTy)
-		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s, %%%s\n", qW, divOp, wideTy, num, den)
-		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s, %%%s\n", rW, remOp, wideTy, num, den)
-		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", q, wideTy, qW, ty)
-		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", r, wideTy, rW, ty)
-		if err := c.storeRegSized(asm.AX, ty, "%"+q); err != nil {
+		q, r := c.emitX86Div(spec.Width, spec.Signed, "%"+num, "%"+den)
+		if err := c.storeRegSized(asm.AX, ty, q); err != nil {
 			return err
 		}
-		return c.storeRegSized(asm.DX, ty, "%"+r)
+		return c.storeRegSized(asm.DX, ty, r)
 
 	case "cwd":
 		ax, err := c.loadReg(asm.AX)

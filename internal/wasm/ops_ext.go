@@ -36,6 +36,67 @@ func (s *wasmExtState) castV128(v wasmValue, vecTy asm.LLVMType) (string, error)
 	return "", fmt.Errorf("expected v128 vector value, got %s", v.typ)
 }
 
+// emitWasmCheckedFloatTrunc lowers non-saturating WebAssembly float-to-int
+// truncation (i32/i64.trunc_f32/f64_s/u) with mandatory trap checks for NaN,
+// infinity, and out-of-range values before fptosi/fptoui. Using @llvm.trap()
+// prevents LLVM -O2 from eliminating the trap when the result is dropped.
+func emitWasmCheckedFloatTrunc(b *strings.Builder, newTmp func() string, srcTy, dstTy asm.LLVMType, signed bool, val string) string {
+	var loPred, loLit, hiLit string
+	switch {
+	case dstTy == asm.I32 && srcTy == asm.LLVMType("float") && signed:
+		loPred = "ult"
+		loLit = asm.FormatLLVMFloat64Literal(-2147483648.0) // -2^31 (exact f32)
+		hiLit = asm.FormatLLVMFloat64Literal(2147483648.0)  // +2^31 (exact f32)
+	case dstTy == asm.I32 && srcTy == asm.LLVMType("float") && !signed:
+		loPred = "ule"
+		loLit = asm.FormatLLVMFloat64Literal(-1.0)
+		hiLit = asm.FormatLLVMFloat64Literal(4294967296.0) // 2^32 (exact f32)
+	case dstTy == asm.I32 && srcTy == asm.LLVMType("double") && signed:
+		loPred = "ule"
+		loLit = asm.FormatLLVMFloat64Literal(-2147483649.0) // -2^31 - 1 (exact f64)
+		hiLit = asm.FormatLLVMFloat64Literal(2147483648.0)  // +2^31 (exact f64)
+	case dstTy == asm.I32 && srcTy == asm.LLVMType("double") && !signed:
+		loPred = "ule"
+		loLit = asm.FormatLLVMFloat64Literal(-1.0)
+		hiLit = asm.FormatLLVMFloat64Literal(4294967296.0) // 2^32 (exact f64)
+	case dstTy == asm.I64 && srcTy == asm.LLVMType("float") && signed:
+		loPred = "ult"
+		loLit = asm.FormatLLVMFloat64Literal(-9223372036854775808.0) // -2^63 (exact f32)
+		hiLit = asm.FormatLLVMFloat64Literal(9223372036854775808.0)  // +2^63 (exact f32)
+	case dstTy == asm.I64 && srcTy == asm.LLVMType("float") && !signed:
+		loPred = "ule"
+		loLit = asm.FormatLLVMFloat64Literal(-1.0)
+		hiLit = asm.FormatLLVMFloat64Literal(18446744073709551616.0) // 2^64 (exact f32)
+	case dstTy == asm.I64 && srcTy == asm.LLVMType("double") && signed:
+		loPred = "ult"
+		loLit = asm.FormatLLVMFloat64Literal(-9223372036854775808.0) // -2^63 (exact f64)
+		hiLit = asm.FormatLLVMFloat64Literal(9223372036854775808.0)  // +2^63 (exact f64)
+	default: // I64TruncF64U
+		loPred = "ule"
+		loLit = asm.FormatLLVMFloat64Literal(-1.0)
+		hiLit = asm.FormatLLVMFloat64Literal(18446744073709551616.0) // 2^64 (exact f64)
+	}
+	loBad, hiBad, bad := newTmp(), newTmp(), newTmp()
+	trapLbl := newTmp() + "_trunc_trap"
+	okLbl := newTmp() + "_trunc_ok"
+	// Unordered predicates (ult/ule/uge) also evaluate to true on NaN.
+	fmt.Fprintf(b, "  %%%s = fcmp %s %s %s, %s\n", loBad, loPred, srcTy, val, loLit)
+	fmt.Fprintf(b, "  %%%s = fcmp uge %s %s, %s\n", hiBad, srcTy, val, hiLit)
+	fmt.Fprintf(b, "  %%%s = or i1 %%%s, %%%s\n", bad, loBad, hiBad)
+	fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n", bad, trapLbl, okLbl)
+	fmt.Fprintf(b, "%s:\n", trapLbl)
+	fmt.Fprintln(b, "  call void @llvm.trap()")
+	fmt.Fprintln(b, "  unreachable")
+	fmt.Fprintf(b, "%s:\n", okLbl)
+	conv := "fptoui"
+	if signed {
+		conv = "fptosi"
+	}
+	res := newTmp()
+	fmt.Fprintf(b, "  %%%s = %s %s %s to %s\n", res, conv, srcTy, val, dstTy)
+	return "%" + res
+}
+
 func wasmCastFloat(s *wasmExtState, v wasmValue, to asm.LLVMType) (wasmValue, error) {
 	if v.typ == to {
 		return v, nil
@@ -327,21 +388,18 @@ func (s *wasmExtState) lowerExtOp(op string, ins asm.Instr) (bool, error) {
 		if err != nil {
 			return true, err
 		}
-		t := s.newTmp()
 		if sat {
+			t := s.newTmp()
 			fn := "fptoui.sat"
 			if signed {
 				fn = "fptosi.sat"
 			}
 			fmt.Fprintf(s.b, "  %%%s = call %s @llvm.%s.%s.%s(%s %s)\n", t, dstTy, fn, dstTy, srcSuf, srcTy, v.val)
+			s.push(wasmValue{typ: dstTy, val: "%" + t})
 		} else {
-			fn := "fptoui"
-			if signed {
-				fn = "fptosi"
-			}
-			fmt.Fprintf(s.b, "  %%%s = %s %s %s to %s\n", t, fn, srcTy, v.val, dstTy)
+			res := emitWasmCheckedFloatTrunc(s.b, s.newTmp, srcTy, dstTy, signed, v.val)
+			s.push(wasmValue{typ: dstTy, val: res})
 		}
-		s.push(wasmValue{typ: dstTy, val: "%" + t})
 		return true, nil
 
 	case "F32CONVERTI32S", "F32CONVERTI32U", "F32CONVERTI64S", "F32CONVERTI64U",

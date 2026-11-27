@@ -2177,22 +2177,11 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, 32\n", hi, dz)
 		dividend := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", dividend, hi, az)
-		q := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = udiv i64 %%%s, %%%s\n", q, dividend, divisor)
-		r := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = urem i64 %%%s, %%%s\n", r, dividend, divisor)
-		q32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", q32, q)
-		r32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", r32, r)
-		q64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", q64, q32)
-		r64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", r64, r32)
-		if err := c.storeReg(asm.AX, "%"+q64); err != nil {
+		q32, r32 := c.emitX86Div(32, false, "%"+dividend, "%"+divisor)
+		if err := c.storeRegSized(asm.AX, asm.I32, q32); err != nil {
 			return true, false, err
 		}
-		if err := c.storeReg(asm.DX, "%"+r64); err != nil {
+		if err := c.storeRegSized(asm.DX, asm.I32, r32); err != nil {
 			return true, false, err
 		}
 		return true, false, nil

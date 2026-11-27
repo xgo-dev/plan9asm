@@ -240,12 +240,13 @@ func (c *arm64Ctx) lowerARM64ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 			return err
 		}
 		var res string
+		var cf string
 		if spec.LLVMOp == "neg" {
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = sub %s 0, %s\n", t, ty, src)
 			res = "%" + t
 		} else {
-			cf := c.newTmp()
+			cf = c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCSlot)
 			ncf := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", ncf, cf)
@@ -260,7 +261,11 @@ func (c *arm64Ctx) lowerARM64ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 			return err
 		}
 		if spec.Flags == asm.FlagsWrite || spec.Flags == asm.FlagsReadWrite {
-			if spec.Width == 32 {
+			if spec.LLVMOp == "ngc" {
+				nsrc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = xor %s %s, -1\n", nsrc, ty, src)
+				c.setFlagsAddWithCarry(spec.Width, "0", "%"+nsrc, "%"+cf, res)
+			} else if spec.Width == 32 {
 				c.setFlagsSub32("0", src, res)
 			} else {
 				c.setFlagsSub("0", src, res)
@@ -331,17 +336,11 @@ func (c *arm64Ctx) lowerARM64ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 			}
 			if spec.Flags == asm.FlagsReadWrite {
 				if spec.LLVMOp == "adc" {
-					if spec.Width == 32 {
-						c.setFlagsAdd32(lhs, src, res)
-					} else {
-						c.setFlagsAdd(lhs, src, res)
-					}
+					c.setFlagsAddWithCarry(spec.Width, lhs, src, "%"+cf, res)
 				} else {
-					if spec.Width == 32 {
-						c.setFlagsSub32(lhs, src, res)
-					} else {
-						c.setFlagsSub(lhs, src, res)
-					}
+					nsrc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = xor %s %s, -1\n", nsrc, ty, src)
+					c.setFlagsAddWithCarry(spec.Width, lhs, "%"+nsrc, "%"+cf, res)
 				}
 			}
 			return nil
@@ -490,19 +489,26 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		return c.storeWidth(dstReg, "%"+n, spec.Width)
 
 	case "mull", "mnegl", "maddl", "msubl":
+		isAcc := spec.LLVMOp == "maddl" || spec.LLVMOp == "msubl"
 		minArgs, maxArgs := 2, 3
-		if spec.LLVMOp == "maddl" || spec.LLVMOp == "msubl" {
+		if isAcc {
 			minArgs, maxArgs = 4, 4
 		}
 		if len(ins.Args) < minArgs || len(ins.Args) > maxArgs || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
 			return fmt.Errorf("arm64 %s expects %d operands: %q", spec.Op, maxArgs, ins.Raw)
 		}
 		dstReg := ins.Args[len(ins.Args)-1].Reg
+		// Plan 9 ARM64 4-op order: OP Rm, Ra, Rn, Rd => Rd = Ra +/- ext(Rm)*ext(Rn).
+		// 2/3-op order: OP Rm, [Rn,] Rd => Rd = +/- ext(Rm)*ext(Rn).
+		mulIdxB := 1
+		if isAcc {
+			mulIdxB = 2
+		}
 		a32, err := c.eval32(ins.Args[0])
 		if err != nil {
 			return err
 		}
-		b32, err := c.eval32(ins.Args[1])
+		b32, err := c.eval32(ins.Args[mulIdxB])
 		if err != nil {
 			return err
 		}
@@ -521,7 +527,7 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = sub i64 0, %s\n", n, out)
 			out = "%" + n
 		case "maddl":
-			acc, err := c.eval64(ins.Args[2], false)
+			acc, err := c.eval64(ins.Args[1], false)
 			if err != nil {
 				return err
 			}
@@ -529,7 +535,7 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", s, acc, out)
 			out = "%" + s
 		case "msubl":
-			acc, err := c.eval64(ins.Args[2], false)
+			acc, err := c.eval64(ins.Args[1], false)
 			if err != nil {
 				return err
 			}

@@ -79,8 +79,11 @@ type abi0State struct {
 	// mmxBytesInit/mmxBitDef/mmxBytesTaintedSP store the cached projection across
 	// all reachable TOP partitions (intersection for init/bitDef, union for taint)
 	// maintained by syncMMXFromTopPartitions().
+	// x87ByTop is allocated lazily on first x87/MMX state mutation; nil
+	// represents allReachableEmptyX87ByTop() (all 8 TOPs reachable with empty
+	// MMX slots), avoiding per-state copy overhead on pure-integer functions.
 	x87TopSynced bool
-	x87ByTop     [8]x87TopSlotState
+	x87ByTop     *[8]x87TopSlotState
 	x87SWBitDef  uint16
 	x87CWBitDef  uint16
 	// fpBytesInit records initialized byte offsets in the FP frame
@@ -196,7 +199,7 @@ func (s *abi0State) clearCallerSaved() {
 	s.x87StackDef = [8]bool{}
 	s.x87StackTaint = [8]bool{}
 	s.x87TopSynced = false
-	s.x87ByTop = allReachableEmptyX87ByTop()
+	s.x87ByTop = nil
 	s.syncMMXFromTopPartitions()
 	s.x87SWBitDef = 0
 	s.x87CWBitDef = 0
@@ -225,10 +228,24 @@ func allReachableEmptyX87ByTop() [8]x87TopSlotState {
 	return out
 }
 
+func (s *abi0State) ensureX87ByTop() *[8]x87TopSlotState {
+	if s.x87ByTop == nil {
+		v := allReachableEmptyX87ByTop()
+		s.x87ByTop = &v
+	}
+	return s.x87ByTop
+}
+
 func (s *abi0State) syncMMXFromTopPartitions() {
-	s.mmxBytesInit = map[int]uint8{}
-	s.mmxBitDef = map[int]uint64{}
-	s.mmxBytesTaintedSP = map[int]uint8{}
+	if s.x87ByTop == nil {
+		s.mmxBytesInit = nil
+		s.mmxBitDef = nil
+		s.mmxBytesTaintedSP = nil
+		return
+	}
+	s.mmxBytesInit = nil
+	s.mmxBitDef = nil
+	s.mmxBytesTaintedSP = nil
 	first := true
 	var initAll [8]uint8
 	var bitAll [8]uint64
@@ -255,12 +272,21 @@ func (s *abi0State) syncMMXFromTopPartitions() {
 	}
 	for k := 0; k < 8; k++ {
 		if initAll[k] != 0 {
+			if s.mmxBytesInit == nil {
+				s.mmxBytesInit = make(map[int]uint8, 8)
+			}
 			s.mmxBytesInit[k] = initAll[k]
 		}
 		if bitAll[k] != 0 {
+			if s.mmxBitDef == nil {
+				s.mmxBitDef = make(map[int]uint64, 8)
+			}
 			s.mmxBitDef[k] = bitAll[k]
 		}
 		if taintAny[k] != 0 {
+			if s.mmxBytesTaintedSP == nil {
+				s.mmxBytesTaintedSP = make(map[int]uint8, 8)
+			}
 			s.mmxBytesTaintedSP[k] = taintAny[k]
 		}
 	}
@@ -269,30 +295,36 @@ func (s *abi0State) syncMMXFromTopPartitions() {
 func (s *abi0State) collapseX87TopToZero() {
 	var collapsed x87TopSlotState
 	collapsed.reachable = true
-	first := true
-	for t := 0; t < 8; t++ {
-		if !s.x87ByTop[t].reachable {
-			continue
-		}
-		if first {
-			collapsed.mmxInit = s.x87ByTop[t].mmxInit
-			collapsed.mmxBitDef = s.x87ByTop[t].mmxBitDef
-			collapsed.mmxTaintSP = s.x87ByTop[t].mmxTaintSP
-			first = false
-			continue
-		}
-		for k := 0; k < 8; k++ {
-			collapsed.mmxInit[k] &= s.x87ByTop[t].mmxInit[k]
-			collapsed.mmxBitDef[k] &= s.x87ByTop[t].mmxBitDef[k]
-			collapsed.mmxTaintSP[k] |= s.x87ByTop[t].mmxTaintSP[k]
+	if s.x87ByTop != nil {
+		first := true
+		for t := 0; t < 8; t++ {
+			if !s.x87ByTop[t].reachable {
+				continue
+			}
+			if first {
+				collapsed.mmxInit = s.x87ByTop[t].mmxInit
+				collapsed.mmxBitDef = s.x87ByTop[t].mmxBitDef
+				collapsed.mmxTaintSP = s.x87ByTop[t].mmxTaintSP
+				first = false
+				continue
+			}
+			for k := 0; k < 8; k++ {
+				collapsed.mmxInit[k] &= s.x87ByTop[t].mmxInit[k]
+				collapsed.mmxBitDef[k] &= s.x87ByTop[t].mmxBitDef[k]
+				collapsed.mmxTaintSP[k] |= s.x87ByTop[t].mmxTaintSP[k]
+			}
 		}
 	}
-	s.x87ByTop = [8]x87TopSlotState{}
-	s.x87ByTop[0] = collapsed
+	var next [8]x87TopSlotState
+	next[0] = collapsed
+	s.x87ByTop = &next
 	s.syncMMXFromTopPartitions()
 }
 
 func (s *abi0State) rotateX87Top(delta int) {
+	if s.x87ByTop == nil {
+		return
+	}
 	var next [8]x87TopSlotState
 	for t := 0; t < 8; t++ {
 		if !s.x87ByTop[t].reachable {
@@ -301,7 +333,7 @@ func (s *abi0State) rotateX87Top(delta int) {
 		nt := (t + delta) & 7
 		next[nt] = s.x87ByTop[t]
 	}
-	s.x87ByTop = next
+	*s.x87ByTop = next
 }
 
 // enterMMXMode models any non-EMMS MMX instruction transitioning the shared
@@ -338,37 +370,43 @@ const (
 // no physical MMX register may be marked initialized/defined.
 func (s *abi0State) syncX87WriteToMMX(logicalIdx int, init, def, taint bool) {
 	if !s.x87TopSynced {
+		if s.x87ByTop == nil && !taint {
+			s.syncMMXFromTopPartitions()
+			return
+		}
+		byTop := s.ensureX87ByTop()
 		for t := 0; t < 8; t++ {
-			if !s.x87ByTop[t].reachable {
+			if !byTop[t].reachable {
 				continue
 			}
-			s.x87ByTop[t].mmxInit = [8]uint8{}
-			s.x87ByTop[t].mmxBitDef = [8]uint64{}
+			byTop[t].mmxInit = [8]uint8{}
+			byTop[t].mmxBitDef = [8]uint64{}
 			if taint {
 				for k := 0; k < 8; k++ {
-					s.x87ByTop[t].mmxTaintSP[k] = 0xff
+					byTop[t].mmxTaintSP[k] = 0xff
 				}
 			}
 		}
 		s.syncMMXFromTopPartitions()
 		return
 	}
+	byTop := s.ensureX87ByTop()
 	for t := 0; t < 8; t++ {
-		if !s.x87ByTop[t].reachable {
+		if !byTop[t].reachable {
 			continue
 		}
 		phys := (t + logicalIdx) & 7
 		if init && def {
-			s.x87ByTop[t].mmxInit[phys] = 0xff
-			s.x87ByTop[t].mmxBitDef[phys] = ^uint64(0)
+			byTop[t].mmxInit[phys] = 0xff
+			byTop[t].mmxBitDef[phys] = ^uint64(0)
 		} else {
-			s.x87ByTop[t].mmxInit[phys] = 0
-			s.x87ByTop[t].mmxBitDef[phys] = 0
+			byTop[t].mmxInit[phys] = 0
+			byTop[t].mmxBitDef[phys] = 0
 		}
 		if taint {
-			s.x87ByTop[t].mmxTaintSP[phys] = 0xff
+			byTop[t].mmxTaintSP[phys] = 0xff
 		} else {
-			s.x87ByTop[t].mmxTaintSP[phys] = 0
+			byTop[t].mmxTaintSP[phys] = 0
 		}
 	}
 	s.syncMMXFromTopPartitions()
@@ -377,19 +415,30 @@ func (s *abi0State) syncX87WriteToMMX(logicalIdx int, init, def, taint bool) {
 // invalidateX87StackFault marks all x87 values, physical TOP/MMX alias state,
 // and #IS status bits undefined after an unmodeled #IS stack overflow/underflow.
 func (s *abi0State) invalidateX87StackFault() {
-	var taintAny [8]uint8
-	for t := 0; t < 8; t++ {
-		if !s.x87ByTop[t].reachable {
-			continue
-		}
-		for k := 0; k < 8; k++ {
-			taintAny[k] |= s.x87ByTop[t].mmxTaintSP[k]
-		}
-	}
 	s.x87TopSynced = false
-	s.x87ByTop = allReachableEmptyX87ByTop()
-	for t := 0; t < 8; t++ {
-		s.x87ByTop[t].mmxTaintSP = taintAny
+	if s.x87ByTop != nil {
+		var taintAny [8]uint8
+		hasTaint := false
+		for t := 0; t < 8; t++ {
+			if !s.x87ByTop[t].reachable {
+				continue
+			}
+			for k := 0; k < 8; k++ {
+				if v := s.x87ByTop[t].mmxTaintSP[k]; v != 0 {
+					taintAny[k] |= v
+					hasTaint = true
+				}
+			}
+		}
+		if !hasTaint {
+			s.x87ByTop = nil
+		} else {
+			v := allReachableEmptyX87ByTop()
+			for t := 0; t < 8; t++ {
+				v[t].mmxTaintSP = taintAny
+			}
+			s.x87ByTop = &v
+		}
 	}
 	s.syncMMXFromTopPartitions()
 	s.x87StackDef = [8]bool{}
@@ -446,9 +495,6 @@ func (s *abi0State) clone() *abi0State {
 		gpBytesInit:       make(map[asm.Reg]uint8, len(s.gpBytesInit)),
 		gpBitDef:          make(map[asm.Reg]uint64, len(s.gpBitDef)),
 		gpBytesTaintedSP:  make(map[asm.Reg]uint8, len(s.gpBytesTaintedSP)),
-		mmxBytesInit:      make(map[int]uint8, len(s.mmxBytesInit)),
-		mmxBitDef:         make(map[int]uint64, len(s.mmxBitDef)),
-		mmxBytesTaintedSP: make(map[int]uint8, len(s.mmxBytesTaintedSP)),
 		kBytesInit:        make(map[int]uint8, len(s.kBytesInit)),
 		kBitDef:           make(map[int]uint64, len(s.kBitDef)),
 		kBytesTaintedSP:   make(map[int]uint8, len(s.kBytesTaintedSP)),
@@ -461,7 +507,6 @@ func (s *abi0State) clone() *abi0State {
 		x87StackDef:       s.x87StackDef,
 		x87StackTaint:     s.x87StackTaint,
 		x87TopSynced:      s.x87TopSynced,
-		x87ByTop:          s.x87ByTop,
 		x87SWBitDef:       s.x87SWBitDef,
 		x87CWBitDef:       s.x87CWBitDef,
 		fpBytesInit:       make(map[int64]bool, len(s.fpBytesInit)),
@@ -480,6 +525,10 @@ func (s *abi0State) clone() *abi0State {
 		ofInit:            s.ofInit,
 		idInit:            s.idInit,
 	}
+	if s.x87ByTop != nil {
+		cp := *s.x87ByTop
+		out.x87ByTop = &cp
+	}
 	for k, v := range s.gpBytesInit {
 		out.gpBytesInit[k] = v
 	}
@@ -489,14 +538,23 @@ func (s *abi0State) clone() *abi0State {
 	for k, v := range s.gpBytesTaintedSP {
 		out.gpBytesTaintedSP[k] = v
 	}
-	for k, v := range s.mmxBytesInit {
-		out.mmxBytesInit[k] = v
+	if len(s.mmxBytesInit) > 0 {
+		out.mmxBytesInit = make(map[int]uint8, len(s.mmxBytesInit))
+		for k, v := range s.mmxBytesInit {
+			out.mmxBytesInit[k] = v
+		}
 	}
-	for k, v := range s.mmxBitDef {
-		out.mmxBitDef[k] = v
+	if len(s.mmxBitDef) > 0 {
+		out.mmxBitDef = make(map[int]uint64, len(s.mmxBitDef))
+		for k, v := range s.mmxBitDef {
+			out.mmxBitDef[k] = v
+		}
 	}
-	for k, v := range s.mmxBytesTaintedSP {
-		out.mmxBytesTaintedSP[k] = v
+	if len(s.mmxBytesTaintedSP) > 0 {
+		out.mmxBytesTaintedSP = make(map[int]uint8, len(s.mmxBytesTaintedSP))
+		for k, v := range s.mmxBytesTaintedSP {
+			out.mmxBytesTaintedSP[k] = v
+		}
 	}
 	for k, v := range s.kBytesInit {
 		out.kBytesInit[k] = v
@@ -650,31 +708,72 @@ func (s *abi0State) merge(other *abi0State) bool {
 		changed = true
 	}
 	mmxChanged := false
-	for t := 0; t < 8; t++ {
-		if !other.x87ByTop[t].reachable {
-			continue
-		}
-		if !s.x87ByTop[t].reachable {
-			s.x87ByTop[t] = other.x87ByTop[t]
-			changed = true
-			mmxChanged = true
-			continue
-		}
-		for k := 0; k < 8; k++ {
-			if inter := s.x87ByTop[t].mmxInit[k] & other.x87ByTop[t].mmxInit[k]; inter != s.x87ByTop[t].mmxInit[k] {
-				s.x87ByTop[t].mmxInit[k] = inter
-				changed = true
-				mmxChanged = true
+	switch {
+	case s.x87ByTop == nil && other.x87ByTop == nil:
+		// Both represent allReachableEmptyX87ByTop(): identical, zero work.
+	case s.x87ByTop == nil && other.x87ByTop != nil:
+		// s already has every TOP reachable with mmxInit=0 and mmxBitDef=0;
+		// only non-zero SP taint from other can change s.
+		hasTaint := false
+		for t := 0; t < 8 && !hasTaint; t++ {
+			if !other.x87ByTop[t].reachable {
+				continue
 			}
-			if inter := s.x87ByTop[t].mmxBitDef[k] & other.x87ByTop[t].mmxBitDef[k]; inter != s.x87ByTop[t].mmxBitDef[k] {
-				s.x87ByTop[t].mmxBitDef[k] = inter
-				changed = true
-				mmxChanged = true
+			for k := 0; k < 8; k++ {
+				if other.x87ByTop[t].mmxTaintSP[k] != 0 {
+					hasTaint = true
+					break
+				}
 			}
-			if merged := s.x87ByTop[t].mmxTaintSP[k] | other.x87ByTop[t].mmxTaintSP[k]; merged != s.x87ByTop[t].mmxTaintSP[k] {
-				s.x87ByTop[t].mmxTaintSP[k] = merged
+		}
+		if hasTaint {
+			byTop := s.ensureX87ByTop()
+			for t := 0; t < 8; t++ {
+				if !other.x87ByTop[t].reachable {
+					continue
+				}
+				for k := 0; k < 8; k++ {
+					if v := other.x87ByTop[t].mmxTaintSP[k]; v != 0 {
+						byTop[t].mmxTaintSP[k] |= v
+						changed = true
+						mmxChanged = true
+					}
+				}
+			}
+		}
+	default:
+		otherByTop := other.x87ByTop
+		var otherDefault [8]x87TopSlotState
+		if otherByTop == nil {
+			otherDefault = allReachableEmptyX87ByTop()
+			otherByTop = &otherDefault
+		}
+		for t := 0; t < 8; t++ {
+			if !otherByTop[t].reachable {
+				continue
+			}
+			if !s.x87ByTop[t].reachable {
+				s.x87ByTop[t] = otherByTop[t]
 				changed = true
 				mmxChanged = true
+				continue
+			}
+			for k := 0; k < 8; k++ {
+				if inter := s.x87ByTop[t].mmxInit[k] & otherByTop[t].mmxInit[k]; inter != s.x87ByTop[t].mmxInit[k] {
+					s.x87ByTop[t].mmxInit[k] = inter
+					changed = true
+					mmxChanged = true
+				}
+				if inter := s.x87ByTop[t].mmxBitDef[k] & otherByTop[t].mmxBitDef[k]; inter != s.x87ByTop[t].mmxBitDef[k] {
+					s.x87ByTop[t].mmxBitDef[k] = inter
+					changed = true
+					mmxChanged = true
+				}
+				if merged := s.x87ByTop[t].mmxTaintSP[k] | otherByTop[t].mmxTaintSP[k]; merged != s.x87ByTop[t].mmxTaintSP[k] {
+					s.x87ByTop[t].mmxTaintSP[k] = merged
+					changed = true
+					mmxChanged = true
+				}
 			}
 		}
 	}
@@ -973,9 +1072,6 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 		gpBytesInit:       map[asm.Reg]uint8{},
 		gpBitDef:          map[asm.Reg]uint64{},
 		gpBytesTaintedSP:  map[asm.Reg]uint8{},
-		mmxBytesInit:      map[int]uint8{},
-		mmxBitDef:         map[int]uint64{},
-		mmxBytesTaintedSP: map[int]uint8{},
 		kBytesInit:        map[int]uint8{},
 		kBitDef:           map[int]uint64{},
 		kBytesTaintedSP:   map[int]uint8{},
@@ -984,7 +1080,6 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 		vecBytesTaintedSP: map[int]uint64{},
 		vecFromRaw:        map[int]bool{},
 		x87TopSynced:      false,
-		x87ByTop:          allReachableEmptyX87ByTop(),
 		x87SWBitDef:       0,
 		x87CWBitDef:       entryCWBitDef,
 		fpBytesInit:       map[int64]bool{},

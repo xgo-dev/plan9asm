@@ -107,7 +107,7 @@ func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr 
 	case "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", string(asm.OpWORD), "DWORD", "NOP", "DMB", "#IFDEF", "#ELSE", "#ENDIF":
 		return false, nil
 	}
-	if ok, term, err := c.lowerData(baseOp, cond, postInc, ins); ok {
+	if ok, term, err := c.lowerDataWithFlags(baseOp, cond, postInc, setFlags, ins); ok {
 		return term, err
 	}
 	if ok, term, err := c.lowerDeclarative(baseOp, cond, postInc, setFlags, ins); ok {

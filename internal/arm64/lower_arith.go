@@ -163,10 +163,12 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, err
 		}
 		if op == "ADCS" {
-			c.setFlagsAdd(bval, a, "%"+t)
+			c.setFlagsAddWithCarry(64, bval, a, "%"+cf, "%"+t)
 		}
 		if op == "SBCS" {
-			c.setFlagsSub(bval, a, "%"+t)
+			na := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i64 %s, -1\n", na, a)
+			c.setFlagsAddWithCarry(64, bval, "%"+na, "%"+cf, "%"+t)
 		}
 		return true, false, nil
 
@@ -856,56 +858,58 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, c.storeReg(dstOp.Reg, "%"+hi)
 
 	case "MADDW", "MSUBW":
+		// Plan 9 ARM64 order: MADDW/MSUBW Rm, Ra, Rn, Rd => Rd = zext32(Ra +/- Rm*Rn).
 		if len(ins.Args) != 4 || ins.Args[3].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm64 %s expects a, b, c, dstReg: %q", op, ins.Raw)
 		}
-		a, err := c.eval32(ins.Args[0])
+		rm, err := c.eval32(ins.Args[0])
 		if err != nil {
 			return true, false, err
 		}
-		bv, err := c.eval32(ins.Args[1])
+		ra, err := c.eval32(ins.Args[1])
 		if err != nil {
 			return true, false, err
 		}
-		cv, err := c.eval32(ins.Args[2])
+		rn, err := c.eval32(ins.Args[2])
 		if err != nil {
 			return true, false, err
 		}
 		product := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = mul i32 %s, %s\n", product, a, bv)
+		fmt.Fprintf(c.b, "  %%%s = mul i32 %s, %s\n", product, rm, rn)
 		result := c.newTmp()
 		if op == "MADDW" {
-			fmt.Fprintf(c.b, "  %%%s = add i32 %%%s, %s\n", result, product, cv)
+			fmt.Fprintf(c.b, "  %%%s = add i32 %s, %%%s\n", result, ra, product)
 		} else {
-			fmt.Fprintf(c.b, "  %%%s = sub i32 %s, %%%s\n", result, cv, product)
+			fmt.Fprintf(c.b, "  %%%s = sub i32 %s, %%%s\n", result, ra, product)
 		}
 		wide := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", wide, result)
 		return true, false, c.storeReg(ins.Args[3].Reg, "%"+wide)
 
 	case "MADD", "MSUB":
+		// Plan 9 ARM64 order: MADD/MSUB Rm, Ra, Rn, Rd => Rd = Ra +/- Rm*Rn.
 		if len(ins.Args) != 4 || ins.Args[3].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm64 %s expects a, b, c, dstReg: %q", op, ins.Raw)
 		}
-		a, err := c.eval64(ins.Args[0], false)
+		rm, err := c.eval64(ins.Args[0], false)
 		if err != nil {
 			return true, false, err
 		}
-		bv, err := c.eval64(ins.Args[1], false)
+		ra, err := c.eval64(ins.Args[1], false)
 		if err != nil {
 			return true, false, err
 		}
-		cv, err := c.eval64(ins.Args[2], false)
+		rn, err := c.eval64(ins.Args[2], false)
 		if err != nil {
 			return true, false, err
 		}
 		m := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = mul i64 %s, %s\n", m, a, bv)
+		fmt.Fprintf(c.b, "  %%%s = mul i64 %s, %s\n", m, rm, rn)
 		t := c.newTmp()
 		if op == "MADD" {
-			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %s\n", t, m, cv)
+			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %%%s\n", t, ra, m)
 		} else {
-			fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %%%s\n", t, cv, m)
+			fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %%%s\n", t, ra, m)
 		}
 		return true, false, c.storeReg(ins.Args[3].Reg, "%"+t)
 

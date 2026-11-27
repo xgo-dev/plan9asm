@@ -199,33 +199,126 @@ func (c *armCtx) eval32(op asm.Operand, postInc bool) (string, error) {
 }
 
 func (c *armCtx) evalShift(op asm.Operand) (string, error) {
+	out, _, err := c.evalShiftWithCarry(op, false)
+	return out, err
+}
+
+func (c *armCtx) evalShiftWithCarry(op asm.Operand, wantCarry bool) (string, string, error) {
 	base, err := c.loadReg(op.Reg)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var sh string
 	if op.ShiftReg != "" {
 		sh, err = c.loadReg(op.ShiftReg)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 	} else {
 		sh = c.imm32(op.ShiftAmount)
 	}
-	t := c.newTmp()
-	switch op.ShiftOp {
-	case asm.ShiftLeft:
-		fmt.Fprintf(c.b, "  %%%s = shl i32 %s, %s\n", t, base, sh)
-	case asm.ShiftRight:
-		fmt.Fprintf(c.b, "  %%%s = lshr i32 %s, %s\n", t, base, sh)
-	case asm.ShiftArith:
-		fmt.Fprintf(c.b, "  %%%s = ashr i32 %s, %s\n", t, base, sh)
+	return c.evalARMShift(op.ShiftOp, base, sh, wantCarry)
+}
+
+// evalARMShift lowers ARMv7 barrel-shift/rotate value and optional exact
+// shifter carry-out (ARMv7-A/R ARM §A2.2.1 Shift_C). Counts are masked to 8
+// bits; shift by 0 preserves the current C flag.
+func (c *armCtx) evalARMShift(shiftOp asm.ShiftOp, src, amt string, wantCarry bool) (string, string, error) {
+	amt8 := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = and i32 %s, 255\n", amt8, amt)
+	isZero := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %%%s, 0\n", isZero, amt8)
+
+	var out string
+	var carryOut string
+	switch shiftOp {
+	case asm.ShiftLeft, asm.ShiftRight, asm.ShiftArith:
+		llvmOp := "shl"
+		if shiftOp == asm.ShiftRight {
+			llvmOp = "lshr"
+		} else if shiftOp == asm.ShiftArith {
+			llvmOp = "ashr"
+		}
+		big := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp uge i32 %%%s, 32\n", big, amt8)
+		clamped := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 31, i32 %%%s\n", clamped, big, amt8)
+		shifted := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = %s i32 %s, %%%s\n", shifted, llvmOp, src, clamped)
+		if shiftOp == asm.ShiftArith {
+			sign := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = ashr i32 %s, 31\n", sign, src)
+			sel := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 %%%s, i32 %%%s\n", sel, big, sign, shifted)
+			out = "%" + sel
+		} else {
+			sel := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 0, i32 %%%s\n", sel, big, shifted)
+			out = "%" + sel
+		}
+		if wantCarry {
+			oldC := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", oldC, c.flagsCSlot)
+			oob := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", oob, isZero, big)
+			rawPos := c.newTmp()
+			if shiftOp == asm.ShiftLeft {
+				fmt.Fprintf(c.b, "  %%%s = sub i32 32, %%%s\n", rawPos, amt8)
+			} else {
+				fmt.Fprintf(c.b, "  %%%s = sub i32 %%%s, 1\n", rawPos, amt8)
+			}
+			safePos := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i32 0, i32 %%%s\n", safePos, oob, rawPos)
+			bitW := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = lshr i32 %s, %%%s\n", bitW, src, safePos)
+			cInRange := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i32 %%%s to i1\n", cInRange, bitW)
+			var cBig string
+			switch shiftOp {
+			case asm.ShiftLeft:
+				isEq32 := c.newTmp()
+				bit0 := c.newTmp()
+				sel32 := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %%%s, 32\n", isEq32, amt8)
+				fmt.Fprintf(c.b, "  %%%s = trunc i32 %s to i1\n", bit0, src)
+				fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %%%s, i1 false\n", sel32, isEq32, bit0)
+				cBig = "%" + sel32
+			case asm.ShiftRight:
+				isEq32 := c.newTmp()
+				bit31 := c.newTmp()
+				sel32 := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %%%s, 32\n", isEq32, amt8)
+				fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", bit31, src)
+				fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %%%s, i1 false\n", sel32, isEq32, bit31)
+				cBig = "%" + sel32
+			case asm.ShiftArith:
+				bit31 := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", bit31, src)
+				cBig = "%" + bit31
+			}
+			cNonZero := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %s, i1 %%%s\n", cNonZero, big, cBig, cInRange)
+			cFinal := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %%%s, i1 %%%s\n", cFinal, isZero, oldC, cNonZero)
+			carryOut = "%" + cFinal
+		}
 	case asm.ShiftRotate:
-		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.fshr.i32(i32 %s, i32 %s, i32 %s)\n", t, base, base, sh)
+		rot := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i32 @llvm.fshr.i32(i32 %s, i32 %s, i32 %%%s)\n", rot, src, src, amt8)
+		out = "%" + rot
+		if wantCarry {
+			oldC := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", oldC, c.flagsCSlot)
+			msb := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", msb, out)
+			cFinal := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i1 %%%s, i1 %%%s\n", cFinal, isZero, oldC, msb)
+			carryOut = "%" + cFinal
+		}
 	default:
-		return "", fmt.Errorf("arm: unsupported shift op %q", op.ShiftOp)
+		return "", "", fmt.Errorf("arm: unsupported shift op %q", shiftOp)
 	}
-	return "%" + t, nil
+	return out, carryOut, nil
 }
 
 func (c *armCtx) evalFPValue32(op asm.Operand) (string, error) {

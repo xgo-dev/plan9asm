@@ -277,7 +277,7 @@ jobs:
           PLAN9ASM_DIFF_REPORT_OUT: ${{ runner.temp }}/amd64-diff-report.json
         run: |
           rm -f "$PLAN9ASM_DIFF_REPORT_OUT"
-          go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate|TestTranslateGoModuleAMD64PopAndPushfqInitPropagation|TestTranslateGoModuleAMD64PrivateSPConfinement|TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix|TestTranslateGoModuleAMD64X87StatusAndStackPrecision|TestTranslateGoModuleAMD64VecLaneSelectPrecision|TestTranslateGoModuleAMD64PerBitEntryFlagDifferential|TestTranslateGoModuleAMD64X87StackAndConstants|TestStep1ExplicitUnsupportedAuditRegistry)$' .
+          go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate|TestTranslateGoModuleAMD64PopAndPushfqInitPropagation|TestTranslateGoModuleAMD64PrivateSPConfinement|TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix|TestTranslateGoModuleAMD64X87StatusAndStackPrecision|TestTranslateGoModuleAMD64VecLaneSelectPrecision|TestTranslateGoModuleAMD64PerBitEntryFlagDifferential|TestTranslateGoModuleAMD64X87StackAndConstants|TestStep1ExplicitUnsupportedAuditRegistry|TestCrossArchARM64MultiplyAccumulateAndCarryFlags|TestCrossArchARMv7ShiftCarryFlags|TestCrossArchX86DivTrapsAndResults|TestCrossArchWasmNonSaturatingTruncTraps)$' .
           go test -v -count=1 ./testdata/conformance/amd64
           go run ./cmd/plan9asmscan \
             -corpus=go-asm \
