@@ -1691,6 +1691,52 @@ func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
 			wantZero: "store i64 0, ptr %x87_hw_scalar",
 			wantOne:  "store i64 1, ptr %x87_hw_scalar",
 		},
+		{
+			name:   "x87-arith-sticky-exc-leak",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $16-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	FINIT
+	MOVQ AX, 0(SP)
+	FLD1
+	FMOVV 0(SP), F0
+	FDIVDP F0, F1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $4, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantZero: "store i64 0, ptr %x87_hw_scalar",
+			wantOne:  "store i64 1, ptr %x87_hw_scalar",
+		},
+		{
+			name:   "x87-fldcw-fldpi-rc-leak",
+			goSrc:  goRet64,
+			header: "TEXT ·f(SB), NOSPLIT, $24-8",
+			body: `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	SHLQ $10, AX
+	ORQ $0x037f, AX
+	FINIT
+	MOVW AX, 0(SP)
+	FLDCW 0(SP)
+	FLDPI
+	FMOVXP F0, 8(SP)
+	MOVQ 8(SP), BX
+	ANDQ $1, BX
+	FINIT
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantZero: "store i16 895, ptr %x87_control",
+			wantOne:  "store i16 1919, ptr %x87_control",
+		},
 	}
 
 	modes := []struct {

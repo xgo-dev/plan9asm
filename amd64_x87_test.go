@@ -1121,6 +1121,8 @@ extern void diffX87Arith80(double a, double b, uint64_t *out);
 extern void diffX87FUCOMI(double a, double b, uint64_t *out);
 extern void diffX87TopStatus(uint64_t *out);
 extern void diffX87Binary80Precision(int64_t *outInt, uint8_t *outRaw80);
+extern void diffX87Exceptions(uint64_t *out);
+extern void diffX87ConstRoundingModes(uint8_t *outRaw80);
 
 static void print_u64s(const uint64_t *v, int n) {
     for (int i = 0; i < n; i++) {
@@ -1195,6 +1197,14 @@ int main(void) {
     uint64_t bin80U64[6];
     for (int i = 0; i < 6; i++) bin80U64[i] = (uint64_t)bin80Int[i];
     printf("x87_bin80="); print_u64s(bin80U64, 6); putchar('|'); print_hex(bin80Raw, 60); putchar('\n');
+
+    uint64_t excOut[10] = {0};
+    diffX87Exceptions(excOut);
+    printf("x87_exc="); print_u64s(excOut, 10); putchar('\n');
+
+    uint8_t constRCRaw[280] = {0};
+    diffX87ConstRoundingModes(constRCRaw);
+    printf("x87_const_rc="); print_hex(constRCRaw, 280); putchar('\n');
     return 0;
 }
 `
@@ -1366,6 +1376,52 @@ int main(void) {
 		if got, want := swMap["x87_bin80"], strings.Join(wantBin80Hex, ",")+"|"+wantBin80Raw; got != want {
 			t.Fatalf("X87Software x87_bin80:\n  got:  %s\n  want: %s", got, want)
 		}
+		// Verify Round 12 P1 #1: sticky x87 arithmetic exception flags + C1 + TOP in FSTSW.
+		wantExcVals := []uint64{0x3804, 0x3801, 0x3a20, 0x0004, 0x3800, 0x0001, 0x0020, 0x0228, 0x0230, 0x0022}
+		wantExcHex := make([]string, len(wantExcVals))
+		for i, v := range wantExcVals {
+			wantExcHex[i] = fmt.Sprintf("%016x", v)
+		}
+		if got, want := swMap["x87_exc"], strings.Join(wantExcHex, ","); got != want {
+			t.Fatalf("X87Software x87_exc:\n  got:  %s\n  want: %s", got, want)
+		}
+		// Verify Round 12 P1 #2: all 7 FLD* constants across RN (0x037f), RD (0x077f), RU (0x0b7f), RZ (0x0f7f).
+		wantConstRC := "" +
+			// Mode 0: RN (0x037f)
+			"0000000000000080ff3f" + // FLD1
+			"00000000000000000000" + // FLDZ
+			"35c26821a2da0fc90040" + // FLDPI  (...c235)
+			"bcf0175c293baab8ff3f" + // FLDL2E (...f0bc)
+			"fe8a1bcd4b789ad40040" + // FLDL2T (...8afe)
+			"99f7cffb849a209afd3f" + // FLDLG2 (...f799)
+			"ac79cfd1f71772b1fe3f" + // FLDLN2 (...79ac)
+			// Mode 1: RD (0x077f)
+			"0000000000000080ff3f" + // FLD1
+			"00000000000000000000" + // FLDZ
+			"34c26821a2da0fc90040" + // FLDPI  (...c234)
+			"bbf0175c293baab8ff3f" + // FLDL2E (...f0bb)
+			"fe8a1bcd4b789ad40040" + // FLDL2T (...8afe)
+			"98f7cffb849a209afd3f" + // FLDLG2 (...f798)
+			"ab79cfd1f71772b1fe3f" + // FLDLN2 (...79ab)
+			// Mode 2: RU (0x0b7f)
+			"0000000000000080ff3f" + // FLD1
+			"00000000000000000000" + // FLDZ
+			"35c26821a2da0fc90040" + // FLDPI  (...c235)
+			"bcf0175c293baab8ff3f" + // FLDL2E (...f0bc)
+			"ff8a1bcd4b789ad40040" + // FLDL2T (...8aff)
+			"99f7cffb849a209afd3f" + // FLDLG2 (...f799)
+			"ac79cfd1f71772b1fe3f" + // FLDLN2 (...79ac)
+			// Mode 3: RZ (0x0f7f)
+			"0000000000000080ff3f" + // FLD1
+			"00000000000000000000" + // FLDZ
+			"34c26821a2da0fc90040" + // FLDPI  (...c234)
+			"bbf0175c293baab8ff3f" + // FLDL2E (...f0bb)
+			"fe8a1bcd4b789ad40040" + // FLDL2T (...8afe)
+			"98f7cffb849a209afd3f" + // FLDLG2 (...f798)
+			"ab79cfd1f71772b1fe3f" // FLDLN2 (...79ab)
+		if got := swMap["x87_const_rc"]; got != wantConstRC {
+			t.Fatalf("X87Software x87_const_rc:\n  got:  %s\n  want: %s", got, wantConstRC)
+		}
 	}
 
 	// Step 3: Native Go amd64 vs LLVM 22 X87Hardware machine-code differential comparison!
@@ -1424,8 +1480,8 @@ int main(void) {
 		t.Fatalf("read x87 oracle transcript %s: %v", oraclePath, err)
 	}
 	oracleMap, _ := parseDiffTranscript(t, string(oracleBytes))
-	if len(oracleMap) < 21 {
-		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 21", len(oracleMap))
+	if len(oracleMap) < 23 {
+		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 23", len(oracleMap))
 	}
 
 	compared := 0
@@ -1449,7 +1505,7 @@ int main(void) {
 		}
 	}
 	writeAMD64ManifestDiffExecutionReport(t, "amd64/x87_diff_amd64.s", llcTool, true, map[string][]string{
-		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80"},
+		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80", "x87_exc", "x87_const_rc"},
 	}, llvmMap, oracleMap, failedKeys, "")
 	if len(mismatches) > 0 {
 		t.Fatalf("AMD64 x87 machine-code differential mismatch (%d/%d failed):\n%s", len(mismatches), compared, strings.Join(mismatches, "\n"))

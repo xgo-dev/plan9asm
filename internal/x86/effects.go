@@ -47,12 +47,14 @@ type abi0State struct {
 	vecByteBitDef     map[int][64]uint8
 	vecBytesTaintedSP map[int]uint64
 	vecFromRaw        map[int]bool
-	// x87StackInit/Def/Taint track the 8-deep x87 FP stack (ST(0)..ST(7) = F0..F7)
-	// and x87SWDef tracks whether the x87 status word condition codes are defined.
+	// x87StackInit/Def/Taint track the 8-deep x87 FP stack (ST(0)..ST(7) = F0..F7),
+	// x87SWDef tracks whether the x87 status word (condition codes + sticky flags)
+	// is fully defined, and x87CWDef tracks whether the x87 control word is defined.
 	x87StackInit  [8]bool
 	x87StackDef   [8]bool
 	x87StackTaint [8]bool
 	x87SWDef      bool
+	x87CWDef      bool
 	// fpBytesInit records initialized byte offsets in the FP frame
 	// (pre-populated with declared parameter slot bytes plus written result bytes).
 	fpBytesInit      map[int64]bool
@@ -164,6 +166,7 @@ func (s *abi0State) clearCallerSaved() {
 	s.x87StackDef = [8]bool{}
 	s.x87StackTaint = [8]bool{}
 	s.x87SWDef = true
+	s.x87CWDef = true
 	s.cfInit = false
 	s.pfInit = false
 	s.afInit = false
@@ -217,6 +220,7 @@ func (s *abi0State) clone() *abi0State {
 		x87StackDef:       s.x87StackDef,
 		x87StackTaint:     s.x87StackTaint,
 		x87SWDef:          s.x87SWDef,
+		x87CWDef:          s.x87CWDef,
 		fpBytesInit:       make(map[int64]bool, len(s.fpBytesInit)),
 		fpByteBitDef:      make(map[int64]uint8, len(s.fpByteBitDef)),
 		fpBytesTaintedSP:  make(map[int64]bool, len(s.fpBytesTaintedSP)),
@@ -418,6 +422,10 @@ func (s *abi0State) merge(other *abi0State) bool {
 	}
 	if s.x87SWDef && !other.x87SWDef {
 		s.x87SWDef = false
+		changed = true
+	}
+	if s.x87CWDef && !other.x87CWDef {
+		s.x87CWDef = false
 		changed = true
 	}
 	for k := range s.fpBytesInit {
@@ -683,6 +691,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		vecBytesTaintedSP: map[int]uint64{},
 		vecFromRaw:        map[int]bool{},
 		x87SWDef:          true,
+		x87CWDef:          true,
 		fpBytesInit:       map[int64]bool{},
 		fpByteBitDef:      map[int64]uint8{},
 		fpBytesTaintedSP:  map[int64]bool{},
@@ -1625,7 +1634,12 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			switch cat {
 			case x87CatConst:
 				// All 7 constants in x87ConstSpecs (FLD1, FLDZ, FLDPI, FLDL2E, FLDL2T, FLDLG2, FLDLN2).
-				st.pushX87(true, true, false)
+				// Irrational constants (SigCeil != "") depend on live FLDCW rounding control.
+				constDef := true
+				if cst, ok := x87ConstSpecs[op]; ok && cst.SigCeil != "" {
+					constDef = st.x87CWDef
+				}
+				st.pushX87(true, constDef, false)
 			case x87CatMove:
 				plan := classifyX87Move(op, ins.Args)
 				switch plan.Kind {
@@ -1647,6 +1661,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						return nil, err
 					}
 					_, anyT := evalOperandTaintSP(st, ins.Args[plan.MemArg], plan.MemBytes, false, op)
+					if op == "FMOVD" || op == "FMOVF" {
+						st.x87SWDef = st.x87SWDef && ev.allBytesInit && ev.allBitsDef
+					}
 					if plan.Kind == x87MovePushMem {
 						st.pushX87(ev.allBytesInit, ev.allBitsDef, anyT)
 					} else {
@@ -1658,6 +1675,10 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					init0 := st.x87StackInit[plan.SrcIdx]
 					def0 := st.x87StackDef[plan.SrcIdx]
 					taint0 := st.x87StackTaint[plan.SrcIdx]
+					if op != "FMOVX" && op != "FMOVXP" {
+						def0 = def0 && st.x87CWDef
+						st.x87SWDef = st.x87SWDef && init0 && def0
+					}
 					if plan.Pop {
 						_, _, _ = st.popX87()
 					}
@@ -1703,8 +1724,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					}
 					_, anyT1 := evalOperandTaintSP(st, ins.Args[1], 8, false, op)
 					initRes := ev0.allBytesInit && ev1.allBytesInit
-					defRes := initRes && ev0.allBitsDef && ev1.allBitsDef
+					defRes := initRes && ev0.allBitsDef && ev1.allBitsDef && st.x87CWDef
 					taintRes := anyT0 || anyT1
+					st.x87SWDef = st.x87SWDef && defRes
 					if dstIdx, ok := x87OperandReg(ins.Args[1]); ok {
 						st.x87StackInit[dstIdx] = initRes
 						st.x87StackDef[dstIdx] = defRes
@@ -1754,6 +1776,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						bothDef = false
 					}
 				}
+				st.x87SWDef = st.x87SWDef && bothDef
 				if cspec.eflags {
 					st.cfInit = bothDef
 					st.pfInit = bothDef
@@ -1761,8 +1784,6 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					st.ofInit = true
 					st.sfInit = true
 					st.afInit = true
-				} else {
-					st.x87SWDef = bothDef
 				}
 				for i := 0; i < cspec.pops; i++ {
 					_, _, _ = st.popX87()
@@ -1792,10 +1813,15 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					}
 				}
 			case x87CatUnaryInPlace:
-				// Preserves F0 init/def/taint in place.
-				st.x87StackDef[0] = st.x87StackInit[0] && st.x87StackDef[0]
+				// Preserves F0 init/taint in place; FSQRT/FRNDINT depend on CW and update sticky flags + C1.
+				if op == "FSQRT" || op == "FRNDINT" {
+					st.x87StackDef[0] = st.x87StackInit[0] && st.x87StackDef[0] && st.x87CWDef
+					st.x87SWDef = st.x87SWDef && st.x87StackDef[0]
+				} else {
+					st.x87StackDef[0] = st.x87StackInit[0] && st.x87StackDef[0]
+				}
 			case x87CatStatusTest:
-				st.x87SWDef = st.x87StackInit[0] && st.x87StackDef[0]
+				st.x87SWDef = st.x87SWDef && st.x87StackInit[0] && st.x87StackDef[0]
 			case x87CatFree:
 				if len(ins.Args) == 1 {
 					if idx, ok := x87OperandReg(ins.Args[0]); ok {
@@ -1825,17 +1851,20 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				st.x87StackDef = [8]bool{}
 				st.x87StackTaint = [8]bool{}
 				st.x87SWDef = true
+				st.x87CWDef = true
 			case x87CatNop, x87CatUnsupported:
 				// FCLEX/FNOP leave stack untouched; unsupported x87 ops fail during lowering.
 			case x87CatControlLoad:
 				if len(ins.Args) == 1 {
-					if _, err := evalOperand(st, ins.Args[0], 2, false, op, ins.Raw); err != nil {
+					ev, err := evalOperand(st, ins.Args[0], 2, false, op, ins.Raw)
+					if err != nil {
 						return nil, err
 					}
+					st.x87CWDef = ev.allBytesInit && ev.allBitsDef
 				}
 			case x87CatControlStore:
 				if len(ins.Args) == 1 {
-					defVal := true
+					defVal := st.x87CWDef
 					if op == "FSTSW" {
 						defVal = st.x87SWDef
 					}

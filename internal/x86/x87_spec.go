@@ -10,21 +10,28 @@ import (
 
 // x87ConstSpec describes an x87 push-constant instruction in exact IEEE-754
 // 80-bit extended representation (significand as signed int64, sign+exp as u16).
+// Exact constants (FLD1, FLDZ) leave SigCeil empty. Irrational constants carry
+// both floor (RD/RZ) and ceil (RU) 64-bit significands plus RNRoundsUp so
+// X87Software matches Intel x87 hardware across all four FLDCW rounding modes
+// while X87Hardware emits the native HWInst directly.
 // Both lowerX87Ext and CheckABI0ResultInitWithSigs dispatch through x87ConstSpecs.
 type x87ConstSpec struct {
-	Op      asm.Op
-	Sig     string
-	SignExp string
+	Op         asm.Op
+	HWInst     string
+	SigFloor   string
+	SigCeil    string
+	SignExp    string
+	RNRoundsUp bool
 }
 
 var x87ConstSpecList = []x87ConstSpec{
-	{Op: "FLD1", Sig: "9223372036854775808", SignExp: "16383"},    // 0x8000000000000000, 0x3fff (+1.0)
-	{Op: "FLDZ", Sig: "0", SignExp: "0"},                          // 0x0000000000000000, 0x0000 (+0.0)
-	{Op: "FLDPI", Sig: "-3958705157555305931", SignExp: "16384"},  // 0xc90fdaa22168c235, 0x4000 (pi)
-	{Op: "FLDL2E", Sig: "-5140230975865229124", SignExp: "16383"}, // 0xb8aa3b295c17f0bc, 0x3fff (log2(e))
-	{Op: "FLDL2T", Sig: "-3127054724296373506", SignExp: "16384"}, // 0xd49a784bcd1b8afe, 0x4000 (log2(10))
-	{Op: "FLDLG2", Sig: "-7340697496662837351", SignExp: "16381"}, // 0x9a209a84fbcff799, 0x3ffd (log10(2))
-	{Op: "FLDLN2", Sig: "-5660435428506895956", SignExp: "16382"}, // 0xb17217f7d1cf79ac, 0x3ffe (ln(2))
+	{Op: "FLD1", HWInst: "fld1", SigFloor: "9223372036854775808", SignExp: "16383"},                                                          // 0x8000000000000000, 0x3fff (+1.0)
+	{Op: "FLDZ", HWInst: "fldz", SigFloor: "0", SignExp: "0"},                                                                                // 0x0000000000000000, 0x0000 (+0.0)
+	{Op: "FLDPI", HWInst: "fldpi", SigFloor: "-3958705157555305932", SigCeil: "-3958705157555305931", SignExp: "16384", RNRoundsUp: true},    // 0xc90fdaa22168c234/35, 0x4000 (pi)
+	{Op: "FLDL2E", HWInst: "fldl2e", SigFloor: "-5140230975865229125", SigCeil: "-5140230975865229124", SignExp: "16383", RNRoundsUp: true},  // 0xb8aa3b295c17f0bb/bc, 0x3fff (log2(e))
+	{Op: "FLDL2T", HWInst: "fldl2t", SigFloor: "-3127054724296373506", SigCeil: "-3127054724296373505", SignExp: "16384", RNRoundsUp: false}, // 0xd49a784bcd1b8afe/ff, 0x4000 (log2(10))
+	{Op: "FLDLG2", HWInst: "fldlg2", SigFloor: "-7340697496662837352", SigCeil: "-7340697496662837351", SignExp: "16381", RNRoundsUp: true},  // 0x9a209a84fbcff798/99, 0x3ffd (log10(2))
+	{Op: "FLDLN2", HWInst: "fldln2", SigFloor: "-5660435428506895957", SigCeil: "-5660435428506895956", SignExp: "16382", RNRoundsUp: true},  // 0xb17217f7d1cf79ab/ac, 0x3ffe (ln(2))
 }
 
 var x87ConstSpecs = func() map[asm.Op]x87ConstSpec {

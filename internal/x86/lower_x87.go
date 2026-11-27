@@ -80,8 +80,10 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		case x87MovePushReg:
 			// Go encodes `FMOVD Fi, F0` (including F0, F0) as D9 C0+i (`FLD ST(i)`),
 			// pushing a copy of ST(i) onto the x87 stack.
+			c.projectX87Status("0", 0x0200)
 			return true, false, c.pushX87Value(c.loadX87Value(plan.SrcIdx))
 		case x87MoveStoreReg:
+			c.projectX87Status("0", 0x0200)
 			c.storeX87Value(plan.DstIdx, c.loadX87Value(plan.SrcIdx))
 			return true, false, nil
 		case x87MoveStoreMem:
@@ -119,6 +121,7 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		plan := classifyX87Move(op, ins.Args)
 		switch plan.Kind {
 		case x87MoveStorePopReg:
+			c.projectX87Status("0", 0x0200)
 			c.storeX87Value(plan.DstIdx, c.loadX87Value(plan.SrcIdx))
 			c.popX87Value()
 			return true, false, nil
@@ -201,6 +204,7 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		b := c.loadX87Value(bv)
 		c.storeX87Value(a, b)
 		c.storeX87Value(bv, av)
+		c.projectX87Status("0", 0x0200)
 		return true, false, nil
 
 	case "FSTCW":
@@ -240,7 +244,7 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		}
 		if c.useHardwareX87() {
 			res, _, status := c.evaluateX87Native("frndint", []x87Value{c.loadX87Value(0)}, 1, 1)
-			c.projectX87Status(status, 0x0200)
+			c.mergeX87ArithStatus(status)
 			c.storeX87Value(0, res)
 			return true, false, nil
 		}
@@ -263,6 +267,7 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			se = c.x87IR("xor i16 %s, 32768", se)
 		}
 		c.storeX87Value(0, c.packX87(sig, se))
+		c.projectX87Status("0", 0x0200)
 		return true, false, nil
 
 	case "FSQRT":
@@ -271,11 +276,12 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		}
 		if c.useHardwareX87() {
 			res, _, status := c.evaluateX87Native("fsqrt", []x87Value{c.loadX87Value(0)}, 1, 1)
-			c.projectX87Status(status, 0x0200)
+			c.mergeX87ArithStatus(status)
 			c.storeX87Value(0, res)
 			return true, false, nil
 		}
-		res := c.x87PortableSqrt(c.loadX87Value(0), c.loadX87ControlWord())
+		res, status := c.x87PortableSqrt(c.loadX87Value(0), c.loadX87ControlWord())
+		c.mergeX87ArithStatus(status)
 		c.storeX87Value(0, res)
 		return true, false, nil
 
@@ -291,7 +297,9 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if err != nil {
 			return true, false, err
 		}
-		eq, lt, uno := c.x87PortableCompare(lhs, rhs)
+		eq, lt, uno, exc := c.x87PortableCompareWithFlags(lhs, rhs, true)
+		c.mergeX87StickyExceptions(exc)
+		c.projectX87Status("0", 0x0200)
 		z := c.x87IR("or i1 %s, %s", eq, uno)
 		cf := c.x87IR("or i1 %s, %s", lt, uno)
 		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", z, c.flagsZSlot)
@@ -306,7 +314,8 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("386 FTST takes no operands: %q", ins.Raw)
 		}
-		eq, lt, uno := c.x87PortableCompare(c.loadX87Value(0), x87ZeroValue)
+		eq, lt, uno, exc := c.x87PortableCompareWithFlags(c.loadX87Value(0), x87ZeroValue, false)
+		c.mergeX87StickyExceptions(exc)
 		c3 := c.x87IR("or i1 %s, %s", eq, uno)
 		c0 := c.x87IR("or i1 %s, %s", lt, uno)
 		c3w := c.x87IR("select i1 %s, i16 16384, i16 0", c3)
@@ -314,7 +323,7 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		c0w := c.x87IR("select i1 %s, i16 256, i16 0", c0)
 		s01 := c.x87IR("or i16 %s, %s", c3w, c2w)
 		status := c.x87IR("or i16 %s, %s", s01, c0w)
-		// Update C3|C2|C1|C0 (0x4700, with C1=0) while preserving TOP (0x3800).
+		// Update C3|C2|C1|C0 (0x4700, with C1=0) while preserving TOP (0x3800) and sticky exceptions.
 		c.projectX87Status(status, 0x4700)
 		return true, false, nil
 
@@ -536,6 +545,7 @@ func (c *amd64Ctx) evaluateX87Native(instruction string, values []x87Value, resu
 		inputs[i] = x87NativeOperand{c.x87ValueScratch[i+1], x87ValueType}
 	}
 	var code strings.Builder
+	code.WriteString("fnclex; ")
 	for i := len(inputs) - 1; i >= 0; i-- {
 		fmt.Fprintf(&code, "fldt $%d; ", len(outputs)+i)
 	}
@@ -561,17 +571,22 @@ func (c *amd64Ctx) evaluateX87Native(instruction string, values []x87Value, resu
 
 func (c *amd64Ctx) x87NativeFromScalar(value, typ, instruction string) x87Value {
 	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", typ, value, c.x87ScalarScratch)
-	c.emitX87NativeAsm(instruction+" $1; fstpt $0",
-		[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}},
+	c.emitX87NativeAsm("fnclex; "+instruction+" $2; fnstsw $1; fstpt $0",
+		[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}, {c.x87NativeStatus, "i16"}},
 		[]x87NativeOperand{{c.x87ScalarScratch, typ}})
+	status := c.x87IR("load i16, ptr %s", c.x87NativeStatus)
+	c.mergeX87StickyExceptions(status)
+	c.projectX87Status("0", 0x0200)
 	return x87Value(c.x87IR("load %s, ptr %s", x87ValueType, c.x87ValueScratch[0]))
 }
 
 func (c *amd64Ctx) x87NativeToScalar(value x87Value, typ, instruction string) string {
 	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, value, c.x87ValueScratch[1])
-	c.emitX87NativeAsm("fldt $1; "+instruction+" $0",
-		[]x87NativeOperand{{c.x87ScalarScratch, typ}},
+	c.emitX87NativeAsm("fnclex; fldt $2; "+instruction+" $0; fnstsw $1",
+		[]x87NativeOperand{{c.x87ScalarScratch, typ}, {c.x87NativeStatus, "i16"}},
 		[]x87NativeOperand{{c.x87ValueScratch[1], x87ValueType}})
+	status := c.x87IR("load i16, ptr %s", c.x87NativeStatus)
+	c.mergeX87ArithStatus(status)
 	return c.x87IR("load %s, ptr %s", typ, c.x87ScalarScratch)
 }
 
@@ -591,6 +606,27 @@ func (c *amd64Ctx) projectX87Status(status string, mask int) {
 	kept := c.x87IR("and i16 %s, %d", prev, ^uint16(mask))
 	changed := c.x87IR("and i16 %s, %d", status, mask)
 	merged := c.x87IR("or i16 %s, %s", kept, changed)
+	fmt.Fprintf(c.b, "  store i16 %s, ptr %s\n", merged, c.x87StatusSlot)
+}
+
+// mergeX87ArithStatus updates C1 (bit 9, 0x0200, non-sticky) and ORs sticky
+// exception flags (bits 0..5, 0x003f: IE/DE/ZE/OE/UE/PE) from status into
+// c.x87StatusSlot while preserving TOP (0x3800), C3/C2/C0, and earlier sticky
+// exception bits.
+func (c *amd64Ctx) mergeX87ArithStatus(status string) {
+	prev := c.x87IR("load i16, ptr %s", c.x87StatusSlot)
+	clearedC1 := c.x87IR("and i16 %s, %d", prev, ^uint16(0x0200))
+	excAndC1 := c.x87IR("and i16 %s, %d", status, 0x023f)
+	merged := c.x87IR("or i16 %s, %s", clearedC1, excAndC1)
+	fmt.Fprintf(c.b, "  store i16 %s, ptr %s\n", merged, c.x87StatusSlot)
+}
+
+// mergeX87StickyExceptions ORs sticky x87 exception bits (bits 0..5, 0x003f)
+// into c.x87StatusSlot while preserving all other status-word bits.
+func (c *amd64Ctx) mergeX87StickyExceptions(exc string) {
+	prev := c.x87IR("load i16, ptr %s", c.x87StatusSlot)
+	masked := c.x87IR("and i16 %s, %d", exc, 0x003f)
+	merged := c.x87IR("or i16 %s, %s", prev, masked)
 	fmt.Fprintf(c.b, "  store i16 %s, ptr %s\n", merged, c.x87StatusSlot)
 }
 
@@ -629,17 +665,24 @@ func (c *amd64Ctx) x87PortableFromFloat(value string, bits int) (x87Value, error
 	normalExponent := c.x87IR("add i64 %s, %d", exponent, 16383-bias)
 	special := c.x87IR("icmp eq i64 %s, %d", exponent, maximum)
 	isNaN := c.x87IR("and i1 %s, %s", special, c.x87IR("xor i1 %s, true", zero))
+	quietBitMask := uint64(1) << (fractionBits - 1)
+	isSNaN := c.x87IR("and i1 %s, %s", isNaN, c.x87IR("icmp eq i64 %s, 0", c.x87IR("and i64 %s, %d", fraction, quietBitMask)))
 	quiet := c.x87IR("or i64 %s, 4611686018427387904", significand)
 	significand = c.x87IR("select i1 %s, i64 %s, i64 %s", isNaN, quiet, significand)
 	normalExponent = c.x87IR("select i1 %s, i64 32767, i64 %s", special, normalExponent)
 	isSubnormal := c.x87IR("icmp eq i64 %s, 0", exponent)
+	isDenorm := c.x87IR("and i1 %s, %s", isSubnormal, c.x87IR("xor i1 %s, true", zero))
+	excIE := c.x87IR("select i1 %s, i16 1, i16 0", isSNaN)
+	excDE := c.x87IR("select i1 %s, i16 2, i16 0", isDenorm)
+	c.mergeX87StickyExceptions(c.x87IR("or i16 %s, %s", excIE, excDE))
+	c.projectX87Status("0", 0x0200)
 	significand = c.x87IR("select i1 %s, i64 %s, i64 %s", isSubnormal, subnormal, significand)
 	exponent = c.x87IR("select i1 %s, i64 %s, i64 %s", isSubnormal, subExponent, normalExponent)
 	exponent = c.x87IR("trunc i64 %s to i16", c.x87IR("or i64 %s, %s", exponent, sign))
 	return c.packX87(significand, exponent), nil
 }
 
-func (c *amd64Ctx) x87PortableRoundedShift(value, shift, negative, cw string) string {
+func (c *amd64Ctx) x87PortableRoundedShiftWithFlags(value, shift, negative, cw string) (result, inexact, roundedUp string) {
 	wide := c.x87IR("icmp uge i32 %s, 64", shift)
 	bounded := c.x87IR("zext i32 %s to i64", c.x87IR("select i1 %s, i32 63, i32 %s", wide, shift))
 	quotient := c.x87IR("select i1 %s, i64 0, i64 %s", wide, c.x87IR("lshr i64 %s, %s", value, bounded))
@@ -655,8 +698,9 @@ func (c *amd64Ctx) x87PortableRoundedShift(value, shift, negative, cw string) st
 	isNearest := c.x87IR("icmp eq i16 %s, 0", rounding)
 	down := c.x87IR("and i1 %s, %s", c.x87IR("icmp eq i16 %s, 1", rounding), negative)
 	up := c.x87IR("and i1 %s, %s", c.x87IR("icmp eq i16 %s, 2", rounding), c.x87IR("xor i1 %s, true", negative))
-	inc := c.x87IR("zext i1 %s to i64", c.x87IR("and i1 %s, %s", c.x87IR("select i1 %s, i1 %s, i1 %s", isNearest, nearest, c.x87IR("or i1 %s, %s", down, up)), discarded))
-	return c.x87IR("add i64 %s, %s", quotient, inc)
+	doInc := c.x87IR("and i1 %s, %s", c.x87IR("select i1 %s, i1 %s, i1 %s", isNearest, nearest, c.x87IR("or i1 %s, %s", down, up)), discarded)
+	inc := c.x87IR("zext i1 %s to i64", doInc)
+	return c.x87IR("add i64 %s, %s", quotient, inc), discarded, doInc
 }
 
 func (c *amd64Ctx) x87PortableRound(value x87Value, cw string) (x87Value, error) {
@@ -666,16 +710,27 @@ func (c *amd64Ctx) x87PortableRound(value x87Value, cw string) (x87Value, error)
 	effExp := c.x87IR("select i1 %s, i32 1, i32 %s", zeroExp, exp)
 	shift := c.x87IR("sub i32 16446, %s", effExp)
 	neg := c.x87IR("icmp slt i16 %s, 0", se)
-	mag := c.x87PortableRoundedShift(sig, shift, neg, cw)
+	mag, inexact, roundedUp := c.x87PortableRoundedShiftWithFlags(sig, shift, neg, cw)
 	leading := c.x87IR("call i64 @llvm.ctlz.i64(i64 %s, i1 false)", mag)
 	rSig := c.x87IR("shl i64 %s, %s", mag, c.x87IR("and i64 %s, 63", leading))
 	rExp := c.x87IR("select i1 %s, i64 0, i64 %s", c.x87IR("icmp eq i64 %s, 0", mag), c.x87IR("sub i64 16446, %s", leading))
 	rSE := c.x87IR("or i16 %s, %s", c.x87IR("trunc i64 %s to i16", rExp), c.x87IR("and i16 %s, 32768", se))
 	rounded := c.packX87(rSig, rSE)
-	selected := c.x87IR("select i1 %s, %s %s, %s %s", c.x87IR("icmp uge i32 %s, 16446", exp), x87ValueType, value, x87ValueType, rounded)
+	alreadyInt := c.x87IR("icmp uge i32 %s, 16446", exp)
+	selected := c.x87IR("select i1 %s, %s %s, %s %s", alreadyInt, x87ValueType, value, x87ValueType, rounded)
 	nan := c.x87IR("and i1 %s, %s", c.x87IR("icmp eq i32 %s, 32767", exp), c.x87IR("icmp ne i64 %s, 0", c.x87IR("and i64 %s, 9223372036854775807", sig)))
+	snan := c.x87IR("and i1 %s, %s", nan, c.x87IR("icmp eq i64 %s, 0", c.x87IR("and i64 %s, 4611686018427387904", sig)))
 	selected = c.x87IR("select i1 %s, %s %s, %s %s", nan, x87ValueType, c.packX87(c.x87IR("or i64 %s, 4611686018427387904", sig), se), x87ValueType, selected)
 	unsup := c.x87IR("and i1 %s, %s", c.x87IR("icmp sge i64 %s, 0", sig), c.x87IR("xor i1 %s, true", zeroExp))
+	denorm := c.x87IR("and i1 %s, %s", zeroExp, c.x87IR("icmp ne i64 %s, 0", sig))
+	notAlready := c.x87IR("and i1 %s, %s", c.x87IR("xor i1 %s, true", alreadyInt), c.x87IR("xor i1 %s, true", unsup))
+	peCond := c.x87IR("and i1 %s, %s", notAlready, inexact)
+	c1Cond := c.x87IR("and i1 %s, %s", notAlready, roundedUp)
+	ieCond := c.x87IR("or i1 %s, %s", unsup, snan)
+	st := c.x87IR("or i16 %s, %s",
+		c.x87IR("or i16 %s, %s", c.x87IR("select i1 %s, i16 1, i16 0", ieCond), c.x87IR("select i1 %s, i16 2, i16 0", denorm)),
+		c.x87IR("or i16 %s, %s", c.x87IR("select i1 %s, i16 32, i16 0", peCond), c.x87IR("select i1 %s, i16 512, i16 0", c1Cond)))
+	c.mergeX87ArithStatus(st)
 	return x87Value(c.x87IR("select i1 %s, %s %s, %s %s", unsup, x87ValueType, c.packX87("13835058055282163712", "65535"), x87ValueType, selected)), nil
 }
 
@@ -697,7 +752,7 @@ func (c *amd64Ctx) x87PortableToFloat(value x87Value, bits int, cw string) (stri
 	outExp := c.x87IR("sub i32 %s, %d", effExp, 16383-bias)
 	subnormal := c.x87IR("icmp sle i32 %s, 0", outExp)
 	extra := c.x87IR("select i1 %s, i32 %s, i32 0", subnormal, c.x87IR("sub i32 1, %s", outExp))
-	rounded := c.x87PortableRoundedShift(norm, c.x87IR("add i32 %s, %d", extra, 64-precision), neg, cw)
+	rounded, inexact, roundedUp := c.x87PortableRoundedShiftWithFlags(norm, c.x87IR("add i32 %s, %d", extra, 64-precision), neg, cw)
 	carry := c.x87IR("icmp uge i64 %s, %d", rounded, uint64(1)<<precision)
 	sigRes := c.x87IR("select i1 %s, i64 %s, i64 %s", carry, c.x87IR("lshr i64 %s, 1", rounded), rounded)
 	normExp := c.x87IR("add i32 %s, %s", outExp, c.x87IR("zext i1 %s to i32", carry))
@@ -719,9 +774,21 @@ func (c *amd64Ctx) x87PortableToFloat(value x87Value, bits int, cw string) (stri
 	special := c.x87IR("icmp eq i32 %s, 32767", exp)
 	payload := c.x87IR("and i64 %s, 9223372036854775807", sig)
 	isNaN := c.x87IR("icmp ne i64 %s, 0", payload)
+	isSNaN := c.x87IR("and i1 %s, %s", c.x87IR("and i1 %s, %s", special, isNaN), c.x87IR("icmp eq i64 %s, 0", c.x87IR("and i64 %s, 4611686018427387904", sig)))
 	payload = c.x87IR("select i1 %s, i64 %s, i64 0", isNaN, c.x87IR("or i64 %s, %d", c.x87IR("lshr i64 %s, %d", payload, 64-precision), uint64(1)<<(precision-2)))
 	packed = c.x87IR("select i1 %s, i64 %s, i64 %s", special, c.x87IR("or i64 %s, %s", c.x87IR("or i64 %s, %d", payload, infBits), sign), packed)
 	unsup := c.x87IR("and i1 %s, %s", c.x87IR("icmp sge i64 %s, 0", sig), c.x87IR("xor i1 %s, true", zeroExp))
+	isZero := c.x87IR("and i1 %s, %s", zeroExp, c.x87IR("icmp eq i64 %s, 0", sig))
+	isFiniteNZ := c.x87IR("and i1 %s, %s", c.x87IR("xor i1 %s, true", c.x87IR("or i1 %s, %s", special, unsup)), c.x87IR("xor i1 %s, true", isZero))
+	oeCond := c.x87IR("and i1 %s, %s", isFiniteNZ, overflow)
+	ueCond := c.x87IR("and i1 %s, %s", c.x87IR("and i1 %s, %s", isFiniteNZ, c.x87IR("icmp eq i32 %s, 0", finalExp)), inexact)
+	peCond := c.x87IR("or i1 %s, %s", oeCond, c.x87IR("and i1 %s, %s", isFiniteNZ, inexact))
+	c1Cond := c.x87IR("or i1 %s, %s", c.x87IR("and i1 %s, %s", oeCond, inf), c.x87IR("and i1 %s, %s", c.x87IR("and i1 %s, %s", isFiniteNZ, c.x87IR("xor i1 %s, true", overflow)), roundedUp))
+	ieCond := c.x87IR("or i1 %s, %s", unsup, isSNaN)
+	st := c.x87IR("or i16 %s, %s",
+		c.x87IR("or i16 %s, %s", c.x87IR("select i1 %s, i16 1, i16 0", ieCond), c.x87IR("select i1 %s, i16 8, i16 0", oeCond)),
+		c.x87IR("or i16 %s, %s", c.x87IR("or i16 %s, %s", c.x87IR("select i1 %s, i16 16, i16 0", ueCond), c.x87IR("select i1 %s, i16 32, i16 0", peCond)), c.x87IR("select i1 %s, i16 512, i16 0", c1Cond)))
+	c.mergeX87ArithStatus(st)
 	indef := uint64(1)<<(bits-1) | infBits | uint64(1)<<(precision-2)
 	packed = c.x87IR("select i1 %s, i64 %d, i64 %s", unsup, indef, packed)
 	if bits == 32 {
@@ -743,6 +810,7 @@ func (c *amd64Ctx) x87PortableFromSigned(value string, bits int) (x87Value, erro
 	sig := c.x87IR("shl i64 %s, %s", mag, c.x87IR("and i64 %s, 63", leading))
 	exp := c.x87IR("select i1 %s, i64 0, i64 %s", c.x87IR("icmp eq i64 %s, 0", mag), c.x87IR("sub i64 16446, %s", leading))
 	se := c.x87IR("trunc i64 %s to i16", c.x87IR("or i64 %s, %s", exp, c.x87IR("select i1 %s, i64 32768, i64 0", neg)))
+	c.projectX87Status("0", 0x0200)
 	return c.packX87(sig, se), nil
 }
 
@@ -757,11 +825,18 @@ func (c *amd64Ctx) x87PortableToSigned(value x87Value, bits int, cw string) (str
 	effExp := c.x87IR("select i1 %s, i32 1, i32 %s", zeroExp, exp)
 	shift := c.x87IR("sub i32 16446, %s", effExp)
 	shift = c.x87IR("select i1 %s, i32 0, i32 %s", c.x87IR("icmp slt i32 %s, 0", shift), shift)
-	rounded := c.x87PortableRoundedShift(sig, shift, neg, cw)
+	rounded, inexact, roundedUp := c.x87PortableRoundedShiftWithFlags(sig, shift, neg, cw)
 	bound := uint64(1) << (bits - 1)
 	valid := c.x87IR("select i1 %s, i1 %s, i1 %s", neg, c.x87IR("icmp ule i64 %s, %d", rounded, bound), c.x87IR("icmp ult i64 %s, %d", rounded, bound))
 	valid = c.x87IR("and i1 %s, %s", valid, c.x87IR("icmp ule i32 %s, %d", effExp, 16383+bits-1))
 	valid = c.x87IR("and i1 %s, %s", valid, c.x87IR("or i1 %s, %s", zeroExp, c.x87IR("icmp slt i64 %s, 0", sig)))
+	ieCond := c.x87IR("xor i1 %s, true", valid)
+	peCond := c.x87IR("and i1 %s, %s", valid, inexact)
+	c1Cond := c.x87IR("and i1 %s, %s", valid, roundedUp)
+	st := c.x87IR("or i16 %s, %s",
+		c.x87IR("select i1 %s, i16 1, i16 0", ieCond),
+		c.x87IR("or i16 %s, %s", c.x87IR("select i1 %s, i16 32, i16 0", peCond), c.x87IR("select i1 %s, i16 512, i16 0", c1Cond)))
+	c.mergeX87ArithStatus(st)
 	res := c.x87IR("select i1 %s, i64 %s, i64 %s", neg, c.x87IR("sub i64 0, %s", rounded), rounded)
 	res = c.x87IR("select i1 %s, i64 %s, i64 %d", valid, res, bound)
 	if bits != 64 {
@@ -770,10 +845,10 @@ func (c *amd64Ctx) x87PortableToSigned(value x87Value, bits int, cw string) (str
 	return res, nil
 }
 
-func (c *amd64Ctx) x87PortableCompare(left, right x87Value) (equal, less, unordered string) {
+func (c *amd64Ctx) x87PortableCompareWithFlags(left, right x87Value, unorderedCmp bool) (equal, less, unordered, exc string) {
 	lSig, lSE := c.partsX87(left)
 	rSig, rSE := c.partsX87(right)
-	var exps, negs, invs, zeros [2]string
+	var exps, negs, invs, snans, unsps, zeros, dens [2]string
 	for i, p := range [][2]string{{lSig, lSE}, {rSig, rSE}} {
 		sig, se := p[0], p[1]
 		exp := c.x87IR("and i16 %s, 32767", se)
@@ -782,11 +857,26 @@ func (c *amd64Ctx) x87PortableCompare(left, right x87Value) (equal, less, unorde
 		negs[i] = c.x87IR("icmp slt i16 %s, 0", se)
 		unsup := c.x87IR("and i1 %s, %s", c.x87IR("icmp sge i64 %s, 0", sig), c.x87IR("xor i1 %s, true", zExp))
 		nan := c.x87IR("and i1 %s, %s", c.x87IR("icmp eq i16 %s, 32767", exp), c.x87IR("icmp ne i64 %s, 9223372036854775808", sig))
+		snan := c.x87IR("and i1 %s, %s", nan, c.x87IR("icmp eq i64 %s, 0", c.x87IR("and i64 %s, 4611686018427387904", sig)))
+		unsps[i] = unsup
+		snans[i] = snan
 		invs[i] = c.x87IR("or i1 %s, %s", unsup, nan)
-		zeros[i] = c.x87IR("and i1 %s, %s", c.x87IR("icmp eq i64 %s, 0", sig), zExp)
+		zSig := c.x87IR("icmp eq i64 %s, 0", sig)
+		zeros[i] = c.x87IR("and i1 %s, %s", zSig, zExp)
+		dens[i] = c.x87IR("and i1 %s, %s", c.x87IR("xor i1 %s, true", zSig), zExp)
 	}
 	unordered = c.x87IR("or i1 %s, %s", invs[0], invs[1])
 	ordered := c.x87IR("xor i1 %s, true", unordered)
+	var ieCond string
+	if unorderedCmp {
+		// FUCOM*/FUCOMI*: raise IE only on SNaN or unsupported encoding (not QNaN).
+		ieCond = c.x87IR("or i1 %s, %s", c.x87IR("or i1 %s, %s", snans[0], snans[1]), c.x87IR("or i1 %s, %s", unsps[0], unsps[1]))
+	} else {
+		// FCOM*/FCOMI*/FTST: raise IE on any NaN or unsupported encoding.
+		ieCond = unordered
+	}
+	deCond := c.x87IR("or i1 %s, %s", dens[0], dens[1])
+	exc = c.x87IR("or i16 %s, %s", c.x87IR("select i1 %s, i16 1, i16 0", ieCond), c.x87IR("select i1 %s, i16 2, i16 0", deCond))
 	eqExp := c.x87IR("icmp eq i16 %s, %s", exps[0], exps[1])
 	eqMag := c.x87IR("and i1 %s, %s", eqExp, c.x87IR("icmp eq i64 %s, %s", lSig, rSig))
 	diffSign := c.x87IR("xor i1 %s, %s", negs[0], negs[1])

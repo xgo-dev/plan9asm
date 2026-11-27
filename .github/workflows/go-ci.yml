@@ -315,7 +315,7 @@ jobs:
           assert verified > 0 and verified + pending == manifest, (
               f"execution-traceable diff count mismatch: verified={verified} + hw_pending={pending} != manifest_execute={manifest}"
           )
-          assert compared_inputs >= 1822, f"expected >= 1822 per-input native diff comparisons, got {compared_inputs}"
+          assert compared_inputs >= 1824, f"expected >= 1824 per-input native diff comparisons, got {compared_inputs}"
           print(
               f"amd64-diff-gate coverage verified: llvm={llvm_ver} ir_generated={cov['ir_generated_forms']} "
               f"object_compiled={cov['object_compiled_forms']} diff_verified={verified} hw_pending={pending} "

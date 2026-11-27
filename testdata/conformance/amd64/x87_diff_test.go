@@ -87,6 +87,14 @@ func runX87DiffOracleLines() []string {
 	}
 	lines = append(lines, fmt.Sprintf("x87_bin80=%s|%x", formatU64Slice(bin80U64), bin80Raw))
 
+	var excOut [10]uint64
+	diffX87Exceptions(&excOut)
+	lines = append(lines, fmt.Sprintf("x87_exc=%s", formatU64Slice(excOut[:])))
+
+	var constRCRaw [280]byte
+	diffX87ConstRoundingModes(&constRCRaw)
+	lines = append(lines, fmt.Sprintf("x87_const_rc=%x", constRCRaw))
+
 	return lines
 }
 
@@ -152,6 +160,32 @@ func TestAMD64X87NativeSanity(t *testing.T) {
 		if bin80Int[i] != want {
 			t.Fatalf("diffX87Binary80Precision[%d] = %d, want %d", i, bin80Int[i], want)
 		}
+	}
+
+	// Verify Round 12 P1 #1: sticky arithmetic exception flags + C1 + TOP in FSTSW.
+	var excOut [10]uint64
+	diffX87Exceptions(&excOut)
+	wantExc := [10]uint64{0x3804, 0x3801, 0x3a20, 0x0004, 0x3800, 0x0001, 0x0020, 0x0228, 0x0230, 0x0022}
+	for i, want := range wantExc {
+		if excOut[i] != want {
+			t.Fatalf("diffX87Exceptions[%d] = %#x, want %#x", i, excOut[i], want)
+		}
+	}
+
+	// Verify Round 12 P1 #2: FLDPI/FLDL2E/FLDL2T/FLDLG2/FLDLN2 obey FLDCW rounding modes.
+	var constRCRaw [280]byte
+	diffX87ConstRoundingModes(&constRCRaw)
+	// FLDPI is at offset +20 within each 70-byte rounding-mode block:
+	// RN (0x037f) and RU (0x0b7f) -> ...c235 (low byte 0x35);
+	// RD (0x077f) and RZ (0x0f7f) -> ...c234 (low byte 0x34).
+	if constRCRaw[20] != 0x35 || constRCRaw[70+20] != 0x34 || constRCRaw[140+20] != 0x35 || constRCRaw[210+20] != 0x34 {
+		t.Fatalf("diffX87ConstRoundingModes FLDPI low bytes = [%#x %#x %#x %#x], want [0x35 0x34 0x35 0x34]",
+			constRCRaw[20], constRCRaw[70+20], constRCRaw[140+20], constRCRaw[210+20])
+	}
+	// FLDL2T is at offset +40 within each block: RN/RD/RZ -> 0xfe, RU -> 0xff.
+	if constRCRaw[40] != 0xfe || constRCRaw[70+40] != 0xfe || constRCRaw[140+40] != 0xff || constRCRaw[210+40] != 0xfe {
+		t.Fatalf("diffX87ConstRoundingModes FLDL2T low bytes = [%#x %#x %#x %#x], want [0xfe 0xfe 0xff 0xfe]",
+			constRCRaw[40], constRCRaw[70+40], constRCRaw[140+40], constRCRaw[210+40])
 	}
 }
 

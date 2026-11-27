@@ -2,6 +2,7 @@ package x86
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/asm"
 )
@@ -27,10 +28,30 @@ func (c *amd64Ctx) lowerX87Ext(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("386 %s takes no operands: %q", op, ins.Raw)
 		}
-		if cst.Sig == "0" && cst.SignExp == "0" {
-			return true, false, c.pushX87Value(x87ZeroValue)
+		c.projectX87Status("0", 0x0200)
+		if cst.SigCeil == "" {
+			if cst.SigFloor == "0" && cst.SignExp == "0" {
+				return true, false, c.pushX87Value(x87ZeroValue)
+			}
+			return true, false, c.pushX87Value(c.packX87(cst.SigFloor, cst.SignExp))
 		}
-		return true, false, c.pushX87Value(c.packX87(cst.Sig, cst.SignExp))
+		if c.useHardwareX87() {
+			c.emitX87NativeAsm(cst.HWInst+"; fstpt $0",
+				[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}}, nil)
+			return true, false, c.pushX87Value(x87Value(c.x87IR("load %s, ptr %s", x87ValueType, c.x87ValueScratch[0])))
+		}
+		// X87Software: honor live x87 control word RC (bits 11:10):
+		// RD (1) and RZ (3) select SigFloor; RU (2) selects SigCeil;
+		// RN (0) selects SigCeil iff cst.RNRoundsUp (FLDPI/FLDL2E/FLDLG2/FLDLN2),
+		// or SigFloor for FLDL2T.
+		cw := c.loadX87ControlWord()
+		rc := c.x87IR("and i16 %s, 3", c.x87IR("lshr i16 %s, 10", cw))
+		useCeil := c.x87IR("icmp eq i16 %s, 2", rc)
+		if cst.RNRoundsUp {
+			useCeil = c.x87IR("or i1 %s, %s", useCeil, c.x87IR("icmp eq i16 %s, 0", rc))
+		}
+		sig := c.x87IR("select i1 %s, i64 %s, i64 %s", useCeil, cst.SigCeil, cst.SigFloor)
+		return true, false, c.pushX87Value(c.packX87(sig, cst.SignExp))
 	}
 	if reason, found := x87UnsupportedReasons[op]; found {
 		return true, false, fmt.Errorf("%s: unsupported instruction %s (%s): %q", c.goarch, op, reason, ins.Raw)
@@ -180,11 +201,14 @@ func (c *amd64Ctx) lowerX87ExtArith(op asm.Op, spec x87ArithSpec, ins asm.Instr)
 		}
 		var status string
 		res, _, status = c.evaluateX87Native(hwOp, []x87Value{rhs, lhs}, 1, 1)
-		c.projectX87Status(status, 0x0200)
+		c.mergeX87ArithStatus(status)
 	} else {
 		// Execute in bit-exact IEEE-754 binary80 pure-integer software arithmetic
-		// honoring live RC (rounding mode) and PC (precision control) in x87ControlSlot.
-		res = c.x87PortableArith(spec.llvmOp, lhs, rhs, c.loadX87ControlWord())
+		// honoring live RC (rounding mode) and PC (precision control) in x87ControlSlot,
+		// and record raised x87 exception flags + C1 into x87StatusSlot.
+		var status string
+		res, status = c.x87PortableArith(spec.llvmOp, lhs, rhs, c.loadX87ControlWord())
+		c.mergeX87ArithStatus(status)
 	}
 	if dstIdx, ok := x87OperandReg(ins.Args[1]); ok {
 		c.storeX87Value(dstIdx, res)
@@ -230,8 +254,11 @@ func (c *amd64Ctx) lowerX87ExtCmp(op asm.Op, spec x87CmpSpec, ins asm.Instr) err
 	if err != nil {
 		return err
 	}
-	eq, lt, uno := c.x87PortableCompare(lhs, rhs)
+	unorderedCmp := strings.HasPrefix(string(op), "FU")
+	eq, lt, uno, exc := c.x87PortableCompareWithFlags(lhs, rhs, unorderedCmp)
+	c.mergeX87StickyExceptions(exc)
 	if spec.eflags {
+		c.projectX87Status("0", 0x0200)
 		z := c.x87IR("or i1 %s, %s", eq, uno)
 		cf := c.x87IR("or i1 %s, %s", lt, uno)
 		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", z, c.flagsZSlot)
@@ -415,6 +442,7 @@ func (c *amd64Ctx) lowerX87ExtMovExt80(pop bool, ins asm.Instr) error {
 		p8 := c.x87IR("getelementptr i8, %s %s, i64 8", pty, p)
 		fmt.Fprintf(c.b, "  store i64 %s, %s %s, align 1\n", sig, pty, p)
 		fmt.Fprintf(c.b, "  store i16 %s, ptr %s, align 1\n", se, p8)
+		c.projectX87Status("0", 0x0200)
 		if pop {
 			c.popX87Value()
 		}
@@ -432,6 +460,7 @@ func (c *amd64Ctx) lowerX87ExtMovExt80(pop bool, ins asm.Instr) error {
 	sig := c.x87IR("load i64, %s %s, align 1", pty, p)
 	se := c.x87IR("load i16, ptr %s, align 1", p8)
 	v := c.packX87(sig, se)
+	c.projectX87Status("0", 0x0200)
 	if dstIdx == 0 {
 		return c.pushX87Value(v)
 	}
@@ -472,6 +501,7 @@ func (c *amd64Ctx) lowerX87ExtBCD(store bool, ins asm.Instr) error {
 			c.emitX87NativeAsm("fbld $1; fstpt $0",
 				[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}},
 				[]x87NativeOperand{{c.x87ValueScratch[1], x87ValueType}})
+			c.projectX87Status("0", 0x0200)
 			return c.pushX87Value(x87Value(c.x87IR("load %s, ptr %s", x87ValueType, c.x87ValueScratch[0])))
 		}
 		// FBLD/FMOVB software mode: decode 18 packed BCD digits (bytes 0..8) + sign bit (byte 9 bit 7).
@@ -500,9 +530,11 @@ func (c *amd64Ctx) lowerX87ExtBCD(store bool, ins asm.Instr) error {
 	}
 	if c.useHardwareX87() {
 		fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, c.loadX87Value(0), c.x87ValueScratch[1])
-		c.emitX87NativeAsm("fldt $1; fbstp $0",
-			[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}},
+		c.emitX87NativeAsm("fnclex; fldt $2; fbstp $0; fnstsw $1",
+			[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}, {c.x87NativeStatus, "i16"}},
 			[]x87NativeOperand{{c.x87ValueScratch[1], x87ValueType}})
+		status := c.x87IR("load i16, ptr %s", c.x87NativeStatus)
+		c.mergeX87ArithStatus(status)
 		bcd := x87Value(c.x87IR("load %s, ptr %s", x87ValueType, c.x87ValueScratch[0]))
 		lo, hi := c.partsX87(bcd)
 		p8 := c.x87IR("getelementptr i8, %s %s, i64 8", pty, p)

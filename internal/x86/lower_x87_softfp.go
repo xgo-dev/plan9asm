@@ -7,12 +7,15 @@ import (
 )
 
 // emitX87SoftwareArithHelpers emits pure-integer, target-independent IEEE-754
-// binary80 ({ i64, i16 }) arithmetic helpers when X87Software mode is selected
-// and the file uses x87 arithmetic (FADDD*/FSUB*/FMUL*/FDIV*) or FSQRT.
+// binary80 arithmetic helpers returning { i64 sig, i16 signExp, i16 statusFlags }
+// when X87Software mode is selected and the file uses x87 arithmetic
+// (FADDD*/FSUB*/FMUL*/FDIV*) or FSQRT.
 //
-// All helpers avoid variable i128 shifts and i128 division so LLVM lowers them
-// inline with zero external runtime libcalls across 386, amd64, arm64, arm,
-// wasm, Linux, macOS, and Windows MSVC.
+// statusFlags encodes the architectural x87 status-word exception bits raised
+// by the operation (IE=0x01, DE=0x02, ZE=0x04, OE=0x08, UE=0x10, PE=0x20) plus
+// C1 (0x0200, rounded-up). All helpers avoid variable i128 shifts and i128
+// division so LLVM lowers them inline with zero external runtime libcalls
+// across 386, amd64, arm64, arm, wasm, Linux, macOS, and Windows MSVC.
 func emitX87SoftwareArithHelpers(b *strings.Builder, file *asm.File) {
 	needAdd, needMul, needDiv, needSqrt := false, false, false, false
 	for _, fn := range file.Funcs {
@@ -52,36 +55,48 @@ func emitX87SoftwareArithHelpers(b *strings.Builder, file *asm.File) {
 	}
 }
 
-func (c *amd64Ctx) x87PortableArith(llvmOp string, lhs, rhs x87Value, cw string) x87Value {
-	switch llvmOp {
-	case "fadd":
-		return x87Value(c.x87IR("call %s @__plan9asm_x87_add(%s %s, %s %s, i16 %s, i1 false)",
-			x87ValueType, x87ValueType, lhs, x87ValueType, rhs, cw))
-	case "fsub":
-		return x87Value(c.x87IR("call %s @__plan9asm_x87_add(%s %s, %s %s, i16 %s, i1 true)",
-			x87ValueType, x87ValueType, lhs, x87ValueType, rhs, cw))
-	case "fmul":
-		return x87Value(c.x87IR("call %s @__plan9asm_x87_mul(%s %s, %s %s, i16 %s)",
-			x87ValueType, x87ValueType, lhs, x87ValueType, rhs, cw))
-	default: // fdiv
-		return x87Value(c.x87IR("call %s @__plan9asm_x87_div(%s %s, %s %s, i16 %s)",
-			x87ValueType, x87ValueType, lhs, x87ValueType, rhs, cw))
-	}
+func (c *amd64Ctx) unpackX87ArithResult(packed string) (x87Value, string) {
+	sig := c.x87IR("extractvalue { i64, i16, i16 } %s, 0", packed)
+	se := c.x87IR("extractvalue { i64, i16, i16 } %s, 1", packed)
+	status := c.x87IR("extractvalue { i64, i16, i16 } %s, 2", packed)
+	return c.packX87(sig, se), status
 }
 
-func (c *amd64Ctx) x87PortableSqrt(val x87Value, cw string) x87Value {
-	return x87Value(c.x87IR("call %s @__plan9asm_x87_sqrt(%s %s, i16 %s)",
-		x87ValueType, x87ValueType, val, cw))
+func (c *amd64Ctx) x87PortableArith(llvmOp string, lhs, rhs x87Value, cw string) (x87Value, string) {
+	var res string
+	switch llvmOp {
+	case "fadd":
+		res = c.x87IR("call { i64, i16, i16 } @__plan9asm_x87_add(%s %s, %s %s, i16 %s, i1 false)",
+			x87ValueType, lhs, x87ValueType, rhs, cw)
+	case "fsub":
+		res = c.x87IR("call { i64, i16, i16 } @__plan9asm_x87_add(%s %s, %s %s, i16 %s, i1 true)",
+			x87ValueType, lhs, x87ValueType, rhs, cw)
+	case "fmul":
+		res = c.x87IR("call { i64, i16, i16 } @__plan9asm_x87_mul(%s %s, %s %s, i16 %s)",
+			x87ValueType, lhs, x87ValueType, rhs, cw)
+	default: // fdiv
+		res = c.x87IR("call { i64, i16, i16 } @__plan9asm_x87_div(%s %s, %s %s, i16 %s)",
+			x87ValueType, lhs, x87ValueType, rhs, cw)
+	}
+	return c.unpackX87ArithResult(res)
+}
+
+func (c *amd64Ctx) x87PortableSqrt(val x87Value, cw string) (x87Value, string) {
+	res := c.x87IR("call { i64, i16, i16 } @__plan9asm_x87_sqrt(%s %s, i16 %s)",
+		x87ValueType, val, cw)
+	return c.unpackX87ArithResult(res)
 }
 
 // x87SoftFPRoundPackIR defines:
 //
-//	@__plan9asm_x87_round_pack(i1 %sign, i32 %exp, i64 %sig, i64 %rem, i16 %cw) -> { i64, i16 }
+//	@__plan9asm_x87_round_pack(i1 %sign, i32 %exp, i64 %sig, i64 %rem, i16 %cw, i16 %pre_flags)
+//	  -> { i64 sig, i16 signExp, i16 statusFlags }
 //
 // %sig must have bit 63 == 1 (normalized finite magnitude). %rem holds bit 63
 // as the round (halfway) bit and bits 62:0 as sticky bits. Respects both RC
-// (bits 11:10) and PC (bits 9:8) of the x87 control word %cw.
-const x87SoftFPRoundPackIR = `define internal { i64, i16 } @__plan9asm_x87_round_pack(i1 %sign, i32 %exp, i64 %sig, i64 %rem, i16 %cw) {
+// (bits 11:10) and PC (bits 9:8) of %cw and computes OE (0x08), UE (0x10),
+// PE (0x20), and C1 (0x0200) ORed with %pre_flags (e.g. DE = 0x02).
+const x87SoftFPRoundPackIR = `define internal { i64, i16, i16 } @__plan9asm_x87_round_pack(i1 %sign, i32 %exp, i64 %sig, i64 %rem, i16 %cw, i16 %pre_flags) {
 entry:
   %is_sub = icmp sle i32 %exp, 0
   br i1 %is_sub, label %subnormal, label %normal
@@ -163,24 +178,45 @@ apply_pc:
   %final_exp = select i1 %promote, i32 1, i32 %exp_carry
 
   %overflow = icmp sge i32 %final_exp, 32767
+  %not_overflow = xor i1 %overflow, true
   %ovf_inf = or i1 %is_rn, %dir_up
   %max_sig = shl i64 -1, %drop
   %ovf_sig = select i1 %ovf_inf, i64 -9223372036854775808, i64 %max_sig
   %ovf_exp = select i1 %ovf_inf, i32 32767, i32 32766
+
+  ; Compute x87 status exception flags + C1:
+  ; OE (0x08) on overflow; UE (0x10) on masked post-rounding tininess + inexact;
+  ; PE (0x20) on inexact or overflow; C1 (0x0200) on rounded-up.
+  %final_exp_zero = icmp eq i32 %final_exp, 0
+  %ue_cond0 = and i1 %not_overflow, %final_exp_zero
+  %ue_cond = and i1 %ue_cond0, %inexact
+  %pe_cond = or i1 %overflow, %inexact
+  %c1_ovf = and i1 %overflow, %ovf_inf
+  %c1_norm = and i1 %not_overflow, %round_up
+  %c1_cond = or i1 %c1_ovf, %c1_norm
+  %f_oe = select i1 %overflow, i16 8, i16 0
+  %f_ue = select i1 %ue_cond, i16 16, i16 0
+  %f_pe = select i1 %pe_cond, i16 32, i16 0
+  %f_c1 = select i1 %c1_cond, i16 512, i16 0
+  %f0 = or i16 %pre_flags, %f_oe
+  %f1 = or i16 %f0, %f_ue
+  %f2 = or i16 %f1, %f_pe
+  %out_flags = or i16 %f2, %f_c1
 
   %out_sig = select i1 %overflow, i64 %ovf_sig, i64 %sig_carry
   %out_exp32 = select i1 %overflow, i32 %ovf_exp, i32 %final_exp
   %out_exp16 = trunc i32 %out_exp32 to i16
   %sign16 = select i1 %sign, i16 -32768, i16 0
   %out_se = or i16 %out_exp16, %sign16
-  %r0 = insertvalue { i64, i16 } zeroinitializer, i64 %out_sig, 0
-  %r1 = insertvalue { i64, i16 } %r0, i16 %out_se, 1
-  ret { i64, i16 } %r1
+  %r0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 %out_sig, 0
+  %r1 = insertvalue { i64, i16, i16 } %r0, i16 %out_se, 1
+  %r2 = insertvalue { i64, i16, i16 } %r1, i16 %out_flags, 2
+  ret { i64, i16, i16 } %r2
 }
 
 `
 
-const x87SoftFPAddIR = `define internal { i64, i16 } @__plan9asm_x87_add({ i64, i16 } %a, { i64, i16 } %b, i16 %cw, i1 %sub) {
+const x87SoftFPAddIR = `define internal { i64, i16, i16 } @__plan9asm_x87_add({ i64, i16 } %a, { i64, i16 } %b, i16 %cw, i1 %sub) {
 entry:
   %a_sig = extractvalue { i64, i16 } %a, 0
   %a_se = extractvalue { i64, i16 } %a, 1
@@ -217,6 +253,14 @@ chk_nan:
   br i1 %any_nan, label %ret_nan, label %chk_inf
 
 ret_nan:
+  %a_qbit = and i64 %a_sig, 4611686018427387904
+  %b_qbit = and i64 %b_sig, 4611686018427387904
+  %a_qbit_z = icmp eq i64 %a_qbit, 0
+  %b_qbit_z = icmp eq i64 %b_qbit, 0
+  %a_snan = and i1 %a_nan, %a_qbit_z
+  %b_snan = and i1 %b_nan, %b_qbit_z
+  %any_snan = or i1 %a_snan, %b_snan
+  %nan_fl = select i1 %any_snan, i16 1, i16 0
   %both_nan = and i1 %a_nan, %b_nan
   %b_bigger = icmp ugt i64 %b_sig, %a_sig
   %pick_b_both = and i1 %both_nan, %b_bigger
@@ -225,11 +269,22 @@ ret_nan:
   %nan_sig0 = select i1 %pick_b, i64 %b_sig, i64 %a_sig
   %nan_se = select i1 %pick_b, i16 %b_se, i16 %a_se
   %nan_sig = or i64 %nan_sig0, 4611686018427387904
-  %rn0 = insertvalue { i64, i16 } zeroinitializer, i64 %nan_sig, 0
-  %rn1 = insertvalue { i64, i16 } %rn0, i16 %nan_se, 1
-  ret { i64, i16 } %rn1
+  %rn0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 %nan_sig, 0
+  %rn1 = insertvalue { i64, i16, i16 } %rn0, i16 %nan_se, 1
+  %rn2 = insertvalue { i64, i16, i16 } %rn1, i16 %nan_fl, 2
+  ret { i64, i16, i16 } %rn2
 
 chk_inf:
+  %a_zsig = icmp eq i64 %a_sig, 0
+  %b_zsig = icmp eq i64 %b_sig, 0
+  %a_zero = and i1 %a_zexp, %a_zsig
+  %b_zero = and i1 %b_zexp, %b_zsig
+  %a_nzsig = xor i1 %a_zsig, true
+  %b_nzsig = xor i1 %b_zsig, true
+  %a_den = and i1 %a_zexp, %a_nzsig
+  %b_den = and i1 %b_zexp, %b_nzsig
+  %any_den = or i1 %a_den, %b_den
+  %de_fl = select i1 %any_den, i16 2, i16 0
   %any_inf = or i1 %a_maxe, %b_maxe
   br i1 %any_inf, label %handle_inf, label %chk_zero
 
@@ -243,15 +298,12 @@ ret_inf:
   %inf_sign = select i1 %a_maxe, i1 %a_sign, i1 %b_sign
   %inf_s16 = select i1 %inf_sign, i16 -32768, i16 0
   %inf_se = or i16 %inf_s16, 32767
-  %ri0 = insertvalue { i64, i16 } zeroinitializer, i64 -9223372036854775808, 0
-  %ri1 = insertvalue { i64, i16 } %ri0, i16 %inf_se, 1
-  ret { i64, i16 } %ri1
+  %ri0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 -9223372036854775808, 0
+  %ri1 = insertvalue { i64, i16, i16 } %ri0, i16 %inf_se, 1
+  %ri2 = insertvalue { i64, i16, i16 } %ri1, i16 %de_fl, 2
+  ret { i64, i16, i16 } %ri2
 
 chk_zero:
-  %a_zsig = icmp eq i64 %a_sig, 0
-  %b_zsig = icmp eq i64 %b_sig, 0
-  %a_zero = and i1 %a_zexp, %a_zsig
-  %b_zero = and i1 %b_zexp, %b_zsig
   %both_zero = and i1 %a_zero, %b_zero
   br i1 %both_zero, label %ret_both_zero, label %chk_one_zero
 
@@ -262,9 +314,10 @@ ret_both_zero:
   %z_or = or i1 %a_sign, %b_sign
   %z_sign = select i1 %is_rd_z, i1 %z_or, i1 %z_and
   %z_se = select i1 %z_sign, i16 -32768, i16 0
-  %rz0 = insertvalue { i64, i16 } zeroinitializer, i64 0, 0
-  %rz1 = insertvalue { i64, i16 } %rz0, i16 %z_se, 1
-  ret { i64, i16 } %rz1
+  %rz0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 0, 0
+  %rz1 = insertvalue { i64, i16, i16 } %rz0, i16 %z_se, 1
+  %rz2 = insertvalue { i64, i16, i16 } %rz1, i16 0, 2
+  ret { i64, i16, i16 } %rz2
 
 chk_one_zero:
   %one_zero = or i1 %a_zero, %b_zero
@@ -281,8 +334,8 @@ ret_one_zero:
   %nz_norm = shl i64 %nz_sig, %nz_lz
   %nz_lz32 = trunc i64 %nz_lz to i32
   %nz_exp = sub i32 %nz_eff32, %nz_lz32
-  %nz_res = call { i64, i16 } @__plan9asm_x87_round_pack(i1 %nz_sign, i32 %nz_exp, i64 %nz_norm, i64 0, i16 %cw)
-  ret { i64, i16 } %nz_res
+  %nz_res = call { i64, i16, i16 } @__plan9asm_x87_round_pack(i1 %nz_sign, i32 %nz_exp, i64 %nz_norm, i64 0, i16 %cw, i16 %de_fl)
+  ret { i64, i16, i16 } %nz_res
 
 finite:
   %a_eff16 = select i1 %a_zexp, i16 1, i16 %a_exp16
@@ -349,8 +402,8 @@ do_add:
   %add_exp = select i1 %has_carry, i32 %add_exp1, i32 %big_exp
   %add_sig = select i1 %has_carry, i64 %sum_shr64, i64 %sum_lo64
   %add_rem = select i1 %has_carry, i64 %carry_rem, i64 %sml_lo
-  %add_res = call { i64, i16 } @__plan9asm_x87_round_pack(i1 %big_sign, i32 %add_exp, i64 %add_sig, i64 %add_rem, i16 %cw)
-  ret { i64, i16 } %add_res
+  %add_res = call { i64, i16, i16 } @__plan9asm_x87_round_pack(i1 %big_sign, i32 %add_exp, i64 %add_sig, i64 %add_rem, i16 %cw, i16 %de_fl)
+  ret { i64, i16, i16 } %add_res
 
 do_sub:
   %sig_eq = icmp eq i64 %big_sig, %sml_sig
@@ -361,9 +414,10 @@ ret_cancel_zero:
   %rc_c = and i16 %cw, 3072
   %is_rd_c = icmp eq i16 %rc_c, 1024
   %cz_se = select i1 %is_rd_c, i16 -32768, i16 0
-  %rcz0 = insertvalue { i64, i16 } zeroinitializer, i64 0, 0
-  %rcz1 = insertvalue { i64, i16 } %rcz0, i16 %cz_se, 1
-  ret { i64, i16 } %rcz1
+  %rcz0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 0, 0
+  %rcz1 = insertvalue { i64, i16, i16 } %rcz0, i16 %cz_se, 1
+  %rcz2 = insertvalue { i64, i16, i16 } %rcz1, i16 %de_fl, 2
+  ret { i64, i16, i16 } %rcz2
 
 do_sub_calc:
   %sb_hi128 = zext i64 %big_sig to i128
@@ -391,8 +445,8 @@ sub_hi_nz:
   %sub_rem_h = shl i64 %d_lo, %h_lz
   %h_lz32 = trunc i64 %h_lz to i32
   %sub_exp_h = sub i32 %big_exp, %h_lz32
-  %sub_res_h = call { i64, i16 } @__plan9asm_x87_round_pack(i1 %big_sign, i32 %sub_exp_h, i64 %sub_sig_h, i64 %sub_rem_h, i16 %cw)
-  ret { i64, i16 } %sub_res_h
+  %sub_res_h = call { i64, i16, i16 } @__plan9asm_x87_round_pack(i1 %big_sign, i32 %sub_exp_h, i64 %sub_sig_h, i64 %sub_rem_h, i16 %cw, i16 %de_fl)
+  ret { i64, i16, i16 } %sub_res_h
 
 sub_lo_only:
   %l_lz = call i64 @llvm.ctlz.i64(i64 %d_lo, i1 false)
@@ -400,18 +454,19 @@ sub_lo_only:
   %l_lz32 = trunc i64 %l_lz to i32
   %sub_exp_l0 = sub i32 %big_exp, 64
   %sub_exp_l = sub i32 %sub_exp_l0, %l_lz32
-  %sub_res_l = call { i64, i16 } @__plan9asm_x87_round_pack(i1 %big_sign, i32 %sub_exp_l, i64 %sub_sig_l, i64 0, i16 %cw)
-  ret { i64, i16 } %sub_res_l
+  %sub_res_l = call { i64, i16, i16 } @__plan9asm_x87_round_pack(i1 %big_sign, i32 %sub_exp_l, i64 %sub_sig_l, i64 0, i16 %cw, i16 %de_fl)
+  ret { i64, i16, i16 } %sub_res_l
 
 ret_indef:
-  %ind0 = insertvalue { i64, i16 } zeroinitializer, i64 -4611686018427387904, 0
-  %ind1 = insertvalue { i64, i16 } %ind0, i16 -1, 1
-  ret { i64, i16 } %ind1
+  %ind0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 -4611686018427387904, 0
+  %ind1 = insertvalue { i64, i16, i16 } %ind0, i16 -1, 1
+  %ind2 = insertvalue { i64, i16, i16 } %ind1, i16 1, 2
+  ret { i64, i16, i16 } %ind2
 }
 
 `
 
-const x87SoftFPMulIR = `define internal { i64, i16 } @__plan9asm_x87_mul({ i64, i16 } %a, { i64, i16 } %b, i16 %cw) {
+const x87SoftFPMulIR = `define internal { i64, i16, i16 } @__plan9asm_x87_mul({ i64, i16 } %a, { i64, i16 } %b, i16 %cw) {
 entry:
   %a_sig = extractvalue { i64, i16 } %a, 0
   %a_se = extractvalue { i64, i16 } %a, 1
@@ -448,6 +503,14 @@ chk_nan:
   br i1 %any_nan, label %ret_nan, label %chk_inf_zero
 
 ret_nan:
+  %a_qbit = and i64 %a_sig, 4611686018427387904
+  %b_qbit = and i64 %b_sig, 4611686018427387904
+  %a_qbit_z = icmp eq i64 %a_qbit, 0
+  %b_qbit_z = icmp eq i64 %b_qbit, 0
+  %a_snan = and i1 %a_nan, %a_qbit_z
+  %b_snan = and i1 %b_nan, %b_qbit_z
+  %any_snan = or i1 %a_snan, %b_snan
+  %nan_fl = select i1 %any_snan, i16 1, i16 0
   %both_nan = and i1 %a_nan, %b_nan
   %b_bigger = icmp ugt i64 %b_sig, %a_sig
   %pick_b_both = and i1 %both_nan, %b_bigger
@@ -456,15 +519,22 @@ ret_nan:
   %nan_sig0 = select i1 %pick_b, i64 %b_sig, i64 %a_sig
   %nan_se = select i1 %pick_b, i16 %b_se, i16 %a_se
   %nan_sig = or i64 %nan_sig0, 4611686018427387904
-  %rn0 = insertvalue { i64, i16 } zeroinitializer, i64 %nan_sig, 0
-  %rn1 = insertvalue { i64, i16 } %rn0, i16 %nan_se, 1
-  ret { i64, i16 } %rn1
+  %rn0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 %nan_sig, 0
+  %rn1 = insertvalue { i64, i16, i16 } %rn0, i16 %nan_se, 1
+  %rn2 = insertvalue { i64, i16, i16 } %rn1, i16 %nan_fl, 2
+  ret { i64, i16, i16 } %rn2
 
 chk_inf_zero:
   %a_zsig = icmp eq i64 %a_sig, 0
   %b_zsig = icmp eq i64 %b_sig, 0
   %a_zero = and i1 %a_zexp, %a_zsig
   %b_zero = and i1 %b_zexp, %b_zsig
+  %a_nzsig = xor i1 %a_zsig, true
+  %b_nzsig = xor i1 %b_zsig, true
+  %a_den = and i1 %a_zexp, %a_nzsig
+  %b_den = and i1 %b_zexp, %b_nzsig
+  %any_den = or i1 %a_den, %b_den
+  %de_fl = select i1 %any_den, i16 2, i16 0
   %inf_x_zero1 = and i1 %a_maxe, %b_zero
   %inf_x_zero2 = and i1 %b_maxe, %a_zero
   %inf_x_zero = or i1 %inf_x_zero1, %inf_x_zero2
@@ -477,9 +547,10 @@ chk_inf:
 ret_inf:
   %inf_s16 = select i1 %res_sign, i16 -32768, i16 0
   %inf_se = or i16 %inf_s16, 32767
-  %ri0 = insertvalue { i64, i16 } zeroinitializer, i64 -9223372036854775808, 0
-  %ri1 = insertvalue { i64, i16 } %ri0, i16 %inf_se, 1
-  ret { i64, i16 } %ri1
+  %ri0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 -9223372036854775808, 0
+  %ri1 = insertvalue { i64, i16, i16 } %ri0, i16 %inf_se, 1
+  %ri2 = insertvalue { i64, i16, i16 } %ri1, i16 %de_fl, 2
+  ret { i64, i16, i16 } %ri2
 
 chk_zero:
   %any_zero = or i1 %a_zero, %b_zero
@@ -487,9 +558,10 @@ chk_zero:
 
 ret_zero:
   %z_se = select i1 %res_sign, i16 -32768, i16 0
-  %rz0 = insertvalue { i64, i16 } zeroinitializer, i64 0, 0
-  %rz1 = insertvalue { i64, i16 } %rz0, i16 %z_se, 1
-  ret { i64, i16 } %rz1
+  %rz0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 0, 0
+  %rz1 = insertvalue { i64, i16, i16 } %rz0, i16 %z_se, 1
+  %rz2 = insertvalue { i64, i16, i16 } %rz1, i16 %de_fl, 2
+  ret { i64, i16, i16 } %rz2
 
 finite:
   %a_eff16 = select i1 %a_zexp, i16 1, i16 %a_exp16
@@ -524,18 +596,19 @@ finite:
   %out_exp = select i1 %msb, i32 %exp_p1, i32 %base_exp
   %out_sig = select i1 %msb, i64 %p_hi, i64 %norm_sig
   %out_rem = select i1 %msb, i64 %p_lo, i64 %norm_rem
-  %res = call { i64, i16 } @__plan9asm_x87_round_pack(i1 %res_sign, i32 %out_exp, i64 %out_sig, i64 %out_rem, i16 %cw)
-  ret { i64, i16 } %res
+  %res = call { i64, i16, i16 } @__plan9asm_x87_round_pack(i1 %res_sign, i32 %out_exp, i64 %out_sig, i64 %out_rem, i16 %cw, i16 %de_fl)
+  ret { i64, i16, i16 } %res
 
 ret_indef:
-  %ind0 = insertvalue { i64, i16 } zeroinitializer, i64 -4611686018427387904, 0
-  %ind1 = insertvalue { i64, i16 } %ind0, i16 -1, 1
-  ret { i64, i16 } %ind1
+  %ind0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 -4611686018427387904, 0
+  %ind1 = insertvalue { i64, i16, i16 } %ind0, i16 -1, 1
+  %ind2 = insertvalue { i64, i16, i16 } %ind1, i16 1, 2
+  ret { i64, i16, i16 } %ind2
 }
 
 `
 
-const x87SoftFPDivIR = `define internal { i64, i16 } @__plan9asm_x87_div({ i64, i16 } %a, { i64, i16 } %b, i16 %cw) {
+const x87SoftFPDivIR = `define internal { i64, i16, i16 } @__plan9asm_x87_div({ i64, i16 } %a, { i64, i16 } %b, i16 %cw) {
 entry:
   %a_sig = extractvalue { i64, i16 } %a, 0
   %a_se = extractvalue { i64, i16 } %a, 1
@@ -572,6 +645,14 @@ chk_nan:
   br i1 %any_nan, label %ret_nan, label %chk_special
 
 ret_nan:
+  %a_qbit = and i64 %a_sig, 4611686018427387904
+  %b_qbit = and i64 %b_sig, 4611686018427387904
+  %a_qbit_z = icmp eq i64 %a_qbit, 0
+  %b_qbit_z = icmp eq i64 %b_qbit, 0
+  %a_snan = and i1 %a_nan, %a_qbit_z
+  %b_snan = and i1 %b_nan, %b_qbit_z
+  %any_snan = or i1 %a_snan, %b_snan
+  %nan_fl = select i1 %any_snan, i16 1, i16 0
   %both_nan = and i1 %a_nan, %b_nan
   %b_bigger = icmp ugt i64 %b_sig, %a_sig
   %pick_b_both = and i1 %both_nan, %b_bigger
@@ -580,15 +661,22 @@ ret_nan:
   %nan_sig0 = select i1 %pick_b, i64 %b_sig, i64 %a_sig
   %nan_se = select i1 %pick_b, i16 %b_se, i16 %a_se
   %nan_sig = or i64 %nan_sig0, 4611686018427387904
-  %rn0 = insertvalue { i64, i16 } zeroinitializer, i64 %nan_sig, 0
-  %rn1 = insertvalue { i64, i16 } %rn0, i16 %nan_se, 1
-  ret { i64, i16 } %rn1
+  %rn0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 %nan_sig, 0
+  %rn1 = insertvalue { i64, i16, i16 } %rn0, i16 %nan_se, 1
+  %rn2 = insertvalue { i64, i16, i16 } %rn1, i16 %nan_fl, 2
+  ret { i64, i16, i16 } %rn2
 
 chk_special:
   %a_zsig = icmp eq i64 %a_sig, 0
   %b_zsig = icmp eq i64 %b_sig, 0
   %a_zero = and i1 %a_zexp, %a_zsig
   %b_zero = and i1 %b_zexp, %b_zsig
+  %a_nzsig = xor i1 %a_zsig, true
+  %b_nzsig = xor i1 %b_zsig, true
+  %a_den = and i1 %a_zexp, %a_nzsig
+  %b_den = and i1 %b_zexp, %b_nzsig
+  %any_den = or i1 %a_den, %b_den
+  %de_fl = select i1 %any_den, i16 2, i16 0
   %inf_div_inf = and i1 %a_maxe, %b_maxe
   %zero_div_zero = and i1 %a_zero, %b_zero
   %is_indef = or i1 %inf_div_inf, %zero_div_zero
@@ -599,11 +687,16 @@ chk_inf:
   br i1 %make_inf, label %ret_inf, label %chk_zero
 
 ret_inf:
+  %not_a_maxe = xor i1 %a_maxe, true
+  %is_ze = and i1 %not_a_maxe, %b_zero
+  %ze_fl = select i1 %is_ze, i16 4, i16 0
+  %inf_fl = or i16 %ze_fl, %de_fl
   %inf_s16 = select i1 %res_sign, i16 -32768, i16 0
   %inf_se = or i16 %inf_s16, 32767
-  %ri0 = insertvalue { i64, i16 } zeroinitializer, i64 -9223372036854775808, 0
-  %ri1 = insertvalue { i64, i16 } %ri0, i16 %inf_se, 1
-  ret { i64, i16 } %ri1
+  %ri0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 -9223372036854775808, 0
+  %ri1 = insertvalue { i64, i16, i16 } %ri0, i16 %inf_se, 1
+  %ri2 = insertvalue { i64, i16, i16 } %ri1, i16 %inf_fl, 2
+  ret { i64, i16, i16 } %ri2
 
 chk_zero:
   %make_zero = or i1 %a_zero, %b_maxe
@@ -611,9 +704,10 @@ chk_zero:
 
 ret_zero:
   %z_se = select i1 %res_sign, i16 -32768, i16 0
-  %rz0 = insertvalue { i64, i16 } zeroinitializer, i64 0, 0
-  %rz1 = insertvalue { i64, i16 } %rz0, i16 %z_se, 1
-  ret { i64, i16 } %rz1
+  %rz0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 0, 0
+  %rz1 = insertvalue { i64, i16, i16 } %rz0, i16 %z_se, 1
+  %rz2 = insertvalue { i64, i16, i16 } %rz1, i16 %de_fl, 2
+  ret { i64, i16, i16 } %rz2
 
 finite:
   %a_eff16 = select i1 %a_zexp, i16 1, i16 %a_exp16
@@ -664,18 +758,19 @@ after_loop:
   %r_top = select i1 %r_ge, i64 -9223372036854775808, i64 0
   %r_st = zext i1 %sticky to i64
   %out_rem = or i64 %r_top, %r_st
-  %res = call { i64, i16 } @__plan9asm_x87_round_pack(i1 %res_sign, i32 %res_exp, i64 %q_next, i64 %out_rem, i16 %cw)
-  ret { i64, i16 } %res
+  %res = call { i64, i16, i16 } @__plan9asm_x87_round_pack(i1 %res_sign, i32 %res_exp, i64 %q_next, i64 %out_rem, i16 %cw, i16 %de_fl)
+  ret { i64, i16, i16 } %res
 
 ret_indef:
-  %ind0 = insertvalue { i64, i16 } zeroinitializer, i64 -4611686018427387904, 0
-  %ind1 = insertvalue { i64, i16 } %ind0, i16 -1, 1
-  ret { i64, i16 } %ind1
+  %ind0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 -4611686018427387904, 0
+  %ind1 = insertvalue { i64, i16, i16 } %ind0, i16 -1, 1
+  %ind2 = insertvalue { i64, i16, i16 } %ind1, i16 1, 2
+  ret { i64, i16, i16 } %ind2
 }
 
 `
 
-const x87SoftFPSqrtIR = `define internal { i64, i16 } @__plan9asm_x87_sqrt({ i64, i16 } %a, i16 %cw) {
+const x87SoftFPSqrtIR = `define internal { i64, i16, i16 } @__plan9asm_x87_sqrt({ i64, i16 } %a, i16 %cw) {
 entry:
   %a_sig = extractvalue { i64, i16 } %a, 0
   %a_se = extractvalue { i64, i16 } %a, 1
@@ -695,10 +790,14 @@ chk_nan:
   br i1 %a_nan, label %ret_nan, label %chk_zero
 
 ret_nan:
+  %a_qbit = and i64 %a_sig, 4611686018427387904
+  %a_snan = icmp eq i64 %a_qbit, 0
+  %nan_fl = select i1 %a_snan, i16 1, i16 0
   %qnan_sig = or i64 %a_sig, 4611686018427387904
-  %rn0 = insertvalue { i64, i16 } zeroinitializer, i64 %qnan_sig, 0
-  %rn1 = insertvalue { i64, i16 } %rn0, i16 %a_se, 1
-  ret { i64, i16 } %rn1
+  %rn0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 %qnan_sig, 0
+  %rn1 = insertvalue { i64, i16, i16 } %rn0, i16 %a_se, 1
+  %rn2 = insertvalue { i64, i16, i16 } %rn1, i16 %nan_fl, 2
+  ret { i64, i16, i16 } %rn2
 
 chk_zero:
   %a_zsig = icmp eq i64 %a_sig, 0
@@ -706,7 +805,10 @@ chk_zero:
   br i1 %a_zero, label %ret_self, label %chk_neg
 
 ret_self:
-  ret { i64, i16 } %a
+  %rs0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 %a_sig, 0
+  %rs1 = insertvalue { i64, i16, i16 } %rs0, i16 %a_se, 1
+  %rs2 = insertvalue { i64, i16, i16 } %rs1, i16 0, 2
+  ret { i64, i16, i16 } %rs2
 
 chk_neg:
   br i1 %a_sign, label %ret_indef, label %chk_inf
@@ -715,6 +817,7 @@ chk_inf:
   br i1 %a_maxe, label %ret_self, label %finite
 
 finite:
+  %de_fl = select i1 %a_zexp, i16 2, i16 0
   %a_eff16 = select i1 %a_zexp, i16 1, i16 %a_exp16
   %a_eff32 = zext i16 %a_eff16 to i32
   %a_lz = call i64 @llvm.ctlz.i64(i64 %a_sig, i1 false)
@@ -773,13 +876,14 @@ after_loop:
   %r_top = select i1 %r_bit, i64 -9223372036854775808, i64 0
   %r_st = zext i1 %sticky to i64
   %out_rem = or i64 %r_top, %r_st
-  %res = call { i64, i16 } @__plan9asm_x87_round_pack(i1 false, i32 %res_exp, i64 %q, i64 %out_rem, i16 %cw)
-  ret { i64, i16 } %res
+  %res = call { i64, i16, i16 } @__plan9asm_x87_round_pack(i1 false, i32 %res_exp, i64 %q, i64 %out_rem, i16 %cw, i16 %de_fl)
+  ret { i64, i16, i16 } %res
 
 ret_indef:
-  %ind0 = insertvalue { i64, i16 } zeroinitializer, i64 -4611686018427387904, 0
-  %ind1 = insertvalue { i64, i16 } %ind0, i16 -1, 1
-  ret { i64, i16 } %ind1
+  %ind0 = insertvalue { i64, i16, i16 } zeroinitializer, i64 -4611686018427387904, 0
+  %ind1 = insertvalue { i64, i16, i16 } %ind0, i16 -1, 1
+  %ind2 = insertvalue { i64, i16, i16 } %ind1, i16 1, 2
+  ret { i64, i16, i16 } %ind2
 }
 
 `
