@@ -545,7 +545,6 @@ func (c *amd64Ctx) evaluateX87Native(instruction string, values []x87Value, resu
 		inputs[i] = x87NativeOperand{c.x87ValueScratch[i+1], x87ValueType}
 	}
 	var code strings.Builder
-	code.WriteString("fnclex; ")
 	for i := len(inputs) - 1; i >= 0; i-- {
 		fmt.Fprintf(&code, "fldt $%d; ", len(outputs)+i)
 	}
@@ -557,6 +556,7 @@ func (c *amd64Ctx) evaluateX87Native(instruction string, values []x87Value, resu
 	for i := results; i < remaining; i++ {
 		code.WriteString("; fstp %st(0)")
 	}
+	fmt.Fprintln(c.b, `  call void asm sideeffect "fnclex", "~{fpsr}"()`)
 	c.emitX87NativeAsm(code.String(), outputs, inputs)
 	first, second := x87ZeroValue, x87ZeroValue
 	if results > 0 {
@@ -571,7 +571,8 @@ func (c *amd64Ctx) evaluateX87Native(instruction string, values []x87Value, resu
 
 func (c *amd64Ctx) x87NativeFromScalar(value, typ, instruction string) x87Value {
 	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", typ, value, c.x87ScalarScratch)
-	c.emitX87NativeAsm("fnclex; "+instruction+" $2; fnstsw $1; fstpt $0",
+	fmt.Fprintln(c.b, `  call void asm sideeffect "fnclex", "~{fpsr}"()`)
+	c.emitX87NativeAsm(instruction+" $2; fnstsw $1; fstpt $0",
 		[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}, {c.x87NativeStatus, "i16"}},
 		[]x87NativeOperand{{c.x87ScalarScratch, typ}})
 	status := c.x87IR("load i16, ptr %s", c.x87NativeStatus)
@@ -582,7 +583,8 @@ func (c *amd64Ctx) x87NativeFromScalar(value, typ, instruction string) x87Value 
 
 func (c *amd64Ctx) x87NativeToScalar(value x87Value, typ, instruction string) string {
 	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, value, c.x87ValueScratch[1])
-	c.emitX87NativeAsm("fnclex; fldt $2; "+instruction+" $0; fnstsw $1",
+	fmt.Fprintln(c.b, `  call void asm sideeffect "fnclex", "~{fpsr}"()`)
+	c.emitX87NativeAsm("fldt $2; "+instruction+" $0; fnstsw $1",
 		[]x87NativeOperand{{c.x87ScalarScratch, typ}, {c.x87NativeStatus, "i16"}},
 		[]x87NativeOperand{{c.x87ValueScratch[1], x87ValueType}})
 	status := c.x87IR("load i16, ptr %s", c.x87NativeStatus)

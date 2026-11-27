@@ -530,7 +530,8 @@ func (c *amd64Ctx) lowerX87ExtBCD(store bool, ins asm.Instr) error {
 	}
 	if c.useHardwareX87() {
 		fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, c.loadX87Value(0), c.x87ValueScratch[1])
-		c.emitX87NativeAsm("fnclex; fldt $2; fbstp $0; fnstsw $1",
+		fmt.Fprintln(c.b, `  call void asm sideeffect "fnclex", "~{fpsr}"()`)
+		c.emitX87NativeAsm("fldt $2; fbstp $0; fnstsw $1",
 			[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}, {c.x87NativeStatus, "i16"}},
 			[]x87NativeOperand{{c.x87ValueScratch[1], x87ValueType}})
 		status := c.x87IR("load i16, ptr %s", c.x87NativeStatus)
