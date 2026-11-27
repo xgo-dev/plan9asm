@@ -1128,6 +1128,7 @@ extern void diffX87ConvInt(uint64_t cw, uint8_t *inRaw80, uint64_t *outVals, uin
 extern void diffX87ConvFloat(uint64_t cw, uint8_t *inRaw80, uint32_t *outF32, uint64_t *outF64, uint8_t *outRnd80, uint64_t *outSW);
 extern void diffX87ArithPC(uint64_t cw, uint8_t *aRaw80, uint8_t *bRaw80, uint8_t *outRaw80, uint64_t *outSW);
 extern void diffX87Cmp(uint8_t *aRaw80, uint8_t *bRaw80, uint64_t *outCC, uint64_t *outExc);
+extern void diffX87DynamicStackBranch(uint64_t x, uint64_t *out);
 
 typedef struct { uint64_t sig; uint16_t se; } raw80_spec;
 
@@ -1335,6 +1336,11 @@ int main(void) {
         make_raw80(cmpPairs[i][1], bB);
         diffX87Cmp(aB, bB, outCC, outExc);
         printf("x87_cmp[%d]=", i); print_u64s(outCC, 5); putchar('|'); print_u64s(outExc, 5); putchar('\n');
+    }
+    for (uint64_t x = 0; x <= 1; x++) {
+        uint64_t outDyn[4] = {0};
+        diffX87DynamicStackBranch(x, outDyn);
+        printf("x87_dyn_branch[%llu]=", (unsigned long long)x); print_u64s(outDyn, 4); putchar('\n');
     }
     return 0;
 }
@@ -1586,8 +1592,14 @@ int main(void) {
 				t.Fatalf("X87Software %s = %s, want %s", bg.key, got, bg.want)
 			}
 		}
-		if len(swMap) < 453 {
-			t.Fatalf("X87Software produced only %d diff keys, want >= 453", len(swMap))
+		if got, want := swMap["x87_dyn_branch[0]"], "0000000000000000,0000000000000800,0000000000000000,0000000000000000"; got != want {
+			t.Fatalf("X87Software x87_dyn_branch[0] = %s, want %s", got, want)
+		}
+		if got, want := swMap["x87_dyn_branch[1]"], "0000000000000000,0000000000000000,0000000000000800,0000000000000000"; got != want {
+			t.Fatalf("X87Software x87_dyn_branch[1] = %s, want %s", got, want)
+		}
+		if len(swMap) < 455 {
+			t.Fatalf("X87Software produced only %d diff keys, want >= 455", len(swMap))
 		}
 	}
 
@@ -1647,8 +1659,8 @@ int main(void) {
 		t.Fatalf("read x87 oracle transcript %s: %v", oraclePath, err)
 	}
 	oracleMap, _ := parseDiffTranscript(t, string(oracleBytes))
-	if len(oracleMap) < 453 {
-		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 453", len(oracleMap))
+	if len(oracleMap) < 455 {
+		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 455", len(oracleMap))
 	}
 
 	compared := 0
@@ -1672,7 +1684,7 @@ int main(void) {
 		}
 	}
 	writeAMD64ManifestDiffExecutionReport(t, "amd64/x87_diff_amd64.s", llcTool, true, map[string][]string{
-		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80", "x87_exc", "x87_const_rc", "x87_bcd_rc[", "x87_conv_int[", "x87_conv_flt[", "x87_arith_pc[", "x87_cmp["},
+		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80", "x87_exc", "x87_const_rc", "x87_bcd_rc[", "x87_conv_int[", "x87_conv_flt[", "x87_arith_pc[", "x87_cmp[", "x87_dyn_branch["},
 	}, llvmMap, oracleMap, failedKeys, "")
 	if len(mismatches) > 0 {
 		t.Fatalf("AMD64 x87 machine-code differential mismatch (%d/%d failed):\n%s", len(mismatches), compared, strings.Join(mismatches, "\n"))

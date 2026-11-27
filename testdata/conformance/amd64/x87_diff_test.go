@@ -269,6 +269,11 @@ func runX87DiffOracleLines() []string {
 		diffX87Cmp(&aCopy, &bCopy, &outCC, &outExc)
 		lines = append(lines, fmt.Sprintf("x87_cmp[%d]=%s|%s", i, formatU64Slice(outCC[:]), formatU64Slice(outExc[:])))
 	}
+	for x := uint64(0); x <= 1; x++ {
+		var out [4]uint64
+		diffX87DynamicStackBranch(x, &out)
+		lines = append(lines, fmt.Sprintf("x87_dyn_branch[%d]=%s", x, formatU64Slice(out[:])))
+	}
 
 	return lines
 }
@@ -390,6 +395,17 @@ func TestAMD64X87NativeSanity(t *testing.T) {
 	diffX87BCDOne(0x077f, &inHalf, &bcdOut, &bcdSW)
 	if bcdOut != wantMax || bcdSW != 0x0020 {
 		t.Fatalf("diffX87BCDOne(+10^18-0.5, RD) = (%x, %#x), want (%x, 0x20)", bcdOut, bcdSW, wantMax)
+	}
+
+	// Verify Round 14 dynamic x87 branch-depth non-overflowing cases on native amd64.
+	var dyn0, dyn1 [4]uint64
+	diffX87DynamicStackBranch(0, &dyn0)
+	diffX87DynamicStackBranch(1, &dyn1)
+	if dyn0 != [4]uint64{0x0000, 0x0800, 0x0000, 0x0000} {
+		t.Fatalf("diffX87DynamicStackBranch(0) = %#x, want [0x0 0x800 0x0 0x0]", dyn0)
+	}
+	if dyn1 != [4]uint64{0x0000, 0x0000, 0x0800, 0x0000} {
+		t.Fatalf("diffX87DynamicStackBranch(1) = %#x, want [0x0 0x0 0x800 0x0]", dyn1)
 	}
 }
 

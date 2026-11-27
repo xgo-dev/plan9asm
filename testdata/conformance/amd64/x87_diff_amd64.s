@@ -1017,3 +1017,84 @@ TEXT ·diffX87Cmp(SB), NOSPLIT, $0-32
 
 	FINIT
 	RET
+
+// diffX87DynamicStackBranch verifies non-overflowing fixed-8 and dynamic
+// CFG-joined x87 stack depths (both branch polarities and FFREE F7 clearing
+// ST(7)'s tag before join), recording FSTSW TOP|SF|IE (0x3841) or SF|IE (0x0041).
+TEXT ·diffX87DynamicStackBranch(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	MOVQ out+8(FP), DI
+
+	// [0] Fixed 8 pushes -> TOP=0, SF=0, IE=0 (0x0000)
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3841, AX
+	MOVQ AX, 0(DI)
+
+	// [1] Dynamic 6/7 + 1 pushes (if x != 0 extra push) -> x=0: 7 pushes (TOP=1 -> 0x0800); x!=0: 8 pushes (TOP=0 -> 0x0000)
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JE dyn1_skip
+	FLD1
+dyn1_skip:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3841, AX
+	MOVQ AX, 8(DI)
+
+	// [2] Swapped dynamic 6/7 + 1 pushes (if x == 0 extra push) -> x=0: 8 pushes (0x0000); x!=0: 7 pushes (0x0800)
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JNE dyn2_skip
+	FLD1
+dyn2_skip:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3841, AX
+	MOVQ AX, 16(DI)
+
+	// [3] Dynamic 7/8 with FMOVDP F0, F0 pop on the 8-push branch before join + 1 push -> 8 pushes on both paths (TOP=0, SF=0, IE=0 -> 0x0000)
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JE dyn3_skip
+	FLD1
+	FMOVDP F0, F0
+dyn3_skip:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3841, AX
+	MOVQ AX, 24(DI)
+
+	FINIT
+	RET

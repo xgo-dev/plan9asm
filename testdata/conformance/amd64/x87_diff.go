@@ -19,3 +19,4 @@ func diffX87ConvInt(cw uint64, inRaw80 *[10]byte, outVals *[3]uint64, outSW *[3]
 func diffX87ConvFloat(cw uint64, inRaw80 *[10]byte, outF32 *uint32, outF64 *uint64, outRnd80 *[10]byte, outSW *[3]uint64)
 func diffX87ArithPC(cw uint64, aRaw80 *[10]byte, bRaw80 *[10]byte, outRaw80 *[50]byte, outSW *[5]uint64)
 func diffX87Cmp(aRaw80 *[10]byte, bRaw80 *[10]byte, outCC *[5]uint64, outExc *[5]uint64)
+func diffX87DynamicStackBranch(x uint64, out *[4]uint64)

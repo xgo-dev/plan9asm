@@ -1777,8 +1777,9 @@ func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
 }
 
 // TestTranslateGoModuleAMD64X87StatusAndStackPrecision freezes Round 13 P2
-// per-bit x87 status/control-word precision AND x87 stack-overflow / empty-stack
-// #IS protection:
+// per-bit x87 status/control-word precision AND Round 14 P1 may-occupied x87
+// stack-overflow / empty-stack #IS protection across BOTH X87Hardware and
+// X87Software modes:
 //  1. On the exact same undef-input division (`1 / entry_CF`):
 //     - reading unknown ZE (`FSTSW AX; ANDQ $4, AX`) is REJECTED;
 //     - clearing with `FCLEX` then reading ZE (`FCLEX; FSTSW AX; ANDQ $4, AX`)
@@ -1787,14 +1788,22 @@ func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
 //     folds under LLVM 22 -O2 to `ret i64 14336` (0x3800).
 //  2. Per-bit C1 clearing (`FLD1` clears C1 while preserving unknown sticky ZE)
 //     and per-bit FLDCW RC vs non-RC mask bits.
-//  3. x87 stack overflow (>8 pushes) and empty-stack pop reject unmodeled #IS
-//     status/value reads, while 8 pushes stay valid and FCLEX clears #IS bits.
+//  3. x87 stack overflow (>8 pushes, dynamic 7/8 + 1 CFG branch joins in BOTH
+//     branch polarities, unbounded push loops, FINCSTP rotating occupied ST(0)
+//     into ST(7), MMX without EMMS, one-branch FFREE F7) and empty-stack pops
+//     reject unmodeled #IS status/value/TOP reads in BOTH X87Hardware and
+//     X87Software, while fixed-8, dynamic 6/7+1, balanced loops, MMX+EMMS, and
+//     both-branch FFREE F7 stay valid.
+//  4. On amd64 hosts, runs TestAMD64X87StackOverflowNativeOracle to record real
+//     hardware results for fixed-8 (0x0), fixed-9 (0x41), and both dynamic
+//     7/8+1 branch polarities (0x0 / 0x41).
 func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
 	optTool := findLLVM22Tool("opt")
 	if optTool == "" {
 		t.Fatal("LLVM 22 opt is required for TestTranslateGoModuleAMD64X87StatusAndStackPrecision (check LLVM_CONFIG / PATH)")
 	}
-	goSrc := "package p\nfunc f() int64\n"
+	const defaultGoSrc = "package p\nfunc f() int64\n"
+	const paramGoSrc = "package p\nfunc f(x uint64) int64\n"
 
 	const divUndefPrefix = `
 	PUSHFQ
@@ -1808,10 +1817,13 @@ func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
 `
 
 	cases := []struct {
-		name    string
-		asm     string
-		wantErr bool
-		wantO2  string
+		name     string
+		goSrc    string
+		asm      string
+		wantErr  bool
+		wantO2   string
+		wantO2HW string
+		wantO2SW string
 	}{
 		{
 			name: "round13-p2-unknown-ze-rejected",
@@ -1888,7 +1900,8 @@ func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
 	MOVQ BX, ret+0(FP)
 	RET
 `,
-			wantO2: `asm sideeffect "fldpi; fstpt $0"`,
+			wantO2HW: `asm sideeffect "fldpi; fstpt $0"`,
+			wantO2SW: "ret i64 1",
 		},
 		{
 			name: "fldcw-undef-rc-bit10-rejects-fldpi",
@@ -1951,6 +1964,68 @@ func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "fixed-9-pushes-sf-ie-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "fixed-9-pushes-top-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "fixed-8-pushes-sf-ie-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+		{
 			name: "empty-stack-pop-is-status-rejected",
 			asm: `TEXT ·f(SB), NOSPLIT, $0-8
 	FINIT
@@ -1997,57 +2072,360 @@ func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
 `,
 			wantO2: "ret i64 0",
 		},
+		{
+			name:  "round14-p1-dyn-branch-7or8-plus-1-sf-ie-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JE skip
+	FLD1
+skip:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round14-p1-dyn-branch-swapped-7or8-plus-1-sf-ie-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JNE skip
+	FLD1
+skip:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round14-p1-dyn-branch-7or8-plus-1-value-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JE skip
+	FLD1
+skip:
+	FLD1
+	FMOVVP F0, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round14-p1-dyn-branch-7or8-plus-1-top-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JE skip
+	FLD1
+skip:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round14-p1-dyn-branch-6or7-plus-1-safe-accepted",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JE skip
+	FLD1
+skip:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+		{
+			name:  "round14-p1-loop-unbounded-push-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE done
+loop:
+	FLD1
+	DECQ CX
+	JNE loop
+done:
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round14-p1-loop-balanced-push-pop-accepted",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE done
+loop:
+	FLD1
+	FMOVDP F0, F0
+	DECQ CX
+	JNE loop
+done:
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+		{
+			name: "round14-p1-fincstp-rotates-occ-into-st7-overflow-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	FINCSTP
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round14-p1-mmx-without-emms-overflow-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	MOVQ $1, AX
+	MOVQ AX, M0
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round14-p1-mmx-with-emms-allows-fld1",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	MOVQ $1, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+		{
+			name:  "round14-p1-ffree-one-branch-8-pushes-overflow-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JE skip
+	FFREE F7
+skip:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round14-p1-ffree-both-branches-8-pushes-accepted",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	CMPQ CX, $0
+	JE alt
+	FFREE F7
+	JMP join
+alt:
+	FFREE F7
+join:
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x41, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+	}
+
+	modes := []struct {
+		name string
+		mode X87Mode
+	}{
+		{"hw", X87Hardware},
+		{"sw", X87Software},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fset := token.NewFileSet()
-			astFile, err := parser.ParseFile(fset, "p.go", goSrc, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
-			pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(tc.asm), GoModuleOptions{
-				FileName:     "p_amd64.s",
-				GOOS:         "linux",
-				GOARCH:       "amd64",
-				TargetTriple: "x86_64-unknown-linux-gnu",
-				ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
-			})
-			if tc.wantErr {
-				if err == nil {
-					ir := res.Module.String()
-					res.Module.Dispose()
-					t.Fatalf("%s: expected rejection, got success:\n%s", tc.name, ir)
+		goSrc := tc.goSrc
+		if goSrc == "" {
+			goSrc = defaultGoSrc
+		}
+		for _, m := range modes {
+			t.Run(tc.name+"/"+m.name, func(t *testing.T) {
+				fset := token.NewFileSet()
+				astFile, err := parser.ParseFile(fset, "p.go", goSrc, 0)
+				if err != nil {
+					t.Fatal(err)
 				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("%s: unexpected error: %v", tc.name, err)
-			}
-			rawIR := res.Module.String()
-			res.Module.Dispose()
-			tmp := t.TempDir()
-			inPath := filepath.Join(tmp, "in.ll")
-			outPath := filepath.Join(tmp, "opt.ll")
-			if err := os.WriteFile(inPath, []byte(rawIR), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
-				t.Fatalf("%s: LLVM 22 opt -O2 failed: %v\n%s", tc.name, err, out)
-			}
-			optBytes, err := os.ReadFile(outPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(optBytes), tc.wantO2) {
-				t.Fatalf("%s: expected LLVM 22 -O2 IR to contain %q, got:\n%s", tc.name, tc.wantO2, string(optBytes))
-			}
-		})
+				cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+				pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(tc.asm), GoModuleOptions{
+					FileName:     "p_amd64.s",
+					GOOS:         "linux",
+					GOARCH:       "amd64",
+					TargetTriple: "x86_64-unknown-linux-gnu",
+					X87Mode:      m.mode,
+					ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+				})
+				if tc.wantErr {
+					if err == nil {
+						ir := res.Module.String()
+						res.Module.Dispose()
+						t.Fatalf("%s/%s: expected rejection, got success:\n%s", tc.name, m.name, ir)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("%s/%s: unexpected error: %v", tc.name, m.name, err)
+				}
+				rawIR := res.Module.String()
+				res.Module.Dispose()
+				tmp := t.TempDir()
+				inPath := filepath.Join(tmp, "in.ll")
+				outPath := filepath.Join(tmp, "opt.ll")
+				if err := os.WriteFile(inPath, []byte(rawIR), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
+					t.Fatalf("%s/%s: LLVM 22 opt -O2 failed: %v\n%s", tc.name, m.name, err, out)
+				}
+				optBytes, err := os.ReadFile(outPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := tc.wantO2
+				if m.mode == X87Hardware && tc.wantO2HW != "" {
+					want = tc.wantO2HW
+				}
+				if m.mode == X87Software && tc.wantO2SW != "" {
+					want = tc.wantO2SW
+				}
+				if want != "" && !strings.Contains(string(optBytes), want) {
+					t.Fatalf("%s/%s: expected LLVM 22 -O2 IR to contain %q, got:\n%s", tc.name, m.name, want, string(optBytes))
+				}
+			})
+		}
+	}
+
+	// On amd64 hosts, run the native Go amd64 hardware oracle proving fixed-8 (0x0),
+	// fixed-9 (0x41), and both dynamic 7/8+1 branch polarities (0x0 / 0x41).
+	if runtime.GOARCH == "amd64" {
+		cmd := exec.Command("go", "test", "-v", "-count=1", "./testdata/conformance/amd64", "-run", "^TestAMD64X87StackOverflowNativeOracle$")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("native amd64 x87 stack-overflow oracle failed: %v\n%s", err, out)
+		}
 	}
 }
 
