@@ -277,7 +277,7 @@ jobs:
           PLAN9ASM_DIFF_REPORT_OUT: ${{ runner.temp }}/amd64-diff-report.json
         run: |
           rm -f "$PLAN9ASM_DIFF_REPORT_OUT"
-          go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate|TestTranslateGoModuleAMD64PopAndPushfqInitPropagation|TestTranslateGoModuleAMD64PrivateSPConfinement|TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix|TestTranslateGoModuleAMD64VecLaneSelectPrecision|TestTranslateGoModuleAMD64PerBitEntryFlagDifferential|TestTranslateGoModuleAMD64X87StackAndConstants|TestStep1ExplicitUnsupportedAuditRegistry)$' .
+          go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate|TestTranslateGoModuleAMD64PopAndPushfqInitPropagation|TestTranslateGoModuleAMD64PrivateSPConfinement|TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix|TestTranslateGoModuleAMD64X87StatusAndStackPrecision|TestTranslateGoModuleAMD64VecLaneSelectPrecision|TestTranslateGoModuleAMD64PerBitEntryFlagDifferential|TestTranslateGoModuleAMD64X87StackAndConstants|TestStep1ExplicitUnsupportedAuditRegistry)$' .
           go test -v -count=1 ./testdata/conformance/amd64
           go run ./cmd/plan9asmscan \
             -corpus=go-asm \
@@ -315,7 +315,7 @@ jobs:
           assert verified > 0 and verified + pending == manifest, (
               f"execution-traceable diff count mismatch: verified={verified} + hw_pending={pending} != manifest_execute={manifest}"
           )
-          assert compared_inputs >= 1824, f"expected >= 1824 per-input native diff comparisons, got {compared_inputs}"
+          assert compared_inputs >= 2254, f"expected >= 2254 per-input native diff comparisons, got {compared_inputs}"
           print(
               f"amd64-diff-gate coverage verified: llvm={llvm_ver} ir_generated={cov['ir_generated_forms']} "
               f"object_compiled={cov['object_compiled_forms']} diff_verified={verified} hw_pending={pending} "

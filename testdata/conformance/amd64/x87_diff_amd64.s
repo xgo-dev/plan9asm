@@ -729,3 +729,291 @@ TEXT ·diffX87ConstRoundingModes(SB), NOSPLIT, $16-8
 
 	FINIT
 	RET
+
+// diffX87BCDOne loads a raw 10-byte binary80 value via FMOVX, stores 10-byte
+// packed BCD via FMOVBP under caller-specified FLDCW cw, and records FSTSW
+// (TOP|C1|IE|DE|ZE|OE|UE|PE = 0x3a3f).
+TEXT ·diffX87BCDOne(SB), NOSPLIT, $16-32
+	MOVQ cw+0(FP), AX
+	MOVQ inRaw80+8(FP), SI
+	MOVQ outBCD+16(FP), DI
+	MOVQ outSW+24(FP), DX
+	FINIT
+	MOVW AX, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVBP F0, 0(DI)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3a3f, AX
+	MOVQ AX, 0(DX)
+	FINIT
+	RET
+
+// diffX87ConvInt converts a raw 10-byte binary80 value via FMOVWP (i16),
+// FMOVLP (i32), and FMOVVP (i64) under caller-specified FLDCW cw, capturing
+// each converted value and its isolated FSTSW (C1|IE..PE = 0x023f).
+TEXT ·diffX87ConvInt(SB), NOSPLIT, $16-32
+	MOVQ cw+0(FP), R9
+	MOVQ inRaw80+8(FP), SI
+	MOVQ outVals+16(FP), DX
+	MOVQ outSW+24(FP), R8
+
+	// [0] i16 via FMOVWP
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVWP F0, 8(SP)
+	MOVWQZX 8(SP), AX
+	MOVQ AX, 0(DX)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 0(R8)
+
+	// [1] i32 via FMOVLP
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVLP F0, 8(SP)
+	MOVLQZX 8(SP), AX
+	MOVQ AX, 8(DX)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 8(R8)
+
+	// [2] i64 via FMOVVP
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVVP F0, 16(DX)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 16(R8)
+
+	FINIT
+	RET
+
+// diffX87ConvFloat converts a raw 10-byte binary80 value via FMOVFP (f32),
+// FMOVDP (f64), and FRNDINT (10-byte raw binary80) under caller-specified
+// FLDCW cw, capturing each output and its isolated FSTSW (C1|IE..PE = 0x023f).
+TEXT ·diffX87ConvFloat(SB), NOSPLIT, $16-48
+	MOVQ cw+0(FP), R9
+	MOVQ inRaw80+8(FP), SI
+	MOVQ outF32+16(FP), DX
+	MOVQ outF64+24(FP), CX
+	MOVQ outRnd80+32(FP), R8
+	MOVQ outSW+40(FP), R10
+
+	// [0] f32 via FMOVFP
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVFP F0, 0(DX)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 0(R10)
+
+	// [1] f64 via FMOVDP
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVDP F0, 0(CX)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 8(R10)
+
+	// [2] FRNDINT -> read FSTSW BEFORE FMOVXP (which clears C1)
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FRNDINT
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 16(R10)
+	FMOVXP F0, 0(R8)
+
+	FINIT
+	RET
+
+// diffX87ArithPC executes FADDDP, FSUBDP, FMULDP, FDIVDP, and FSQRT(a) on raw
+// 10-byte binary80 inputs under caller-specified FLDCW cw (covering all 3 PC x
+// 4 RC modes), recording all 5 raw 10-byte results and isolated FSTSW (0x023f).
+TEXT ·diffX87ArithPC(SB), NOSPLIT, $16-40
+	MOVQ cw+0(FP), R9
+	MOVQ aRaw80+8(FP), SI
+	MOVQ bRaw80+16(FP), DI
+	MOVQ outRaw80+24(FP), R8
+	MOVQ outSW+32(FP), R10
+
+	// [0] a + b
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVX 0(DI), F0
+	FADDDP F0, F1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 0(R10)
+	FMOVXP F0, 0(R8)
+
+	// [1] a - b
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVX 0(DI), F0
+	FSUBDP F0, F1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 8(R10)
+	FMOVXP F0, 10(R8)
+
+	// [2] a * b
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVX 0(DI), F0
+	FMULDP F0, F1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 16(R10)
+	FMOVXP F0, 20(R8)
+
+	// [3] a / b
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FMOVX 0(DI), F0
+	FDIVDP F0, F1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 24(R10)
+	FMOVXP F0, 30(R8)
+
+	// [4] sqrt(a)
+	FINIT
+	MOVW R9, 0(SP)
+	FLDCW 0(SP)
+	FMOVX 0(SI), F0
+	FSQRT
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 32(R10)
+	FMOVXP F0, 40(R8)
+
+	FINIT
+	RET
+
+// diffX87Cmp executes FCOMD, FUCOM, FCOMI, FUCOMI, and FTST on raw 10-byte
+// binary80 inputs, capturing both condition codes (C3/C2/C1/C0 or RFLAGS
+// OF/SF/ZF/AF/PF/CF) and sticky x87 exceptions (IE/DE) in FSTSW.
+TEXT ·diffX87Cmp(SB), NOSPLIT, $0-32
+	MOVQ aRaw80+0(FP), SI
+	MOVQ bRaw80+8(FP), DI
+	MOVQ outCC+16(FP), R8
+	MOVQ outExc+24(FP), R10
+
+	// [0] FCOMD F1, F0 (ST(0)=a vs ST(1)=b)
+	FINIT
+	FMOVX 0(DI), F0
+	FMOVX 0(SI), F0
+	FCOMD F1, F0
+	MOVQ $0, AX
+	FSTSW AX
+	MOVQ AX, BX
+	ANDQ $0x4700, AX
+	MOVQ AX, 0(R8)
+	ANDQ $0x003f, BX
+	MOVQ BX, 0(R10)
+
+	// [1] FUCOM F0, F1 (ST(0)=a vs ST(1)=b)
+	FINIT
+	FMOVX 0(DI), F0
+	FMOVX 0(SI), F0
+	FUCOM F0, F1
+	MOVQ $0, AX
+	FSTSW AX
+	MOVQ AX, BX
+	ANDQ $0x4700, AX
+	MOVQ AX, 8(R8)
+	ANDQ $0x003f, BX
+	MOVQ BX, 8(R10)
+
+	// [2] FCOMI F1, F0 (ST(0)=a vs ST(1)=b, OF/SF/AF pre-set to 1)
+	FINIT
+	FMOVX 0(DI), F0
+	FMOVX 0(SI), F0
+	MOVQ $0xa92, AX
+	PUSHQ AX
+	POPFQ
+	FCOMI F1, F0
+	MOVQ $0, AX
+	LAHF
+	MOVQ $0, BX
+	SETOS BL
+	SHRQ $8, AX
+	ANDQ $0xd7, AX
+	SHLQ $8, BX
+	ORQ BX, AX
+	MOVQ AX, 16(R8)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 16(R10)
+
+	// [3] FUCOMI F0, F1 (ST(0)=a vs ST(1)=b, OF/SF/AF pre-set to 1)
+	FINIT
+	FMOVX 0(DI), F0
+	FMOVX 0(SI), F0
+	MOVQ $0xa92, AX
+	PUSHQ AX
+	POPFQ
+	FUCOMI F0, F1
+	MOVQ $0, AX
+	LAHF
+	MOVQ $0, BX
+	SETOS BL
+	SHRQ $8, AX
+	ANDQ $0xd7, AX
+	SHLQ $8, BX
+	ORQ BX, AX
+	MOVQ AX, 24(R8)
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x023f, AX
+	MOVQ AX, 24(R10)
+
+	// [4] FTST (ST(0)=a vs 0.0)
+	FINIT
+	FMOVX 0(SI), F0
+	FTST
+	MOVQ $0, AX
+	FSTSW AX
+	MOVQ AX, BX
+	ANDQ $0x4700, AX
+	MOVQ AX, 32(R8)
+	ANDQ $0x003f, BX
+	MOVQ BX, 32(R10)
+
+	FINIT
+	RET

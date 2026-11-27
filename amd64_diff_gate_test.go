@@ -1776,6 +1776,281 @@ func TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix(t *testing.T) {
 	}
 }
 
+// TestTranslateGoModuleAMD64X87StatusAndStackPrecision freezes Round 13 P2
+// per-bit x87 status/control-word precision AND x87 stack-overflow / empty-stack
+// #IS protection:
+//  1. On the exact same undef-input division (`1 / entry_CF`):
+//     - reading unknown ZE (`FSTSW AX; ANDQ $4, AX`) is REJECTED;
+//     - clearing with `FCLEX` then reading ZE (`FCLEX; FSTSW AX; ANDQ $4, AX`)
+//     is ACCEPTED and folds under LLVM 22 -O2 to `ret i64 0`;
+//     - reading independent TOP (`FSTSW AX; ANDQ $0x3800, AX`) is ACCEPTED and
+//     folds under LLVM 22 -O2 to `ret i64 14336` (0x3800).
+//  2. Per-bit C1 clearing (`FLD1` clears C1 while preserving unknown sticky ZE)
+//     and per-bit FLDCW RC vs non-RC mask bits.
+//  3. x87 stack overflow (>8 pushes) and empty-stack pop reject unmodeled #IS
+//     status/value reads, while 8 pushes stay valid and FCLEX clears #IS bits.
+func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
+	optTool := findLLVM22Tool("opt")
+	if optTool == "" {
+		t.Fatal("LLVM 22 opt is required for TestTranslateGoModuleAMD64X87StatusAndStackPrecision (check LLVM_CONFIG / PATH)")
+	}
+	goSrc := "package p\nfunc f() int64\n"
+
+	const divUndefPrefix = `
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	FINIT
+	MOVQ AX, 0(SP)
+	FLD1
+	FMOVV 0(SP), F0
+	FDIVDP F0, F1
+`
+
+	cases := []struct {
+		name    string
+		asm     string
+		wantErr bool
+		wantO2  string
+	}{
+		{
+			name: "round13-p2-unknown-ze-rejected",
+			asm: "TEXT ·f(SB), NOSPLIT, $16-8" + divUndefPrefix + `
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $4, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round13-p2-fclex-clears-ze-folds-zero",
+			asm: "TEXT ·f(SB), NOSPLIT, $16-8" + divUndefPrefix + `
+	FCLEX
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $4, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+		{
+			name: "round13-p2-independent-top-folds-0x3800",
+			asm: "TEXT ·f(SB), NOSPLIT, $16-8" + divUndefPrefix + `
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 14336",
+		},
+		{
+			name: "unknown-c1-after-undef-div-rejected",
+			asm: "TEXT ·f(SB), NOSPLIT, $16-8" + divUndefPrefix + `
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x0200, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "fld1-clears-c1-while-ze-stays-unknown",
+			asm: "TEXT ·f(SB), NOSPLIT, $16-8" + divUndefPrefix + `
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x0200, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+		{
+			name: "fldcw-undef-im-bit0-allows-fldpi",
+			asm: `TEXT ·f(SB), NOSPLIT, $24-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	ORQ $0x037e, AX
+	FINIT
+	MOVW AX, 0(SP)
+	FLDCW 0(SP)
+	FLDPI
+	FMOVXP F0, 8(SP)
+	MOVQ 8(SP), BX
+	ANDQ $1, BX
+	FINIT
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantO2: `asm sideeffect "fldpi; fstpt $0"`,
+		},
+		{
+			name: "fldcw-undef-rc-bit10-rejects-fldpi",
+			asm: `TEXT ·f(SB), NOSPLIT, $24-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	SHLQ $10, AX
+	ORQ $0x037f, AX
+	FINIT
+	MOVW AX, 0(SP)
+	FLDCW 0(SP)
+	FLDPI
+	FMOVXP F0, 8(SP)
+	MOVQ 8(SP), BX
+	ANDQ $1, BX
+	FINIT
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "stack-overflow-9-pushes-value-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $8-8
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FMOVVP F0, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "stack-overflow-9-pushes-is-status-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x0241, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "empty-stack-pop-is-status-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FMOVDP F0, F0
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x0041, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "empty-stack-pop-fclex-clears-is-status",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FMOVDP F0, F0
+	FCLEX
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x0041, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+		{
+			name: "eight-pushes-valid-top-zero",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 0",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			astFile, err := parser.ParseFile(fset, "p.go", goSrc, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := types.Config{Importer: importer.Default(), Sizes: types.SizesFor("gc", "amd64")}
+			pkg, err := cfg.Check("p", fset, []*ast.File{astFile}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := TranslateGoModule(GoPackage{Path: "p", Types: pkg, Syntax: []*ast.File{astFile}}, []byte(tc.asm), GoModuleOptions{
+				FileName:     "p_amd64.s",
+				GOOS:         "linux",
+				GOARCH:       "amd64",
+				TargetTriple: "x86_64-unknown-linux-gnu",
+				ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+			})
+			if tc.wantErr {
+				if err == nil {
+					ir := res.Module.String()
+					res.Module.Dispose()
+					t.Fatalf("%s: expected rejection, got success:\n%s", tc.name, ir)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", tc.name, err)
+			}
+			rawIR := res.Module.String()
+			res.Module.Dispose()
+			tmp := t.TempDir()
+			inPath := filepath.Join(tmp, "in.ll")
+			outPath := filepath.Join(tmp, "opt.ll")
+			if err := os.WriteFile(inPath, []byte(rawIR), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", inPath, "-o", outPath).CombinedOutput(); err != nil {
+				t.Fatalf("%s: LLVM 22 opt -O2 failed: %v\n%s", tc.name, err, out)
+			}
+			optBytes, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(optBytes), tc.wantO2) {
+				t.Fatalf("%s: expected LLVM 22 -O2 IR to contain %q, got:\n%s", tc.name, tc.wantO2, string(optBytes))
+			}
+		})
+	}
+}
+
 // TestTranslateGoModuleAMD64VecLaneSelectPrecision verifies Round 10 P1 #2 and
 // sibling lane-select/insert/half-move ops: extracting a defined lane succeeds
 // and folds to the exact constant under LLVM 22 -O2 even when an unselected

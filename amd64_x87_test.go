@@ -1123,6 +1123,19 @@ extern void diffX87TopStatus(uint64_t *out);
 extern void diffX87Binary80Precision(int64_t *outInt, uint8_t *outRaw80);
 extern void diffX87Exceptions(uint64_t *out);
 extern void diffX87ConstRoundingModes(uint8_t *outRaw80);
+extern void diffX87BCDOne(uint64_t cw, uint8_t *inRaw80, uint8_t *outBCD, uint64_t *outSW);
+extern void diffX87ConvInt(uint64_t cw, uint8_t *inRaw80, uint64_t *outVals, uint64_t *outSW);
+extern void diffX87ConvFloat(uint64_t cw, uint8_t *inRaw80, uint32_t *outF32, uint64_t *outF64, uint8_t *outRnd80, uint64_t *outSW);
+extern void diffX87ArithPC(uint64_t cw, uint8_t *aRaw80, uint8_t *bRaw80, uint8_t *outRaw80, uint64_t *outSW);
+extern void diffX87Cmp(uint8_t *aRaw80, uint8_t *bRaw80, uint64_t *outCC, uint64_t *outExc);
+
+typedef struct { uint64_t sig; uint16_t se; } raw80_spec;
+
+static void make_raw80(raw80_spec s, uint8_t out[10]) {
+    for (int i = 0; i < 8; i++) out[i] = (uint8_t)(s.sig >> (i * 8));
+    out[8] = (uint8_t)(s.se & 0xff);
+    out[9] = (uint8_t)(s.se >> 8);
+}
 
 static void print_u64s(const uint64_t *v, int n) {
     for (int i = 0; i < n; i++) {
@@ -1205,6 +1218,124 @@ int main(void) {
     uint8_t constRCRaw[280] = {0};
     diffX87ConstRoundingModes(constRCRaw);
     printf("x87_const_rc="); print_hex(constRCRaw, 280); putchar('\n');
+
+    const uint64_t rcWords[4] = {0x037f, 0x077f, 0x0b7f, 0x0f7f};
+    const uint64_t pcrcWords[12] = {
+        0x007f, 0x047f, 0x087f, 0x0c7f,
+        0x027f, 0x067f, 0x0a7f, 0x0e7f,
+        0x037f, 0x077f, 0x0b7f, 0x0f7f,
+    };
+    const raw80_spec bcdSpecs[21] = {
+        {0xde0b6b3a763ffff0ULL, 0x403a}, {0xde0b6b3a763ffff0ULL, 0xc03a},
+        {0xde0b6b3a76400000ULL, 0x403a}, {0xde0b6b3a76400000ULL, 0xc03a},
+        {0xde0b6b3a763ffff8ULL, 0x403a}, {0xde0b6b3a763ffff8ULL, 0xc03a},
+        {0xde0b6b3a763ffff1ULL, 0x403a}, {0xde0b6b3a763ffff1ULL, 0xc03a},
+        {0x8000000000000000ULL, 0x403b},
+        {0x0000000000000000ULL, 0x0000}, {0x0000000000000000ULL, 0x8000},
+        {0x8000000000000000ULL, 0x3ffd}, {0x8000000000000000ULL, 0xbffd},
+        {0x8000000000000000ULL, 0x3ffe}, {0x8000000000000000ULL, 0xbffe},
+        {0xc000000000000000ULL, 0x3fff}, {0xc000000000000000ULL, 0xbfff},
+        {0x8000000000000000ULL, 0x7fff}, {0x8000000000000000ULL, 0xffff},
+        {0xc000000000000001ULL, 0x7fff}, {0x8000000000000001ULL, 0x7fff},
+    };
+    const raw80_spec intSpecs[24] = {
+        {0xfffe000000000000ULL, 0x400d}, {0xffff000000000000ULL, 0x400d},
+        {0x8000000000000000ULL, 0x400e}, {0x8000000000000000ULL, 0xc00e},
+        {0x8000800000000000ULL, 0xc00e}, {0x8001000000000000ULL, 0xc00e},
+        {0xfffffffe00000000ULL, 0x401d}, {0xffffffff00000000ULL, 0x401d},
+        {0x8000000000000000ULL, 0x401e}, {0x8000000000000000ULL, 0xc01e},
+        {0x8000000080000000ULL, 0xc01e}, {0x8000000100000000ULL, 0xc01e},
+        {0xfffffffffffffffeULL, 0x403d}, {0xffffffffffffffffULL, 0x403d},
+        {0x8000000000000000ULL, 0x403e}, {0x8000000000000000ULL, 0xc03e},
+        {0xffffffffffffffffULL, 0xc03d}, {0x8000000000000001ULL, 0xc03e},
+        {0x8000000000000000ULL, 0xc03f},
+        {0x8000000000000000ULL, 0xbffd}, {0x8000000000000000ULL, 0x3ffe},
+        {0x8000000000000000ULL, 0x7fff}, {0xc000000000000001ULL, 0x7fff},
+        {0x8000000000000001ULL, 0x7fff},
+    };
+    const raw80_spec fltSpecs[21] = {
+        {0x0000000000000000ULL, 0x0000}, {0x0000000000000000ULL, 0x8000},
+        {0x8000000000000000ULL, 0x3ffd}, {0x8000000000000000ULL, 0xbffd},
+        {0x8000000000000000ULL, 0x3ffe}, {0x8000000000000000ULL, 0xbffe},
+        {0xc000000000000000ULL, 0x3fff}, {0xc000000000000000ULL, 0xbfff},
+        {0x8000000000000400ULL, 0x3fff}, {0x8000000000000c00ULL, 0x3fff},
+        {0x8000008000000000ULL, 0x3fff}, {0x8000018000000000ULL, 0x3fff},
+        {0xffffffffffffffffULL, 0x403d}, {0x8000000000000000ULL, 0x403e},
+        {0xfffffffffffffc00ULL, 0x3c00}, {0xffffffc000000000ULL, 0x3f80},
+        {0xffffffffffffffffULL, 0x7ffe}, {0x8000000000000000ULL, 0x0001},
+        {0x0000000000000001ULL, 0x0000}, {0x8000000000000000ULL, 0x7fff},
+        {0x8000000000000001ULL, 0x7fff},
+    };
+    for (int r = 0; r < 4; r++) {
+        for (int i = 0; i < 21; i++) {
+            uint8_t inB[10], outB[10] = {0};
+            uint64_t outSW = 0;
+            make_raw80(bcdSpecs[i], inB);
+            diffX87BCDOne(rcWords[r], inB, outB, &outSW);
+            printf("x87_bcd_rc[%d][%d]=", r, i); print_hex(outB, 10); printf("|%04llx\n", (unsigned long long)outSW);
+        }
+        for (int i = 0; i < 24; i++) {
+            uint8_t inB[10];
+            uint64_t outV[3] = {0}, outSW[3] = {0};
+            make_raw80(intSpecs[i], inB);
+            diffX87ConvInt(rcWords[r], inB, outV, outSW);
+            printf("x87_conv_int[%d][%d]=", r, i); print_u64s(outV, 3); putchar('|'); print_u64s(outSW, 3); putchar('\n');
+        }
+        for (int i = 0; i < 21; i++) {
+            uint8_t inB[10], outRnd[10] = {0};
+            uint32_t outF32 = 0;
+            uint64_t outF64 = 0, outSW[3] = {0};
+            make_raw80(fltSpecs[i], inB);
+            diffX87ConvFloat(rcWords[r], inB, &outF32, &outF64, outRnd, outSW);
+            printf("x87_conv_flt[%d][%d]=%08x|%016llx|", r, i, (unsigned)outF32, (unsigned long long)outF64);
+            print_hex(outRnd, 10); putchar('|'); print_u64s(outSW, 3); putchar('\n');
+        }
+    }
+    const raw80_spec arithPairs[13][2] = {
+        {{0x8000000000000000ULL, 0x3fff}, {0xc000000000000000ULL, 0x4000}},
+        {{0x8000000000000000ULL, 0x4000}, {0xc000000000000000ULL, 0x4000}},
+        {{0x8000000000000000ULL, 0x4034}, {0x8000000000000000ULL, 0x3fff}},
+        {{0x8000000000000000ULL, 0x4017}, {0x8000000000000000ULL, 0x3fff}},
+        {{0xffffffffffffffffULL, 0x7ffe}, {0x8000000000000000ULL, 0x4000}},
+        {{0x8000000000000000ULL, 0x0001}, {0xc000000000000000ULL, 0x4000}},
+        {{0x0000000000000001ULL, 0x0000}, {0x8000000000000000ULL, 0x3fff}},
+        {{0x8000000000000000ULL, 0x3fff}, {0x0000000000000000ULL, 0x0000}},
+        {{0x0000000000000000ULL, 0x0000}, {0x0000000000000000ULL, 0x0000}},
+        {{0x8000000000000000ULL, 0x7fff}, {0x8000000000000000ULL, 0x7fff}},
+        {{0x0000000000000000ULL, 0x8000}, {0x0000000000000000ULL, 0x8000}},
+        {{0xc000000000000001ULL, 0x7fff}, {0x8000000000000000ULL, 0x3fff}},
+        {{0x8000000000000001ULL, 0x7fff}, {0x8000000000000000ULL, 0x3fff}},
+    };
+    for (int m = 0; m < 12; m++) {
+        for (int i = 0; i < 13; i++) {
+            uint8_t aB[10], bB[10], outRaw[50] = {0};
+            uint64_t outSW[5] = {0};
+            make_raw80(arithPairs[i][0], aB);
+            make_raw80(arithPairs[i][1], bB);
+            diffX87ArithPC(pcrcWords[m], aB, bB, outRaw, outSW);
+            printf("x87_arith_pc[%d][%d]=", m, i); print_hex(outRaw, 50); putchar('|'); print_u64s(outSW, 5); putchar('\n');
+        }
+    }
+    const raw80_spec cmpPairs[10][2] = {
+        {{0x8000000000000000ULL, 0x3fff}, {0x8000000000000000ULL, 0x4000}},
+        {{0x8000000000000000ULL, 0x4000}, {0x8000000000000000ULL, 0x4000}},
+        {{0xc000000000000000ULL, 0x4000}, {0x8000000000000000ULL, 0x4000}},
+        {{0x0000000000000000ULL, 0x8000}, {0x0000000000000000ULL, 0x0000}},
+        {{0xc000000000000001ULL, 0x7fff}, {0x8000000000000000ULL, 0x3fff}},
+        {{0x8000000000000001ULL, 0x7fff}, {0x8000000000000000ULL, 0x3fff}},
+        {{0x0000000000000001ULL, 0x0000}, {0x8000000000000000ULL, 0x3fff}},
+        {{0xc000000000000001ULL, 0x7fff}, {0x0000000000000001ULL, 0x0000}},
+        {{0x8000000000000001ULL, 0x7fff}, {0x0000000000000001ULL, 0x0000}},
+        {{0x8000000000000000ULL, 0xffff}, {0x8000000000000000ULL, 0x7fff}},
+    };
+    for (int i = 0; i < 10; i++) {
+        uint8_t aB[10], bB[10];
+        uint64_t outCC[5] = {0}, outExc[5] = {0};
+        make_raw80(cmpPairs[i][0], aB);
+        make_raw80(cmpPairs[i][1], bB);
+        diffX87Cmp(aB, bB, outCC, outExc);
+        printf("x87_cmp[%d]=", i); print_u64s(outCC, 5); putchar('|'); print_u64s(outExc, 5); putchar('\n');
+    }
     return 0;
 }
 `
@@ -1422,6 +1553,42 @@ int main(void) {
 		if got := swMap["x87_const_rc"]; got != wantConstRC {
 			t.Fatalf("X87Software x87_const_rc:\n  got:  %s\n  want: %s", got, wantConstRC)
 		}
+		// Verify Round 13 P1 golden BCD boundary invariants on portable X87Software (every host):
+		// max valid (+999999999999999999), min valid (-999999999999999999), +10^18, -10^18,
+		// and rounding-induced overflow (+/-999999999999999999.5, +/-999999999999999999.0625)
+		// across RN (0), RD (1), RU (2), RZ (3) checking ALL 10 bytes + IE/PE/C1/TOP!
+		wantMaxPos := "99999999999999999900"
+		wantMaxNeg := "99999999999999999980"
+		wantIndef := "00000000000000c0ffff"
+		bcdGoldens := []struct{ key, want string }{
+			{"x87_bcd_rc[0][0]", wantMaxPos + "|0000"}, // +10^18-1 RN
+			{"x87_bcd_rc[0][1]", wantMaxNeg + "|0000"}, // -10^18-1 RN
+			{"x87_bcd_rc[0][2]", wantIndef + "|0001"},  // +10^18 RN -> IE=1 + indefinite
+			{"x87_bcd_rc[0][3]", wantIndef + "|0001"},  // -10^18 RN -> IE=1 + indefinite
+			{"x87_bcd_rc[0][4]", wantIndef + "|0001"},  // +10^18-0.5 RN -> rounds to 10^18 -> IE=1
+			{"x87_bcd_rc[1][4]", wantMaxPos + "|0020"}, // +10^18-0.5 RD -> valid max + PE
+			{"x87_bcd_rc[2][4]", wantIndef + "|0001"},  // +10^18-0.5 RU -> IE=1
+			{"x87_bcd_rc[3][4]", wantMaxPos + "|0020"}, // +10^18-0.5 RZ -> valid max + PE
+			{"x87_bcd_rc[0][5]", wantIndef + "|0001"},  // -10^18+0.5 RN -> IE=1
+			{"x87_bcd_rc[1][5]", wantIndef + "|0001"},  // -10^18+0.5 RD -> IE=1
+			{"x87_bcd_rc[2][5]", wantMaxNeg + "|0020"}, // -10^18+0.5 RU -> valid min + PE
+			{"x87_bcd_rc[3][5]", wantMaxNeg + "|0020"}, // -10^18+0.5 RZ -> valid min + PE
+			{"x87_bcd_rc[0][6]", wantMaxPos + "|0020"}, // +10^18-0.9375 RN -> valid max + PE
+			{"x87_bcd_rc[2][6]", wantIndef + "|0001"},  // +10^18-0.9375 RU -> rounds up to 10^18 -> IE=1
+			{"x87_bcd_rc[1][7]", wantIndef + "|0001"},  // -10^18+0.9375 RD -> rounds down to -10^18 -> IE=1
+			{"x87_bcd_rc[0][8]", wantIndef + "|0001"},  // +2^60 RN -> IE=1
+			{"x87_bcd_rc[0][17]", wantIndef + "|0001"}, // +Inf -> IE=1
+			{"x87_bcd_rc[0][19]", wantIndef + "|0001"}, // QNaN -> IE=1
+			{"x87_bcd_rc[0][20]", wantIndef + "|0001"}, // SNaN -> IE=1
+		}
+		for _, bg := range bcdGoldens {
+			if got := swMap[bg.key]; got != bg.want {
+				t.Fatalf("X87Software %s = %s, want %s", bg.key, got, bg.want)
+			}
+		}
+		if len(swMap) < 453 {
+			t.Fatalf("X87Software produced only %d diff keys, want >= 453", len(swMap))
+		}
 	}
 
 	// Step 3: Native Go amd64 vs LLVM 22 X87Hardware machine-code differential comparison!
@@ -1480,8 +1647,8 @@ int main(void) {
 		t.Fatalf("read x87 oracle transcript %s: %v", oraclePath, err)
 	}
 	oracleMap, _ := parseDiffTranscript(t, string(oracleBytes))
-	if len(oracleMap) < 23 {
-		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 23", len(oracleMap))
+	if len(oracleMap) < 453 {
+		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 453", len(oracleMap))
 	}
 
 	compared := 0
@@ -1505,7 +1672,7 @@ int main(void) {
 		}
 	}
 	writeAMD64ManifestDiffExecutionReport(t, "amd64/x87_diff_amd64.s", llcTool, true, map[string][]string{
-		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80", "x87_exc", "x87_const_rc"},
+		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80", "x87_exc", "x87_const_rc", "x87_bcd_rc[", "x87_conv_int[", "x87_conv_flt[", "x87_arith_pc[", "x87_cmp["},
 	}, llvmMap, oracleMap, failedKeys, "")
 	if len(mismatches) > 0 {
 		t.Fatalf("AMD64 x87 machine-code differential mismatch (%d/%d failed):\n%s", len(mismatches), compared, strings.Join(mismatches, "\n"))

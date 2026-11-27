@@ -228,6 +228,9 @@ func (c *amd64Ctx) lowerX87ExtArith(op asm.Op, spec x87ArithSpec, ins asm.Instr)
 }
 
 func (c *amd64Ctx) lowerX87ExtCmp(op asm.Op, spec x87CmpSpec, ins asm.Instr) error {
+	if spec.eflags && len(ins.Args) != 2 {
+		return fmt.Errorf("386 %s expects lhs, rhs: %q", op, ins.Raw)
+	}
 	var lhsOp, rhsOp asm.Operand
 	switch len(ins.Args) {
 	case 0:
@@ -544,28 +547,62 @@ func (c *amd64Ctx) lowerX87ExtBCD(store bool, ins asm.Instr) error {
 		c.popX87Value()
 		return nil
 	}
-	// FBSTP/FMOVBP software mode: encode signed i64 into 10-byte packed BCD and pop.
+	// FBSTP/FMOVBP software mode: round ST(0) per live FLDCW RC, validate
+	// exact 18-digit packed BCD range |rounded| <= 999999999999999999 (10^18-1)
+	// AFTER rounding, update IE/PE/C1 in x87StatusSlot, and write either the
+	// 10-byte packed BCD encoding or the Intel SDM 10-byte packed BCD integer
+	// indefinite (FFFFC000000000000000H: bytes 0..7 = 0xc000000000000000,
+	// bytes 8..9 = 0xffff) before popping ST(0).
 	val0 := c.loadX87Value(0)
-	_, se0 := c.partsX87(val0)
-	origNeg := c.x87IR("icmp slt i16 %s, 0", se0)
-	iv, err := c.x87PortableToSigned(val0, 64, c.loadX87ControlWord())
-	if err != nil {
-		return err
-	}
-	neg := c.x87IR("or i1 %s, %s", c.x87IR("icmp slt i64 %s, 0", iv), c.x87IR("and i1 %s, %s", origNeg, c.x87IR("icmp eq i64 %s, 0", iv)))
-	cur := c.x87IR("select i1 %s, i64 %s, i64 %s", c.x87IR("icmp slt i64 %s, 0", iv), c.x87IR("sub i64 0, %s", iv), iv)
+	cw := c.loadX87ControlWord()
+	sig0, se0 := c.partsX87(val0)
+	neg := c.x87IR("icmp slt i16 %s, 0", se0)
+	exp := c.x87IR("zext i16 %s to i32", c.x87IR("and i16 %s, 32767", se0))
+	zeroExp := c.x87IR("icmp eq i32 %s, 0", exp)
+	effExp := c.x87IR("select i1 %s, i32 1, i32 %s", zeroExp, exp)
+	shift := c.x87IR("sub i32 16446, %s", effExp)
+	shift = c.x87IR("select i1 %s, i32 0, i32 %s", c.x87IR("icmp slt i32 %s, 0", shift), shift)
+	rounded, inexact, roundedUp := c.x87PortableRoundedShiftWithFlags(sig0, shift, neg, cw)
+	notUnsup := c.x87IR("or i1 %s, %s", zeroExp, c.x87IR("icmp slt i64 %s, 0", sig0))
+	// 2^60 = 1152921504606846976 > 10^18, so any normal value with effExp >= 16443
+	// (including Inf/NaN at 32767) is unconditionally outside [-10^18+1, +10^18-1].
+	expOK := c.x87IR("icmp ule i32 %s, 16442", effExp)
+	magOK := c.x87IR("icmp ule i64 %s, 999999999999999999", rounded)
+	valid := c.x87IR("and i1 %s, %s", c.x87IR("and i1 %s, %s", notUnsup, expOK), magOK)
+	ieCond := c.x87IR("xor i1 %s, true", valid)
+	peCond := c.x87IR("and i1 %s, %s", valid, inexact)
+	c1Cond := c.x87IR("and i1 %s, %s", valid, roundedUp)
+	st := c.x87IR("or i16 %s, %s",
+		c.x87IR("select i1 %s, i16 1, i16 0", ieCond),
+		c.x87IR("or i16 %s, %s", c.x87IR("select i1 %s, i16 32, i16 0", peCond), c.x87IR("select i1 %s, i16 512, i16 0", c1Cond)))
+	c.mergeX87ArithStatus(st)
+
+	cur := c.x87IR("select i1 %s, i64 %s, i64 0", valid, rounded)
+	validLo := "0"
+	var byte8 string
 	for i := 0; i < 9; i++ {
 		d0 := c.x87IR("urem i64 %s, 10", cur)
 		cur = c.x87IR("udiv i64 %s, 10", cur)
 		d1 := c.x87IR("urem i64 %s, 10", cur)
 		cur = c.x87IR("udiv i64 %s, 10", cur)
-		pack := c.x87IR("trunc i64 %s to i8", c.x87IR("or i64 %s, %s", c.x87IR("shl i64 %s, 4", d1), d0))
-		pb := c.x87IR("getelementptr i8, %s %s, i64 %d", pty, p, i)
-		fmt.Fprintf(c.b, "  store i8 %s, ptr %s, align 1\n", pack, pb)
+		pack64 := c.x87IR("or i64 %s, %s", c.x87IR("shl i64 %s, 4", d1), d0)
+		if i < 8 {
+			if i == 0 {
+				validLo = pack64
+			} else {
+				validLo = c.x87IR("or i64 %s, %s", validLo, c.x87IR("shl i64 %s, %d", pack64, i*8))
+			}
+		} else {
+			byte8 = c.x87IR("trunc i64 %s to i16", pack64)
+		}
 	}
-	p9 := c.x87IR("getelementptr i8, %s %s, i64 9", pty, p)
-	sb := c.x87IR("select i1 %s, i8 -128, i8 0", neg)
-	fmt.Fprintf(c.b, "  store i8 %s, ptr %s, align 1\n", sb, p9)
+	signHi := c.x87IR("select i1 %s, i16 -32768, i16 0", neg)
+	validHi := c.x87IR("or i16 %s, %s", byte8, signHi)
+	outLo := c.x87IR("select i1 %s, i64 %s, i64 -4611686018427387904", valid, validLo) // 0xc000000000000000
+	outHi := c.x87IR("select i1 %s, i16 %s, i16 -1", valid, validHi)                   // 0xffff
+	p8 := c.x87IR("getelementptr i8, %s %s, i64 8", pty, p)
+	fmt.Fprintf(c.b, "  store i64 %s, %s %s, align 1\n", outLo, pty, p)
+	fmt.Fprintf(c.b, "  store i16 %s, ptr %s, align 1\n", outHi, p8)
 	c.popX87Value()
 	return nil
 }

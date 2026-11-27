@@ -285,31 +285,6 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		c.storeX87Value(0, res)
 		return true, false, nil
 
-	case "FUCOMI":
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("386 FUCOMI expects lhs, rhs: %q", ins.Raw)
-		}
-		lhs, err := c.evalX87Value(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		rhs, err := c.evalX87Value(ins.Args[1])
-		if err != nil {
-			return true, false, err
-		}
-		eq, lt, uno, exc := c.x87PortableCompareWithFlags(lhs, rhs, true)
-		c.mergeX87StickyExceptions(exc)
-		c.projectX87Status("0", 0x0200)
-		z := c.x87IR("or i1 %s, %s", eq, uno)
-		cf := c.x87IR("or i1 %s, %s", lt, uno)
-		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", z, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", cf, c.flagsCFSlot)
-		fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", uno, c.flagsPFSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
-		c.clearAuxCarryFlag()
-		return true, false, nil
-
 	case "FTST":
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("386 FTST takes no operands: %q", ins.Raw)
@@ -877,7 +852,8 @@ func (c *amd64Ctx) x87PortableCompareWithFlags(left, right x87Value, unorderedCm
 		// FCOM*/FCOMI*/FTST: raise IE on any NaN or unsupported encoding.
 		ieCond = unordered
 	}
-	deCond := c.x87IR("or i1 %s, %s", dens[0], dens[1])
+	// Per Intel SDM Vol. 1 §4.9.2, NaN/unsupported operands suppress #D.
+	deCond := c.x87IR("and i1 %s, %s", c.x87IR("or i1 %s, %s", dens[0], dens[1]), ordered)
 	exc = c.x87IR("or i16 %s, %s", c.x87IR("select i1 %s, i16 1, i16 0", ieCond), c.x87IR("select i1 %s, i16 2, i16 0", deCond))
 	eqExp := c.x87IR("icmp eq i16 %s, %s", exps[0], exps[1])
 	eqMag := c.x87IR("and i1 %s, %s", eqExp, c.x87IR("icmp eq i64 %s, %s", lSig, rSig))
