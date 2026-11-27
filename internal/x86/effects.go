@@ -62,18 +62,27 @@ type abi0State struct {
 	x87StackMayOcc [8]bool
 	x87StackDef    [8]bool
 	x87StackTaint  [8]bool
+	// x87TopSynced is true iff hardware TOP is guaranteed to match the lowered
+	// function-local %x87_status TOP field on ALL reaching paths (established
+	// only by FINIT or any non-EMMS MMX op, invalidated at function entry, on
+	// opaque CALL, and on #IS stack faults). While !x87TopSynced, x87 writes
+	// still execute at unknown physical offsets relative to %x87_phys and
+	// therefore must never mark any physical M0..M7 register initialized.
+	//
 	// x87ByTop partitions physical x87/MMX slot definedness (R0..R7 = M0..M7) by
-	// each reachable x87 TOP value (0..7). Preserving the relational coupling
-	// between TOP and physical slots allows CFG joins with differing TOP depths
-	// to prove that a physical register (e.g. M7/R7) is initialized on all paths
-	// even when written at different instruction positions, while still rejecting
-	// paths where TOP or a physical slot is unknown or uninitialized.
+	// each reachable x87 TOP value (0..7) once x87TopSynced holds. Preserving
+	// the relational coupling between TOP and physical slots allows CFG joins
+	// with differing TOP depths to prove that a physical register (e.g. M7/R7)
+	// is initialized on all paths even when written at different instruction
+	// positions, while still rejecting paths where TOP or a physical slot is
+	// unknown or uninitialized.
 	// mmxBytesInit/mmxBitDef/mmxBytesTaintedSP store the cached projection across
 	// all reachable TOP partitions (intersection for init/bitDef, union for taint)
 	// maintained by syncMMXFromTopPartitions().
-	x87ByTop    [8]x87TopSlotState
-	x87SWBitDef uint16
-	x87CWBitDef uint16
+	x87TopSynced bool
+	x87ByTop     [8]x87TopSlotState
+	x87SWBitDef  uint16
+	x87CWBitDef  uint16
 	// fpBytesInit records initialized byte offsets in the FP frame
 	// (pre-populated with declared parameter slot bytes plus written result bytes).
 	fpBytesInit      map[int64]bool
@@ -186,6 +195,7 @@ func (s *abi0State) clearCallerSaved() {
 	s.x87StackMayOcc = [8]bool{true, true, true, true, true, true, true, true}
 	s.x87StackDef = [8]bool{}
 	s.x87StackTaint = [8]bool{}
+	s.x87TopSynced = false
 	s.x87ByTop = allReachableEmptyX87ByTop()
 	s.syncMMXFromTopPartitions()
 	s.x87SWBitDef = 0
@@ -302,6 +312,7 @@ func (s *abi0State) enterMMXMode() {
 	s.x87StackInit = [8]bool{}
 	s.x87StackMayOcc = [8]bool{true, true, true, true, true, true, true, true}
 	s.x87StackDef = [8]bool{}
+	s.x87TopSynced = true
 	s.collapseX87TopToZero()
 	s.x87SWBitDef |= x87SWMaskTOP
 }
@@ -321,7 +332,27 @@ const (
 // syncX87WriteToMMX mirrors an x87 write to logical ST(logicalIdx) into the
 // physically aliased MMX register M[(t + logicalIdx) & 7] within EVERY reachable
 // TOP partition t (Intel SDM Vol. 1 §9.2.1), then refreshes the MMX summary maps.
+// When !s.x87TopSynced (hardware TOP is not synchronized with the lowered
+// function-local %x87_status slot), which physical M0..M7 slot receives the
+// write depends on unknown runtime TOP (e.g. caller entered with FDECSTP), so
+// no physical MMX register may be marked initialized/defined.
 func (s *abi0State) syncX87WriteToMMX(logicalIdx int, init, def, taint bool) {
+	if !s.x87TopSynced {
+		for t := 0; t < 8; t++ {
+			if !s.x87ByTop[t].reachable {
+				continue
+			}
+			s.x87ByTop[t].mmxInit = [8]uint8{}
+			s.x87ByTop[t].mmxBitDef = [8]uint64{}
+			if taint {
+				for k := 0; k < 8; k++ {
+					s.x87ByTop[t].mmxTaintSP[k] = 0xff
+				}
+			}
+		}
+		s.syncMMXFromTopPartitions()
+		return
+	}
 	for t := 0; t < 8; t++ {
 		if !s.x87ByTop[t].reachable {
 			continue
@@ -355,6 +386,7 @@ func (s *abi0State) invalidateX87StackFault() {
 			taintAny[k] |= s.x87ByTop[t].mmxTaintSP[k]
 		}
 	}
+	s.x87TopSynced = false
 	s.x87ByTop = allReachableEmptyX87ByTop()
 	for t := 0; t < 8; t++ {
 		s.x87ByTop[t].mmxTaintSP = taintAny
@@ -428,6 +460,7 @@ func (s *abi0State) clone() *abi0State {
 		x87StackMayOcc:    s.x87StackMayOcc,
 		x87StackDef:       s.x87StackDef,
 		x87StackTaint:     s.x87StackTaint,
+		x87TopSynced:      s.x87TopSynced,
 		x87ByTop:          s.x87ByTop,
 		x87SWBitDef:       s.x87SWBitDef,
 		x87CWBitDef:       s.x87CWBitDef,
@@ -611,6 +644,10 @@ func (s *abi0State) merge(other *abi0State) bool {
 			s.x87StackTaint[i] = true
 			changed = true
 		}
+	}
+	if s.x87TopSynced && !other.x87TopSynced {
+		s.x87TopSynced = false
+		changed = true
 	}
 	mmxChanged := false
 	for t := 0; t < 8; t++ {
@@ -806,6 +843,27 @@ func fullBitDefUniform(nBytes int64, val uint8) [64]uint8 {
 	return out
 }
 
+// FuncUsesX87OrMMX reports whether fn executes any x87, MMX, or EMMS instruction.
+func FuncUsesX87OrMMX(fn asm.Func) bool {
+	for _, ins := range fn.Instrs {
+		op := asm.Op(strings.ToUpper(string(ins.Op)))
+		if op == "EMMS" || isX87Op(op) {
+			return true
+		}
+		for _, a := range ins.Args {
+			if a.Kind == asm.OpReg {
+				if _, ok := amd64ParseMReg(a.Reg); ok {
+					return true
+				}
+				if _, ok := amd64ParseX87Reg(a.Reg); ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // CheckABI0ResultInit verifies that a Go ABI0 x86/amd64 function obeys
 // byte-level register, stack-slot, and FP initialization, private stack-pointer
 // confinement, raw-directive provenance, and CFG/byte-exact ABI0 result
@@ -814,13 +872,21 @@ func fullBitDefUniform(nBytes int64, val uint8) [64]uint8 {
 // Driven directly by OpTable so adding new instructions automatically participates
 // in effect tracking without per-opcode boilerplate.
 func CheckABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string) (*ABI0EffectReport, error) {
-	return CheckABI0ResultInitWithSigs(fn, sig, goarch, nil, nil)
+	return CheckABI0ResultInitWithOptions(fn, sig, goarch, nil, nil, asm.X87Auto)
 }
 
 // CheckABI0ResultInitWithSigs extends CheckABI0ResultInit with callee ABI0
 // signatures so outgoing CALLs can verify outgoing parameter bytes and mark
 // callee ABI0 result stack bytes initialized.
 func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, resolve func(string) string, sigs map[string]asm.FuncSig) (*ABI0EffectReport, error) {
+	return CheckABI0ResultInitWithOptions(fn, sig, goarch, resolve, sigs, asm.X87Auto)
+}
+
+// CheckABI0ResultInitWithOptions extends CheckABI0ResultInitWithSigs with the
+// active x87 lowering mode so X87Software requires explicit FINIT/FLDCW on all
+// reaching paths before any control-word-dependent x87 operation (unlike
+// X87Hardware, which natively reads the caller's live hardware FCW).
+func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string, resolve func(string) string, sigs map[string]asm.FuncSig, x87Mode asm.X87Mode) (*ABI0EffectReport, error) {
 	instrs, err := DecodeRawDirectives(fn.Instrs, goarch)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", asm.ErrProbeNeedsContext, err)
@@ -893,6 +959,16 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 	}
 
 	// Entry state at pc = 0: pre-populate declared parameter FP bytes and ArgRegs.
+	// System V / Go ABI0 entry guarantees an empty x87 stack, while:
+	//   - FSW (including TOP, C0..C3, and sticky exceptions) is unspecified at
+	//     entry (x87TopSynced=false, x87SWBitDef=0) until FINIT / FCLEX / MMX.
+	//   - X87Hardware natively reads the caller's live hardware FCW on every
+	//     CW-dependent x87 instruction, whereas X87Software uses a local slot
+	//     and cannot observe caller FLDCW (entry x87CWBitDef=0 until FINIT/FLDCW).
+	entryCWBitDef := uint16(0xffff)
+	if x87Mode == asm.X87Software {
+		entryCWBitDef = 0
+	}
 	entry := &abi0State{
 		gpBytesInit:       map[asm.Reg]uint8{},
 		gpBitDef:          map[asm.Reg]uint64{},
@@ -907,21 +983,18 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		vecByteBitDef:     map[int][64]uint8{},
 		vecBytesTaintedSP: map[int]uint64{},
 		vecFromRaw:        map[int]bool{},
-		// System V / Go ABI0 entry guarantees an empty x87 stack and default
-		// callee-saved FCW (0x037f), while FSW (including TOP, C0..C3, and sticky
-		// exceptions) is caller-saved/unspecified until established by FINIT,
-		// FCLEX, comparison, or MMX mode entry.
-		x87ByTop:         allReachableEmptyX87ByTop(),
-		x87SWBitDef:      0,
-		x87CWBitDef:      0xffff,
-		fpBytesInit:      map[int64]bool{},
-		fpByteBitDef:     map[int64]uint8{},
-		fpBytesTaintedSP: map[int64]bool{},
-		spBytesInit:      map[int64]bool{},
-		spByteBitDef:     map[int64]uint8{},
-		spBytesTaintedSP: map[int64]bool{},
-		dfInit:           true,
-		idInit:           true,
+		x87TopSynced:      false,
+		x87ByTop:          allReachableEmptyX87ByTop(),
+		x87SWBitDef:       0,
+		x87CWBitDef:       entryCWBitDef,
+		fpBytesInit:       map[int64]bool{},
+		fpByteBitDef:      map[int64]uint8{},
+		fpBytesTaintedSP:  map[int64]bool{},
+		spBytesInit:       map[int64]bool{},
+		spByteBitDef:      map[int64]uint8{},
+		spBytesTaintedSP:  map[int64]bool{},
+		dfInit:            true,
+		idInit:            true,
 	}
 	for _, s := range sig.Frame.Params {
 		sz := x86ABI0SlotBytes(s.Type, goarch)
@@ -2239,6 +2312,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				st.x87StackMayOcc = [8]bool{}
 				st.x87StackDef = [8]bool{}
 				st.x87StackTaint = [8]bool{}
+				st.x87TopSynced = true
 				st.collapseX87TopToZero()
 				st.x87SWBitDef = 0xffff
 				st.x87CWBitDef = 0xffff

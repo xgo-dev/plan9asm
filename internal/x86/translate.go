@@ -221,7 +221,14 @@ func (c *amd64Ctx) lowerBlocks() error {
 		return nil
 	}
 
+	if c.usedX87 && !c.useHardwareX87() {
+		c.x87CWInitInBlock = c.computeX87SWCWInit()
+	}
+
 	for bi := 0; bi < len(c.blocks); bi++ {
+		if len(c.x87CWInitInBlock) == len(c.blocks) {
+			c.x87CWInitialized = c.x87CWInitInBlock[bi]
+		}
 		blk := c.blocks[bi]
 		if bi != 0 {
 			fmt.Fprintf(c.b, "\n%s:\n", asm.LLVMBlockName(blk.name))

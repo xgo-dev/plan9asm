@@ -55,6 +55,7 @@ type amd64Ctx struct {
 	x87StatusSlot    string // condition-code status populated by FTST/FRNDINT for FSTSW
 	x87IntegerSlot   string // kept for scratch compatibility
 	x87CWInitialized bool   // tracks explicit control-word initialization in software mode
+	x87CWInitInBlock []bool // CFG-exact software CW init state at entry to each block
 	x87Mode          asm.X87Mode
 
 	flagsZSlot     string

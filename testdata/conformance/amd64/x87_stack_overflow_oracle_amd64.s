@@ -161,3 +161,61 @@ TEXT ·x87OracleCallNopEmptyTop(SB), NOSPLIT, $8-8
 	FINIT
 	MOVQ AX, ret+0(FP)
 	RET
+
+// Native amd64 hardware oracle for Round 17 P1 #1 & P1 #2:
+//   - Caller sets TOP=7 (FINIT; FDECSTP) vs TOP=0 (FINIT) with empty stack and
+//     calls an 8-push callee (7x FLD1 + FLDZ; MOVQ M7, AX) without FINIT:
+//     TOP=7 -> 0, TOP=0 -> 0x8000000000000000.
+//   - Caller sets FCW=0x077f (RD) vs FCW=0x037f (RN) and calls FLDPI; FMOVXP
+//     without FINIT: RD -> 0xc90fdaa22168c234, RN -> 0xc90fdaa22168c235.
+
+TEXT x87OracleEightPushM7Callee<>(SB), NOSPLIT, $0-0
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLDZ
+	MOVQ M7, AX
+	RET
+
+TEXT ·x87OracleEntryTop7EightPushM7(SB), NOSPLIT, $8-8
+	FINIT
+	FDECSTP
+	CALL x87OracleEightPushM7Callee<>(SB)
+	EMMS
+	FINIT
+	MOVQ AX, ret+0(FP)
+	RET
+
+TEXT ·x87OracleEntryTop0EightPushM7(SB), NOSPLIT, $8-8
+	FINIT
+	CALL x87OracleEightPushM7Callee<>(SB)
+	EMMS
+	FINIT
+	MOVQ AX, ret+0(FP)
+	RET
+
+TEXT x87OracleFldpiCallee<>(SB), NOSPLIT, $16-0
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	RET
+
+TEXT ·x87OracleEntryCwRDFldpi(SB), NOSPLIT, $16-8
+	FINIT
+	MOVW $0x077f, 0(SP)
+	FLDCW 0(SP)
+	CALL x87OracleFldpiCallee<>(SB)
+	FINIT
+	MOVQ AX, ret+0(FP)
+	RET
+
+TEXT ·x87OracleEntryCwRNFldpi(SB), NOSPLIT, $16-8
+	FINIT
+	CALL x87OracleFldpiCallee<>(SB)
+	FINIT
+	MOVQ AX, ret+0(FP)
+	RET

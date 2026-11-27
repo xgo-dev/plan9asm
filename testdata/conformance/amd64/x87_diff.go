@@ -23,3 +23,8 @@ func diffX87DynamicStackBranch(x uint64, out *[4]uint64)
 func diffX87MMXAliasAndTop(x uint64, out *[8]uint64)
 func diffX87ResetHelper()
 func diffX87CallAndMergeAlias(x uint64, out *[6]uint64)
+func diffX87EightPushFinitHelper() uint64
+func diffX87EightPushMMXHelper() uint64
+func diffX87FldpiFinitHelper() uint64
+func diffX87FldpiFldcwRDHelper() uint64
+func diffX87EntryTopAndCW(x uint64, out *[4]uint64)

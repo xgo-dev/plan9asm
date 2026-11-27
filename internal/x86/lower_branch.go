@@ -12,6 +12,7 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op asm.Op, ins asm.Instr, emitBr 
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("amd64 CALL expects 1 operand: %q", ins.Raw)
 		}
+		c.x87CWInitialized = false
 		switch ins.Args[0].Kind {
 		case asm.OpReg:
 			addr, err := c.loadReg(ins.Args[0].Reg)

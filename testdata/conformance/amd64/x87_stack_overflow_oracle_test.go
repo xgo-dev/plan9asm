@@ -13,6 +13,10 @@ func x87OracleCallReset() uint64
 func x87OracleCallNop() uint64
 func x87OracleCallResetEmptyTop() uint64
 func x87OracleCallNopEmptyTop() uint64
+func x87OracleEntryTop7EightPushM7() uint64
+func x87OracleEntryTop0EightPushM7() uint64
+func x87OracleEntryCwRDFldpi() uint64
+func x87OracleEntryCwRNFldpi() uint64
 
 // TestAMD64X87StackOverflowNativeOracle records real amd64 hardware execution
 // for:
@@ -54,5 +58,17 @@ func TestAMD64X87StackOverflowNativeOracle(t *testing.T) {
 	}
 	if got := x87OracleCallNopEmptyTop(); got != 0x3000 {
 		t.Fatalf("x87OracleCallNopEmptyTop() = %#x, want 0x3000", got)
+	}
+	if got := x87OracleEntryTop7EightPushM7(); got != 0 {
+		t.Fatalf("x87OracleEntryTop7EightPushM7() = %#x, want 0x0", got)
+	}
+	if got := x87OracleEntryTop0EightPushM7(); got != 0x8000000000000000 {
+		t.Fatalf("x87OracleEntryTop0EightPushM7() = %#x, want 0x8000000000000000", got)
+	}
+	if got := x87OracleEntryCwRDFldpi(); got != 0xc90fdaa22168c234 {
+		t.Fatalf("x87OracleEntryCwRDFldpi() = %#x, want 0xc90fdaa22168c234", got)
+	}
+	if got := x87OracleEntryCwRNFldpi(); got != 0xc90fdaa22168c235 {
+		t.Fatalf("x87OracleEntryCwRNFldpi() = %#x, want 0xc90fdaa22168c235", got)
 	}
 }

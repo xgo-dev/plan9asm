@@ -165,7 +165,7 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		return nil, fmt.Errorf("%s: globals %s: %w", pkgPath, asmName, err)
 	}
 	if opt.GOARCH == "amd64" {
-		if err := validateAMD64PhysicalFrameLeases(file, resolve, sigs); err != nil {
+		if err := validateAMD64PhysicalFrameLeasesWithX87Mode(file, resolve, sigs, opt.X87Mode); err != nil {
 			return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
 		}
 	}
@@ -589,6 +589,10 @@ func DeriveGoFuncABI0Signature(name string, fn *types.Func, goarch string, sz ty
 }
 
 func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, sigs map[string]FuncSig) error {
+	return validateAMD64PhysicalFrameLeasesWithX87Mode(file, resolve, sigs, X87Auto)
+}
+
+func validateAMD64PhysicalFrameLeasesWithX87Mode(file *File, resolve func(string) string, sigs map[string]FuncSig, x87Mode X87Mode) error {
 	checkedLeases := make(map[uintptr]bool)
 	resolveCallee := func(s string) string { return resolve(goStripABISuffix(s)) }
 	for _, fn := range file.Funcs {
@@ -596,11 +600,12 @@ func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, s
 		sig, ok := sigs[name]
 		if !funcUsesPhysicalAMD64SP(fn) {
 			// Ordinary ABI0 functions (non-physical SP) with declared Go result
-			// slots still require CFG + byte-exact result/register/FP/SP
+			// slots — or any function touching x87/MMX (including void pointer-out
+			// kernels) — require CFG + byte-exact result/register/FP/SP/x87
 			// initialization verification before translation.
-			if ok && len(sig.ArgRegs) == 0 && len(sig.Frame.Results) > 0 &&
+			if ok && len(sig.ArgRegs) == 0 && (len(sig.Frame.Results) > 0 || x86.FuncUsesX87OrMMX(fn)) &&
 				!strings.Contains(strings.TrimSuffix(fn.Sym, "<>"), "<") {
-				if _, err := x86.CheckABI0ResultInitWithSigs(fn, sig, "amd64", resolveCallee, sigs); err != nil {
+				if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode); err != nil {
 					return err
 				}
 			}
@@ -619,6 +624,11 @@ func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, s
 				}
 				checkedLeases[leasePtr] = true
 			}
+			if x87Mode == X87Software && x86.FuncUsesX87OrMMX(fn) {
+				if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		// Without a captured physical-frame owner, check whether any outgoing
@@ -636,7 +646,7 @@ func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, s
 				}
 			}
 		}
-		if _, err := x86.CheckABI0ResultInitWithSigs(fn, sig, "amd64", resolveCallee, sigs); err != nil {
+		if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode); err != nil {
 			return err
 		}
 	}

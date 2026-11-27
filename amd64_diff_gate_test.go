@@ -1805,6 +1805,7 @@ func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
 	const defaultGoSrc = "package p\nfunc f() int64\n"
 	const paramGoSrc = "package p\nfunc f(x uint64) int64\n"
 	const helperGoSrc = "package p\nfunc f() int64\nfunc helper()\n"
+	const voidOutGoSrc = "package p\nfunc f(out *uint64)\n"
 
 	const divUndefPrefix = `
 	PUSHFQ
@@ -1818,13 +1819,15 @@ func TestTranslateGoModuleAMD64X87StatusAndStackPrecision(t *testing.T) {
 `
 
 	cases := []struct {
-		name     string
-		goSrc    string
-		asm      string
-		wantErr  bool
-		wantO2   string
-		wantO2HW string
-		wantO2SW string
+		name      string
+		goSrc     string
+		asm       string
+		wantErr   bool
+		wantErrHW bool
+		wantErrSW bool
+		wantO2    string
+		wantO2HW  string
+		wantO2SW  string
 	}{
 		{
 			name: "round13-p2-unknown-ze-rejected",
@@ -2783,6 +2786,231 @@ skip:
 `,
 			wantErr: true,
 		},
+		// Round 17 P1 #1: entry TOP is unspecified (caller may enter with empty
+		// stack and TOP != 0, e.g. FINIT; FDECSTP), so even 8 full pushes writing
+		// all 8 physical slots must not mark M0..M7 defined until FINIT or MMX
+		// synchronizes hardware TOP with the lowered local %x87_status slot.
+		{
+			name: "round17-p1-entry-8pushes-read-m7-without-finit-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLDZ
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round17-p1-entry-8pushes-void-ptr-read-m7-without-finit-rejected",
+			goSrc: voidOutGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ out+0(FP), DI
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLDZ
+	MOVQ M7, AX
+	MOVQ AX, 0(DI)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name:  "round17-p1-entry-partial-branch-finit-8pushes-m7-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	CMPQ CX, $0
+	JE skip
+	FINIT
+skip:
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLDZ
+	MOVQ M7, AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round17-p1-entry-finit-8pushes-read-m7-accepted",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLDZ
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 -9223372036854775808",
+		},
+		{
+			name: "round17-p1-entry-mmx-emms-8pushes-read-m7-accepted",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $0, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLDZ
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 -9223372036854775808",
+		},
+		// Round 17 P1 #2: X87Hardware natively reads caller's live hardware FCW
+		// (rounding/precision control) on CW-dependent instructions, whereas
+		// X87Software uses a local control-word slot and must explicitly reject
+		// CW-dependent operations until FINIT or FLDCW establishes CW on all paths.
+		{
+			name: "round17-p1-entry-fldpi-without-finit-hw-ok-sw-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErrSW: true,
+			wantO2HW:  `"fldpi; fstpt $0"`,
+		},
+		{
+			name:  "round17-p1-entry-fldpi-void-ptr-without-finit-hw-ok-sw-rejected",
+			goSrc: voidOutGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	MOVQ out+0(FP), DI
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, 0(DI)
+	RET
+`,
+			wantErrSW: true,
+			wantO2HW:  `"fldpi; fstpt $0"`,
+		},
+		{
+			name:  "round17-p1-entry-partial-branch-finit-fldpi-hw-ok-sw-rejected",
+			goSrc: paramGoSrc,
+			asm: `TEXT ·f(SB), NOSPLIT, $16-16
+	MOVQ x+0(FP), CX
+	CMPQ CX, $0
+	JE skip
+	FINIT
+skip:
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+8(FP)
+	RET
+`,
+			wantErrSW: true,
+			wantO2HW:  `"fldpi; fstpt $0"`,
+		},
+		{
+			name: "round17-p1-entry-fadddp-without-finit-hw-ok-sw-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	FLD1
+	FLD1
+	FADDDP F0, F1
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErrSW: true,
+			wantO2HW:  `faddp`,
+		},
+		{
+			name: "round17-p1-entry-fsqrt-without-finit-hw-ok-sw-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	FLD1
+	FSQRT
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErrSW: true,
+			wantO2HW:  `fsqrt`,
+		},
+		{
+			name: "round17-p1-entry-fmovdp-without-finit-hw-ok-sw-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	FLD1
+	FMOVDP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErrSW: true,
+			wantO2HW:  `fstpl`,
+		},
+		{
+			name: "round17-p1-entry-fmovbp-without-finit-hw-ok-sw-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	FLD1
+	FMOVBP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantErrSW: true,
+			wantO2HW:  `fbstp`,
+		},
+		{
+			name: "round17-p1-entry-fld1-fmovxp-without-finit-both-accepted",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	FLD1
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 -9223372036854775808",
+		},
+		{
+			name: "round17-p1-entry-fldcw-rd-fldpi-both-accepted",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	MOVW $0x077f, 0(SP)
+	FLDCW 0(SP)
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2HW: `"fldpi; fstpt $0"`,
+			wantO2SW: "ret i64 -3958705157555305932",
+		},
 	}
 
 	modes := []struct {
@@ -2818,7 +3046,14 @@ skip:
 					X87Mode:      m.mode,
 					ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
 				})
-				if tc.wantErr {
+				wantErr := tc.wantErr
+				if m.mode == X87Hardware && tc.wantErrHW {
+					wantErr = true
+				}
+				if m.mode == X87Software && tc.wantErrSW {
+					wantErr = true
+				}
+				if wantErr {
 					if err == nil {
 						ir := res.Module.String()
 						res.Module.Dispose()

@@ -284,6 +284,11 @@ func runX87DiffOracleLines() []string {
 		diffX87CallAndMergeAlias(x, &out)
 		lines = append(lines, fmt.Sprintf("x87_call_merge[%d]=%s", x, formatU64Slice(out[:])))
 	}
+	for x := uint64(0); x <= 1; x++ {
+		var out [4]uint64
+		diffX87EntryTopAndCW(x, &out)
+		lines = append(lines, fmt.Sprintf("x87_entry_top_cw[%d]=%s", x, formatU64Slice(out[:])))
+	}
 
 	return lines
 }
@@ -442,6 +447,16 @@ func TestAMD64X87NativeSanity(t *testing.T) {
 	}
 	if cm1 != wantCM1 {
 		t.Fatalf("diffX87CallAndMergeAlias(1) = %#x, want %#x", cm1, wantCM1)
+	}
+
+	// Verify Round 17 P1 entry-TOP and entry-CW invariance with explicit FINIT/MMX+EMMS/FLDCW.
+	wantET := [4]uint64{0x8000000000000000, 0x8000000000000000, 0xc90fdaa22168c235, 0xc90fdaa22168c234}
+	for x := uint64(0); x <= 1; x++ {
+		var et [4]uint64
+		diffX87EntryTopAndCW(x, &et)
+		if et != wantET {
+			t.Fatalf("diffX87EntryTopAndCW(%d) = %#x, want %#x", x, et, wantET)
+		}
 	}
 }
 

@@ -10,6 +10,7 @@
 // depths and register aliases, popping the ENTIRE stack after each sequence so
 // every slot (not just ST(0)) is verified.
 TEXT ·diffX87FmovdStackDepths(SB), NOSPLIT, $32-8
+	FINIT
 	MOVQ out+0(FP), DI
 
 	// Case A (Round 10 P1 #1 exact repro): FLDZ; FLD1; FMOVD F1, F0
@@ -97,6 +98,7 @@ TEXT ·diffX87FmovdStackDepths(SB), NOSPLIT, $32-8
 // FLDL2T, FLDLG2, FLDLN2), verifies both IEEE-754 f64 (FMOVDP) and raw 80-bit
 // extended bytes (FMOVXP).
 TEXT ·diffX87Constants(SB), NOSPLIT, $0-16
+	FINIT
 	MOVQ outF64+0(FP), DI
 	MOVQ outRaw80+8(FP), SI
 
@@ -139,6 +141,7 @@ TEXT ·diffX87Constants(SB), NOSPLIT, $0-16
 
 // diffX87BCD exercises Go's FMOVB/FMOVBP (DF /4 = FBLD, DF /6 = FBSTP) and FBLD/FBSTP aliases.
 TEXT ·diffX87BCD(SB), NOSPLIT, $0-24
+	FINIT
 	MOVQ inBCD+0(FP), SI
 	MOVQ outBCD+8(FP), DI
 	MOVQ outF64+16(FP), DX
@@ -153,6 +156,7 @@ TEXT ·diffX87BCD(SB), NOSPLIT, $0-24
 
 // diffX87Arith80 exercises FADDD/FADDDP/FSUBD/FSUBDP/FSUBRD/FSUBRDP/FMULD/FMULDP/FDIVD/FDIVDP/FDIVRD/FDIVRDP.
 TEXT ·diffX87Arith80(SB), NOSPLIT, $0-24
+	FINIT
 	MOVQ out+16(FP), DI
 
 	// [0] a + b via FADDDP F0, F1
@@ -224,6 +228,7 @@ TEXT ·diffX87Arith80(SB), NOSPLIT, $0-24
 // diffX87FUCOMI verifies FUCOMI, FUCOMIP, FCOMI, FCOMIP flags (ZF/PF/CF) AND
 // proves OF/SF/AF are cleared to 0 even when pre-set to 1 before the compare.
 TEXT ·diffX87FUCOMI(SB), NOSPLIT, $0-24
+	FINIT
 	MOVQ out+16(FP), DI
 
 	// [0] FUCOMI F0, F1 (a vs b) with OF=1, SF=1, AF=1 pre-set via POPFQ
@@ -1257,5 +1262,118 @@ p2_skip3:
 	MOVQ AX, 40(DI)
 
 	EMMS
+	FINIT
+	RET
+
+// Round 17 P1 helpers: explicit FINIT / MMX+EMMS / FLDCW establish entry-independent
+// TOP and control-word semantics even when callers enter with FDECSTP (TOP=7) or
+// FLDCW 0x077f (RD).
+TEXT ·diffX87EightPushFinitHelper(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLDZ
+	MOVQ M7, AX
+	EMMS
+	FINIT
+	MOVQ AX, ret+0(FP)
+	RET
+
+TEXT ·diffX87EightPushMMXHelper(SB), NOSPLIT, $0-8
+	MOVQ $0, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLD1
+	FLDZ
+	MOVQ M7, AX
+	EMMS
+	FINIT
+	MOVQ AX, ret+0(FP)
+	RET
+
+TEXT ·diffX87FldpiFinitHelper(SB), NOSPLIT, $16-8
+	FINIT
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	FINIT
+	MOVQ AX, ret+0(FP)
+	RET
+
+TEXT ·diffX87FldpiFldcwRDHelper(SB), NOSPLIT, $16-8
+	MOVW $0x077f, 0(SP)
+	FLDCW 0(SP)
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	FINIT
+	MOVQ AX, ret+0(FP)
+	RET
+
+// diffX87EntryTopAndCW verifies Round 17 P1 #1 & #2 under both default caller
+// entry state (x=0: TOP=0, CW=RN) and modified caller entry state (x=1:
+// TOP=7 via FDECSTP, CW=RD via FLDCW 0x077f).
+TEXT ·diffX87EntryTopAndCW(SB), NOSPLIT, $16-16
+	// [0] Caller TOP=0/7 -> callee with FINIT + 7x FLD1 + FLDZ -> M7 == 0x8000000000000000
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE r17_top0_skip
+	FDECSTP
+r17_top0_skip:
+	CALL ·diffX87EightPushFinitHelper(SB)
+	MOVQ 0(SP), AX
+	MOVQ out+8(FP), DI
+	MOVQ AX, 0(DI)
+
+	// [1] Caller TOP=0/7 -> callee with MMX+EMMS + 7x FLD1 + FLDZ -> M7 == 0x8000000000000000
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE r17_top1_skip
+	FDECSTP
+r17_top1_skip:
+	CALL ·diffX87EightPushMMXHelper(SB)
+	MOVQ 0(SP), AX
+	MOVQ out+8(FP), DI
+	MOVQ AX, 8(DI)
+
+	// [2] Caller CW=RN/RD -> callee with FINIT + FLDPI -> 0xc90fdaa22168c235 (RN)
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE r17_cw0_skip
+	MOVW $0x077f, 8(SP)
+	FLDCW 8(SP)
+r17_cw0_skip:
+	CALL ·diffX87FldpiFinitHelper(SB)
+	MOVQ 0(SP), AX
+	MOVQ out+8(FP), DI
+	MOVQ AX, 16(DI)
+
+	// [3] Caller CW=RN/RD -> callee with FLDCW 0x077f + FLDPI -> 0xc90fdaa22168c234 (RD)
+	MOVQ x+0(FP), CX
+	FINIT
+	CMPQ CX, $0
+	JE r17_cw1_skip
+	MOVW $0x077f, 8(SP)
+	FLDCW 8(SP)
+r17_cw1_skip:
+	CALL ·diffX87FldpiFldcwRDHelper(SB)
+	MOVQ 0(SP), AX
+	MOVQ out+8(FP), DI
+	MOVQ AX, 24(DI)
+
 	FINIT
 	RET

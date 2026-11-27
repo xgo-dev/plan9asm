@@ -27,6 +27,119 @@ func (c *amd64Ctx) requireX87SoftwareControlInit(op asm.Op) error {
 	return fmt.Errorf("%w: result initialization: %s requires initialized x87 control word in software mode", asm.ErrProbeNeedsContext, op)
 }
 
+// computeX87SWCWInit computes the forward CFG must-initialized x87 control-word
+// state at entry to every basic block for X87Software mode (false at function
+// entry and after CALL; true after FINIT or FLDCW; intersected at CFG joins).
+func (c *amd64Ctx) computeX87SWCWInit() []bool {
+	n := len(c.blocks)
+	inInit := make([]bool, n)
+	if n == 0 {
+		return inInit
+	}
+	blockByName := make(map[string]int, n)
+	for i, blk := range c.blocks {
+		blockByName[blk.name] = i
+	}
+	visited := make([]bool, n)
+	visited[0] = true
+	inInit[0] = false
+	queue := []int{0}
+	inQueue := make([]bool, n)
+	inQueue[0] = true
+
+	enqueue := func(next int, val bool) {
+		if next < 0 || next >= n {
+			return
+		}
+		if !visited[next] {
+			visited[next] = true
+			inInit[next] = val
+			if !inQueue[next] {
+				queue = append(queue, next)
+				inQueue[next] = true
+			}
+			return
+		}
+		if inInit[next] && !val {
+			inInit[next] = false
+			if !inQueue[next] {
+				queue = append(queue, next)
+				inQueue[next] = true
+			}
+		}
+	}
+
+	resolveTarget := func(bi, ii int, opnd asm.Operand) (int, bool) {
+		switch opnd.Kind {
+		case asm.OpIdent:
+			idx, ok := blockByName[opnd.Ident]
+			return idx, ok
+		case asm.OpLabel:
+			idx, ok := blockByName[opnd.Sym]
+			return idx, ok
+		case asm.OpReg:
+			idx, ok := blockByName[string(opnd.Reg)]
+			return idx, ok
+		case asm.OpSym:
+			s := strings.TrimSpace(opnd.Sym)
+			if strings.HasPrefix(s, "*") || strings.HasSuffix(s, "(SB)") {
+				return -1, false
+			}
+			s = strings.TrimSuffix(s, "<>")
+			idx, ok := blockByName[s]
+			return idx, ok
+		case asm.OpMem:
+			if strings.EqualFold(string(opnd.Mem.Base), "PC") {
+				tgt := c.blockBase[bi] + ii + int(opnd.Mem.Off)
+				idx, ok := c.blockByIdx[tgt]
+				return idx, ok
+			}
+		}
+		return -1, false
+	}
+
+	for len(queue) > 0 {
+		bi := queue[0]
+		queue = queue[1:]
+		inQueue[bi] = false
+		cur := inInit[bi]
+		terminated := false
+		for ii, ins := range c.blocks[bi].instrs {
+			op := asm.Op(strings.ToUpper(string(ins.Op)))
+			switch {
+			case op == "FINIT" || op == "FLDCW":
+				cur = true
+			case op == "CALL":
+				cur = false
+			case op == asm.OpRET || op == "UD2" || op == "HLT" || op == "UNDEF":
+				terminated = true
+			case op == "JMP":
+				terminated = true
+				if len(ins.Args) == 1 {
+					if tgt, ok := resolveTarget(bi, ii, ins.Args[0]); ok {
+						enqueue(tgt, cur)
+					}
+				}
+			case isX86FlagCondJumpOp(op):
+				terminated = true
+				if len(ins.Args) == 1 {
+					if tgt, ok := resolveTarget(bi, ii, ins.Args[0]); ok {
+						enqueue(tgt, cur)
+					}
+				}
+				enqueue(bi+1, cur)
+			}
+			if terminated {
+				break
+			}
+		}
+		if !terminated {
+			enqueue(bi+1, cur)
+		}
+	}
+	return inInit
+}
+
 func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool, err error) {
 	if !isX87Op(op) {
 		return false, false, nil
@@ -87,6 +200,9 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			c.storeX87Value(plan.DstIdx, c.loadX87Value(plan.SrcIdx))
 			return true, false, nil
 		case x87MoveStoreMem:
+			if err := c.requireX87SoftwareControlInit(op); err != nil {
+				return true, false, err
+			}
 			v, err := c.x87ValueToF64(c.loadX87Value(plan.SrcIdx))
 			if err != nil {
 				return true, false, err
@@ -126,6 +242,9 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			c.popX87Value()
 			return true, false, nil
 		case x87MoveStorePopMem:
+			if err := c.requireX87SoftwareControlInit(op); err != nil {
+				return true, false, err
+			}
 			v, err := c.x87ValueToF64(c.loadX87Value(plan.SrcIdx))
 			if err != nil {
 				return true, false, err
@@ -273,6 +392,9 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 	case "FSQRT":
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("386 FSQRT takes no operands: %q", ins.Raw)
+		}
+		if err := c.requireX87SoftwareControlInit(op); err != nil {
+			return true, false, err
 		}
 		if c.useHardwareX87() {
 			res, _, status := c.evaluateX87Native("fsqrt", []x87Value{c.loadX87Value(0)}, 1, 1)

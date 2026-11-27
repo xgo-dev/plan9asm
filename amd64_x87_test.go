@@ -66,9 +66,24 @@ TEXT ·x87SqrtSum(SB),NOSPLIT,$0-24
 	}
 	verifyLLVMWithTargetLLC(t, hwIR, "x86_64-unknown-linux-gnu")
 
-	// 2. Software x87 lowering on amd64 -> compile and execute on host!
+	// 2. Software x87 lowering on amd64: without FINIT/FLDCW it must reject
+	// uninitialized CW, and with FINIT it compiles and executes identically on host!
 	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
-	swIR, err := Translate(file, Options{
+	if _, err := Translate(file, Options{
+		TargetTriple: triple,
+		Goarch:       "amd64",
+		X87Mode:      X87Software,
+		ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+		Sigs:         map[string]FuncSig{"x87SqrtSum": sig},
+	}); err == nil {
+		t.Fatalf("Translate(amd64, X87Software) without FINIT/FLDCW unexpectedly succeeded")
+	}
+	swSrc := strings.Replace(src, "\tFMOVD a+0(FP), F0", "\tFINIT\n\tFMOVD a+0(FP), F0", 1)
+	swFile, err := Parse(ArchAMD64, swSrc)
+	if err != nil {
+		t.Fatalf("Parse(sw) failed: %v", err)
+	}
+	swIR, err := Translate(swFile, Options{
 		TargetTriple: triple,
 		Goarch:       "amd64",
 		X87Mode:      X87Software,
@@ -76,7 +91,7 @@ TEXT ·x87SqrtSum(SB),NOSPLIT,$0-24
 		Sigs:         map[string]FuncSig{"x87SqrtSum": sig},
 	})
 	if err != nil {
-		t.Fatalf("Translate(amd64, X87Software) failed: %v", err)
+		t.Fatalf("Translate(amd64, X87Software, with FINIT) failed: %v", err)
 	}
 	llc, clang, ok := findLlcAndClang(t)
 	if !ok {
@@ -1131,6 +1146,7 @@ extern void diffX87Cmp(uint8_t *aRaw80, uint8_t *bRaw80, uint64_t *outCC, uint64
 extern void diffX87DynamicStackBranch(uint64_t x, uint64_t *out);
 extern void diffX87MMXAliasAndTop(uint64_t x, uint64_t *out);
 extern void diffX87CallAndMergeAlias(uint64_t x, uint64_t *out);
+extern void diffX87EntryTopAndCW(uint64_t x, uint64_t *out);
 
 typedef struct { uint64_t sig; uint16_t se; } raw80_spec;
 
@@ -1353,6 +1369,11 @@ int main(void) {
         uint64_t outCM[6] = {0};
         diffX87CallAndMergeAlias(x, outCM);
         printf("x87_call_merge[%llu]=", (unsigned long long)x); print_u64s(outCM, 6); putchar('\n');
+    }
+    for (uint64_t x = 0; x <= 1; x++) {
+        uint64_t outET[4] = {0};
+        diffX87EntryTopAndCW(x, outET);
+        printf("x87_entry_top_cw[%llu]=", (unsigned long long)x); print_u64s(outET, 4); putchar('\n');
     }
     return 0;
 }
@@ -1622,8 +1643,15 @@ int main(void) {
 		if got, want := swMap["x87_call_merge[1]"], "8000000000000000,8000000000000000,8000000000000000,8000000000000000,c90fdaa22168c235,0000000000003800"; got != want {
 			t.Fatalf("X87Software x87_call_merge[1] = %s, want %s", got, want)
 		}
-		if len(swMap) < 459 {
-			t.Fatalf("X87Software produced only %d diff keys, want >= 459", len(swMap))
+		const wantEntryTopCW = "8000000000000000,8000000000000000,c90fdaa22168c235,c90fdaa22168c234"
+		if got := swMap["x87_entry_top_cw[0]"]; got != wantEntryTopCW {
+			t.Fatalf("X87Software x87_entry_top_cw[0] = %s, want %s", got, wantEntryTopCW)
+		}
+		if got := swMap["x87_entry_top_cw[1]"]; got != wantEntryTopCW {
+			t.Fatalf("X87Software x87_entry_top_cw[1] = %s, want %s", got, wantEntryTopCW)
+		}
+		if len(swMap) < 461 {
+			t.Fatalf("X87Software produced only %d diff keys, want >= 461", len(swMap))
 		}
 	}
 
@@ -1683,8 +1711,8 @@ int main(void) {
 		t.Fatalf("read x87 oracle transcript %s: %v", oraclePath, err)
 	}
 	oracleMap, _ := parseDiffTranscript(t, string(oracleBytes))
-	if len(oracleMap) < 459 {
-		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 459", len(oracleMap))
+	if len(oracleMap) < 461 {
+		t.Fatalf("native Go amd64 x87 oracle executed only %d cases, want >= 461", len(oracleMap))
 	}
 
 	compared := 0
@@ -1708,10 +1736,103 @@ int main(void) {
 		}
 	}
 	writeAMD64ManifestDiffExecutionReport(t, "amd64/x87_diff_amd64.s", llcTool, true, map[string][]string{
-		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80", "x87_exc", "x87_const_rc", "x87_bcd_rc[", "x87_conv_int[", "x87_conv_flt[", "x87_arith_pc[", "x87_cmp[", "x87_dyn_branch[", "x87_mmx_alias[", "x87_call_merge["},
+		"amd64-diff-gate-x87": {"x87_stack", "x87_consts", "x87_bcd[", "x87_arith[", "x87_fucomi[", "x87_top", "x87_bin80", "x87_exc", "x87_const_rc", "x87_bcd_rc[", "x87_conv_int[", "x87_conv_flt[", "x87_arith_pc[", "x87_cmp[", "x87_dyn_branch[", "x87_mmx_alias[", "x87_call_merge[", "x87_entry_top_cw["},
 	}, llvmMap, oracleMap, failedKeys, "")
 	if len(mismatches) > 0 {
 		t.Fatalf("AMD64 x87 machine-code differential mismatch (%d/%d failed):\n%s", len(mismatches), compared, strings.Join(mismatches, "\n"))
 	}
-	t.Logf("AMD64 x87 native machine-code differential gate PASSED: compared=%d (BOTH X87Hardware and X87Software vs Go native amd64 asm)", compared)
+
+	// Step 4: On native amd64 hardware, also verify Round 17 P1 #2 exact repro
+	// (FLDPI without FINIT/FLDCW) executed under caller FLDCW=0x037f (RN) and
+	// FLDCW=0x077f (RD): X87Hardware reads live hardware FCW and matches Go
+	// native amd64 silicon (0xc90fdaa22168c235 / 0xc90fdaa22168c234), while
+	// X87Software explicitly rejects it.
+	r17GoSrc := "package r17cw\nfunc entryCwFldpi() uint64\n"
+	r17AsmSrc := []byte(`TEXT ·entryCwFldpi(SB), NOSPLIT, $16-8
+	FLDPI
+	FMOVXP F0, 0(SP)
+	MOVQ 0(SP), AX
+	MOVQ AX, ret+0(FP)
+	RET
+`)
+	r17Fset := token.NewFileSet()
+	r17Ast, err := parser.ParseFile(r17Fset, "r17cw.go", r17GoSrc, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r17Pkg, err := cfg.Check("r17cw", r17Fset, []*ast.File{r17Ast}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r17GP := GoPackage{Path: "r17cw", Types: r17Pkg, Syntax: []*ast.File{r17Ast}}
+	if swR17, err := TranslateGoModule(r17GP, r17AsmSrc, GoModuleOptions{
+		FileName:     "r17cw_amd64.s",
+		GOOS:         "linux",
+		GOARCH:       "amd64",
+		TargetTriple: "x86_64-unknown-linux-gnu",
+		X87Mode:      X87Software,
+		ResolveSym:   resolve,
+	}); err == nil {
+		swR17.Module.Dispose()
+		t.Fatalf("Round 17 P1 #2: X87Software unexpectedly accepted entry FLDPI without FINIT/FLDCW")
+	}
+	hwR17, err := TranslateGoModule(r17GP, r17AsmSrc, GoModuleOptions{
+		FileName:     "r17cw_amd64.s",
+		GOOS:         "linux",
+		GOARCH:       "amd64",
+		TargetTriple: hostTriple,
+		X87Mode:      X87Hardware,
+		ResolveSym:   resolve,
+	})
+	if err != nil {
+		t.Fatalf("Round 17 P1 #2: X87Hardware entry FLDPI failed: %v", err)
+	}
+	hwR17IR := hwR17.Module.String()
+	hwR17.Module.Dispose()
+	r17InLL := filepath.Join(tmp, "r17_hw.ll")
+	r17OptLL := filepath.Join(tmp, "r17_hw_opt.ll")
+	r17Obj := filepath.Join(tmp, "r17_hw.o")
+	r17C := filepath.Join(tmp, "r17_hw_harness.c")
+	r17Bin := filepath.Join(tmp, "r17_hw_bin")
+	if runtime.GOOS == "windows" {
+		r17Bin += ".exe"
+	}
+	if err := os.WriteFile(r17InLL, []byte(hwR17IR), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(optTool, "-passes=default<O2>", "-S", r17InLL, "-o", r17OptLL).CombinedOutput(); err != nil {
+		t.Fatalf("opt -O2 (r17_hw) failed: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(llcTool, "-mtriple="+hostTriple, "-filetype=obj", r17OptLL, "-o", r17Obj).CombinedOutput(); err != nil {
+		t.Fatalf("llc (r17_hw) failed: %v\n%s", err, out)
+	}
+	r17HarnessC := `
+#include <stdint.h>
+#include <stdio.h>
+extern uint64_t entryCwFldpi(void);
+static uint64_t call_with_cw(uint16_t cw) {
+    uint64_t res;
+    __asm__ __volatile__("fninit; fldcw %0" : : "m"(cw) : "memory");
+    res = entryCwFldpi();
+    __asm__ __volatile__("fninit" : : : "memory");
+    return res;
+}
+int main(void) {
+    uint64_t rn = call_with_cw(0x037f);
+    uint64_t rd = call_with_cw(0x077f);
+    printf("rn=%016llx rd=%016llx\n", (unsigned long long)rn, (unsigned long long)rd);
+    if (rn != 0xc90fdaa22168c235ULL || rd != 0xc90fdaa22168c234ULL) return 1;
+    return 0;
+}
+`
+	if err := os.WriteFile(r17C, []byte(r17HarnessC), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(clangTool, "-O2", r17C, r17Obj, "-o", r17Bin).CombinedOutput(); err != nil {
+		t.Fatalf("clang link r17_hw failed: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(r17Bin).CombinedOutput(); err != nil {
+		t.Fatalf("Round 17 P1 #2 X87Hardware live-FCW silicon test failed: %v\n%s", err, out)
+	}
+	t.Logf("AMD64 x87 native machine-code differential gate PASSED: compared=%d (BOTH X87Hardware and X87Software vs Go native amd64 asm + X87Hardware live-FCW entry FLDPI)", compared)
 }

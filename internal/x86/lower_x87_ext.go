@@ -40,6 +40,9 @@ func (c *amd64Ctx) lowerX87Ext(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 				[]x87NativeOperand{{c.x87ValueScratch[0], x87ValueType}}, nil)
 			return true, false, c.pushX87Value(x87Value(c.x87IR("load %s, ptr %s", x87ValueType, c.x87ValueScratch[0])))
 		}
+		if err := c.requireX87SoftwareControlInit(op); err != nil {
+			return true, false, err
+		}
 		// X87Software: honor live x87 control word RC (bits 11:10):
 		// RD (1) and RZ (3) select SigFloor; RU (2) selects SigCeil;
 		// RN (0) selects SigCeil iff cst.RNRoundsUp (FLDPI/FLDL2E/FLDLG2/FLDLN2),
@@ -194,6 +197,9 @@ func (c *amd64Ctx) lowerX87ExtArith(op asm.Op, spec x87ArithSpec, ins asm.Instr)
 		res, _, status = c.evaluateX87Native(hwOp, []x87Value{rhs, lhs}, 1, 1)
 		c.mergeX87ArithStatus(status)
 	} else {
+		if err := c.requireX87SoftwareControlInit(op); err != nil {
+			return err
+		}
 		// Execute in bit-exact IEEE-754 binary80 pure-integer software arithmetic
 		// honoring live RC (rounding mode) and PC (precision control) in x87ControlSlot,
 		// and record raised x87 exception flags + C1 into x87StatusSlot.
@@ -326,6 +332,9 @@ func (c *amd64Ctx) lowerX87ExtMovF32(pop bool, ins asm.Instr) error {
 		if c.useHardwareX87() {
 			f32 = c.x87NativeToScalar(val, "float", "fstps")
 		} else {
+			if err := c.requireX87SoftwareControlInit(ins.Op); err != nil {
+				return err
+			}
 			f32, err = c.x87PortableToFloat(val, 32, c.loadX87ControlWord())
 			if err != nil {
 				return err
@@ -380,6 +389,9 @@ func (c *amd64Ctx) lowerX87ExtMovInt(bits int, pop bool, ins asm.Instr) error {
 		if c.useHardwareX87() {
 			iv = c.x87NativeToSigned(val, convBits)
 		} else {
+			if err := c.requireX87SoftwareControlInit(ins.Op); err != nil {
+				return err
+			}
 			iv, err = c.x87PortableToSigned(val, convBits, c.loadX87ControlWord())
 			if err != nil {
 				return err
@@ -537,6 +549,9 @@ func (c *amd64Ctx) lowerX87ExtBCD(store bool, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  store i16 %s, ptr %s, align 1\n", hi, p8)
 		c.popX87Value()
 		return nil
+	}
+	if err := c.requireX87SoftwareControlInit(ins.Op); err != nil {
+		return err
 	}
 	// FBSTP/FMOVBP software mode: round ST(0) per live FLDCW RC, validate
 	// exact 18-digit packed BCD range |rounded| <= 999999999999999999 (10^18-1)
