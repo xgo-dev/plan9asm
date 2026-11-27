@@ -78,21 +78,17 @@ func (c *amd64Ctx) lowerX87Ext(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("386 FFREE expects x87 reg: %q", ins.Raw)
 		}
-		idx, ok := x87OperandReg(ins.Args[0])
+		_, ok := x87OperandReg(ins.Args[0])
 		if !ok {
 			return true, false, fmt.Errorf("386 FFREE expects x87 reg: %q", ins.Raw)
 		}
-		c.storeX87Value(idx, x87ZeroValue)
+		// Intel SDM Vol. 2A FFREE: marks the slot's tag empty without modifying
+		// TOP or the physical data register R[(TOP+idx)&7].
 		return true, false, nil
 	case "FINCSTP":
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("386 FINCSTP takes no operands: %q", ins.Raw)
 		}
-		top := c.loadX87Value(0)
-		for i := 0; i < len(c.x87Slot)-1; i++ {
-			c.storeX87Value(i, c.loadX87Value(i+1))
-		}
-		c.storeX87Value(len(c.x87Slot)-1, top)
 		c.adjustX87Top(1)
 		c.projectX87Status("0", 0x0200)
 		return true, false, nil
@@ -100,11 +96,6 @@ func (c *amd64Ctx) lowerX87Ext(op asm.Op, ins asm.Instr) (ok bool, terminated bo
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("386 FDECSTP takes no operands: %q", ins.Raw)
 		}
-		last := c.loadX87Value(len(c.x87Slot) - 1)
-		for i := len(c.x87Slot) - 1; i > 0; i-- {
-			c.storeX87Value(i, c.loadX87Value(i-1))
-		}
-		c.storeX87Value(0, last)
 		c.adjustX87Top(-1)
 		c.projectX87Status("0", 0x0200)
 		return true, false, nil

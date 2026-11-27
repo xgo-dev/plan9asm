@@ -2344,6 +2344,108 @@ join:
 `,
 			wantO2: "ret i64 0",
 		},
+		{
+			name: "round15-p1-x87-fld1-overwrites-m7",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $123, AX
+	MOVQ AX, M7
+	FINIT
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 -9223372036854775808",
+		},
+		{
+			name: "round15-p1-x87-fld1-preserves-m0",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	MOVQ $123, AX
+	MOVQ AX, M0
+	FINIT
+	FLD1
+	MOVQ M0, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 123",
+		},
+		{
+			name: "round15-p2-emms-allows-top-0x3800",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	MOVQ $1, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 14336",
+		},
+		{
+			name: "round15-p2-mmx-resets-nonzero-top-before-emms",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	FLD1
+	MOVQ $1, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, ret+0(FP)
+	RET
+`,
+			wantO2: "ret i64 14336",
+		},
+		{
+			name: "round15-p1-undef-x87-write-poisons-m7-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	PUSHFQ
+	POPQ AX
+	ANDQ $1, AX
+	MOVQ $123, BX
+	MOVQ BX, M7
+	FINIT
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	MOVQ M7, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round15-p1-sptaint-x87-write-poisons-m7-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $16-8
+	MOVQ $123, BX
+	MOVQ BX, M7
+	FINIT
+	LEAQ 0(SP), AX
+	MOVQ AX, 0(SP)
+	FMOVV 0(SP), F0
+	MOVQ M7, BX
+	MOVQ BX, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
+		{
+			name: "round15-p1-mmx-without-emms-read-f0-rejected",
+			asm: `TEXT ·f(SB), NOSPLIT, $0-8
+	FINIT
+	MOVQ $123, AX
+	MOVQ AX, M0
+	FMOVVP F0, ret+0(FP)
+	RET
+`,
+			wantErr: true,
+		},
 	}
 
 	modes := []struct {

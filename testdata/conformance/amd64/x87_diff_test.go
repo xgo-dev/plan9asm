@@ -274,6 +274,11 @@ func runX87DiffOracleLines() []string {
 		diffX87DynamicStackBranch(x, &out)
 		lines = append(lines, fmt.Sprintf("x87_dyn_branch[%d]=%s", x, formatU64Slice(out[:])))
 	}
+	for x := uint64(0); x <= 1; x++ {
+		var out [8]uint64
+		diffX87MMXAliasAndTop(x, &out)
+		lines = append(lines, fmt.Sprintf("x87_mmx_alias[%d]=%s", x, formatU64Slice(out[:])))
+	}
 
 	return lines
 }
@@ -406,6 +411,19 @@ func TestAMD64X87NativeSanity(t *testing.T) {
 	}
 	if dyn1 != [4]uint64{0x0000, 0x0000, 0x0800, 0x0000} {
 		t.Fatalf("diffX87DynamicStackBranch(1) = %#x, want [0x0 0x0 0x800 0x0]", dyn1)
+	}
+
+	// Verify Round 15 P1/P2 physical x87/MMX register aliasing and TOP reset on native amd64.
+	var mmx0, mmx1 [8]uint64
+	diffX87MMXAliasAndTop(0, &mmx0)
+	diffX87MMXAliasAndTop(1, &mmx1)
+	wantMMX0 := [8]uint64{0x8000000000000000, 123, 0x3800, 0x3800, 0xc90fdaa22168c235, 0x8000000000000000, 0x8000000000000000, 123}
+	wantMMX1 := [8]uint64{0x8000000000000000, 123, 0x3800, 0x3800, 0xc90fdaa22168c235, 0x8000000000000000, 0x8000000000000000, 0xc90fdaa22168c235}
+	if mmx0 != wantMMX0 {
+		t.Fatalf("diffX87MMXAliasAndTop(0) = %#x, want %#x", mmx0, wantMMX0)
+	}
+	if mmx1 != wantMMX1 {
+		t.Fatalf("diffX87MMXAliasAndTop(1) = %#x, want %#x", mmx1, wantMMX1)
 	}
 }
 

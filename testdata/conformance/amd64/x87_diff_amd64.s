@@ -1098,3 +1098,85 @@ dyn3_skip:
 
 	FINIT
 	RET
+
+// diffX87MMXAliasAndTop verifies Intel SDM Vol. 1 §9.2.1 physical x87/MMX
+// register aliasing (M0..M7 <-> R0..R7 low 64-bit significand) and TOP=0 reset
+// across MMX/EMMS/FINIT/FLD1/FLDPI/FMOVDP and dynamic-TOP CFG joins (Round 15
+// P1, M0 control, and P2).
+TEXT ·diffX87MMXAliasAndTop(SB), NOSPLIT, $0-16
+	MOVQ x+0(FP), CX
+	MOVQ out+8(FP), DI
+
+	// [0] Round 15 P1 exact repro: M7 = 123 -> FINIT -> FLD1 (writes R7) -> M7 == 0x8000000000000000
+	MOVQ $123, AX
+	MOVQ AX, M7
+	FINIT
+	FLD1
+	MOVQ M7, AX
+	MOVQ AX, 0(DI)
+
+	// [1] Round 15 P1 M0 control: M0 = 123 -> FINIT -> FLD1 (writes R7, not R0) -> M0 == 123
+	MOVQ $123, AX
+	MOVQ AX, M0
+	FINIT
+	FLD1
+	MOVQ M0, AX
+	MOVQ AX, 8(DI)
+
+	// [2] Round 15 P2 exact repro: FINIT -> MOVQ AX, M0 -> EMMS -> FLD1 -> FSTSW & 0x3800 == 0x3800
+	FINIT
+	MOVQ $1, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 16(DI)
+
+	// [3] Non-zero TOP reset by MMX before EMMS: FINIT -> FLD1 (TOP=7) -> MOVQ AX, M0 (TOP=0) -> EMMS -> FLD1 -> TOP=7 (0x3800)
+	FINIT
+	FLD1
+	MOVQ $1, AX
+	MOVQ AX, M0
+	EMMS
+	FLD1
+	MOVQ $0, AX
+	FSTSW AX
+	ANDQ $0x3800, AX
+	MOVQ AX, 24(DI)
+
+	// [4..5] Two pushes: FINIT -> FLD1 (R7) -> FLDPI (R6) -> M6 == pi sig, M7 == 1.0 sig
+	FINIT
+	FLD1
+	FLDPI
+	MOVQ M6, AX
+	MOVQ AX, 32(DI)
+	MOVQ M7, AX
+	MOVQ AX, 40(DI)
+
+	// [6] Pop does not erase physical R7: FINIT -> FLD1 -> FMOVDP F0, F0 -> M7 == 0x8000000000000000
+	FINIT
+	FLD1
+	FMOVDP F0, F0
+	MOVQ M7, AX
+	MOVQ AX, 48(DI)
+
+	// [7] Dynamic-TOP CFG join aliasing M6/M7: M6=M7=123 -> FINIT -> if x!=0 FLD1 (R7) -> join -> FLDPI -> read M6
+	//     x == 0: FLDPI writes R7, so M6 == 123
+	//     x != 0: FLDPI writes R6, so M6 == 0xc90fdaa22168c235
+	MOVQ $123, AX
+	MOVQ AX, M6
+	MOVQ AX, M7
+	FINIT
+	CMPQ CX, $0
+	JE mmx_dyn_skip
+	FLD1
+mmx_dyn_skip:
+	FLDPI
+	MOVQ M6, AX
+	MOVQ AX, 56(DI)
+
+	EMMS
+	FINIT
+	RET

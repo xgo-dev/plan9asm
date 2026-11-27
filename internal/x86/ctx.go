@@ -47,7 +47,7 @@ type amd64Ctx struct {
 	kRegSlot         map[int]string // avx512 mask reg index -> alloca name (i64)
 	usedX87          bool
 	usesX87Convert   bool
-	x87Slot          [8]string // x87 stack registers as 80-bit extended { i64, i16 }
+	x87PhysSlot      string    // shared physical x87/MMX register file [8 x { i64, i16 }]
 	x87ValueScratch  [3]string // hardware x87 binary80 scratch slots
 	x87ScalarScratch string    // hardware x87 64-bit scalar transfer slot
 	x87NativeStatus  string    // hardware x87 status word capture slot
@@ -346,6 +346,11 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 	c.b.WriteString(asm.LLVMBlockName("entry") + ":\n")
 	for _, rs := range regs {
 		r := asm.Reg(rs)
+		if c.usedX87 && isAMD64MReg(r) {
+			// When x87 is active, M0..M7 physically alias the low 64-bit mantissas
+			// of R0..R7 in c.x87PhysSlot rather than separate integer slots.
+			continue
+		}
 		name := c.slotName(r)
 		c.regSlot[r] = name
 		fmt.Fprintf(c.b, "  %s = alloca i64\n", name)
@@ -428,12 +433,9 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", name)
 	}
 	if c.usedX87 {
-		for i := range c.x87Slot {
-			name := fmt.Sprintf("%%x87_f%d", i)
-			c.x87Slot[i] = name
-			fmt.Fprintf(c.b, "  %s = alloca %s\n", name, x87ValueType)
-			fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, x87ZeroValue, name)
-		}
+		c.x87PhysSlot = "%x87_phys"
+		fmt.Fprintf(c.b, "  %s = alloca [8 x %s]\n", c.x87PhysSlot, x87ValueType)
+		fmt.Fprintf(c.b, "  store [8 x %s] zeroinitializer, ptr %s\n", x87ValueType, c.x87PhysSlot)
 		c.x87ControlSlot = "%x87_control"
 		c.x87StatusSlot = "%x87_status"
 		fmt.Fprintf(c.b, "  %s = alloca i16\n", c.x87ControlSlot)
@@ -1026,6 +1028,13 @@ func amd64ByteRegBase(r asm.Reg) (base asm.Reg, shift uint, ok bool) {
 }
 
 func (c *amd64Ctx) loadReg(r asm.Reg) (string, error) {
+	if mIdx, ok := amd64ParseMReg(r); ok && c.usedX87 {
+		// Intel SDM Vol. 1 §9.2.1: any MMX access resets x87 TOP to 0 and reads
+		// the low 64-bit significand of physical x87 data register R[mIdx].
+		c.resetX87TopForMMX()
+		ptr := c.x87PhysMantissaPtr(mIdx)
+		return c.x87IR("load i64, ptr %s", ptr), nil
+	}
 	// Model byte aliases used by stdlib asm. Reads return the selected byte as a
 	// zero-extended i64.
 	if base, shift, ok := amd64ByteAlias(r); ok {
@@ -1059,6 +1068,17 @@ func (c *amd64Ctx) storeReg(r asm.Reg, v string) error {
 }
 
 func (c *amd64Ctx) storeRegUnchecked(r asm.Reg, v string) error {
+	if mIdx, ok := amd64ParseMReg(r); ok && c.usedX87 {
+		// Intel SDM Vol. 1 §9.2.1: any MMX write resets x87 TOP to 0, writes the
+		// 64-bit payload into physical R[mIdx].mantissa, and sets R[mIdx].signExp
+		// to 0xFFFF.
+		c.resetX87TopForMMX()
+		mPtr := c.x87PhysMantissaPtr(mIdx)
+		ePtr := c.x87PhysSignExpPtr(mIdx)
+		fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v, mPtr)
+		fmt.Fprintf(c.b, "  store i16 -1, ptr %s\n", ePtr)
+		return nil
+	}
 	// See loadReg for byte-alias handling.
 	if base, shift, ok := amd64ByteAlias(r); ok {
 		cur, err := c.loadReg(base)

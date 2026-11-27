@@ -43,9 +43,9 @@ func (c *amd64Ctx) lowerX87(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		if c.useHardwareX87() {
 			fmt.Fprintln(c.b, `  call void asm sideeffect "fninit", "~{st},~{st(1)},~{st(2)},~{st(3)},~{st(4)},~{st(5)},~{st(6)},~{st(7)},~{fpsr}"()`)
 		}
-		for i := range c.x87Slot {
-			c.storeX87Value(i, x87ZeroValue)
-		}
+		// Intel SDM Vol. 2A FINIT/FNINIT: resets CW=0x037f, SW=0 (TOP=0), and
+		// TW=0xffff (all tags empty) WITHOUT altering physical data registers R0..R7
+		// (aliased by M0..M7).
 		fmt.Fprintf(c.b, "  store i16 895, ptr %s\n", c.x87ControlSlot)
 		fmt.Fprintf(c.b, "  store i16 0, ptr %s\n", c.x87StatusSlot)
 		c.x87CWInitialized = true
@@ -340,12 +340,43 @@ func (c *amd64Ctx) loadX87ControlWord() string {
 	return c.x87IR("load i16, ptr %s", c.x87ControlSlot)
 }
 
+func (c *amd64Ctx) x87TopIndex() string {
+	status := c.x87IR("load i16, ptr %s", c.x87StatusSlot)
+	return c.x87IR("and i16 %s, 7", c.x87IR("lshr i16 %s, 11", status))
+}
+
+func (c *amd64Ctx) x87SlotPtr(index int) string {
+	top := c.x87TopIndex()
+	phys := top
+	if index&7 != 0 {
+		phys = c.x87IR("and i16 %s, 7", c.x87IR("add i16 %s, %d", top, index&7))
+	}
+	phys64 := c.x87IR("zext i16 %s to i64", phys)
+	return c.x87IR("getelementptr inbounds [8 x %s], ptr %s, i64 0, i64 %s", x87ValueType, c.x87PhysSlot, phys64)
+}
+
+func (c *amd64Ctx) x87PhysMantissaPtr(physIdx int) string {
+	return c.x87IR("getelementptr inbounds [8 x %s], ptr %s, i64 0, i64 %d, i32 0", x87ValueType, c.x87PhysSlot, physIdx&7)
+}
+
+func (c *amd64Ctx) x87PhysSignExpPtr(physIdx int) string {
+	return c.x87IR("getelementptr inbounds [8 x %s], ptr %s, i64 0, i64 %d, i32 1", x87ValueType, c.x87PhysSlot, physIdx&7)
+}
+
+func (c *amd64Ctx) resetX87TopForMMX() {
+	status := c.x87IR("load i16, ptr %s", c.x87StatusSlot)
+	cleared := c.x87IR("and i16 %s, %d", status, ^uint16(0x3800))
+	fmt.Fprintf(c.b, "  store i16 %s, ptr %s\n", cleared, c.x87StatusSlot)
+}
+
 func (c *amd64Ctx) loadX87Value(index int) x87Value {
-	return x87Value(c.x87IR("load %s, ptr %s", x87ValueType, c.x87Slot[index]))
+	ptr := c.x87SlotPtr(index)
+	return x87Value(c.x87IR("load %s, ptr %s", x87ValueType, ptr))
 }
 
 func (c *amd64Ctx) storeX87Value(index int, value x87Value) {
-	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, value, c.x87Slot[index])
+	ptr := c.x87SlotPtr(index)
+	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", x87ValueType, value, ptr)
 }
 
 // adjustX87Top adds delta (modulo 8: -1 on push/FDECSTP, +1 on pop/FINCSTP)
@@ -361,19 +392,16 @@ func (c *amd64Ctx) adjustX87Top(delta int) {
 }
 
 func (c *amd64Ctx) pushX87Value(value x87Value) error {
-	for i := len(c.x87Slot) - 1; i > 0; i-- {
-		c.storeX87Value(i, c.loadX87Value(i-1))
-	}
-	c.storeX87Value(0, value)
+	// Decrement TOP first so physical register R[(TOP-1)&7] receives the pushed
+	// value without touching any of the other 7 physical registers R0..R7.
 	c.adjustX87Top(-1)
+	c.storeX87Value(0, value)
 	return nil
 }
 
 func (c *amd64Ctx) popX87Value() {
-	for i := 0; i < len(c.x87Slot)-1; i++ {
-		c.storeX87Value(i, c.loadX87Value(i+1))
-	}
-	c.storeX87Value(len(c.x87Slot)-1, x87ZeroValue)
+	// Intel SDM: popping marks the popped slot's tag empty and increments TOP
+	// without clearing the underlying physical data register R[oldTOP].
 	c.adjustX87Top(1)
 }
 

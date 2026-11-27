@@ -62,8 +62,14 @@ type abi0State struct {
 	x87StackMayOcc [8]bool
 	x87StackDef    [8]bool
 	x87StackTaint  [8]bool
-	x87SWBitDef    uint16
-	x87CWBitDef    uint16
+	// x87TopKnown/x87Top track the static x87 stack TOP pointer (0..7) so writes
+	// to logical ST(i) mirror into aliased physical MMX register M[(TOP+i)&7].
+	// When paths with differing TOP values join, x87TopKnown becomes false while
+	// runtime x87StatusSlot still keeps TOP defined (x87SWMaskTOP).
+	x87TopKnown bool
+	x87Top      uint8
+	x87SWBitDef uint16
+	x87CWBitDef uint16
 	// fpBytesInit records initialized byte offsets in the FP frame
 	// (pre-populated with declared parameter slot bytes plus written result bytes).
 	fpBytesInit      map[int64]bool
@@ -175,6 +181,8 @@ func (s *abi0State) clearCallerSaved() {
 	s.x87StackMayOcc = [8]bool{}
 	s.x87StackDef = [8]bool{}
 	s.x87StackTaint = [8]bool{}
+	s.x87TopKnown = true
+	s.x87Top = 0
 	s.x87SWBitDef = 0xffff
 	s.x87CWBitDef = 0xffff
 	s.cfInit = false
@@ -199,11 +207,57 @@ const (
 	x87CWMaskRC       uint16 = 0x0c00 // Rounding Control (bits 11:10)
 )
 
+// syncX87WriteToMMX mirrors an x87 write to logical ST(logicalIdx) into the
+// physically aliased MMX register M[(TOP + logicalIdx) & 7] (Intel SDM Vol. 1 §9.2.1).
+// When TOP is statically unknown across a CFG join, it never forges MMX
+// initialization and conservatively propagates undefinedness and SP taint to
+// all 8 MMX registers.
+func (s *abi0State) syncX87WriteToMMX(logicalIdx int, init, def, taint bool) {
+	if s.x87TopKnown {
+		phys := (int(s.x87Top) + logicalIdx) & 7
+		if init && def {
+			s.mmxBytesInit[phys] = 0xff
+			s.mmxBitDef[phys] = ^uint64(0)
+		} else {
+			delete(s.mmxBytesInit, phys)
+			delete(s.mmxBitDef, phys)
+		}
+		if taint {
+			s.mmxBytesTaintedSP[phys] = 0xff
+		} else {
+			delete(s.mmxBytesTaintedSP, phys)
+		}
+		return
+	}
+	if !init || !def {
+		s.mmxBytesInit = map[int]uint8{}
+		s.mmxBitDef = map[int]uint64{}
+	}
+	if taint {
+		for k := 0; k < 8; k++ {
+			s.mmxBytesTaintedSP[k] = 0xff
+		}
+	}
+}
+
+// invalidateX87StackFault marks all x87 values, physical TOP/MMX alias state,
+// and #IS status bits undefined after an unmodeled #IS stack overflow/underflow.
+func (s *abi0State) invalidateX87StackFault() {
+	s.x87TopKnown = false
+	s.x87StackDef = [8]bool{}
+	s.mmxBytesInit = map[int]uint8{}
+	s.mmxBitDef = map[int]uint64{}
+	s.x87SWBitDef &^= x87SWMaskStackFlt
+}
+
 // pushX87 pushes one entry onto the 8-deep x87 stack and returns true if ST(7)
 // may already be occupied on any reaching control-flow path (unmodeled hardware
 // #IS stack overflow).
 func (s *abi0State) pushX87(init, def, taint bool) (overflow bool) {
 	overflow = s.x87StackMayOcc[7]
+	if s.x87TopKnown {
+		s.x87Top = (s.x87Top + 7) & 7
+	}
 	for i := 7; i > 0; i-- {
 		s.x87StackInit[i] = s.x87StackInit[i-1]
 		s.x87StackMayOcc[i] = s.x87StackMayOcc[i-1]
@@ -216,15 +270,19 @@ func (s *abi0State) pushX87(init, def, taint bool) (overflow bool) {
 	s.x87StackTaint[0] = taint
 	if overflow {
 		// Unmodeled #IS stack overflow may overwrite ST(0) with QNaN indefinite
-		// and leave TOP/slot alignment divergent from the shifted virtual stack.
-		s.x87StackDef = [8]bool{}
-		s.x87SWBitDef &^= x87SWMaskStackFlt
+		// and leave TOP/slot/MMX alignment divergent from the physical register model.
+		s.invalidateX87StackFault()
+	} else {
+		s.syncX87WriteToMMX(0, init, def, taint)
 	}
 	return overflow
 }
 
 func (s *abi0State) popX87() (init, def, taint bool) {
 	init, def, taint = s.x87StackInit[0], s.x87StackDef[0], s.x87StackTaint[0]
+	if s.x87TopKnown {
+		s.x87Top = (s.x87Top + 1) & 7
+	}
 	for i := 0; i < 7; i++ {
 		s.x87StackInit[i] = s.x87StackInit[i+1]
 		s.x87StackMayOcc[i] = s.x87StackMayOcc[i+1]
@@ -236,8 +294,7 @@ func (s *abi0State) popX87() (init, def, taint bool) {
 	s.x87StackDef[7] = false
 	s.x87StackTaint[7] = false
 	if !init {
-		s.x87StackDef = [8]bool{}
-		s.x87SWBitDef &^= x87SWMaskStackFlt
+		s.invalidateX87StackFault()
 	}
 	return init, def, taint
 }
@@ -261,6 +318,8 @@ func (s *abi0State) clone() *abi0State {
 		x87StackMayOcc:    s.x87StackMayOcc,
 		x87StackDef:       s.x87StackDef,
 		x87StackTaint:     s.x87StackTaint,
+		x87TopKnown:       s.x87TopKnown,
+		x87Top:            s.x87Top,
 		x87SWBitDef:       s.x87SWBitDef,
 		x87CWBitDef:       s.x87CWBitDef,
 		fpBytesInit:       make(map[int64]bool, len(s.fpBytesInit)),
@@ -465,6 +524,10 @@ func (s *abi0State) merge(other *abi0State) bool {
 			s.x87StackTaint[i] = true
 			changed = true
 		}
+	}
+	if s.x87TopKnown && (!other.x87TopKnown || s.x87Top != other.x87Top) {
+		s.x87TopKnown = false
+		changed = true
 	}
 	if inter := s.x87SWBitDef & other.x87SWBitDef; inter != s.x87SWBitDef {
 		s.x87SWBitDef = inter
@@ -736,6 +799,8 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		vecByteBitDef:     map[int][64]uint8{},
 		vecBytesTaintedSP: map[int]uint64{},
 		vecFromRaw:        map[int]bool{},
+		x87TopKnown:       true,
+		x87Top:            0,
 		x87SWBitDef:       0xffff,
 		x87CWBitDef:       0xffff,
 		fpBytesInit:       map[int64]bool{},
@@ -1281,6 +1346,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				st.x87StackMayOcc[idx] = true
 				st.x87StackDef[idx] = allBits
 				st.x87StackTaint[idx] = anyTaint
+				st.syncX87WriteToMMX(idx, allInit, allBits, anyTaint)
 				return nil
 			}
 			if idx, ok := anyVecRegIndex(op.Reg); ok {
@@ -1608,9 +1674,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 			continue
 		}
 		if op == "EMMS" {
-			st.mmxBytesInit = map[int]uint8{}
-			st.mmxBitDef = map[int]uint64{}
-			st.mmxBytesTaintedSP = map[int]uint8{}
+			// Intel SDM Vol. 2A EMMS: sets the x87 FPU tag word to 0xFFFF (all
+			// 8 x87 slots empty) without altering TOP or physical data R0..R7
+			// (aliased by M0..M7).
 			st.x87StackInit = [8]bool{}
 			st.x87StackMayOcc = [8]bool{}
 			st.x87StackDef = [8]bool{}
@@ -1721,32 +1787,38 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					srcInit := st.x87StackInit[plan.SrcIdx]
 					ovf := st.pushX87(srcInit, st.x87StackDef[plan.SrcIdx], st.x87StackTaint[plan.SrcIdx])
 					if !srcInit {
-						st.x87SWBitDef &^= x87SWMaskStackFlt
+						st.invalidateX87StackFault()
 					} else if !ovf {
 						st.x87SWBitDef |= x87SWMaskC1
 					}
 				case x87MoveStoreReg:
 					srcInit := st.x87StackInit[plan.SrcIdx]
+					srcDef := srcInit && st.x87StackDef[plan.SrcIdx]
+					srcTaint := st.x87StackTaint[plan.SrcIdx]
 					st.x87StackInit[plan.DstIdx] = srcInit
 					st.x87StackMayOcc[plan.DstIdx] = true
-					st.x87StackDef[plan.DstIdx] = srcInit && st.x87StackDef[plan.SrcIdx]
-					st.x87StackTaint[plan.DstIdx] = st.x87StackTaint[plan.SrcIdx]
+					st.x87StackDef[plan.DstIdx] = srcDef
+					st.x87StackTaint[plan.DstIdx] = srcTaint
+					st.syncX87WriteToMMX(plan.DstIdx, srcInit, srcDef, srcTaint)
 					if !srcInit {
-						st.x87SWBitDef &^= x87SWMaskStackFlt
+						st.invalidateX87StackFault()
 					} else {
 						st.x87SWBitDef |= x87SWMaskC1
 					}
 				case x87MoveStorePopReg:
 					// FSTP ST(dstIdx): write ST(dstIdx) = ST(srcIdx) BEFORE popping ST(0).
 					srcInit := st.x87StackInit[plan.SrcIdx]
+					srcDef := srcInit && st.x87StackDef[plan.SrcIdx]
+					srcTaint := st.x87StackTaint[plan.SrcIdx]
 					topInit := st.x87StackInit[0]
 					st.x87StackInit[plan.DstIdx] = srcInit
 					st.x87StackMayOcc[plan.DstIdx] = true
-					st.x87StackDef[plan.DstIdx] = srcInit && st.x87StackDef[plan.SrcIdx]
-					st.x87StackTaint[plan.DstIdx] = st.x87StackTaint[plan.SrcIdx]
+					st.x87StackDef[plan.DstIdx] = srcDef
+					st.x87StackTaint[plan.DstIdx] = srcTaint
+					st.syncX87WriteToMMX(plan.DstIdx, srcInit, srcDef, srcTaint)
 					_, _, _ = st.popX87()
 					if !srcInit || !topInit {
-						st.x87SWBitDef &^= x87SWMaskStackFlt
+						st.invalidateX87StackFault()
 					} else {
 						st.x87SWBitDef |= x87SWMaskC1
 					}
@@ -1770,6 +1842,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						st.x87StackMayOcc[plan.DstIdx] = true
 						st.x87StackDef[plan.DstIdx] = ev.allBytesInit && ev.allBitsDef
 						st.x87StackTaint[plan.DstIdx] = anyT
+						st.syncX87WriteToMMX(plan.DstIdx, ev.allBytesInit, ev.allBytesInit && ev.allBitsDef, anyT)
 						st.x87SWBitDef |= x87SWMaskC1
 					}
 				case x87MoveStoreMem, x87MoveStorePopMem:
@@ -1824,12 +1897,14 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						st.x87StackDef[i0], st.x87StackDef[i1] = st.x87StackDef[i1], st.x87StackDef[i0]
 						st.x87StackTaint[i0], st.x87StackTaint[i1] = st.x87StackTaint[i1], st.x87StackTaint[i0]
 						if !bothInit {
-							st.x87SWBitDef &^= x87SWMaskStackFlt
 							st.x87StackMayOcc[i0] = true
 							st.x87StackMayOcc[i1] = true
 							st.x87StackDef[i0] = false
 							st.x87StackDef[i1] = false
+							st.invalidateX87StackFault()
 						} else {
+							st.syncX87WriteToMMX(i0, st.x87StackInit[i0], st.x87StackDef[i0], st.x87StackTaint[i0])
+							st.syncX87WriteToMMX(i1, st.x87StackInit[i1], st.x87StackDef[i1], st.x87StackTaint[i1])
 							st.x87SWBitDef |= x87SWMaskC1
 						}
 					}
@@ -1852,7 +1927,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					defRes := initRes && ev0.allBitsDef && ev1.allBitsDef && cwArithDef
 					taintRes := anyT0 || anyT1
 					if !initRes {
-						st.x87SWBitDef &^= x87SWMaskStackFlt
+						st.invalidateX87StackFault()
 					}
 					if defRes {
 						st.x87SWBitDef |= x87SWMaskC1
@@ -1864,6 +1939,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						st.x87StackMayOcc[dstIdx] = true
 						st.x87StackDef[dstIdx] = defRes
 						st.x87StackTaint[dstIdx] = taintRes
+						st.syncX87WriteToMMX(dstIdx, initRes, defRes, taintRes)
 					} else {
 						if err := writeX87ToDst(ins.Args[1], 8, initRes, defRes, taintRes); err != nil {
 							return nil, err
@@ -1959,7 +2035,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						defRes := initRes && st.x87StackDef[srcIdx] && st.x87StackDef[dstIdx]
 						taintRes := st.x87StackTaint[srcIdx] || st.x87StackTaint[dstIdx]
 						if !st.x87StackInit[srcIdx] || !st.x87StackInit[dstIdx] {
-							st.x87SWBitDef &^= x87SWMaskStackFlt
+							st.invalidateX87StackFault()
 						} else {
 							// Intel SDM Vol. 2A FCMOVcc: C1 is undefined when no stack underflow occurs.
 							st.x87SWBitDef &^= x87SWMaskC1
@@ -1968,6 +2044,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						st.x87StackMayOcc[dstIdx] = true
 						st.x87StackDef[dstIdx] = defRes
 						st.x87StackTaint[dstIdx] = taintRes
+						st.syncX87WriteToMMX(dstIdx, initRes, defRes, taintRes)
 					}
 				}
 			case x87CatUnaryInPlace:
@@ -1976,7 +2053,7 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 				init0 := st.x87StackInit[0]
 				st.x87StackMayOcc[0] = true
 				if !init0 {
-					st.x87SWBitDef &^= x87SWMaskStackFlt
+					st.invalidateX87StackFault()
 				}
 				switch op {
 				case "FSQRT":
@@ -2001,11 +2078,12 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 						st.x87SWBitDef |= x87SWMaskC1
 					}
 				}
+				st.syncX87WriteToMMX(0, init0, st.x87StackDef[0], st.x87StackTaint[0])
 			case x87CatStatusTest:
 				init0 := st.x87StackInit[0]
 				def0 := init0 && st.x87StackDef[0]
 				if !init0 {
-					st.x87SWBitDef &^= x87SWMaskStackFlt
+					st.invalidateX87StackFault()
 				} else {
 					st.x87SWBitDef |= x87SWMaskC1
 				}
@@ -2032,6 +2110,9 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					st.x87StackTaint[i] = st.x87StackTaint[i+1]
 				}
 				st.x87StackInit[7], st.x87StackMayOcc[7], st.x87StackDef[7], st.x87StackTaint[7] = i0, m0, d0, t0
+				if st.x87TopKnown {
+					st.x87Top = (st.x87Top + 1) & 7
+				}
 				st.x87SWBitDef |= x87SWMaskC1
 			case x87CatRotateDown:
 				i7, m7, d7, t7 := st.x87StackInit[7], st.x87StackMayOcc[7], st.x87StackDef[7], st.x87StackTaint[7]
@@ -2042,12 +2123,17 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 					st.x87StackTaint[i] = st.x87StackTaint[i-1]
 				}
 				st.x87StackInit[0], st.x87StackMayOcc[0], st.x87StackDef[0], st.x87StackTaint[0] = i7, m7, d7, t7
+				if st.x87TopKnown {
+					st.x87Top = (st.x87Top + 7) & 7
+				}
 				st.x87SWBitDef |= x87SWMaskC1
 			case x87CatInit:
 				st.x87StackInit = [8]bool{}
 				st.x87StackMayOcc = [8]bool{}
 				st.x87StackDef = [8]bool{}
 				st.x87StackTaint = [8]bool{}
+				st.x87TopKnown = true
+				st.x87Top = 0
 				st.x87SWBitDef = 0xffff
 				st.x87CWBitDef = 0xffff
 			case x87CatNop, x87CatUnsupported:
@@ -2727,15 +2813,17 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 		}
 		// Any MMX instruction (except EMMS, handled above) transitions the shared
 		// x87/MMX register file to MMX mode: all 8 x87 tags become non-empty and
-		// TOP resets to 0 (Intel SDM Vol. 1 §9.2.1), so subsequent x87 pushes
-		// without EMMS/FINIT will trigger #IS stack overflow.
+		// TOP resets deterministically to 0 (Intel SDM Vol. 1 §9.2.1), matching
+		// resetX87TopForMMX() in the lowerer.
 		for _, arg := range ins.Args {
 			if arg.Kind == asm.OpReg {
 				if _, ok := amd64ParseMReg(arg.Reg); ok {
 					st.x87StackInit = [8]bool{}
 					st.x87StackMayOcc = [8]bool{true, true, true, true, true, true, true, true}
 					st.x87StackDef = [8]bool{}
-					st.x87SWBitDef &^= x87SWMaskTOP
+					st.x87TopKnown = true
+					st.x87Top = 0
+					st.x87SWBitDef |= x87SWMaskTOP
 					break
 				}
 			}
