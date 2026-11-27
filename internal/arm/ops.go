@@ -320,12 +320,9 @@ func (c *armCtx) lowerARMRSC(cond string, setFlags bool, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", subtr, l64, b64)
 		hasBorrow := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, %%%s\n", hasBorrow, s64, subtr)
-		if err := c.setFlagsSub(cond, src, lhs, "%"+res); err != nil {
-			return err
-		}
 		nb := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", nb, hasBorrow)
-		if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+nb); err != nil {
+		if err := c.setFlagsSubWithCarry(cond, src, lhs, "%"+res, "%"+nb); err != nil {
 			return err
 		}
 	}
@@ -965,17 +962,7 @@ func (c *armCtx) lowerARMDeclarativeFP(spec asm.OpSpec, cond string, ins asm.Ins
 		c01, cf := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", c01, gt, eq)
 		fmt.Fprintf(c.b, "  %%%s = or i1 %%%s, %%%s\n", cf, c01, uno)
-		c.flagsWritten = true
-		if err := c.storeFlagCond(cond, c.flagsNSlot, "%"+lt); err != nil {
-			return err
-		}
-		if err := c.storeFlagCond(cond, c.flagsZSlot, "%"+eq); err != nil {
-			return err
-		}
-		if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+cf); err != nil {
-			return err
-		}
-		return c.storeFlagCond(cond, c.flagsVSlot, "%"+uno)
+		return c.setFlagsNZCV(cond, "%"+lt, "%"+eq, "%"+cf, "%"+uno)
 
 	case "f2f":
 		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {

@@ -556,11 +556,26 @@ func TestARMArithErrorCoverage(t *testing.T) {
 	if err := c.lowerARMALU("ORR", "", true, asm.Instr{Raw: "ORR.S R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err != nil {
 		t.Fatalf("lowerARMALU(ORR.S) error = %v", err)
 	}
-	if err := c.lowerARMCompare("CMP", asm.Instr{Raw: "CMP bad+8(FP), R0", Args: []asm.Operand{{Kind: asm.OpFPAddr, FPName: "bad", FPOffset: 8}, {Kind: asm.OpReg, Reg: "R0"}}}); err == nil {
+	if err := c.lowerARMCompare("CMP", "", asm.Instr{Raw: "CMP bad+8(FP), R0", Args: []asm.Operand{{Kind: asm.OpFPAddr, FPName: "bad", FPOffset: 8}, {Kind: asm.OpReg, Reg: "R0"}}}); err == nil {
 		t.Fatalf("lowerARMCompare(src err) unexpectedly succeeded")
 	}
-	if err := c.lowerARMCompare("CMP", asm.Instr{Raw: "CMP R0, bad+8(FP)", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpFPAddr, FPName: "bad", FPOffset: 8}}}); err == nil {
+	if err := c.lowerARMCompare("CMP", "", asm.Instr{Raw: "CMP R0, bad+8(FP)", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpFPAddr, FPName: "bad", FPOffset: 8}}}); err == nil {
 		t.Fatalf("lowerARMCompare(lhs err) unexpectedly succeeded")
+	}
+	cCondCmp, _ := newARMCtxForTest(t, asm.FuncSig{Name: "example.cond_cmp_noflags", Ret: asm.Void}, nil)
+	for _, op := range []string{"CMP", "CMN", "TST", "TEQ"} {
+		if err := cCondCmp.lowerARMCompare(op, "EQ", asm.Instr{Raw: op + ".EQ R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); err == nil {
+			t.Fatalf("lowerARMCompare(%s.EQ without prior flags) unexpectedly succeeded", op)
+		}
+	}
+	if err := cCondCmp.setFlagsNZCV("VS", "false", "false", "true", "false"); err == nil {
+		t.Fatalf("setFlagsNZCV(VS without prior flags) unexpectedly succeeded")
+	}
+	if err := cCondCmp.setFlagsNZCV("", "false", "true", "true", "false"); err != nil {
+		t.Fatalf("setFlagsNZCV(unconditional) error = %v", err)
+	}
+	if err := cCondCmp.setFlagsNZCV("EQ", "true", "false", "false", "true"); err != nil {
+		t.Fatalf("setFlagsNZCV(EQ) error = %v", err)
 	}
 	if err := c.lowerARMMVN("", false, asm.Instr{Raw: "MVN", Args: nil}); err == nil {
 		t.Fatalf("lowerARMMVN(len err) unexpectedly succeeded")
@@ -862,7 +877,7 @@ func TestARMFPAndRetCoverage(t *testing.T) {
 func TestARMArithCoverageDeep(t *testing.T) {
 	c, b := newARMCtxForTest(t, asm.FuncSig{Name: "example.arith", Ret: asm.Void}, nil)
 
-	if err := c.lowerARMCompare("CMP", asm.Instr{Raw: "CMP R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); err != nil {
+	if err := c.lowerARMCompare("CMP", "", asm.Instr{Raw: "CMP R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); err != nil {
 		t.Fatalf("lowerARMCompare(CMP) error = %v", err)
 	}
 	for _, ins := range []struct {
@@ -884,8 +899,11 @@ func TestARMArithCoverageDeep(t *testing.T) {
 		}
 	}
 	for _, op := range []string{"CMN", "TST", "TEQ"} {
-		if err := c.lowerARMCompare(op, asm.Instr{Raw: op + " R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); err != nil {
+		if err := c.lowerARMCompare(op, "", asm.Instr{Raw: op + " R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); err != nil {
 			t.Fatalf("lowerARMCompare(%s) error = %v", op, err)
+		}
+		if err := c.lowerARMCompare(op, "EQ", asm.Instr{Raw: op + ".EQ R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); err != nil {
+			t.Fatalf("lowerARMCompare(%s.EQ) error = %v", op, err)
 		}
 	}
 	if err := c.lowerARMMVN("EQ", true, asm.Instr{Raw: "MVN.EQ.S R0, R8", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R8"}}}); err != nil {
@@ -936,7 +954,7 @@ func TestARMArithCoverageDeep(t *testing.T) {
 	if err := c.lowerARMALU("ADD", "", false, asm.Instr{Raw: "ADD R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); err == nil {
 		t.Fatalf("lowerARMALU(invalid) unexpectedly succeeded")
 	}
-	if err := c.lowerARMCompare("CMP", asm.Instr{Raw: "CMP R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); err == nil {
+	if err := c.lowerARMCompare("CMP", "", asm.Instr{Raw: "CMP R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); err == nil {
 		t.Fatalf("lowerARMCompare(invalid) unexpectedly succeeded")
 	}
 	if err := c.lowerARMMVN("", false, asm.Instr{Raw: "MVN R0, $1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpImm, Imm: 1}}}); err == nil {

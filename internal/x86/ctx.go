@@ -135,8 +135,7 @@ func (c *amd64Ctx) useHardwareX87() bool {
 
 func (c *amd64Ctx) isX86TargetTriple() bool {
 	t := strings.ToLower(strings.TrimSpace(c.targetTriple))
-	return t == "" ||
-		strings.HasPrefix(t, "x86_64") ||
+	return strings.HasPrefix(t, "x86_64") ||
 		strings.HasPrefix(t, "amd64") ||
 		strings.HasPrefix(t, "i386") ||
 		strings.HasPrefix(t, "i486") ||

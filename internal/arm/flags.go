@@ -68,6 +68,10 @@ func (c *armCtx) storeFlagCond(cond, slot, v string) error {
 }
 
 func (c *armCtx) setFlagsSub(cond, dst, src, res string) error {
+	return c.setFlagsSubWithCarry(cond, dst, src, res, "")
+}
+
+func (c *armCtx) setFlagsSubWithCarry(cond, dst, src, res, carryOverride string) error {
 	pred, err := c.evalFlagPred(cond)
 	if err != nil {
 		return err
@@ -75,10 +79,14 @@ func (c *armCtx) setFlagsSub(cond, dst, src, res string) error {
 	c.flagsWritten = true
 	z := c.newTmp()
 	n := c.newTmp()
-	carry := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", n, res)
-	fmt.Fprintf(c.b, "  %%%s = icmp uge i32 %s, %s\n", carry, dst, src)
+	carryVal := carryOverride
+	if carryVal == "" {
+		carry := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp uge i32 %s, %s\n", carry, dst, src)
+		carryVal = "%" + carry
+	}
 	x1 := c.newTmp()
 	x2 := c.newTmp()
 	x3 := c.newTmp()
@@ -89,12 +97,16 @@ func (c *armCtx) setFlagsSub(cond, dst, src, res string) error {
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", ov, x3)
 	c.storeFlagPred(pred, c.flagsZSlot, "%"+z)
 	c.storeFlagPred(pred, c.flagsNSlot, "%"+n)
-	c.storeFlagPred(pred, c.flagsCSlot, "%"+carry)
+	c.storeFlagPred(pred, c.flagsCSlot, carryVal)
 	c.storeFlagPred(pred, c.flagsVSlot, "%"+ov)
 	return nil
 }
 
 func (c *armCtx) setFlagsAdd(cond, dst, src, res string) error {
+	return c.setFlagsAddWithCarry(cond, dst, src, res, "")
+}
+
+func (c *armCtx) setFlagsAddWithCarry(cond, dst, src, res, carryOverride string) error {
 	pred, err := c.evalFlagPred(cond)
 	if err != nil {
 		return err
@@ -102,10 +114,14 @@ func (c *armCtx) setFlagsAdd(cond, dst, src, res string) error {
 	c.flagsWritten = true
 	z := c.newTmp()
 	n := c.newTmp()
-	carry := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", n, res)
-	fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, %s\n", carry, res, dst)
+	carryVal := carryOverride
+	if carryVal == "" {
+		carry := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i32 %s, %s\n", carry, res, dst)
+		carryVal = "%" + carry
+	}
 	x1 := c.newTmp()
 	nx1 := c.newTmp()
 	x2 := c.newTmp()
@@ -118,8 +134,21 @@ func (c *armCtx) setFlagsAdd(cond, dst, src, res string) error {
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", ov, x3)
 	c.storeFlagPred(pred, c.flagsZSlot, "%"+z)
 	c.storeFlagPred(pred, c.flagsNSlot, "%"+n)
-	c.storeFlagPred(pred, c.flagsCSlot, "%"+carry)
+	c.storeFlagPred(pred, c.flagsCSlot, carryVal)
 	c.storeFlagPred(pred, c.flagsVSlot, "%"+ov)
+	return nil
+}
+
+func (c *armCtx) setFlagsNZCV(cond, n, z, carry, v string) error {
+	pred, err := c.evalFlagPred(cond)
+	if err != nil {
+		return err
+	}
+	c.flagsWritten = true
+	c.storeFlagPred(pred, c.flagsNSlot, n)
+	c.storeFlagPred(pred, c.flagsZSlot, z)
+	c.storeFlagPred(pred, c.flagsCSlot, carry)
+	c.storeFlagPred(pred, c.flagsVSlot, v)
 	return nil
 }
 

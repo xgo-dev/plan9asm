@@ -806,6 +806,191 @@ TEXT ·immAndNconRot1SetsC1(SB),NOSPLIT,$0-4
 	MOVW R0, ret+0(FP)
 	RET
 
+// Conditional compare (TST/TEQ/CMP/CMN), conditional carry-chain (ADC/SBC/RSC),
+// and conditional VFP compare (CMPF/CMPD) must evaluate their condition predicate
+// once before modifying any flag, and preserve all 4 NZCV flags when false.
+// Each helper packs NZCV into bit3=N(8), bit2=Z(4), bit1=C(2), bit0=V(1).
+TEXT ·condTstEqFalsePreservesNZCV(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	TST.EQ $0x40000000, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condTstNeTrueClearsCAndSetsZ(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	TST.NE $0x40000000, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condTeqEqFalsePreservesNZCV(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	TEQ.EQ $0x40000000, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condTeqNeTrueClearsC(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	TEQ.NE $0x40000000, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condTstShiftEqFalsePreservesNZCV(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	MOVW $0, R1
+	TST.EQ R1<<1, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condCmpEqFalsePreservesNZCV(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	CMP.EQ $5, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condCmpNeTrueUpdatesAllNZCV(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	CMP.NE $5, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condCmnEqFalsePreservesNZCV(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	CMN.EQ $0x7fffffff, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condCmnNeTrueUpdatesAllNZCV(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	CMN.NE $0x7fffffff, R2
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condAdcEqSTakenUpdatesCarryAtomically(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $0, R3
+	MOVW $1, R2
+	MOVW $-1, R4
+	ADC.EQ.S R4, R2, R3
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condSbcEqSTakenUpdatesCarryAtomically(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $0, R2
+	TST $0, R2
+	MOVW $1, R2
+	SBC.EQ.S $1, R2, R3
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condRscEqSTakenUpdatesCarryAtomically(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW $0, R2
+	TST $0, R2
+	MOVW $1, R2
+	RSC.EQ.S $1, R2, R3
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condCmpfEqFalsePreservesNZCV(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	MOVF $1.0, F0
+	MOVF $2.0, F1
+	CMPF.EQ F0, F1
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condCmpdPlTrueUpdatesAtomically(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	MOVD $1.0, F0
+	MOVD $2.0, F1
+	CMPD.PL F0, F1
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
 // Runtime-input shift function to verify non-constant armv7 backend codegen.
 TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 	MOVW x+0(FP), R1
@@ -828,43 +1013,57 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 		}
 	}
 	wantConst := map[string]int{
-		"sllCarry1":                  1,
-		"sllCarry0":                  0,
-		"srlCarry1":                  1,
-		"srlCarry0":                  0,
-		"sraCarry1":                  1,
-		"sraCarry0":                  0,
-		"sllZeroPreservesC":          1,
-		"sll32Bit0":                  1,
-		"sll33Zero":                  0,
-		"srl32Bit31":                 1,
-		"sra33Sign":                  1,
-		"movwShiftCarry1":            1,
-		"andShiftCarry1":             1,
-		"tstRotateCarry1":            1,
-		"mvnShiftCarry1":             1,
-		"immSll32PreservesC0":        0,
-		"immSll32Value":              -1,
-		"immSll33SetsC1":             1,
-		"immSll64PreservesC0":        0,
-		"immSrl32SetsC1":             1,
-		"immSrl33ValueAndC1":         0x7fffffff,
-		"immSra32SetsC1":             1,
-		"immSra33ClearsC":            0,
-		"immTstRot0":                 0,
-		"immTeqRot0":                 0,
-		"immAndRot0":                 0,
-		"immOrrRot0":                 0,
-		"immEorRot0":                 0,
-		"immBicRot0":                 0,
-		"immTstUnrotPreservesC1":     1,
-		"immTstRot1SetsC1":           1,
-		"immTstPoolPreservesC1":      1,
-		"immAndNconRot0":             0,
-		"immAndNconUnrotPreservesC1": 1,
-		"immBicNconPreservesC1":      1,
-		"immSll0PreservesC1":         1,
-		"immAndNconRot1SetsC1":       1,
+		"sllCarry1":                             1,
+		"sllCarry0":                             0,
+		"srlCarry1":                             1,
+		"srlCarry0":                             0,
+		"sraCarry1":                             1,
+		"sraCarry0":                             0,
+		"sllZeroPreservesC":                     1,
+		"sll32Bit0":                             1,
+		"sll33Zero":                             0,
+		"srl32Bit31":                            1,
+		"sra33Sign":                             1,
+		"movwShiftCarry1":                       1,
+		"andShiftCarry1":                        1,
+		"tstRotateCarry1":                       1,
+		"mvnShiftCarry1":                        1,
+		"immSll32PreservesC0":                   0,
+		"immSll32Value":                         -1,
+		"immSll33SetsC1":                        1,
+		"immSll64PreservesC0":                   0,
+		"immSrl32SetsC1":                        1,
+		"immSrl33ValueAndC1":                    0x7fffffff,
+		"immSra32SetsC1":                        1,
+		"immSra33ClearsC":                       0,
+		"immTstRot0":                            0,
+		"immTeqRot0":                            0,
+		"immAndRot0":                            0,
+		"immOrrRot0":                            0,
+		"immEorRot0":                            0,
+		"immBicRot0":                            0,
+		"immTstUnrotPreservesC1":                1,
+		"immTstRot1SetsC1":                      1,
+		"immTstPoolPreservesC1":                 1,
+		"immAndNconRot0":                        0,
+		"immAndNconUnrotPreservesC1":            1,
+		"immBicNconPreservesC1":                 1,
+		"immSll0PreservesC1":                    1,
+		"immAndNconRot1SetsC1":                  1,
+		"condTstEqFalsePreservesNZCV":           2,
+		"condTstNeTrueClearsCAndSetsZ":          4,
+		"condTeqEqFalsePreservesNZCV":           2,
+		"condTeqNeTrueClearsC":                  0,
+		"condTstShiftEqFalsePreservesNZCV":      2,
+		"condCmpEqFalsePreservesNZCV":           2,
+		"condCmpNeTrueUpdatesAllNZCV":           8,
+		"condCmnEqFalsePreservesNZCV":           2,
+		"condCmnNeTrueUpdatesAllNZCV":           9,
+		"condAdcEqSTakenUpdatesCarryAtomically": 2,
+		"condSbcEqSTakenUpdatesCarryAtomically": 8,
+		"condRscEqSTakenUpdatesCarryAtomically": 8,
+		"condCmpfEqFalsePreservesNZCV":          2,
+		"condCmpdPlTrueUpdatesAtomically":       8,
 	}
 	sigs := map[string]FuncSig{
 		"runtimeShiftCarry": {
@@ -1169,21 +1368,42 @@ TEXT ·divbRuntime64(SB),NOSPLIT,$0-24
 	verifyLLVMWithTargetLLC(t, ll64, "x86_64-pc-windows-msvc")
 	verifyLLVMWithTargetLLC(t, ll64, "x86_64-pc-windows-gnu")
 
-	// Also verify non-x86 target-triple lowering emits portable @llvm.trap()
-	// without x86 inline asm (used for cross-host target-independent checks).
-	llNonX86, err := Translate(file64, Options{
-		TargetTriple: "arm64-apple-darwin",
-		Goarch:       "amd64",
-		ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
-		Sigs:         sigs64,
-	})
-	if err != nil {
-		t.Fatalf("Translate amd64 div for non-x86 triple failed: %v", err)
+	// Also verify non-x86 and omitted (empty) target-triple lowering emit
+	// portable @llvm.trap() without x86 inline asm so modules translated via
+	// the public Translate API without TargetTriple compile cleanly on non-x86
+	// hosts (e.g. Apple Silicon arm64) as well as x86_64.
+	for _, tc := range []struct {
+		name   string
+		triple string
+	}{
+		{name: "arm64", triple: "arm64-apple-darwin"},
+		{name: "empty", triple: ""},
+	} {
+		llPortable, err := Translate(file64, Options{
+			TargetTriple: tc.triple,
+			Goarch:       "amd64",
+			ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+			Sigs:         sigs64,
+		})
+		if err != nil {
+			t.Fatalf("Translate amd64 div for %s triple failed: %v", tc.name, err)
+		}
+		if !strings.Contains(llPortable, "@llvm.trap()") || strings.Contains(llPortable, "divl %eax") || strings.Contains(llPortable, "xorl %eax") {
+			t.Fatalf("%s triple div trap expected portable @llvm.trap() without x86 inline asm:\n%s", tc.name, llPortable)
+		}
+		verifyLLVMWithTargetLLC(t, llPortable, "arm64-apple-darwin")
+		verifyLLVMWithTargetLLC(t, llPortable, "x86_64-unknown-linux-gnu")
+		if tc.triple == "" {
+			// Compile with llc using the default host target (no -mtriple),
+			// reproducing callers that pass empty TargetTriple on arm64 hosts.
+			tmpObj := filepath.Join(t.TempDir(), "empty_triple_div.o")
+			cmd := exec.Command(llcTool, "-filetype=obj", "-o", tmpObj, "-")
+			cmd.Stdin = strings.NewReader(llPortable)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("llc default-host compile of empty-triple amd64 div IR failed: %v\n%s", err, out)
+			}
+		}
 	}
-	if !strings.Contains(llNonX86, "@llvm.trap()") || strings.Contains(llNonX86, "divl %eax") {
-		t.Fatalf("non-x86 triple div trap expected @llvm.trap() without x86 inline asm:\n%s", llNonX86)
-	}
-	verifyLLVMWithTargetLLC(t, llNonX86, "arm64-apple-darwin")
 
 	opt64 := runOptO2(t, ll64)
 	assertNoWindowsChkstk(opt64, "x86_64-pc-windows-msvc")
@@ -1459,15 +1679,10 @@ TEXT ·rtDropI32F64S(SB),NOSPLIT,$0-12
 	t.Run("NodeWasmExec", func(t *testing.T) {
 		requireExec := os.Getenv("PLAN9ASM_REQUIRE_WASM_EXEC") == "1" || os.Getenv("PLAN9ASM_REQUIRE_AMD64_DIFF") == "1"
 		wasmLD := findLLVM22Tool("wasm-ld")
-		if wasmLD == "" {
-			if p, err := exec.LookPath("wasm-ld"); err == nil {
-				wasmLD = p
-			}
-		}
 		nodeBin, _ := exec.LookPath("node")
 		llc := findLLVM22Tool("llc")
 		if wasmLD == "" || nodeBin == "" || llc == "" {
-			msg := fmt.Sprintf("Wasm execution prerequisites missing (wasm-ld=%q node=%q llc=%q)", wasmLD, nodeBin, llc)
+			msg := fmt.Sprintf("Wasm execution prerequisites missing (wasm-ld-22=%q node=%q llc-22=%q)", wasmLD, nodeBin, llc)
 			if requireExec {
 				t.Fatal("PLAN9ASM_REQUIRE_WASM_EXEC=1: " + msg)
 			}
@@ -1576,6 +1791,41 @@ console.log("wasm_trunc_executed_cases=" + executed);
 			t.Fatalf("expected %q in Node output, got:\n%s", wantMarker, out)
 		}
 		t.Log(wantMarker)
+	})
+}
+
+// TestFindLLVM22ToolRejectsNon22WasmLD ensures the LLVM 22 toolchain lookup
+// rejects non-22 wasm-ld binaries on PATH (e.g. LLD 23.1.4) while accepting
+// genuine LLD 22.x binaries.
+func TestFindLLVM22ToolRejectsNon22WasmLD(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell shim test runs on Unix hosts")
+	}
+	writeShim := func(dir, name, version string) string {
+		p := filepath.Join(dir, name)
+		script := "#!/bin/sh\necho " + version + "\n"
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	t.Run("RejectLLD23", func(t *testing.T) {
+		dir := t.TempDir()
+		writeShim(dir, "wasm-ld", "'Homebrew LLD 23.1.4'")
+		t.Setenv("LLVM_CONFIG", "")
+		t.Setenv("PATH", dir)
+		if got := findLLVM22Tool("wasm-ld"); got != "" {
+			t.Fatalf("findLLVM22Tool(wasm-ld) accepted non-22 binary: %q", got)
+		}
+	})
+	t.Run("AcceptLLD22", func(t *testing.T) {
+		dir := t.TempDir()
+		want := writeShim(dir, "wasm-ld", "'Ubuntu LLD 22.1.8'")
+		t.Setenv("LLVM_CONFIG", "")
+		t.Setenv("PATH", dir)
+		if got := findLLVM22Tool("wasm-ld"); got != want {
+			t.Fatalf("findLLVM22Tool(wasm-ld) = %q, want %q", got, want)
+		}
 	})
 }
 

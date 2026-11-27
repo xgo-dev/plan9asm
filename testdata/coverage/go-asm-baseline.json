@@ -600,12 +600,12 @@
         "encoder_fingerprint": "4341ad3acc9a810857665d1941f5f6329b514aeeb62667ac292c46b79fcd1a81"
       },
       "arm": {
-        "context_forms": 41,
-        "coverage_fingerprint": "a3a34e4caa965926904a224b34fe97dbc82614f5abe24d3c18731996ba8aa8b5",
+        "context_forms": 42,
+        "coverage_fingerprint": "e488f87c81b47905d9394b4ab3ab70818b3f9971288f2159e666f1342c597468",
         "official_opcodes": 181,
         "parse_err_count": 0,
         "runtime_verified_forms": 0,
-        "supported_forms": 459,
+        "supported_forms": 458,
         "unique_forms": 500,
         "unique_ops": 135,
         "unsupported_forms": 0,

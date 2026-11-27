@@ -31,7 +31,7 @@ func (c *armCtx) lowerArith(op, cond string, setFlags bool, ins asm.Instr) (ok b
 	case "MRC":
 		return true, false, c.lowerARMMRC(ins)
 	case "CMP", "CMN", "TST", "TEQ":
-		return true, false, c.lowerARMCompare(op, ins)
+		return true, false, c.lowerARMCompare(op, cond, ins)
 	}
 	return false, false, nil
 }
@@ -127,7 +127,7 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins asm.Instr) erro
 	}
 }
 
-func (c *armCtx) lowerARMCompare(op string, ins asm.Instr) error {
+func (c *armCtx) lowerARMCompare(op, cond string, ins asm.Instr) error {
 	if len(ins.Args) != 2 {
 		return fmt.Errorf("arm %s expects 2 operands: %q", op, ins.Raw)
 	}
@@ -161,22 +161,22 @@ func (c *armCtx) lowerARMCompare(op string, ins asm.Instr) error {
 	switch op {
 	case "CMP":
 		fmt.Fprintf(c.b, "  %%%s = sub i32 %s, %s\n", res, lhs, src)
-		if err := c.setFlagsSub("", lhs, src, "%"+res); err != nil {
+		if err := c.setFlagsSub(cond, lhs, src, "%"+res); err != nil {
 			return err
 		}
 	case "CMN":
 		fmt.Fprintf(c.b, "  %%%s = add i32 %s, %s\n", res, lhs, src)
-		if err := c.setFlagsAdd("", lhs, src, "%"+res); err != nil {
+		if err := c.setFlagsAdd(cond, lhs, src, "%"+res); err != nil {
 			return err
 		}
 	case "TST":
 		fmt.Fprintf(c.b, "  %%%s = and i32 %s, %s\n", res, lhs, src)
-		if err := c.setFlagsLogicCarry("", "%"+res, shiftCarry); err != nil {
+		if err := c.setFlagsLogicCarry(cond, "%"+res, shiftCarry); err != nil {
 			return err
 		}
 	case "TEQ":
 		fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", res, lhs, src)
-		if err := c.setFlagsLogicCarry("", "%"+res, shiftCarry); err != nil {
+		if err := c.setFlagsLogicCarry(cond, "%"+res, shiftCarry); err != nil {
 			return err
 		}
 	}
@@ -292,10 +292,7 @@ func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins asm.Instr) e
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", total1, l64, s64)
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", total2, total1, c64)
 			fmt.Fprintf(c.b, "  %%%s = icmp ugt i64 %%%s, 4294967295\n", carry, total2)
-			if err := c.setFlagsAdd(cond, lhs, src, "%"+res); err != nil {
-				return err
-			}
-			if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+carry); err != nil {
+			if err := c.setFlagsAddWithCarry(cond, lhs, src, "%"+res, "%"+carry); err != nil {
 				return err
 			}
 		} else {
@@ -309,12 +306,9 @@ func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins asm.Instr) e
 			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", b64, cin)
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", subtr, s64, b64)
 			fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %%%s, %%%s\n", borrow, l64, subtr)
-			if err := c.setFlagsSub(cond, lhs, src, "%"+res); err != nil {
-				return err
-			}
 			nb := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", nb, borrow)
-			if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+nb); err != nil {
+			if err := c.setFlagsSubWithCarry(cond, lhs, src, "%"+res, "%"+nb); err != nil {
 				return err
 			}
 		}
