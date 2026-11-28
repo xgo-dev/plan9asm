@@ -4,9 +4,9 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 go build -C "$root/cmd/plan9asmll" -o "$tmp/plan9asmll" .
-args=(-patterns std -targets linux/386,linux/amd64,linux/arm,linux/arm64,js/wasm -out "$tmp/objects" -repo-root "$root")
-"$tmp/plan9asmll" "${args[@]}" -list-only >"$tmp/tasks.json"
-"$tmp/plan9asmll" "${args[@]}" -compile -keep-obj
+args=(-patterns std -targets linux/386,linux/amd64,linux/arm,linux/arm64,js/wasm -out "$tmp/objects" -repo-root "$root" -strict-load)
+CGO_ENABLED=0 "$tmp/plan9asmll" "${args[@]}" -list-only >"$tmp/tasks.json"
+CGO_ENABLED=0 "$tmp/plan9asmll" "${args[@]}" -compile -keep-obj
 python3 - "$tmp/tasks.json" <<'PY'
 import json
 import sys

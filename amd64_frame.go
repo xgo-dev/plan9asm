@@ -634,4 +634,25 @@ func funcUsesPhysicalAMD64SP(fn Func) bool {
 	return false
 }
 
+func funcUsesPhysical386SP(fn Func) bool {
+	if fn.FrameSize > 0 {
+		return true
+	}
+	for _, ins := range fn.Instrs {
+		switch strings.ToUpper(string(ins.Op)) {
+		case "PUSHL", "POPL", "PUSHW", "POPW", "PUSHFL", "POPFL", "PUSHFW", "POPFW", "PUSHAL", "POPAL", "ADJSP", "LEAVEL", "LEAVEW":
+			return true
+		}
+		for _, arg := range ins.Args {
+			if arg.Kind == OpMem && (arg.Mem.Base == SP || arg.Mem.Index == SP) {
+				return true
+			}
+			if arg.Kind == OpReg && (arg.Reg == SP || arg.Reg == Reg("SPB")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 var _ = asm.ArchAMD64

@@ -98,6 +98,7 @@ type abi0State struct {
 	spBytesTaintedSP map[int64]bool
 	spOffset         int64
 	fpAddresses      map[asm.Reg]int64
+	fpMayAlias       map[asm.Reg]bool
 	// Architectural status/control flag definedness tracked independently
 	// (covering every live bit packed/unpacked by x86FlagSlots()):
 	//   - cfInit: Carry Flag (CF, RFLAGS bit 0)
@@ -180,7 +181,28 @@ func (s *abi0State) setFlagsFromBytes(b0, b1 uint8) {
 	s.ofInit = (b1 & 0x08) != 0
 }
 
+func (s *abi0State) invalidateBelowSP() {
+	for slot := range s.spBytesInit {
+		if slot < s.spOffset {
+			delete(s.spBytesInit, slot)
+		}
+	}
+	for slot := range s.spByteBitDef {
+		if slot < s.spOffset {
+			delete(s.spByteBitDef, slot)
+		}
+	}
+	for slot := range s.spBytesTaintedSP {
+		if slot < s.spOffset {
+			delete(s.spBytesTaintedSP, slot)
+		}
+	}
+}
+
 func (s *abi0State) clearCallerSaved() {
+	s.fpAddresses = nil
+	s.fpMayAlias = nil
+	s.invalidateBelowSP()
 	s.gpBytesInit = map[asm.Reg]uint8{}
 	s.gpBitDef = map[asm.Reg]uint64{}
 	s.gpBytesTaintedSP = map[asm.Reg]uint8{}
@@ -532,6 +554,12 @@ func (s *abi0State) clone() *abi0State {
 			out.fpAddresses[r] = off
 		}
 	}
+	if len(s.fpMayAlias) > 0 {
+		out.fpMayAlias = make(map[asm.Reg]bool, len(s.fpMayAlias))
+		for r, v := range s.fpMayAlias {
+			out.fpMayAlias[r] = v
+		}
+	}
 	if s.x87ByTop != nil {
 		cp := *s.x87ByTop
 		out.x87ByTop = &cp
@@ -616,6 +644,15 @@ func (s *abi0State) merge(other *abi0State) bool {
 	for r, off := range s.fpAddresses {
 		if v, ok := other.fpAddresses[r]; !ok || v != off {
 			delete(s.fpAddresses, r)
+			changed = true
+		}
+	}
+	for r, v := range other.fpMayAlias {
+		if v && !s.fpMayAlias[r] {
+			if s.fpMayAlias == nil {
+				s.fpMayAlias = map[asm.Reg]bool{}
+			}
+			s.fpMayAlias[r] = true
 			changed = true
 		}
 	}
@@ -1177,18 +1214,20 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 	inStates := make([]*abi0State, len(instrs))
 	inStates[0] = entry
 	repPending := make([]bool, len(instrs))
+	lockPending := make([]bool, len(instrs))
 	queue := []int{0}
 	inQueue := make([]bool, len(instrs))
 	inQueue[0] = true
 
 	var inconsistentSP bool
-	enqueue := func(next int, st *abi0State, nextRep bool) {
+	enqueueState := func(next int, st *abi0State, nextRep bool, nextLock bool) {
 		if next < 0 || next >= len(instrs) {
 			return
 		}
 		if inStates[next] == nil {
 			inStates[next] = st.clone()
 			repPending[next] = nextRep
+			lockPending[next] = nextLock
 			if !inQueue[next] {
 				queue = append(queue, next)
 				inQueue[next] = true
@@ -1204,10 +1243,17 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 			repPending[next] = true
 			changed = true
 		}
+		if nextLock && !lockPending[next] {
+			lockPending[next] = true
+			changed = true
+		}
 		if changed && !inQueue[next] {
 			queue = append(queue, next)
 			inQueue[next] = true
 		}
+	}
+	enqueue := func(next int, st *abi0State, nextRep bool) {
+		enqueueState(next, st, nextRep, false)
 	}
 
 	checkGPRead := func(st *abi0State, reg asm.Reg, reqMask uint8, raw string) error {
@@ -1635,8 +1681,8 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 	writeDstMask := func(st *abi0State, op asm.Operand, writeBytes int64, valMask uint64, valBitDef uint64, fullBitDef [64]uint8, opName asm.Op, spec asm.OpSpec, pureCopy bool, fromRaw bool, taintMask uint64, anyTaint bool, srcIsReg bool) error {
 		switch op.Kind {
 		case asm.OpReg:
-			if op.Reg == asm.SP {
-				return nil
+			if canonicalGP(op.Reg) == asm.SP {
+				return fmt.Errorf("%w: unproven stack-pointer assignment to %s in %s", asm.ErrProbeNeedsContext, op.Reg, opName)
 			}
 			if idx, ok := amd64ParseMReg(op.Reg); ok {
 				w := writeBytes
@@ -1993,18 +2039,27 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 
 		st := inStates[pc].clone()
 		curRep := repPending[pc]
+		curLock := lockPending[pc]
 		ins := instrs[pc]
 		op := asm.Op(strings.ToUpper(string(ins.Op)))
 
 		if goarch == "386" {
-			ins = st.resolve386FrameOperands(ins)
+			var err error
+			ins, err = st.resolve386FrameOperands(ins, linuxSyscall)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		if op == "REP" || op == "REPN" {
-			enqueue(pc+1, st, true)
+			enqueueState(pc+1, st, true, curLock)
 			continue
 		}
-		if op == "LOCK" || op == asm.OpTEXT || op == asm.OpLABEL || op == "NOP" || op == "PCALIGN" ||
+		if op == "LOCK" {
+			enqueueState(pc+1, st, curRep, true)
+			continue
+		}
+		if op == asm.OpTEXT || op == asm.OpLABEL || op == "NOP" || op == "PCALIGN" ||
 			op == "NO_LOCAL_POINTERS" || op == "FUNCDATA" || op == "PCDATA" || op == "GO_ARGS" ||
 			op == "VZEROUPPER" || op == "VZEROALL" ||
 			op == "LFENCE" || op == "SFENCE" || op == "MFENCE" || op == "PAUSE" {
@@ -2572,6 +2627,7 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 				delete(st.spBytesTaintedSP, slot)
 			}
 			st.spOffset += w
+			st.invalidateBelowSP()
 			st.setFlagsFromBytes(b0, b1)
 			if w >= 4 {
 				st.idInit = (b2 & 0x20) != 0
@@ -2624,7 +2680,7 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 			continue
 		case "POPQ", "POPL", "POPW":
-			if goarch == "386" && is386SPDestination(ins) {
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpReg && canonicalGP(ins.Args[0].Reg) == asm.SP {
 				return nil, fmt.Errorf("%w: unproven stack-pointer assignment: %s", asm.ErrProbeNeedsContext, ins.Raw)
 			}
 			w := int64(8)
@@ -2656,6 +2712,7 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 			// Intel SDM: POP increments SP before computing an SP-relative destination address.
 			st.spOffset += w
+			st.invalidateBelowSP()
 			if len(ins.Args) == 1 {
 				dst := ins.Args[0]
 				if dst.Kind == asm.OpMem {
@@ -2716,29 +2773,311 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 				}
 				continue
 			}
-		case "ADJSP", "LEAL", "INT":
+		case "LEAVEW", "LEAVEL", "LEAVEQ":
+			return nil, fmt.Errorf("%w: unproven stack-pointer rebase: %s", asm.ErrProbeNeedsContext, ins.Raw)
+		case "XADDB", "XADDW", "XADDL", "XADDQ":
+			if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg {
+				return nil, fmt.Errorf("%w: malformed %s: %s", asm.ErrProbeNeedsContext, op, ins.Raw)
+			}
+			w := int64(4)
+			switch op {
+			case "XADDB":
+				w = 1
+			case "XADDW":
+				w = 2
+			case "XADDQ":
+				w = 8
+			}
+			evSrc, err := evalOperand(st, ins.Args[0], w, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			_, anySrc := evalOperandTaintSP(st, ins.Args[0], w, false, op)
+			dst := ins.Args[1]
+			specXadd := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectReadWrite}
+			// Go's 386 atomic Store64 uses `XORL AX, AX; LOCK; XADDL AX, (SP)` as a
+			// Pentium-compatible memory fence on the private stack slot. Keep it sound
+			// by rejecting tainted/uninitialized sources and leaving AX, (SP), and
+			// status flags uninitialized so no uninitialized stack bytes can escape.
+			if curLock && dst.Kind == asm.OpMem && dst.Mem.Base == asm.SP && dst.Mem.Index == "" && !dst.Mem.GoTLSOffset && dst.Mem.Segment == "" {
+				allSPInit := true
+				for b := int64(0); b < w; b++ {
+					if !st.spBytesInit[st.spOffset+dst.Mem.Off+b] {
+						allSPInit = false
+						break
+					}
+				}
+				if !allSPInit {
+					if anySrc {
+						return nil, fmt.Errorf("%w: private frame address escapes to stack slot %d(SP)", asm.ErrProbeNeedsContext, dst.Mem.Off)
+					}
+					if !evSrc.allBytesInit || !evSrc.allBitsDef {
+						return nil, fmt.Errorf("%w: %s reads uninitialized source operand", asm.ErrProbeNeedsContext, ins.Raw)
+					}
+					tmDst, anyDst := evalOperandTaintSP(st, dst, w, false, op)
+					if err := writeDstMask(st, ins.Args[0], w, 0, 0, [64]uint8{}, op, specXadd, true, false, tmDst, anyDst, false); err != nil {
+						return nil, err
+					}
+					for b := int64(0); b < w; b++ {
+						slot := st.spOffset + dst.Mem.Off + b
+						delete(st.spBytesInit, slot)
+						delete(st.spByteBitDef, slot)
+					}
+					updateX86FlagsAfter(st, op, ins.Args, false)
+					if pc+1 < len(instrs) {
+						enqueue(pc+1, st, false)
+					} else {
+						finalState = st
+					}
+					continue
+				}
+			}
+			evDst, err := evalOperand(st, dst, w, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			tmDst, anyDst := evalOperandTaintSP(st, dst, w, false, op)
+			sumInit := evSrc.allBytesInit && evDst.allBytesInit
+			sumBits := sumInit && evSrc.allBitsDef && evDst.allBitsDef
+			sumAnyTaint := anySrc || anyDst
+			var sumMask, sumBitDef, sumTaint uint64
+			var sumFull [64]uint8
+			if sumInit {
+				sumMask = abi0ByteMaskN(w)
+			}
+			if sumBits {
+				sumBitDef = abi0BitMaskN(w)
+				sumFull = fullBitDefUniform(w, 0xff)
+			}
+			if sumAnyTaint {
+				sumTaint = abi0ByteMaskN(w)
+			}
+			if err := writeDstMask(st, dst, w, sumMask, sumBitDef, sumFull, op, specXadd, false, false, sumTaint, sumAnyTaint, true); err != nil {
+				return nil, err
+			}
+			if err := writeDstMask(st, ins.Args[0], w, evDst.byteMask, evDst.bitDef, evDst.fullBitDef, op, specXadd, true, false, tmDst, anyDst, dst.Kind == asm.OpReg); err != nil {
+				return nil, err
+			}
+			updateX86FlagsAfter(st, op, ins.Args, sumBits)
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "CMPXCHGB", "CMPXCHGW", "CMPXCHGL", "CMPXCHGQ":
+			if len(ins.Args) != 2 {
+				return nil, fmt.Errorf("%w: malformed %s: %s", asm.ErrProbeNeedsContext, op, ins.Raw)
+			}
+			w := int64(4)
+			switch op {
+			case "CMPXCHGB":
+				w = 1
+			case "CMPXCHGW":
+				w = 2
+			case "CMPXCHGQ":
+				w = 8
+			}
+			axOp := asm.Operand{Kind: asm.OpReg, Reg: asm.AX}
+			evAX, err := evalOperand(st, axOp, w, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			tmAX, anyAX := evalOperandTaintSP(st, axOp, w, false, op)
+			evNew, err := evalOperand(st, ins.Args[0], w, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			tmNew, anyNew := evalOperandTaintSP(st, ins.Args[0], w, false, op)
+			dst := ins.Args[1]
+			evDst, err := evalOperand(st, dst, w, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			tmDst, anyDst := evalOperandTaintSP(st, dst, w, false, op)
+			isExternalMem := dst.Kind == asm.OpMem && !(dst.Mem.Base == asm.SP && dst.Mem.Index == "" && !dst.Mem.GoTLSOffset && dst.Mem.Segment == "")
+			if isExternalMem {
+				if anyAX || !evAX.allBytesInit || !evAX.allBitsDef {
+					return nil, fmt.Errorf("%w: %s compares external memory against uninitialized or frame-tainted AX", asm.ErrProbeNeedsContext, ins.Raw)
+				}
+			}
+			specCAS := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectReadWrite}
+			if isExternalMem {
+				if err := writeDstMask(st, dst, w, evNew.byteMask, evNew.bitDef, evNew.fullBitDef, op, specCAS, true, false, tmNew, anyNew, ins.Args[0].Kind == asm.OpReg); err != nil {
+					return nil, err
+				}
+			} else {
+				dstMask := evDst.byteMask & evNew.byteMask
+				dstBitDef := evDst.bitDef & evNew.bitDef
+				var dstFull [64]uint8
+				for b := int64(0); b < w && b < 64; b++ {
+					if (dstMask & (uint64(1) << uint(b))) != 0 {
+						dstFull[b] = evDst.fullBitDef[b] & evNew.fullBitDef[b]
+					}
+				}
+				if err := writeDstMask(st, dst, w, dstMask, dstBitDef, dstFull, op, specCAS, true, false, tmDst|tmNew, anyDst || anyNew, false); err != nil {
+					return nil, err
+				}
+			}
+			axMask := evAX.byteMask & evDst.byteMask
+			axBitDef := evAX.bitDef & evDst.bitDef
+			var axFull [64]uint8
+			for b := int64(0); b < w && b < 64; b++ {
+				if (axMask & (uint64(1) << uint(b))) != 0 {
+					axFull[b] = evAX.fullBitDef[b] & evDst.fullBitDef[b]
+				}
+			}
+			if err := writeDstMask(st, axOp, w, axMask, axBitDef, axFull, op, specCAS, true, false, tmAX|tmDst, anyAX || anyDst, false); err != nil {
+				return nil, err
+			}
+			updateX86FlagsAfter(st, op, ins.Args, evAX.allBytesInit && evAX.allBitsDef && evDst.allBytesInit && evDst.allBitsDef)
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "CMPXCHG8B", "CMPXCHG16B":
+			if len(ins.Args) != 1 {
+				return nil, fmt.Errorf("%w: malformed %s: %s", asm.ErrProbeNeedsContext, op, ins.Raw)
+			}
+			regW := int64(4)
+			if op == "CMPXCHG16B" {
+				regW = 8
+			}
+			w := regW * 2
+			axOp := asm.Operand{Kind: asm.OpReg, Reg: asm.AX}
+			dxOp := asm.Operand{Kind: asm.OpReg, Reg: asm.DX}
+			bxOp := asm.Operand{Kind: asm.OpReg, Reg: asm.BX}
+			cxOp := asm.Operand{Kind: asm.OpReg, Reg: asm.CX}
+			evAX, err := evalOperand(st, axOp, regW, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			evDX, err := evalOperand(st, dxOp, regW, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			evBX, err := evalOperand(st, bxOp, regW, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			evCX, err := evalOperand(st, cxOp, regW, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			tmAX, anyAX := evalOperandTaintSP(st, axOp, regW, false, op)
+			tmDX, anyDX := evalOperandTaintSP(st, dxOp, regW, false, op)
+			tmBX, anyBX := evalOperandTaintSP(st, bxOp, regW, false, op)
+			tmCX, anyCX := evalOperandTaintSP(st, cxOp, regW, false, op)
+			dst := ins.Args[0]
+			evDst, err := evalOperand(st, dst, w, false, op, ins.Raw)
+			if err != nil {
+				return nil, err
+			}
+			tmDst, anyDst := evalOperandTaintSP(st, dst, w, false, op)
+			newMask := (evBX.byteMask & abi0ByteMaskN(regW)) | ((evCX.byteMask & abi0ByteMaskN(regW)) << uint(regW))
+			var newFull [64]uint8
+			for b := int64(0); b < regW; b++ {
+				newFull[b] = evBX.fullBitDef[b]
+				newFull[regW+b] = evCX.fullBitDef[b]
+			}
+			newTaint := (tmBX & abi0ByteMaskN(regW)) | ((tmCX & abi0ByteMaskN(regW)) << uint(regW))
+			anyNew := anyBX || anyCX
+			isExternalMem := dst.Kind == asm.OpMem && !(dst.Mem.Base == asm.SP && dst.Mem.Index == "" && !dst.Mem.GoTLSOffset && dst.Mem.Segment == "")
+			if isExternalMem {
+				if anyAX || anyDX || !evAX.allBytesInit || !evAX.allBitsDef || !evDX.allBytesInit || !evDX.allBitsDef {
+					return nil, fmt.Errorf("%w: %s compares external memory against uninitialized or frame-tainted AX:DX", asm.ErrProbeNeedsContext, ins.Raw)
+				}
+			}
+			specCAS := asm.OpSpec{Op: op, Width: uint16(w * 8), Effect: asm.EffectReadWrite}
+			if isExternalMem {
+				if err := writeDstMask(st, dst, w, newMask, 0, newFull, op, specCAS, true, false, newTaint, anyNew, false); err != nil {
+					return nil, err
+				}
+			} else {
+				dstMask := evDst.byteMask & newMask
+				var dstFull [64]uint8
+				for b := int64(0); b < w && b < 64; b++ {
+					if (dstMask & (uint64(1) << uint(b))) != 0 {
+						dstFull[b] = evDst.fullBitDef[b] & newFull[b]
+					}
+				}
+				if err := writeDstMask(st, dst, w, dstMask, 0, dstFull, op, specCAS, true, false, tmDst|newTaint, anyDst || anyNew, false); err != nil {
+					return nil, err
+				}
+			}
+			dstLoMask := evDst.byteMask & abi0ByteMaskN(regW)
+			dstHiMask := (evDst.byteMask >> uint(regW)) & abi0ByteMaskN(regW)
+			var dstLoBitDef, dstHiBitDef uint64
+			var axFull, dxFull [64]uint8
+			for b := int64(0); b < regW; b++ {
+				if (dstLoMask & (uint64(1) << uint(b))) != 0 {
+					dstLoBitDef |= uint64(evDst.fullBitDef[b]) << uint(b*8)
+				}
+				if (dstHiMask & (uint64(1) << uint(b))) != 0 {
+					dstHiBitDef |= uint64(evDst.fullBitDef[regW+b]) << uint(b*8)
+				}
+			}
+			axMask := evAX.byteMask & dstLoMask
+			axBitDef := evAX.bitDef & dstLoBitDef
+			for b := int64(0); b < regW; b++ {
+				if (axMask & (uint64(1) << uint(b))) != 0 {
+					axFull[b] = uint8(axBitDef >> uint(b*8))
+				}
+			}
+			dxMask := evDX.byteMask & dstHiMask
+			dxBitDef := evDX.bitDef & dstHiBitDef
+			for b := int64(0); b < regW; b++ {
+				if (dxMask & (uint64(1) << uint(b))) != 0 {
+					dxFull[b] = uint8(dxBitDef >> uint(b*8))
+				}
+			}
+			dstLoTaint := tmDst & abi0ByteMaskN(regW)
+			dstHiTaint := (tmDst >> uint(regW)) & abi0ByteMaskN(regW)
+			if err := writeDstMask(st, axOp, regW, axMask, axBitDef, axFull, op, specCAS, true, false, tmAX|dstLoTaint, anyAX || dstLoTaint != 0, false); err != nil {
+				return nil, err
+			}
+			if err := writeDstMask(st, dxOp, regW, dxMask, dxBitDef, dxFull, op, specCAS, true, false, tmDX|dstHiTaint, anyDX || dstHiTaint != 0, false); err != nil {
+				return nil, err
+			}
+			st.zfInit = evAX.allBytesInit && evAX.allBitsDef && evDX.allBytesInit && evDX.allBitsDef && evDst.allBytesInit && evDst.allBitsDef
+			if pc+1 < len(instrs) {
+				enqueue(pc+1, st, false)
+			} else {
+				finalState = st
+			}
+			continue
+		case "ADJSP", "LEAL", "LEAQ", "INT":
 			handled := false
-			if goarch == "386" {
-				switch {
-				case op == "ADJSP" && len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].ImmRaw == "":
-					st.spOffset -= ins.Args[0].Imm
+			switch {
+			case goarch == "386" && op == "ADJSP" && len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].ImmRaw == "":
+				prevSP := st.spOffset
+				st.spOffset -= ins.Args[0].Imm
+				if st.spOffset > prevSP {
+					st.invalidateBelowSP()
+				}
+				handled = true
+			case (op == "LEAL" && goarch == "386" || op == "LEAQ" && goarch == "amd64") && is386SPDestination(ins) && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpMem:
+				m := ins.Args[0].Mem
+				if m.Base == asm.SP && m.Index == "" && m.Sym == "" && m.Segment == "" && !m.GoTLSOffset {
+					prevSP := st.spOffset
+					st.spOffset += m.Off
+					if st.spOffset > prevSP {
+						st.invalidateBelowSP()
+					}
 					handled = true
-				case op == "LEAL" && is386SPDestination(ins) && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpMem:
-					m := ins.Args[0].Mem
-					if m.Base == asm.SP && m.Index == "" && m.Sym == "" && m.Segment == "" && !m.GoTLSOffset {
-						st.spOffset += m.Off
-						handled = true
+				}
+			case goarch == "386" && op == "INT" && len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].Imm == 0x80 && ins.Args[0].ImmRaw == "":
+				if linuxSyscall {
+					if err := checkGPRead(st, asm.AX, wordMask, ins.Raw); err != nil {
+						return nil, err
 					}
-				case op == "INT" && len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].Imm == 0x80 && ins.Args[0].ImmRaw == "":
-					if linuxSyscall {
-						if err := checkGPRead(st, asm.AX, wordMask, ins.Raw); err != nil {
-							return nil, err
-						}
-						st.gpBytesInit[asm.AX] = wordMask
-						st.gpBitDef[asm.AX] = wordBitMask
-						delete(st.gpBytesTaintedSP, asm.AX)
-						handled = true
-					}
+					st.invalidateBelowSP()
+					st.gpBytesInit[asm.AX] = wordMask
+					st.gpBitDef[asm.AX] = wordBitMask
+					delete(st.gpBytesTaintedSP, asm.AX)
+					handled = true
 				}
 			}
 			if handled {
@@ -2751,10 +3090,14 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 		case "ADDQ", "SUBQ", "ADDL", "SUBL":
 			if (op == "ADDQ" || op == "SUBQ" || goarch == "386") && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg && ins.Args[1].Reg == asm.SP {
+				prevSP := st.spOffset
 				if op == "ADDQ" || op == "ADDL" {
 					st.spOffset += ins.Args[0].Imm
 				} else {
 					st.spOffset -= ins.Args[0].Imm
+				}
+				if st.spOffset > prevSP {
+					st.invalidateBelowSP()
 				}
 				st.cfInit = true
 				st.pfInit = true
@@ -2809,17 +3152,26 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 			}
 			taken, fall := st, st
 			if goarch == "386" && linuxSyscall {
-				if off, zeroTaken, proven := linux386SeekOutput(instrs, pc, resultByteOwned); proven {
-					success := st.clone()
-					for b := int64(0); b < 8; b++ {
-						success.fpBytesInit[off+b] = true
-						success.fpByteBitDef[off+b] = 0xff
-						delete(success.fpBytesTaintedSP, off+b)
+				if off, successTaken, proven := linux386SeekOutput(instrs, pc, resultByteOwned); proven {
+					argsOK := true
+					for _, argReg := range []asm.Reg{asm.BX, asm.CX, asm.DX, asm.DI} {
+						if err := checkGPRead(st, argReg, wordMask, ins.Raw); err != nil || (st.gpBytesTaintedSP[argReg]&wordMask) != 0 {
+							argsOK = false
+							break
+						}
 					}
-					if zeroTaken {
-						taken = success
-					} else {
-						fall = success
+					if argsOK {
+						success := st.clone()
+						for b := int64(0); b < 8; b++ {
+							success.fpBytesInit[off+b] = true
+							success.fpByteBitDef[off+b] = 0xff
+							delete(success.fpBytesTaintedSP, off+b)
+						}
+						if successTaken {
+							taken = success
+						} else {
+							fall = success
+						}
 					}
 				}
 			}
@@ -3242,6 +3594,7 @@ func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, re
 		// Update status flags independently per architectural semantics.
 		flagsInputsInit := computeX86FlagInputsInit(op, ins.Args, readBytes, writeBytes, arg0BitDef, dstInBitDef, allInputsInit, allInputsBitDef)
 		if op == "SYSCALL" {
+			st.invalidateBelowSP()
 			// RCX and R11 are the SYSCALL hardware return address and saved
 			// physical RFLAGS, neither of which is a translated input register.
 			for _, r := range []asm.Reg{asm.CX, "R11"} {
@@ -4395,43 +4748,145 @@ func hasFuncAttr(attrs, name string) bool {
 	return false
 }
 
-// resolve386FrameOperands follows simple LEAL frame addresses through the CFG.
-// Only instructions with known, explicit GP destinations preserve a binding.
-func (s *abi0State) resolve386FrameOperands(ins asm.Instr) asm.Instr {
+// resolve386FrameOperands follows LEAL frame addresses through the CFG and
+// rejects untracked indirect dereferences or escapes of FP-derived pointers so
+// uninitialized FP slots and SP-tainted param slots cannot bypass frame checks.
+func (s *abi0State) resolve386FrameOperands(ins asm.Instr, linuxSyscall bool) (asm.Instr, error) {
+	op := asm.Op(strings.ToUpper(string(ins.Op)))
 	a := ins.Args
-	if len(s.fpAddresses) > 0 {
+	// Step 1: rewrite direct memory operands whose base has an exact known FP
+	// offset into explicit OpFP operands across ALL instructions, and reject
+	// any indirect/indexed dereference of a may-alias FP register.
+	if len(s.fpAddresses) > 0 || len(s.fpMayAlias) > 0 {
 		for i, arg := range a {
-			if !strings.HasPrefix(string(ins.Op), "MOV") && ins.Op != "LEAL" {
-				break
-			}
-			m := arg.Mem
-			off, ok := s.fpAddresses[m.Base]
-			if !ok || arg.Kind != asm.OpMem || m.Index != "" || m.Sym != "" || m.Segment != "" || m.GoTLSOffset {
+			if arg.Kind != asm.OpMem {
 				continue
 			}
-			if &a[0] == &ins.Args[0] {
-				a = append([]asm.Operand(nil), a...)
+			m := arg.Mem
+			base := canonicalGP(m.Base)
+			idx := canonicalGP(m.Index)
+			if m.Base != "" && m.Index == "" && m.Sym == "" && m.Segment == "" && !m.GoTLSOffset {
+				if off, ok := s.fpAddresses[base]; ok {
+					if &a[0] == &ins.Args[0] {
+						a = append([]asm.Operand(nil), a...)
+					}
+					a[i] = asm.Operand{Kind: asm.OpFP, FPOffset: off + m.Off}
+					continue
+				}
 			}
-			a[i] = asm.Operand{Kind: asm.OpFP, FPOffset: off + m.Off}
+			if (m.Base != "" && s.fpMayAlias[base]) || (m.Index != "" && s.fpMayAlias[idx]) {
+				return ins, fmt.Errorf("%w: unproven indirect frame pointer access in %s", asm.ErrProbeNeedsContext, ins.Raw)
+			}
 		}
-		switch ins.Op {
-		case asm.OpLABEL, "RET", "JMP", "NOP", "PCDATA", "FUNCDATA", "CMPL", "TESTL", "TESTW":
-		case "MOVL", "MOVO", "MOVOU", "LEAL", "ADDL", "ORL", "DECL", "SHRL", "AESENC", "PAND", "PXOR", "PINSRW", "PSHUFB", "PSHUFHW", "SETEQ":
-			if len(a) > 0 && a[len(a)-1].Kind == asm.OpReg {
-				delete(s.fpAddresses, canonicalGP(a[len(a)-1].Reg))
+	}
+
+	// Step 2: update exact FP bindings and may-alias provenance, and reject
+	// untracked value escapes of FP-derived pointers into other regs/memory.
+	setFP := func(dst asm.Reg, off int64) {
+		if s.fpAddresses == nil {
+			s.fpAddresses = map[asm.Reg]int64{}
+		}
+		if s.fpMayAlias == nil {
+			s.fpMayAlias = map[asm.Reg]bool{}
+		}
+		s.fpAddresses[dst] = off
+		s.fpMayAlias[dst] = true
+	}
+	clearFull := func(dst asm.Reg) {
+		delete(s.fpAddresses, dst)
+		delete(s.fpMayAlias, dst)
+	}
+	clobberPartial := func(dst asm.Reg) {
+		delete(s.fpAddresses, dst)
+	}
+
+	switch {
+	case op == "LEAL" && len(a) == 2 && a[0].Kind == asm.OpFP && a[1].Kind == asm.OpReg && canonicalGP(a[1].Reg) != asm.SP:
+		dst := canonicalGP(a[1].Reg)
+		if a[1].Reg == dst {
+			setFP(dst, a[0].FPOffset)
+		} else {
+			clobberPartial(dst)
+			if s.fpMayAlias == nil {
+				s.fpMayAlias = map[asm.Reg]bool{}
 			}
-		default:
-			if !isX86FlagCondJumpOp(ins.Op) {
+			s.fpMayAlias[dst] = true
+		}
+	case op == "MOVL" && len(a) == 2 && a[0].Kind == asm.OpReg && a[1].Kind == asm.OpReg &&
+		a[0].Reg == canonicalGP(a[0].Reg) && a[1].Reg == canonicalGP(a[1].Reg) && a[1].Reg != asm.SP:
+		src, dst := a[0].Reg, a[1].Reg
+		if off, ok := s.fpAddresses[src]; ok {
+			setFP(dst, off)
+		} else if s.fpMayAlias[src] {
+			delete(s.fpAddresses, dst)
+			if s.fpMayAlias == nil {
+				s.fpMayAlias = map[asm.Reg]bool{}
+			}
+			s.fpMayAlias[dst] = true
+		} else {
+			clearFull(dst)
+		}
+	case (op == "ADDL" || op == "SUBL") && len(a) == 2 && a[0].Kind == asm.OpImm && a[0].ImmRaw == "" &&
+		a[1].Kind == asm.OpReg && a[1].Reg == canonicalGP(a[1].Reg) && a[1].Reg != asm.SP:
+		dst := a[1].Reg
+		if off, ok := s.fpAddresses[dst]; ok {
+			if op == "ADDL" {
+				s.fpAddresses[dst] = off + a[0].Imm
+			} else {
+				s.fpAddresses[dst] = off - a[0].Imm
+			}
+		}
+	case op == asm.OpTEXT || op == asm.OpLABEL || op == "RET" || op == "JMP" || op == "NOP" ||
+		op == "PCALIGN" || op == "PCDATA" || op == "FUNCDATA" || op == "NO_LOCAL_POINTERS" ||
+		op == "GO_ARGS" || op == "LOCK" || op == "REP" || op == "REPN" ||
+		op == "CMPL" || op == "CMPW" || op == "CMPB" || op == "TESTL" || op == "TESTW" || op == "TESTB" ||
+		isX86CondJumpOp(op):
+		// No register modification and no FP pointer escape.
+	case op == "INT" && linuxSyscall && len(a) == 1 && a[0].Kind == asm.OpImm && a[0].Imm == 0x80 && a[0].ImmRaw == "":
+		// Linux INT $0x80 preserves non-AX registers and returns status in AX.
+		clearFull(asm.AX)
+	case op == "CALL":
+		s.fpAddresses = nil
+		s.fpMayAlias = nil
+	default:
+		// Check whether any input GP operand carries an FP-derived pointer into an
+		// unmodeled operation or memory/stack store.
+		if len(s.fpMayAlias) > 0 {
+			spec, ok := OpTable.Lookup(op)
+			if !ok {
+				spec = asm.OpSpec{Op: op, Effect: asm.EffectWriteOnly}
+			}
+			// Self-XOR/self-SUB zeroing idioms overwrite dst with 0 without reading it.
+			if !isZeroingIdiom(op, a) {
+				readEnd := len(a) - 1
+				if spec.Effect == asm.EffectReadOnly || spec.Effect == asm.EffectReadWrite ||
+					spec.Effect == asm.EffectImplicit || op == "PUSHL" || op == "PUSHW" ||
+					op == "XCHGL" || op == "XCHGW" || op == "XCHGB" ||
+					op == "XADDL" || op == "XADDW" || op == "XADDB" ||
+					op == "CMPXCHGL" || op == "CMPXCHGW" || op == "CMPXCHGB" {
+					readEnd = len(a)
+				}
+				for i := 0; i < readEnd && i < len(a); i++ {
+					if a[i].Kind == asm.OpReg && s.fpMayAlias[canonicalGP(a[i].Reg)] {
+						return ins, fmt.Errorf("%w: untracked frame pointer escape via %s in %s", asm.ErrProbeNeedsContext, a[i].Reg, ins.Raw)
+					}
+				}
+			}
+			// Also update destinations cleanly.
+			if len(a) > 0 && a[len(a)-1].Kind == asm.OpReg && spec.Effect != asm.EffectReadOnly && spec.Effect != asm.EffectNone {
+				dstRaw := a[len(a)-1].Reg
+				dst := canonicalGP(dstRaw)
+				_, wBytes := x86ABI0OpWidths(op, spec, a, "386")
+				if dstRaw == dst && wBytes >= 4 {
+					clearFull(dst)
+				} else {
+					clobberPartial(dst)
+				}
+			} else if spec.Effect == asm.EffectImplicit {
 				s.fpAddresses = nil
 			}
 		}
 	}
-	if ins.Op == "LEAL" && len(a) == 2 && a[0].Kind == asm.OpFP && a[1].Kind == asm.OpReg && a[1].Reg != asm.SP {
-		if s.fpAddresses == nil {
-			s.fpAddresses = map[asm.Reg]int64{}
-		}
-		s.fpAddresses[a[1].Reg] = a[0].FPOffset
-	}
 	ins.Args = a
-	return ins
+	return ins, nil
 }

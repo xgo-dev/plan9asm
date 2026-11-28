@@ -168,7 +168,10 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		callee := func(s string) string { return resolve(goTextSymbolForResolution(s)) }
 		for _, fn := range prepared.Funcs {
 			sig, ok := sigs[resolve(goTextSymbolForResolution(fn.Sym))]
-			if !ok || len(sig.ArgRegs) != 0 || strings.Contains(fn.Sym, "<ABIInternal>") || len(sig.Frame.Results) == 0 && !x86.FuncUsesX87OrMMX(fn) {
+			if !ok || len(sig.ArgRegs) != 0 {
+				continue
+			}
+			if len(sig.Frame.Results) == 0 && !x86.FuncUsesX87OrMMX(fn) && !funcUsesPhysical386SP(fn) {
 				continue
 			}
 			if _, err := x86.CheckPreparedABI0ResultInit(fn, sig, "386", callee, sigs, opt.X87Mode, opt.TargetTriple); err != nil {

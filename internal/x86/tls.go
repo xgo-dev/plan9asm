@@ -2,10 +2,22 @@ package x86
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/asm"
 )
+
+func isX86TLSBaseReg(r asm.Reg, goarch string) bool {
+	switch r {
+	case asm.AX, asm.BX, asm.CX, asm.DX, asm.SI, asm.DI, asm.BP:
+		return true
+	case "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15":
+		return goarch == "amd64"
+	default:
+		return false
+	}
+}
 
 // goTLSInstructions expands cmd/asm's target-dependent TLS register and
 // TLS*1 index. Linux uses the runtime.tlsg ELF local-exec relocation, Darwin
@@ -25,8 +37,20 @@ func goTLSInstructions(ins asm.Instr, goarch, target string, legacyWindowsTLS bo
 	if index >= 0 {
 		arg := ins.Args[index]
 		if strings.HasSuffix(arg.Sym, "(TLS*1)") {
-			mem, ok := asm.ParseMem(strings.TrimSuffix(arg.Sym, "(TLS*1)"))
-			if !ok || mem.Base == "" || mem.Base == "FP" || mem.Base == "PC" || mem.Base == "SB" || mem.Index != "" || mem.Segment != "" || mem.Sym != "" {
+			raw := strings.TrimSpace(strings.TrimSuffix(arg.Sym, "(TLS*1)"))
+			lp := strings.IndexByte(raw, '(')
+			if lp < 0 {
+				return nil, fmt.Errorf("invalid Go TLS reference %q", arg.Sym)
+			}
+			if disp := strings.TrimSpace(raw[:lp]); disp != "" {
+				if _, err := strconv.ParseInt(disp, 0, 64); err != nil {
+					if _, ok := asm.ParseImmExpr(disp); !ok {
+						return nil, fmt.Errorf("invalid Go TLS reference %q", arg.Sym)
+					}
+				}
+			}
+			mem, ok := asm.ParseMem(raw)
+			if !ok || !isX86TLSBaseReg(mem.Base, goarch) || mem.Index != "" || mem.Segment != "" || mem.Sym != "" {
 				return nil, fmt.Errorf("invalid Go TLS reference %q", arg.Sym)
 			}
 			switch target {

@@ -277,19 +277,33 @@ func TestUnmodeledTLSOperandsRejected(t *testing.T) {
 }
 
 func Test386IndexedGoTLSBase(t *testing.T) {
-	for _, base := range []string{"SP", "FP", "PC", "SB"} {
+	for _, ref := range []string{"0(SP)(TLS*1)", "0(FP)(TLS*1)", "0(PC)(TLS*1)", "0(SB)(TLS*1)", "0(X0)(TLS*1)", "foo(BX)(TLS*1)"} {
+		src := "TEXT f(SB),4,$0-4\n MOVL " + ref + ", AX\n RET"
+		file, err := asm.Parse(asm.ArchAMD64, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := PrepareFile(file, "386", "i686-unknown-linux-gnu"); err == nil {
+			t.Fatalf("accepted invalid 386 TLS ref %s", ref)
+		}
+	}
+	for _, ref := range []string{"0(X0)(TLS*1)", "0(SP)(TLS*1)", "foo(BX)(TLS*1)"} {
+		src := "TEXT f(SB),4,$0-8\n MOVQ " + ref + ", AX\n RET"
+		file, err := asm.Parse(asm.ArchAMD64, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := PrepareFile(file, "amd64", "x86_64-unknown-linux-gnu"); err == nil {
+			t.Fatalf("accepted invalid amd64 TLS ref %s", ref)
+		}
+	}
+	for _, base := range []string{"BX", "CX"} {
 		src := "TEXT f(SB),4,$0-4\n MOVL 0(" + base + ")(TLS*1), AX\n RET"
 		file, err := asm.Parse(asm.ArchAMD64, src)
 		if err != nil {
 			t.Fatal(err)
 		}
 		f, err := PrepareFile(file, "386", "i686-unknown-linux-gnu")
-		if base != "SP" {
-			if err == nil {
-				t.Fatalf("accepted TLS base %s", base)
-			}
-			continue
-		}
 		found := false
 		if err == nil {
 			for _, ins := range f.Funcs[0].Instrs {
@@ -299,7 +313,7 @@ func Test386IndexedGoTLSBase(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("SP TLS rewrite: %v, %v", f, err)
+			t.Fatalf("%s TLS rewrite: %v, %v", base, f, err)
 		}
 	}
 }

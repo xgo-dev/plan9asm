@@ -416,4 +416,29 @@ func TestARMExclusiveExitAtEnd(t *testing.T) {
 	if err != nil || !strings.Contains(ir, "br i1") || !strings.Contains(ir, "ret void") {
 		t.Fatalf("exclusive fallthrough: %v\n%s", err, ir)
 	}
+	// Non-void scalar, floating-point, and aggregate returns must emit valid IR
+	// (and scalar returns must return R0 rather than hardcoded 0).
+	for _, tc := range []struct {
+		name string
+		ret  LLVMType
+		want string
+	}{
+		{"i32", I32, "ret i32 %"},
+		{"double", LLVMType("double"), "ret double 0.0"},
+		{"aggregate", LLVMType("{ i32, i32 }"), "ret { i32, i32 } zeroinitializer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f2, err := Parse(ArchARM, "TEXT guard(SB),4,$0\nstart:\nMOVW $42, R0\nLDREX (R1), R2\nSTREX R2, (R1), R3\nCMP $0, R3\nB.NE start\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ir, err := Translate(f2, Options{TargetTriple: "armv7-unknown-linux-gnueabihf", Goarch: "arm", Sigs: map[string]FuncSig{"guard": {Name: "guard", Ret: tc.ret}}})
+			if err != nil {
+				t.Fatalf("translate %s failed: %v", tc.name, err)
+			}
+			if !strings.Contains(ir, tc.want) {
+				t.Fatalf("%s return missing %q:\n%s", tc.name, tc.want, ir)
+			}
+		})
+	}
 }

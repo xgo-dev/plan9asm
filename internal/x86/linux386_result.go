@@ -2,18 +2,13 @@ package x86
 
 import "github.com/xgo-dev/plan9asm/internal/asm"
 
-// linux386SeekOutput recognizes a zero return from Linux _llseek. On this edge
-// the kernel has written eight bytes through SI. Match only straight-line
-// setup: labels (including normalized PC-relative targets) end the search.
-func linux386SeekOutput(instrs []asm.Instr, branch int, resultBytes map[int64]bool) (offset int64, zeroTaken, ok bool) {
+// linux386SeekOutput recognizes a successful return from Linux i386 _llseek
+// (syscall 140), which only returns 0 (after writing 8 bytes to *SI) or
+// -errno in [0xfffff001, 0xffffffff]. Match only straight-line setup with
+// exact full-register AX/SI assignments so sub-register clobbers (e.g. AL)
+// cannot forge syscall 140.
+func linux386SeekOutput(instrs []asm.Instr, branch int, resultBytes map[int64]bool) (offset int64, successTaken, ok bool) {
 	if branch < 4 {
-		return
-	}
-	switch instrs[branch].Op {
-	case "JE", "JEQ", "JZ":
-		zeroTaken = true
-	case "JNE", "JNZ":
-	default:
 		return
 	}
 	cmp, trap := instrs[branch-1], instrs[branch-2]
@@ -21,8 +16,32 @@ func linux386SeekOutput(instrs []asm.Instr, branch int, resultBytes map[int64]bo
 		return
 	}
 	rhs := cmp.Args[1]
-	if !(cmp.Op == "CMPL" && rhs.Kind == asm.OpImm && rhs.ImmRaw == "" && rhs.Imm == 0 ||
-		cmp.Op == "TESTL" && rhs.Kind == asm.OpReg && rhs.Reg == asm.AX) {
+	isZeroCmp := cmp.Op == "CMPL" && rhs.Kind == asm.OpImm && rhs.ImmRaw == "" && rhs.Imm == 0 ||
+		cmp.Op == "TESTL" && rhs.Kind == asm.OpReg && rhs.Reg == asm.AX
+	isErrnoBoundCmp := cmp.Op == "CMPL" && rhs.Kind == asm.OpImm && rhs.ImmRaw == "" && uint32(rhs.Imm) == 0xfffff001
+	if !isZeroCmp && !isErrnoBoundCmp {
+		return
+	}
+	switch instrs[branch].Op {
+	case "JE", "JEQ", "JZ":
+		if !isZeroCmp {
+			return
+		}
+		successTaken = true
+	case "JNE", "JNZ":
+		if !isZeroCmp {
+			return
+		}
+	case "JLS", "JBE", "JNA", "JLO", "JB", "JNAE", "JC", "JCS":
+		if !isErrnoBoundCmp {
+			return
+		}
+		successTaken = true
+	case "JHI", "JA", "JNBE", "JHS", "JAE", "JNB", "JNC", "JCC":
+		if !isErrnoBoundCmp {
+			return
+		}
+	default:
 		return
 	}
 	if trap.Op != "INT" || len(trap.Args) != 1 || trap.Args[0].Kind != asm.OpImm || trap.Args[0].ImmRaw != "" || trap.Args[0].Imm != 0x80 {
@@ -35,17 +54,18 @@ func linux386SeekOutput(instrs []asm.Instr, branch int, resultBytes map[int64]bo
 			return
 		}
 		src := ins.Args[0]
-		switch ins.Args[1].Reg {
+		dstReg := ins.Args[1].Reg
+		switch canonicalGP(dstReg) {
 		case asm.AX:
 			if !number {
-				if ins.Op != "MOVL" || src.Kind != asm.OpImm || src.ImmRaw != "" || src.Imm != 140 {
+				if ins.Op != "MOVL" || dstReg != asm.AX || src.Kind != asm.OpImm || src.ImmRaw != "" || src.Imm != 140 {
 					return
 				}
 				number = true
 			}
 		case asm.SI:
 			if !buffer {
-				if ins.Op != "LEAL" || src.Kind != asm.OpFP {
+				if ins.Op != "LEAL" || dstReg != asm.SI || src.Kind != asm.OpFP {
 					return
 				}
 				offset, buffer = src.FPOffset, true
@@ -57,7 +77,7 @@ func linux386SeekOutput(instrs []asm.Instr, branch int, resultBytes map[int64]bo
 					return
 				}
 			}
-			return offset, zeroTaken, true
+			return offset, successTaken, true
 		}
 	}
 	return

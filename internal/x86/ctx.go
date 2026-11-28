@@ -1072,8 +1072,13 @@ func (c *amd64Ctx) loadReg(r asm.Reg) (string, error) {
 }
 
 func (c *amd64Ctx) storeReg(r asm.Reg, v string) error {
-	if c.goarch == "386" && r == asm.SP && !c.allowSPWrite {
-		return fmt.Errorf("386 direct SP write is unsupported; use ADJSP or a modeled stack instruction")
+	if c.goarch == "386" && !c.allowSPWrite {
+		if r == asm.SP {
+			return fmt.Errorf("386 direct SP write is unsupported; use ADJSP or a modeled stack instruction")
+		}
+		if base, _, ok := amd64ByteAlias(r); ok && base == asm.SP {
+			return fmt.Errorf("386 direct SP write is unsupported; use ADJSP or a modeled stack instruction")
+		}
 	}
 	return c.storeRegUnchecked(r, v)
 }

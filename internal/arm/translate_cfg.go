@@ -159,7 +159,9 @@ func (c *armCtx) lowerBlocks(blockFlagsDefIn, blockFlagsTouchedIn []armFlagMask,
 			emitBr(c.blocks[bi+1].name)
 			continue
 		}
-		c.lowerRetZero()
+		if err := c.lowerRET(); err != nil {
+			c.lowerRetZero()
+		}
 	}
 	return nil
 }
@@ -337,8 +339,15 @@ func (c *armCtx) lowerRetZero() {
 		c.b.WriteString("  ret i1 false\n")
 	case asm.Ptr:
 		c.b.WriteString("  ret ptr null\n")
+	case asm.LLVMType("float"), asm.LLVMType("double"), asm.LLVMType("half"), asm.LLVMType("bfloat"):
+		fmt.Fprintf(c.b, "  ret %s 0.0\n", c.sig.Ret)
 	default:
-		fmt.Fprintf(c.b, "  ret %s 0\n", c.sig.Ret)
+		s := string(c.sig.Ret)
+		if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") || strings.HasPrefix(s, "<") {
+			fmt.Fprintf(c.b, "  ret %s zeroinitializer\n", c.sig.Ret)
+		} else {
+			fmt.Fprintf(c.b, "  ret %s 0\n", c.sig.Ret)
+		}
 	}
 }
 

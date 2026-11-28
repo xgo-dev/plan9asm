@@ -573,7 +573,7 @@ func llvmArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz types.Siz
 			continue
 		}
 
-		switch u := types.Unalias(t).(type) {
+		switch u := unaliasType(t).(type) {
 		case *types.Basic:
 			if u.Kind() == types.String {
 				if flattenAgg {
@@ -661,7 +661,7 @@ func llvmArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz types.Siz
 }
 
 func llvmTypeForGo(t types.Type, goarch string) (plan9asm.LLVMType, error) {
-	switch tt := types.Unalias(t).(type) {
+	switch tt := unaliasType(t).(type) {
 	case *types.Basic:
 		switch tt.Kind() {
 		case types.Bool:
