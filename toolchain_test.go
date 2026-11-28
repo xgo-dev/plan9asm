@@ -34,9 +34,10 @@ func findLLVM22Tool(name string) string {
 			return ""
 		}
 		candidates = append(candidates, filepath.Join(strings.TrimSpace(string(out)), name))
-	} else {
-		candidates = append(candidates, name+"-22", name)
 	}
+	// Also search PATH candidates (e.g. Homebrew packages lld@22 separately
+	// from llvm@22), still enforcing the exact LLVM/LLD 22 version regex below.
+	candidates = append(candidates, name+"-22", name)
 	for _, candidate := range candidates {
 		path, err := exec.LookPath(candidate)
 		if err != nil {

@@ -41,6 +41,7 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins asm.Instr) erro
 		return fmt.Errorf("arm %s expects 2 or 3 operands: %q", op, ins.Raw)
 	}
 	var src, lhs, shiftCarry string
+	carryDef := false
 	dst := asm.Operand{}
 	var err error
 	isLogicOp := op == "AND" || op == "ORR" || op == "EOR" || op == "BIC"
@@ -50,11 +51,13 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins asm.Instr) erro
 			case asm.OpRegShift:
 				v, cf, serr := c.evalShiftWithCarry(arg, true)
 				shiftCarry = cf
+				carryDef = armRegShiftDefinesCarry(arg)
 				return v, serr
 			case asm.OpImm:
 				if arg.ImmRaw == "" {
 					if cf, ok := armImmLogicalCarry(op, arg.Imm); ok {
 						shiftCarry = cf
+						carryDef = true
 					}
 				}
 			}
@@ -121,7 +124,7 @@ func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins asm.Instr) erro
 	case "RSB":
 		return c.setFlagsSub(cond, src, lhs, "%"+t)
 	case "AND", "ORR", "EOR", "BIC":
-		return c.setFlagsLogicCarry(cond, "%"+t, shiftCarry)
+		return c.setFlagsLogicCarry(cond, "%"+t, shiftCarry, carryDef)
 	default:
 		return nil
 	}
@@ -132,15 +135,18 @@ func (c *armCtx) lowerARMCompare(op, cond string, ins asm.Instr) error {
 		return fmt.Errorf("arm %s expects 2 operands: %q", op, ins.Raw)
 	}
 	var src, shiftCarry string
+	carryDef := false
 	var err error
 	if op == "TST" || op == "TEQ" {
 		switch ins.Args[0].Kind {
 		case asm.OpRegShift:
 			src, shiftCarry, err = c.evalShiftWithCarry(ins.Args[0], true)
+			carryDef = armRegShiftDefinesCarry(ins.Args[0])
 		case asm.OpImm:
 			if ins.Args[0].ImmRaw == "" {
 				if cf, ok := armImmLogicalCarry(op, ins.Args[0].Imm); ok {
 					shiftCarry = cf
+					carryDef = true
 				}
 			}
 			src, err = c.eval32(ins.Args[0], false)
@@ -171,12 +177,12 @@ func (c *armCtx) lowerARMCompare(op, cond string, ins asm.Instr) error {
 		}
 	case "TST":
 		fmt.Fprintf(c.b, "  %%%s = and i32 %s, %s\n", res, lhs, src)
-		if err := c.setFlagsLogicCarry(cond, "%"+res, shiftCarry); err != nil {
+		if err := c.setFlagsLogicCarry(cond, "%"+res, shiftCarry, carryDef); err != nil {
 			return err
 		}
 	case "TEQ":
 		fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", res, lhs, src)
-		if err := c.setFlagsLogicCarry(cond, "%"+res, shiftCarry); err != nil {
+		if err := c.setFlagsLogicCarry(cond, "%"+res, shiftCarry, carryDef); err != nil {
 			return err
 		}
 	}
@@ -188,6 +194,7 @@ func (c *armCtx) lowerARMMVN(cond string, setFlags bool, ins asm.Instr) error {
 		return fmt.Errorf("arm MVN expects 2 or 3 operands: %q", ins.Raw)
 	}
 	var src, shiftCarry string
+	carryDef := false
 	var dst asm.Operand
 	var err error
 	srcArg := ins.Args[0]
@@ -199,6 +206,7 @@ func (c *armCtx) lowerARMMVN(cond string, setFlags bool, ins asm.Instr) error {
 	}
 	if setFlags && srcArg.Kind == asm.OpRegShift {
 		src, shiftCarry, err = c.evalShiftWithCarry(srcArg, true)
+		carryDef = armRegShiftDefinesCarry(srcArg)
 	} else {
 		src, err = c.eval32(srcArg, false)
 	}
@@ -214,7 +222,7 @@ func (c *armCtx) lowerARMMVN(cond string, setFlags bool, ins asm.Instr) error {
 		return err
 	}
 	if setFlags {
-		return c.setFlagsLogicCarry(cond, "%"+t, shiftCarry)
+		return c.setFlagsLogicCarry(cond, "%"+t, shiftCarry, carryDef)
 	}
 	return nil
 }
@@ -252,6 +260,9 @@ func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins asm.Instr) e
 		if err != nil {
 			return err
 		}
+	}
+	if err := c.requireFlags(armFlagC, op); err != nil {
+		return err
 	}
 	cf := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCSlot)

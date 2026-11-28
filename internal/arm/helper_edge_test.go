@@ -130,7 +130,7 @@ func TestARMHelperCoverage(t *testing.T) {
 				Results: []asm.FrameSlot{{Offset: 8, Type: asm.I16, Index: 0}},
 			},
 		}, nil)
-		c.flagsWritten = true
+		c.flagsDef = armFlagAll
 
 		if err := c.selectRegWrite("R1", "EQ", "7"); err != nil {
 			t.Fatalf("selectRegWrite(EQ) error = %v", err)
@@ -319,7 +319,7 @@ func TestARMParserFlagAndHelperEdges(t *testing.T) {
 	if err := c.storeFlagCond("AL", c.flagsNSlot, "false"); err != nil {
 		t.Fatalf("storeFlagCond(AL) error = %v", err)
 	}
-	c.flagsWritten = true
+	c.flagsDef = armFlagAll
 	for _, cond := range []string{"EQ", "NE", "CS", "CC", "HI", "LS", "LT", "GE", "GT", "LE", "MI", "PL", "VS", "VC", "AL"} {
 		if got, err := c.condValue(cond); err != nil || got == "" {
 			t.Fatalf("condValue(%s) = (%q, %v)", cond, got, err)
@@ -604,13 +604,13 @@ func TestARMArithErrorCoverage(t *testing.T) {
 		t.Fatalf("selectRegPairWrite(cond err) unexpectedly succeeded")
 	}
 	c6, _ := newARMCtxForTest(t, asm.FuncSig{Name: "example.pair_err3", Ret: asm.Void}, nil)
-	c6.flagsWritten = true
+	c6.flagsDef = armFlagAll
 	delete(c6.regSlot, asm.Reg("R1"))
 	if err := c6.selectRegPairWrite("R1", "R2", "EQ", "1", "2"); err == nil {
 		t.Fatalf("selectRegPairWrite(load hi err) unexpectedly succeeded")
 	}
 	c7, _ := newARMCtxForTest(t, asm.FuncSig{Name: "example.pair_err4", Ret: asm.Void}, nil)
-	c7.flagsWritten = true
+	c7.flagsDef = armFlagAll
 	delete(c7.regSlot, asm.Reg("R2"))
 	if err := c7.selectRegPairWrite("R1", "R2", "EQ", "1", "2"); err == nil {
 		t.Fatalf("selectRegPairWrite(load lo err) unexpectedly succeeded")
@@ -1009,7 +1009,7 @@ func TestARMBranchMovmAndSyscallCoverage(t *testing.T) {
 		"example.tail":   {Name: "example.tail", Ret: asm.Void},
 	}
 	c, b := newARMCtxForTest(t, asm.FuncSig{Name: "example.branch", Ret: asm.Void}, sigs)
-	c.flagsWritten = true
+	c.flagsDef = armFlagAll
 	c.blocks = []armBlock{{name: "entry"}, {name: "fall"}}
 
 	var gotBr string

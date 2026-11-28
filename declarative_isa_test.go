@@ -55,8 +55,6 @@ DATA glob<>+0(SB)/8, $0
 GLOBL glob<>(SB), 0, $8
 
 TEXT ·armAll(SB),0,$0-0
-	RSC R1, R2, R3
-	RSC $5, R2
 	SLL $3, R1, R2
 	SLL R1, R2
 	SRL R1, R2, R3
@@ -171,6 +169,8 @@ TEXT ·armAll(SB),0,$0-0
 	MOVD F2, glob<>(SB)
 	MOVD F1, F2
 	CMP R1, R2
+	RSC R1, R2, R3
+	RSC $5, R2
 	RSC.S R1, R2, R3
 	SLL.S $3, R1, R2
 	ADDF.EQ F1, F2, F3

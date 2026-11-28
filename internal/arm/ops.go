@@ -299,6 +299,9 @@ func (c *armCtx) lowerARMRSC(cond string, setFlags bool, ins asm.Instr) error {
 			return err
 		}
 	}
+	if err := c.requireFlags(armFlagC, "RSC"); err != nil {
+		return err
+	}
 	cf := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCSlot)
 	ncf := c.newTmp()
@@ -341,6 +344,7 @@ func (c *armCtx) lowerARMShiftOp(spec asm.OpSpec, cond string, setFlags bool, in
 		shiftOp = asm.ShiftArith
 	}
 	var amt string
+	carryDef := false
 	var err error
 	if ins.Args[0].Kind == asm.OpImm && ins.Args[0].ImmRaw == "" {
 		// Match Go's cmd/internal/obj/arm/asm5.go immediate shift encoding:
@@ -349,22 +353,9 @@ func (c *armCtx) lowerARMShiftOp(spec asm.OpSpec, cond string, setFlags bool, in
 		//     * SLL with (imm&31)==0 ($32/$64) encodes LSL #0 (MOV): shift=0, C unchanged.
 		//     * SRL/SRA with (imm&31)==0 ($32/$64) encode LSR #0/ASR #0 => shift by 32.
 		//     * Otherwise shift by (imm & 31) in 1..31 (e.g. $33 => shift by 1).
-		raw := ins.Args[0].Imm
-		imm5 := raw & 31
-		var eff int64
-		switch {
-		case raw == 0:
-			eff = 0
-		case imm5 == 0:
-			if shiftOp == asm.ShiftLeft {
-				eff = 0
-			} else {
-				eff = 32
-			}
-		default:
-			eff = imm5
-		}
+		eff := armImmShiftEffAmount(string(spec.Op), ins.Args[0].Imm)
 		amt = c.imm32(eff)
+		carryDef = eff != 0
 	} else {
 		amt, err = c.eval32(ins.Args[0], false)
 		if err != nil {
@@ -397,7 +388,7 @@ func (c *armCtx) lowerARMShiftOp(spec asm.OpSpec, cond string, setFlags bool, in
 		return err
 	}
 	if setFlags {
-		return c.setFlagsLogicCarry(cond, out, carryOut)
+		return c.setFlagsLogicCarry(cond, out, carryOut, carryDef)
 	}
 	return nil
 }
@@ -943,13 +934,23 @@ func (c *armCtx) lowerARMDeclarativeFP(spec asm.OpSpec, cond string, ins asm.Ins
 		if len(ins.Args) != 1 && len(ins.Args) != 2 {
 			return fmt.Errorf("arm %s expects 1 or 2 operands: %q", spec.Op, ins.Raw)
 		}
-		lhs, err := c.armLoadFloat(ins.Args[0], spec.Width)
-		if err != nil {
-			return err
-		}
-		rhs := "0.0"
-		if len(ins.Args) == 2 {
-			rhs, err = c.armLoadFloat(ins.Args[1], spec.Width)
+		var lhs, rhs string
+		var err error
+		if len(ins.Args) == 1 {
+			// 1-operand CMPF/CMPD Fm compares Fm against 0.0.
+			lhs, err = c.armLoadFloat(ins.Args[0], spec.Width)
+			if err != nil {
+				return err
+			}
+			rhs = "0.0"
+		} else {
+			// 2-operand Plan 9 CMPF/CMPD src, dst encodes VCMPE dst, src
+			// (comparing Args[1] against Args[0], matching Plan 9 CMP/SUB).
+			rhs, err = c.armLoadFloat(ins.Args[0], spec.Width)
+			if err != nil {
+				return err
+			}
+			lhs, err = c.armLoadFloat(ins.Args[1], spec.Width)
 			if err != nil {
 				return err
 			}

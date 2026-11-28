@@ -45,8 +45,10 @@ func (c *armCtx) lowerBlocks() error {
 		return nil
 	}
 
+	blockFlagsDefIn := c.computeBlockFlagsDefIn()
 	for bi := 0; bi < len(c.blocks); bi++ {
 		blk := c.blocks[bi]
+		c.flagsDef = blockFlagsDefIn[bi]
 		if bi != 0 {
 			fmt.Fprintf(c.b, "\n%s:\n", armLLVMBlockName(blk.name))
 		}

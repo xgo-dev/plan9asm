@@ -28,6 +28,7 @@ func (c *armCtx) lowerDataWithFlags(op, cond string, postInc, setFlags bool, ins
 		}
 		v := ""
 		shiftCarry := ""
+		carryDef := false
 		if src.Kind == asm.OpMem {
 			v, err = c.loadMem(src.Mem, 32, postInc, false)
 		} else if src.Kind == asm.OpReg && strings.HasPrefix(string(src.Reg), "F") {
@@ -40,6 +41,7 @@ func (c *armCtx) lowerDataWithFlags(op, cond string, postInc, setFlags bool, ins
 			v = "%" + tr
 		} else if setFlags && src.Kind == asm.OpRegShift {
 			v, shiftCarry, err = c.evalShiftWithCarry(src, true)
+			carryDef = armRegShiftDefinesCarry(src)
 		} else {
 			v, err = c.eval32(src, false)
 		}
@@ -69,7 +71,7 @@ func (c *armCtx) lowerDataWithFlags(op, cond string, postInc, setFlags bool, ins
 			return true, false, err
 		}
 		if setFlags && dst.Kind == asm.OpReg {
-			return true, false, c.setFlagsLogicCarry(cond, v, shiftCarry)
+			return true, false, c.setFlagsLogicCarry(cond, v, shiftCarry, carryDef)
 		}
 		return true, false, nil
 	case "MOVB", "MOVBS", "MOVBU", "MOVH", "MOVHS", "MOVHU":
@@ -144,9 +146,13 @@ func (c *armCtx) emitConditionalEffect(cond string, emit func() error) error {
 	done := armLLVMBlockName("cond_effect_done_" + id)
 	fmt.Fprintf(c.b, "  br i1 %s, label %%%s, label %%%s\n", cv, taken, done)
 	fmt.Fprintf(c.b, "\n%s:\n", taken)
+	savedFlagsDef := c.flagsDef
 	if err := emit(); err != nil {
 		return err
 	}
+	// The skip edge enters done with savedFlagsDef, so conditional effects
+	// cannot establish newly defined flags after the merge.
+	c.flagsDef = savedFlagsDef
 	fmt.Fprintf(c.b, "  br label %%%s\n", done)
 	fmt.Fprintf(c.b, "\n%s:\n", done)
 	return nil

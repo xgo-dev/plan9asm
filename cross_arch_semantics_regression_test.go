@@ -3,6 +3,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -498,6 +499,8 @@ TEXT ·sllZeroPreservesC(SB),NOSPLIT,$0-4
 
 // SLL.S by 32 uses bit 0 of src; by 33 sets C=0
 TEXT ·sll32Bit0(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
 	MOVW $1, R1
 	MOVW $32, R4
 	SLL.S R4, R1, R2
@@ -519,6 +522,8 @@ TEXT ·sll33Zero(SB),NOSPLIT,$0-4
 
 // SRL.S by 32 uses bit 31; SRA.S by 33 uses sign bit 31
 TEXT ·srl32Bit31(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
 	MOVW $0x80000000, R1
 	MOVW $32, R4
 	SRL.S R4, R1, R2
@@ -528,6 +533,8 @@ TEXT ·srl32Bit31(SB),NOSPLIT,$0-4
 	RET
 
 TEXT ·sra33Sign(SB),NOSPLIT,$0-4
+	MOVW $0, R3
+	CMP $1, R3
 	MOVW $0x80000000, R1
 	MOVW $33, R4
 	SRA.S R4, R1, R2
@@ -966,8 +973,8 @@ TEXT ·condRscEqSTakenUpdatesCarryAtomically(SB),NOSPLIT,$0-4
 TEXT ·condCmpfEqFalsePreservesNZCV(SB),NOSPLIT,$0-4
 	MOVW $1, R2
 	CMP $0, R2
-	MOVF $1.0, F0
-	MOVF $2.0, F1
+	MOVF $2.0, F0
+	MOVF $1.0, F1
 	CMPF.EQ F0, F1
 	MOVW $0, R0
 	ORR.MI $8, R0
@@ -977,7 +984,9 @@ TEXT ·condCmpfEqFalsePreservesNZCV(SB),NOSPLIT,$0-4
 	MOVW R0, ret+0(FP)
 	RET
 
-TEXT ·condCmpdPlTrueUpdatesAtomically(SB),NOSPLIT,$0-4
+// Plan 9 2-op CMPD/CMPF src, dst encodes VCMPE dst, src (compare Args[1] vs Args[0]).
+// F0=1.0, F1=2.0 => CMPD.PL F0, F1 compares F1(2.0) vs F0(1.0) => GT => C=1 (2).
+TEXT ·condCmpdPlGt(SB),NOSPLIT,$0-4
 	MOVW $1, R2
 	CMP $0, R2
 	MOVD $1.0, F0
@@ -991,8 +1000,147 @@ TEXT ·condCmpdPlTrueUpdatesAtomically(SB),NOSPLIT,$0-4
 	MOVW R0, ret+0(FP)
 	RET
 
-// Runtime-input shift function to verify non-constant armv7 backend codegen.
+// F0=2.0, F1=1.0 => CMPD.PL F0, F1 compares F1(1.0) vs F0(2.0) => LT => N flips 0->1
+// and C flips 1->0 atomically under a single evaluation of PL => N=1 (8).
+TEXT ·condCmpdPlLtUpdatesAtomically(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	MOVD $2.0, F0
+	MOVD $1.0, F1
+	CMPD.PL F0, F1
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condCmpdPlEq(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	MOVD $2.0, F0
+	MOVD $2.0, F1
+	CMPD.PL F0, F1
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·condCmpdPlNaN(SB),NOSPLIT,$0-4
+	MOVW $1, R2
+	CMP $0, R2
+	MOVD $0.0, F0
+	DIVD F0, F0
+	MOVD $1.0, F1
+	CMPD.PL F0, F1
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·cmpfGt(SB),NOSPLIT,$0-4
+	MOVF $1.0, F0
+	MOVF $2.0, F1
+	CMPF F0, F1
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·cmpfLt(SB),NOSPLIT,$0-4
+	MOVF $2.0, F0
+	MOVF $1.0, F1
+	CMPF F0, F1
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·cmpfEq(SB),NOSPLIT,$0-4
+	MOVF $2.0, F0
+	MOVF $2.0, F1
+	CMPF F0, F1
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+// 1-operand CMPF/CMPD compares the single operand against 0.0.
+TEXT ·cmpfZeroPos(SB),NOSPLIT,$0-4
+	MOVF $2.0, F0
+	CMPF F0
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·cmpdZeroNeg(SB),NOSPLIT,$0-4
+	MOVD $-2.0, F0
+	CMPD F0
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·cmpdZeroEq(SB),NOSPLIT,$0-4
+	MOVD $0.0, F0
+	CMPD F0
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+// Positive partial-flag controls: explicitly establishing C=1 or C=0 before TST $1, R1.
+TEXT ·partialTstPreservesExplicitC1(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	TST $1, R1
+	CMP.CS $1, R1
+	MOVW $0, R0
+	MOVW.EQ $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·partialTstPreservesExplicitC0(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $2, R1
+	TST $1, R1
+	CMP.CS $1, R1
+	MOVW $0, R0
+	MOVW.EQ $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+// Runtime-input shift function to verify non-constant armv7 backend codegen
+// (explicitly establishes C=0 so shift-by-0 does not depend on caller entry C).
 TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
+	MOVW $0, R3
+	CMP $1, R3
 	MOVW x+0(FP), R1
 	MOVW n+4(FP), R4
 	SLL.S R4, R1, R2
@@ -1063,7 +1211,18 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 		"condSbcEqSTakenUpdatesCarryAtomically": 8,
 		"condRscEqSTakenUpdatesCarryAtomically": 8,
 		"condCmpfEqFalsePreservesNZCV":          2,
-		"condCmpdPlTrueUpdatesAtomically":       8,
+		"condCmpdPlGt":                          2,
+		"condCmpdPlLtUpdatesAtomically":         8,
+		"condCmpdPlEq":                          6,
+		"condCmpdPlNaN":                         3,
+		"cmpfGt":                                2,
+		"cmpfLt":                                8,
+		"cmpfEq":                                6,
+		"cmpfZeroPos":                           2,
+		"cmpdZeroNeg":                           8,
+		"cmpdZeroEq":                            6,
+		"partialTstPreservesExplicitC1":         1,
+		"partialTstPreservesExplicitC0":         0,
 	}
 	sigs := map[string]FuncSig{
 		"runtimeShiftCarry": {
@@ -1101,6 +1260,139 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 			t.Errorf("ARMv7 %s: expected %q after -O2, got:\n%s", name, expectedRet, body)
 		}
 	}
+
+	// Per-flag definedness enforcement: partial flag writes (N/Z only, or N/Z/C
+	// without V) and conditional flag writes must NOT mark unmodified entry flags
+	// as defined; reading any undefined entry flag must fail with ErrProbeNeedsContext.
+	t.Run("PartialFlagDefinedness", func(t *testing.T) {
+		rejectCases := []struct {
+			name string
+			body string
+		}{
+			{
+				name: "TST_unrot_then_CMP_CS",
+				body: "MOVW $1, R1\nTST $1, R1\nCMP.CS $1, R1\nMOVW $0, R0\nMOVW.EQ $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "TST_unrot_then_MOVW_CS",
+				body: "MOVW $1, R1\nTST $1, R1\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "TST_unrot_then_MOVW_HI",
+				body: "MOVW $1, R1\nTST $1, R1\nMOVW $0, R0\nMOVW.HI $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "TST_unrot_then_MOVW_VS",
+				body: "MOVW $1, R1\nTST $1, R1\nMOVW $0, R0\nMOVW.VS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "TST_unrot_then_MOVW_LT",
+				body: "MOVW $1, R1\nTST $1, R1\nMOVW $0, R0\nMOVW.LT $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "TST_rot_defines_C_not_V",
+				body: "MOVW $1, R1\nTST $0x40000000, R1\nMOVW $0, R0\nMOVW.VS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "conditional_CMP_EQ_does_not_define_C",
+				body: "MOVW $1, R1\nTST $1, R1\nCMP.EQ $0, R1\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "TST_unrot_then_ADC_reads_undef_C",
+				body: "MOVW $1, R1\nTST $1, R1\nADC $0, R1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "TST_unrot_then_SBC_reads_undef_C",
+				body: "MOVW $1, R1\nTST $1, R1\nSBC $0, R1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "TST_unrot_then_RSC_reads_undef_C",
+				body: "MOVW $1, R1\nTST $1, R1\nRSC $0, R1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "SLL_S_imm0_does_not_define_C",
+				body: "MOVW $-1, R1\nSLL.S $0, R1, R2\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "SLL_S_imm32_does_not_define_C",
+				body: "MOVW $-1, R1\nSLL.S $32, R1, R2\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "SLL_S_reg_may_be_zero_does_not_define_C",
+				body: "MOVW $1, R1\nMOVW $4, R4\nSLL.S R4, R1, R2\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "CFG_join_missing_C_on_one_path",
+				body: "MOVW $1, R1\nTST $1, R1\nBEQ join\nCMP $0, R1\njoin:\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+		}
+		for _, tc := range rejectCases {
+			t.Run("Reject_"+tc.name, func(t *testing.T) {
+				f, err := Parse(ArchARM, "TEXT ·f(SB),NOSPLIT,$0-4\n"+tc.body)
+				if err != nil {
+					t.Fatalf("Parse failed: %v", err)
+				}
+				_, err = Translate(f, Options{
+					TargetTriple: "armv7-unknown-linux-gnueabihf",
+					Goarch:       "arm",
+					ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+					Sigs:         map[string]FuncSig{"f": sig0("f")},
+				})
+				if !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatalf("expected ErrProbeNeedsContext for %s, got: %v", tc.name, err)
+				}
+			})
+		}
+
+		acceptCases := []struct {
+			name string
+			body string
+			want int
+		}{
+			{
+				name: "TST_unrot_allows_EQ",
+				body: "MOVW $0, R1\nTST $1, R1\nMOVW $0, R0\nMOVW.EQ $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+				want: 1,
+			},
+			{
+				name: "TST_unrot_allows_MI",
+				body: "MOVW $-1, R1\nTST $0x80000000, R1\nMOVW $0, R0\nMOVW.MI $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+				want: 1,
+			},
+			{
+				name: "TST_rot_defines_C_allows_CS",
+				body: "MOVW $0, R1\nTST $0x80000000, R1\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+				want: 1,
+			},
+			{
+				name: "SRL_S_imm32_defines_C_allows_CS",
+				body: "MOVW $-1, R1\nSRL.S $32, R1, R2\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+				want: 1,
+			},
+		}
+		for _, tc := range acceptCases {
+			t.Run("Accept_"+tc.name, func(t *testing.T) {
+				f, err := Parse(ArchARM, "TEXT ·f(SB),NOSPLIT,$0-4\n"+tc.body)
+				if err != nil {
+					t.Fatalf("Parse failed: %v", err)
+				}
+				llCase, err := Translate(f, Options{
+					TargetTriple: "armv7-unknown-linux-gnueabihf",
+					Goarch:       "arm",
+					ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+					Sigs:         map[string]FuncSig{"f": sig0("f")},
+				})
+				if err != nil {
+					t.Fatalf("Translate(%s) unexpected error: %v", tc.name, err)
+				}
+				optCase := runOptO2(t, llCase)
+				body := extractLLVMFuncBody(t, optCase, "f")
+				if wantRet := fmt.Sprintf("ret i32 %d", tc.want); !strings.Contains(body, wantRet) {
+					t.Fatalf("Accept_%s: expected %q after -O2, got:\n%s", tc.name, wantRet, body)
+				}
+			})
+		}
+	})
 }
 
 // TestCrossArchX86DivTrapsAndResults verifies 386 and amd64 DIV/IDIV across
@@ -1825,6 +2117,45 @@ func TestFindLLVM22ToolRejectsNon22WasmLD(t *testing.T) {
 		t.Setenv("PATH", dir)
 		if got := findLLVM22Tool("wasm-ld"); got != want {
 			t.Fatalf("findLLVM22Tool(wasm-ld) = %q, want %q", got, want)
+		}
+	})
+	t.Run("LLVMConfig22FallsBackToPathLLD22", func(t *testing.T) {
+		llvmBin := t.TempDir()
+		pathBin := t.TempDir()
+		llvmConfig := filepath.Join(llvmBin, "llvm-config")
+		cfgScript := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n--version) echo 22.1.8 ;;\n--bindir) echo %q ;;\nesac\n", llvmBin)
+		if err := os.WriteFile(llvmConfig, []byte(cfgScript), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		want := writeShim(pathBin, "wasm-ld", "'Homebrew LLD 22.1.8'")
+		t.Setenv("LLVM_CONFIG", llvmConfig)
+		t.Setenv("PATH", pathBin)
+		if got := findLLVM22Tool("wasm-ld"); got != want {
+			t.Fatalf("findLLVM22Tool(wasm-ld) with separate LLVM_CONFIG bindir = %q, want %q", got, want)
+		}
+	})
+	t.Run("LLVMConfig22StillRejectsPathLLD23", func(t *testing.T) {
+		llvmBin := t.TempDir()
+		pathBin := t.TempDir()
+		llvmConfig := filepath.Join(llvmBin, "llvm-config")
+		cfgScript := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n--version) echo 22.1.8 ;;\n--bindir) echo %q ;;\nesac\n", llvmBin)
+		if err := os.WriteFile(llvmConfig, []byte(cfgScript), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeShim(pathBin, "wasm-ld", "'Homebrew LLD 23.1.4'")
+		t.Setenv("LLVM_CONFIG", llvmConfig)
+		t.Setenv("PATH", pathBin)
+		if got := findLLVM22Tool("wasm-ld"); got != "" {
+			t.Fatalf("findLLVM22Tool(wasm-ld) with LLVM_CONFIG=22 accepted LLD 23 on PATH: %q", got)
+		}
+	})
+	t.Run("InvalidLLVMConfigRejectsPathLLD22", func(t *testing.T) {
+		pathBin := t.TempDir()
+		writeShim(pathBin, "wasm-ld", "'Ubuntu LLD 22.1.8'")
+		t.Setenv("LLVM_CONFIG", "/nonexistent/llvm-config")
+		t.Setenv("PATH", pathBin)
+		if got := findLLVM22Tool("wasm-ld"); got != "" {
+			t.Fatalf("findLLVM22Tool(wasm-ld) with invalid LLVM_CONFIG accepted PATH binary: %q", got)
 		}
 	})
 }

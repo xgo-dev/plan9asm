@@ -23,11 +23,11 @@ type armCtx struct {
 	usedFRegs map[asm.Reg]bool
 	fRegSlot  map[asm.Reg]string
 
-	flagsNSlot   string
-	flagsZSlot   string
-	flagsCSlot   string
-	flagsVSlot   string
-	flagsWritten bool
+	flagsNSlot string
+	flagsZSlot string
+	flagsCSlot string
+	flagsVSlot string
+	flagsDef   armFlagMask
 
 	curPreInc bool
 	curSubOff bool
