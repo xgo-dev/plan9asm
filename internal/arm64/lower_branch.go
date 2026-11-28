@@ -10,16 +10,14 @@ func (c *arm64Ctx) resolveBranchTarget(bi int, op asm.Operand) (string, bool) {
 	if tgt, ok := arm64BranchTarget(op); ok {
 		return tgt, true
 	}
-	// Plan9's n(PC) is instruction-relative. Our lowering is block-based, so
-	// use a conservative target to keep translation total.
-	if op.Kind == asm.OpMem && op.Mem.Base == asm.PC {
-		if op.Mem.Off <= 0 {
-			return c.blocks[bi].name, true
+	if op.Kind == asm.OpMem && op.Mem.Base == asm.PC && bi >= 0 && bi < len(c.blocks) {
+		block := c.blocks[bi]
+		dest := block.startPC + int64(len(block.instrs)) - 1 + op.Mem.Off
+		for _, b := range c.blocks {
+			if len(b.instrs) != 0 && b.startPC == dest {
+				return b.name, true
+			}
 		}
-		if bi+1 < len(c.blocks) {
-			return c.blocks[bi+1].name, true
-		}
-		return c.blocks[bi].name, true
 	}
 	return "", false
 }
@@ -27,6 +25,10 @@ func (c *arm64Ctx) resolveBranchTarget(bi int, op asm.Operand) (string, bool) {
 func (c *arm64Ctx) lowerBranch(bi int, op asm.Op, ins asm.Instr, emitBr arm64EmitBr, emitCondBr arm64EmitCondBr) (ok bool, terminated bool, err error) {
 	switch op {
 	case "BL", "BLR", "CALL":
+		if c.flagFlow != nil {
+			c.flagFlow.clobbers = true
+			c.flagsDefined = 0
+		}
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("arm64 %s expects 1 operand: %q", op, ins.Raw)
 		}
@@ -38,7 +40,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op asm.Op, ins asm.Instr, emitBr arm64Emi
 			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %s)\n", "blr $0", "r,~{memory}", addr)
 			return true, false, nil
 		}
-		if ins.Args[0].Kind == asm.OpMem {
+		if ins.Args[0].Kind == asm.OpMem && ins.Args[0].Mem.Base != asm.PC {
 			addr, _, _, err := c.addrI64(ins.Args[0].Mem, false)
 			if err != nil {
 				return true, false, err
@@ -67,7 +69,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op asm.Op, ins asm.Instr, emitBr arm64Emi
 			c.lowerRetZero()
 			return true, true, nil
 		}
-		if ins.Args[0].Kind == asm.OpMem {
+		if ins.Args[0].Kind == asm.OpMem && ins.Args[0].Mem.Base != asm.PC {
 			addr, _, _, err := c.addrI64(ins.Args[0].Mem, false)
 			if err != nil {
 				return true, false, err
@@ -79,13 +81,8 @@ func (c *arm64Ctx) lowerBranch(bi int, op asm.Op, ins asm.Instr, emitBr arm64Emi
 		if ins.Args[0].Kind == asm.OpSym && strings.HasSuffix(ins.Args[0].Sym, "(SB)") {
 			return true, true, c.tailCallAndRet(ins.Args[0])
 		}
-		tgt, ok := arm64BranchTarget(ins.Args[0])
+		tgt, ok := c.resolveBranchTarget(bi, ins.Args[0])
 		if !ok {
-			// Legacy loop form in runtime stubs: B 0(PC)
-			if ins.Args[0].Kind == asm.OpMem && ins.Args[0].Mem.Base == asm.PC {
-				emitBr(c.blocks[bi].name)
-				return true, true, nil
-			}
 			return true, false, fmt.Errorf("arm64 B invalid target: %q", ins.Raw)
 		}
 		emitBr(tgt)
@@ -95,16 +92,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op asm.Op, ins asm.Instr, emitBr arm64Emi
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("arm64 %s expects label: %q", op, ins.Raw)
 		}
-		tgt, ok := arm64BranchTarget(ins.Args[0])
-		if !ok {
-			if ins.Args[0].Kind == asm.OpMem && ins.Args[0].Mem.Base == asm.PC {
-				// Relative PC branch in generated stubs; best-effort: use fallthrough.
-				if bi+1 < len(c.blocks) {
-					tgt = c.blocks[bi+1].name
-					ok = true
-				}
-			}
-		}
+		tgt, ok := c.resolveBranchTarget(bi, ins.Args[0])
 		if !ok {
 			return true, false, fmt.Errorf("arm64 %s invalid target: %q", op, ins.Raw)
 		}
@@ -180,7 +168,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op asm.Op, ins asm.Instr, emitBr arm64Emi
 		if fall == "" {
 			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
 		}
-		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", t, asm.LLVMBlockName(tgt), asm.LLVMBlockName(fall))
+		c.branchIf("%"+t, tgt, fall)
 		return true, true, nil
 
 	case "TBZ", "TBNZ":
@@ -213,7 +201,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op asm.Op, ins asm.Instr, emitBr arm64Emi
 		if fall == "" {
 			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
 		}
-		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", condT, asm.LLVMBlockName(tgt), asm.LLVMBlockName(fall))
+		c.branchIf("%"+condT, tgt, fall)
 		return true, true, nil
 
 	case "CBZW", "CBNZW":
@@ -243,7 +231,7 @@ func (c *arm64Ctx) lowerBranch(bi int, op asm.Op, ins asm.Instr, emitBr arm64Emi
 		if fall == "" {
 			return true, false, fmt.Errorf("arm64 %s needs fallthrough block: %q", op, ins.Raw)
 		}
-		fmt.Fprintf(c.b, "  br i1 %%%s, label %%%s, label %%%s\n", t, asm.LLVMBlockName(tgt), asm.LLVMBlockName(fall))
+		c.branchIf("%"+t, tgt, fall)
 		return true, true, nil
 	}
 	return false, false, nil

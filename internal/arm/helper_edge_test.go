@@ -357,31 +357,14 @@ func TestARMAtomicMovmAndInstrEdges(t *testing.T) {
 		},
 	}, asm.FuncSig{Name: "example.helpers", Ret: asm.Void}, nil)
 
-	if ty, align, err := armAtomicType("LDREXB"); err != nil || ty != asm.I8 || align != 1 {
-		t.Fatalf("armAtomicType(LDREXB) = (%q, %d, %v)", ty, align, err)
-	}
-	if _, _, err := armAtomicType("BAD"); err == nil {
-		t.Fatalf("armAtomicType(BAD) unexpectedly succeeded")
-	}
-	if got, err := c.atomicExtendToI32("%x", asm.I8); err != nil || got == "" {
-		t.Fatalf("atomicExtendToI32(I8) = (%q, %v)", got, err)
-	}
-	if _, err := c.atomicExtendToI32("%x", asm.I64); err == nil {
-		t.Fatalf("atomicExtendToI32(I64) unexpectedly succeeded")
-	}
-	if got, err := c.atomicTruncFromI32("%x", asm.I8); err != nil || got == "" {
-		t.Fatalf("atomicTruncFromI32(I8) = (%q, %v)", got, err)
-	}
-	if _, err := c.atomicTruncFromI32("%x", asm.I64); err == nil {
-		t.Fatalf("atomicTruncFromI32(I64) unexpectedly succeeded")
-	}
-	if ok, _, err := c.lowerAtomic("LDREX", asm.Instr{Raw: "LDREX R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); !ok || err == nil {
+	c.nativeA32 = true
+	if ok, _, err := c.lowerAtomic("LDREX", "", asm.Instr{Raw: "LDREX R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); !ok || err == nil {
 		t.Fatalf("lowerAtomic(LDREX invalid) = (%v, %v), want error", ok, err)
 	}
-	if ok, _, err := c.lowerAtomic("STREX", asm.Instr{Raw: "STREX R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); !ok || err == nil {
+	if ok, _, err := c.lowerAtomic("STREX", "", asm.Instr{Raw: "STREX R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); !ok || err == nil {
 		t.Fatalf("lowerAtomic(STREX invalid) = (%v, %v), want error", ok, err)
 	}
-	if ok, _, err := c.lowerAtomic("STREXD", asm.Instr{Raw: "STREXD R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); !ok || err == nil {
+	if ok, _, err := c.lowerAtomic("STREXD", "", asm.Instr{Raw: "STREXD R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); !ok || err == nil {
 		t.Fatalf("lowerAtomic(STREXD invalid) = (%v, %v), want error", ok, err)
 	}
 	if ok, _, err := c.lowerMOVM("MOVM", asm.Instr{Raw: "MOVM R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); !ok || err == nil {
@@ -453,13 +436,12 @@ func TestARMBranchAndSyscallExtraEdges(t *testing.T) {
 	}
 
 	c2, b2 := newARMCtxForTest(t, asm.FuncSig{Name: "example.sys", Ret: asm.I32}, nil)
-	delete(c2.regSlot, asm.Reg("R4"))
-	delete(c2.regSlot, asm.Reg("R5"))
-	if ok, _, err := c2.lowerSyscall("SWI", asm.Instr{Raw: "SWI $0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0}}}); !ok || err != nil {
-		t.Fatalf("lowerSyscall(SWI $0) = (%v, %v)", ok, err)
+	c2.linuxA32 = true
+	if err := c2.lowerSyscall("", asm.Instr{Op: "SWI", Raw: "SWI $0", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0}}}); err != nil {
+		t.Fatal(err)
 	}
 	out := b2.String()
-	for _, want := range []string{"call i64 @syscall(", "zext i32 0 to i64", "store i32", "store i32 0, ptr %reg_R1"} {
+	for _, want := range []string{".inst 0xef000000", "{r7}", "extractvalue {i32, i32}", "store i32"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
 		}
@@ -1053,11 +1035,12 @@ func TestARMBranchMovmAndSyscallCoverage(t *testing.T) {
 	if ok, _, err := c.lowerMOVM("MOVM.DA", asm.Instr{Raw: "MOVM.DA [R2,R3], (R13)", Args: []asm.Operand{{Kind: asm.OpRegList, RegList: []asm.Reg{"R2", "R3"}}, {Kind: asm.OpMem, Mem: asm.MemRef{Base: "R13"}}}}); !ok || err != nil {
 		t.Fatalf("lowerMOVM(DA store) = (%v, %v)", ok, err)
 	}
-	if ok, _, err := c.lowerSyscall("SWI", asm.Instr{Raw: "SWI $1", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}}}); !ok || err != nil {
-		t.Fatalf("lowerSyscall(SWI imm) = (%v, %v)", ok, err)
+	c.linuxA32 = true
+	if err := c.lowerSyscall("", asm.Instr{Op: "SWI", Raw: "SWI $1", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}}}); err != nil {
+		t.Fatal(err)
 	}
-	if ok, _, err := c.lowerSyscall("SWI", asm.Instr{Raw: "SWI R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); !ok || err == nil {
-		t.Fatalf("lowerSyscall(SWI invalid) = (%v, %v), want error", ok, err)
+	if err := c.lowerSyscall("", asm.Instr{Op: "SWI", Raw: "SWI R0", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}}}); err == nil {
+		t.Fatal("SWI accepted a register immediate")
 	}
 
 	c2, _ := newARMCtxForTest(t, asm.FuncSig{Name: "example.callers", Ret: asm.I32}, map[string]asm.FuncSig{
@@ -1120,7 +1103,7 @@ func TestARMBranchMovmAndSyscallCoverage(t *testing.T) {
 		"ret void",
 		"load i32, ptr",
 		"store i32",
-		"call i64 @syscall(",
+		".inst 0xef000001",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)

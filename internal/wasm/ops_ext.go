@@ -26,14 +26,36 @@ func (s *wasmExtState) castV128(v wasmValue, vecTy asm.LLVMType) (string, error)
 	if v.typ == vecTy {
 		return v.val, nil
 	}
-	if v.typ == asm.LLVMType("<16 x i8>") || v.typ == asm.LLVMType("<8 x i16>") ||
-		v.typ == asm.LLVMType("<4 x i32>") || v.typ == asm.LLVMType("<2 x i64>") ||
-		v.typ == asm.LLVMType("<4 x float>") || v.typ == asm.LLVMType("<2 x double>") {
+	if isWasmV128(v.typ) {
 		t := s.newTmp()
 		fmt.Fprintf(s.b, "  %%%s = bitcast %s %s to %s\n", t, v.typ, v.val, vecTy)
 		return "%" + t, nil
 	}
 	return "", fmt.Errorf("expected v128 vector value, got %s", v.typ)
+}
+
+// emitTrapIf keeps observable traps alive even when an instruction's value is dropped.
+func emitTrapIf(b *strings.Builder, newTmp func() string, condition string) {
+	trap, ok := newTmp()+"_trap", newTmp()+"_ok"
+	fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n", condition, trap, ok)
+	fmt.Fprintf(b, "%s:\n  call void @llvm.trap()\n  unreachable\n%s:\n", trap, ok)
+}
+
+// Bulk memory validates every range before any write, including zero-length
+// operations. Use 64-bit arithmetic for the possible 4 GiB end address.
+func emitBulkBoundsCheck(b *strings.Builder, newTmp func() string, length string, addresses ...string) {
+	pages, pages64, limit, size := newTmp(), newTmp(), newTmp(), newTmp()
+	fmt.Fprintf(b, "  %%%s = call i32 @llvm.wasm.memory.size.i32(i32 0)\n", pages)
+	fmt.Fprintf(b, "  %%%s = zext i32 %%%s to i64\n", pages64, pages)
+	fmt.Fprintf(b, "  %%%s = shl i64 %%%s, 16\n", limit, pages64)
+	fmt.Fprintf(b, "  %%%s = zext i32 %s to i64\n", size, length)
+	for _, addr := range addresses {
+		start, end, bad := newTmp(), newTmp(), newTmp()
+		fmt.Fprintf(b, "  %%%s = ptrtoint ptr %s to i64\n", start, addr)
+		fmt.Fprintf(b, "  %%%s = add i64 %%%s, %%%s\n", end, start, size)
+		fmt.Fprintf(b, "  %%%s = icmp ugt i64 %%%s, %%%s\n", bad, end, limit)
+		emitTrapIf(b, newTmp, bad)
+	}
 }
 
 // emitWasmCheckedFloatTrunc lowers non-saturating WebAssembly float-to-int
@@ -77,17 +99,12 @@ func emitWasmCheckedFloatTrunc(b *strings.Builder, newTmp func() string, srcTy, 
 		hiLit = asm.FormatLLVMFloat64Literal(18446744073709551616.0) // 2^64 (exact f64)
 	}
 	loBad, hiBad, bad := newTmp(), newTmp(), newTmp()
-	trapLbl := newTmp() + "_trunc_trap"
-	okLbl := newTmp() + "_trunc_ok"
+
 	// Unordered predicates (ult/ule/uge) also evaluate to true on NaN.
 	fmt.Fprintf(b, "  %%%s = fcmp %s %s %s, %s\n", loBad, loPred, srcTy, val, loLit)
 	fmt.Fprintf(b, "  %%%s = fcmp uge %s %s, %s\n", hiBad, srcTy, val, hiLit)
 	fmt.Fprintf(b, "  %%%s = or i1 %%%s, %%%s\n", bad, loBad, hiBad)
-	fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n", bad, trapLbl, okLbl)
-	fmt.Fprintf(b, "%s:\n", trapLbl)
-	fmt.Fprintln(b, "  call void @llvm.trap()")
-	fmt.Fprintln(b, "  unreachable")
-	fmt.Fprintf(b, "%s:\n", okLbl)
+	emitTrapIf(b, newTmp, bad)
 	conv := "fptoui"
 	if signed {
 		conv = "fptosi"
@@ -202,21 +219,25 @@ func (s *wasmExtState) lowerExtOp(op string, ins asm.Instr) (bool, error) {
 		if len(ins.Args) != 1 {
 			return true, fmt.Errorf("F32Const expects one immediate")
 		}
-		var f32 float32
-		switch ins.Args[0].Kind {
+		var bits uint32
+		switch arg := ins.Args[0]; arg.Kind {
 		case asm.OpImm:
-			f32 = math.Float32frombits(uint32(ins.Args[0].Imm))
+			if arg.ImmRaw != "" || arg.Imm < math.MinInt32 || arg.Imm > math.MaxUint32 {
+				return true, fmt.Errorf("F32Const requires a 32-bit literal")
+			}
+			bits = uint32(arg.Imm)
 		case asm.OpSym:
-			raw := strings.TrimPrefix(strings.TrimSpace(ins.Args[0].Sym), "$")
+			raw := strings.TrimPrefix(strings.TrimSpace(arg.Sym), "$")
 			v, err := strconv.ParseFloat(raw, 32)
 			if err != nil {
 				return true, fmt.Errorf("F32Const expects one immediate: %w", err)
 			}
-			f32 = float32(v)
+			bits = math.Float32bits(float32(v))
 		default:
 			return true, fmt.Errorf("F32Const expects one immediate")
 		}
-		s.push(wasmValue{typ: asm.LLVMType("float"), val: asm.FormatLLVMFloat64Literal(float64(f32))})
+		// Widening a signaling NaN to float64 would change its quiet bit.
+		s.push(wasmValue{typ: "float", val: fmt.Sprintf("bitcast (i32 %d to float)", bits)})
 		return true, nil
 
 	case "F32LOAD", "F64LOAD":
@@ -236,7 +257,7 @@ func (s *wasmExtState) lowerExtOp(op string, ins asm.Instr) (bool, error) {
 			return true, err
 		}
 		t := s.newTmp()
-		fmt.Fprintf(s.b, "  %%%s = load %s, ptr %s, align 1\n", t, ty, addr.val)
+		fmt.Fprintf(s.b, "  %%%s = load volatile %s, ptr %s, align 1\n", t, ty, addr.val)
 		s.push(wasmValue{typ: ty, val: "%" + t})
 		return true, nil
 
@@ -264,7 +285,7 @@ func (s *wasmExtState) lowerExtOp(op string, ins asm.Instr) (bool, error) {
 		if err != nil {
 			return true, err
 		}
-		fmt.Fprintf(s.b, "  store %s %s, ptr %s, align 1\n", ty, val.val, addr.val)
+		fmt.Fprintf(s.b, "  store volatile %s %s, ptr %s, align 1\n", ty, val.val, addr.val)
 		return true, nil
 
 	case "F32ADD", "F32SUB", "F32MUL", "F32DIV", "F32MIN", "F32MAX", "F32COPYSIGN",
@@ -522,18 +543,32 @@ func wasmVecShape(op string) (vecTy asm.LLVMType, elemTy asm.LLVMType, lanes int
 	}
 }
 
+func wasmLane(arg asm.Operand, lanes int) (int, error) {
+	if arg.Kind != asm.OpImm || arg.ImmRaw != "" || arg.Imm < 0 || arg.Imm >= int64(lanes) {
+		return 0, fmt.Errorf("expected lane index in [0,%d), got %s", lanes, arg)
+	}
+	return int(arg.Imm), nil
+}
+
+func wasmVectorOffset(args []asm.Operand) (int64, error) {
+	if len(args) == 0 {
+		return 0, nil
+	}
+	if len(args) != 1 || args[0].Kind != asm.OpImm || args[0].ImmRaw != "" {
+		return 0, fmt.Errorf("expected an unsigned wasm32 memory offset")
+	}
+	return args[0].Imm, nil
+}
+
 func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 	v128 := asm.LLVMType("<16 x i8>")
 	// V128 constants, loads, stores, bitwise
 	switch op {
 	case "V128CONST":
-		var lo, hi int64
-		if len(ins.Args) >= 1 && ins.Args[0].Kind == asm.OpImm {
-			lo = ins.Args[0].Imm
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpImm || ins.Args[0].ImmRaw != "" || ins.Args[1].ImmRaw != "" {
+			return fmt.Errorf("V128Const requires two integer immediates")
 		}
-		if len(ins.Args) >= 2 && ins.Args[1].Kind == asm.OpImm {
-			hi = ins.Args[1].Imm
-		}
+		lo, hi := ins.Args[0].Imm, ins.Args[1].Imm
 		v0, v1, bc := s.newTmp(), s.newTmp(), s.newTmp()
 		fmt.Fprintf(s.b, "  %%%s = insertelement <2 x i64> undef, i64 %d, i32 0\n", v0, lo)
 		fmt.Fprintf(s.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %d, i32 1\n", v1, v0, hi)
@@ -544,9 +579,9 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 	case "V128LOAD", "V128LOAD32ZERO", "V128LOAD64ZERO",
 		"V128LOAD8SPLAT", "V128LOAD16SPLAT", "V128LOAD32SPLAT", "V128LOAD64SPLAT",
 		"V128LOAD8X8S", "V128LOAD8X8U", "V128LOAD16X4S", "V128LOAD16X4U", "V128LOAD32X2S", "V128LOAD32X2U":
-		off := int64(0)
-		if len(ins.Args) >= 1 && ins.Args[0].Kind == asm.OpImm {
-			off = ins.Args[0].Imm
+		off, err := wasmVectorOffset(ins.Args)
+		if err != nil {
+			return err
 		}
 		addr, err := s.pop(op)
 		if err != nil {
@@ -556,10 +591,24 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
+		// Check the original access width even when LLVM extracts just one
+		// widened lane or legalizes the vector to multiple scalar loads.
+		size := "8"
+		switch op {
+		case "V128LOAD":
+			size = "16"
+		case "V128LOAD8SPLAT":
+			size = "1"
+		case "V128LOAD16SPLAT":
+			size = "2"
+		case "V128LOAD32ZERO", "V128LOAD32SPLAT":
+			size = "4"
+		}
+		emitBulkBoundsCheck(s.b, s.newTmp, size, addr.val)
 		switch op {
 		case "V128LOAD":
 			t := s.newTmp()
-			fmt.Fprintf(s.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", t, addr.val)
+			fmt.Fprintf(s.b, "  %%%s = load volatile <16 x i8>, ptr %s, align 1\n", t, addr.val)
 			s.push(wasmValue{typ: v128, val: "%" + t})
 		case "V128LOAD32ZERO", "V128LOAD64ZERO":
 			elTy, vecTy := "i32", "<4 x i32>"
@@ -567,7 +616,7 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 				elTy, vecTy = "i64", "<2 x i64>"
 			}
 			ld, ins0, bc := s.newTmp(), s.newTmp(), s.newTmp()
-			fmt.Fprintf(s.b, "  %%%s = load %s, ptr %s, align 1\n", ld, elTy, addr.val)
+			fmt.Fprintf(s.b, "  %%%s = load volatile %s, ptr %s, align 1\n", ld, elTy, addr.val)
 			fmt.Fprintf(s.b, "  %%%s = insertelement %s zeroinitializer, %s %%%s, i32 0\n", ins0, vecTy, elTy, ld)
 			fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, ins0)
 			s.push(wasmValue{typ: v128, val: "%" + bc})
@@ -584,7 +633,7 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 			elTy := fmt.Sprintf("i%d", bits)
 			vecTy := fmt.Sprintf("<%d x %s>", lanes, elTy)
 			ld, ins0, sp, bc := s.newTmp(), s.newTmp(), s.newTmp(), s.newTmp()
-			fmt.Fprintf(s.b, "  %%%s = load %s, ptr %s, align 1\n", ld, elTy, addr.val)
+			fmt.Fprintf(s.b, "  %%%s = load volatile %s, ptr %s, align 1\n", ld, elTy, addr.val)
 			fmt.Fprintf(s.b, "  %%%s = insertelement %s undef, %s %%%s, i32 0\n", ins0, vecTy, elTy, ld)
 			fmt.Fprintf(s.b, "  %%%s = shufflevector %s %%%s, %s poison, <%d x i32> zeroinitializer\n", sp, vecTy, ins0, vecTy, lanes)
 			fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, sp)
@@ -601,7 +650,7 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 				srcTy, dstTy = "<2 x i32>", "<2 x i64>"
 			}
 			ld, ex, bc := s.newTmp(), s.newTmp(), s.newTmp()
-			fmt.Fprintf(s.b, "  %%%s = load %s, ptr %s, align 1\n", ld, srcTy, addr.val)
+			fmt.Fprintf(s.b, "  %%%s = load volatile %s, ptr %s, align 1\n", ld, srcTy, addr.val)
 			fmt.Fprintf(s.b, "  %%%s = %s %s %%%s to %s\n", ex, extOp, srcTy, ld, dstTy)
 			fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, dstTy, ex)
 			s.push(wasmValue{typ: v128, val: "%" + bc})
@@ -609,9 +658,9 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		return nil
 
 	case "V128STORE":
-		off := int64(0)
-		if len(ins.Args) >= 1 && ins.Args[0].Kind == asm.OpImm {
-			off = ins.Args[0].Imm
+		off, err := wasmVectorOffset(ins.Args)
+		if err != nil {
+			return err
 		}
 		val, err := s.pop(op)
 		if err != nil {
@@ -629,7 +678,8 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(s.b, "  store <16 x i8> %s, ptr %s, align 1\n", vb, addr.val)
+		emitBulkBoundsCheck(s.b, s.newTmp, "16", addr.val)
+		fmt.Fprintf(s.b, "  store volatile <16 x i8> %s, ptr %s, align 1\n", vb, addr.val)
 		return nil
 
 	case "V128LOAD8LANE", "V128LOAD16LANE", "V128LOAD32LANE", "V128LOAD64LANE",
@@ -645,12 +695,13 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		}
 		elTy := fmt.Sprintf("i%d", bits)
 		vecTy := asm.LLVMType(fmt.Sprintf("<%d x %s>", lanes, elTy))
-		off, lane := int64(0), 0
-		if len(ins.Args) >= 1 && ins.Args[0].Kind == asm.OpImm {
-			off = ins.Args[0].Imm
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpImm || ins.Args[0].ImmRaw != "" {
+			return fmt.Errorf("%s expects an offset and a lane", op)
 		}
-		if len(ins.Args) >= 2 && ins.Args[1].Kind == asm.OpImm {
-			lane = int(ins.Args[1].Imm) % lanes
+		off := ins.Args[0].Imm
+		lane, err := wasmLane(ins.Args[1], lanes)
+		if err != nil {
+			return err
 		}
 		val, err := s.pop(op)
 		if err != nil {
@@ -670,14 +721,14 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		}
 		if strings.Contains(op, "LOAD") {
 			ld, insE, bc := s.newTmp(), s.newTmp(), s.newTmp()
-			fmt.Fprintf(s.b, "  %%%s = load %s, ptr %s, align 1\n", ld, elTy, addr.val)
+			fmt.Fprintf(s.b, "  %%%s = load volatile %s, ptr %s, align 1\n", ld, elTy, addr.val)
 			fmt.Fprintf(s.b, "  %%%s = insertelement %s %s, %s %%%s, i32 %d\n", insE, vecTy, vv, elTy, ld, lane)
 			fmt.Fprintf(s.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", bc, vecTy, insE)
 			s.push(wasmValue{typ: v128, val: "%" + bc})
 		} else {
 			el := s.newTmp()
 			fmt.Fprintf(s.b, "  %%%s = extractelement %s %s, i32 %d\n", el, vecTy, vv, lane)
-			fmt.Fprintf(s.b, "  store %s %%%s, ptr %s, align 1\n", elTy, el, addr.val)
+			fmt.Fprintf(s.b, "  store volatile %s %%%s, ptr %s, align 1\n", elTy, el, addr.val)
 		}
 		return nil
 
@@ -783,8 +834,14 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		return nil
 	}
 
+	if strings.HasPrefix(op, "V128") {
+		return fmt.Errorf("unsupported wasm SIMD instruction %s", op)
+	}
 	vecTy, elemTy, lanes, isFloat, suf := wasmVecShape(op)
-	suffix := op[5:] // after I8X16 / I16X8 / I32X4 / I64X2 / F32X4 / F64X2
+	suffix := op[5:]
+	if !wasmVecSupports(suffix, lanes, isFloat) {
+		return fmt.Errorf("unsupported wasm SIMD instruction %s", op)
+	}
 
 	// Splat / ExtractLane / ReplaceLane
 	switch suffix {
@@ -809,9 +866,12 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		return nil
 
 	case "EXTRACTLANE", "EXTRACTLANES", "EXTRACTLANEU":
-		lane := 0
-		if len(ins.Args) >= 1 && ins.Args[0].Kind == asm.OpImm {
-			lane = int(ins.Args[0].Imm) % lanes
+		if len(ins.Args) != 1 {
+			return fmt.Errorf("%s expects one lane index", op)
+		}
+		lane, err := wasmLane(ins.Args[0], lanes)
+		if err != nil {
+			return err
 		}
 		v, err := s.pop(op)
 		if err != nil {
@@ -834,9 +894,12 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		return nil
 
 	case "REPLACELANE":
-		lane := 0
-		if len(ins.Args) >= 1 && ins.Args[0].Kind == asm.OpImm {
-			lane = int(ins.Args[0].Imm) % lanes
+		if len(ins.Args) != 1 {
+			return fmt.Errorf("%s expects one lane index", op)
+		}
+		lane, err := wasmLane(ins.Args[0], lanes)
+		if err != nil {
+			return err
 		}
 		sv, err := s.pop(op)
 		if err != nil {
@@ -981,7 +1044,17 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 			switch suffix {
 			case "ADD", "SUB", "MUL", "DIV":
 				fmt.Fprintf(s.b, "  %%%s = f%s %s %s, %s\n", res, strings.ToLower(suffix), vecTy, a, b)
-			case "MIN", "PMIN", "RELAXEDMIN":
+			case "PMIN", "PMAX":
+				// Pseudo-min/max keep the first input on equality or NaN,
+				// including its signed zero or unmodified NaN payload.
+				pred := "olt"
+				if suffix == "PMAX" {
+					pred = "ogt"
+				}
+				takeSecond := s.newTmp()
+				fmt.Fprintf(s.b, "  %%%s = fcmp %s %s %s, %s\n", takeSecond, pred, vecTy, b, a)
+				fmt.Fprintf(s.b, "  %%%s = select <%d x i1> %%%s, %s %s, %s %s\n", res, lanes, takeSecond, vecTy, b, vecTy, a)
+			case "MIN", "RELAXEDMIN":
 				fmt.Fprintf(s.b, "  %%%s = call %s @llvm.minimum.%s(%s %s, %s %s)\n", res, vecTy, suf, vecTy, a, vecTy, b)
 			default:
 				fmt.Fprintf(s.b, "  %%%s = call %s @llvm.maximum.%s(%s %s, %s %s)\n", res, vecTy, suf, vecTy, a, vecTy, b)
@@ -1116,11 +1189,14 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		if err != nil {
 			return err
 		}
+		if len(ins.Args) != 16 {
+			return fmt.Errorf("%s expects 16 lane indices", op)
+		}
 		mask := make([]string, 16)
-		for i := 0; i < 16; i++ {
-			idx := 0
-			if i < len(ins.Args) && ins.Args[i].Kind == asm.OpImm {
-				idx = int(ins.Args[i].Imm) & 31
+		for i, arg := range ins.Args {
+			idx, err := wasmLane(arg, 32)
+			if err != nil {
+				return err
 			}
 			mask[i] = fmt.Sprintf("i32 %d", idx)
 		}
@@ -1547,7 +1623,7 @@ func (s *wasmExtState) lowerSIMD128(op string, ins asm.Instr) error {
 		s.push(wasmValue{typ: v128, val: "%" + bc})
 		return nil
 
-	case "TRUNCSATF64X2SZERO", "TRUNCSATF64X2UZERO", "RELAXEDTRUNCF64X2S", "RELAXEDTRUNCF64X2U":
+	case "TRUNCSATF64X2SZERO", "TRUNCSATF64X2UZERO", "RELAXEDTRUNCF64X2S", "RELAXEDTRUNCF64X2U", "RELAXEDTRUNCF64X2SZERO", "RELAXEDTRUNCF64X2UZERO":
 		v, err := s.pop(op)
 		if err != nil {
 			return err

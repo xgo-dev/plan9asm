@@ -18,6 +18,8 @@ import (
 
 	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm"
+	"github.com/xgo-dev/plan9asm/cmd/internal/asmfile"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -361,7 +363,7 @@ func runOneTarget(spec targetSpec, pats []string, modulePath, outDir string, ann
 			}
 			continue
 		}
-		err := compileOne(pkg, arch, spec.Goarch, triple, t, annotate, ccfg)
+		err := compileOne(pkg, spec.Goos, spec.Goarch, triple, t, annotate, ccfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[%d/%d] FAIL %s\n", idx, len(tasks), t.AsmFile)
 			printFailureReason(err.Error())
@@ -402,36 +404,34 @@ func runOneTarget(spec targetSpec, pats []string, modulePath, outDir string, ann
 	return rep, nil, nil
 }
 
-func compileOne(pkg *packages.Package, arch plan9asm.Arch, goarch, triple string, t asmTask, annotate bool, ccfg compileConfig) error {
+func compileOne(pkg *packages.Package, goos, goarch, triple string, t asmTask, annotate bool, ccfg compileConfig) error {
 	src, err := os.ReadFile(t.AsmFile)
 	if err != nil {
 		return fmt.Errorf("read asm: %w", err)
 	}
-	file, err := plan9asm.Parse(arch, string(src))
-	if err != nil {
-		if strings.Contains(err.Error(), "no TEXT directive found") {
-			return nil
+	goPkg := plan9asm.GoPackage{Path: pkg.PkgPath, Types: pkg.Types, Imports: make(map[string]*types.Package, len(pkg.Imports))}
+	for path, imported := range pkg.Imports {
+		if imported != nil {
+			goPkg.Imports[path] = imported.Types
 		}
+	}
+	arch, err := toPlan9Arch(goarch)
+	if err != nil {
+		return err
+	}
+	file, _, err := asmfile.ParseInput(goPkg, src, t.AsmFile, goos, goarch, arch)
+	if err != nil {
 		return fmt.Errorf("parse asm: %w", err)
 	}
-	if len(file.Funcs) == 0 {
-		return nil
+	var mod llvm.Module
+	if file == nil {
+		mod = asmfile.EmptyModule(triple)
+	} else {
+		mod, err = translateOnePackageFile(pkg, file, goarch, triple, annotate)
 	}
 
-	resolve := resolveSymFunc(pkg.PkgPath)
-	sigs, err := sigsForAsmFile(pkg, file, resolve, goarch)
 	if err != nil {
-		return fmt.Errorf("infer signatures: %w", err)
-	}
-	mod, err := plan9asm.TranslateModule(file, plan9asm.Options{
-		TargetTriple:   triple,
-		ResolveSym:     resolve,
-		Sigs:           sigs,
-		Goarch:         goarch,
-		AnnotateSource: annotate,
-	})
-	if err != nil {
-		return fmt.Errorf("translate: %w", err)
+		return err
 	}
 	defer mod.Dispose()
 	if err := llvm.VerifyModule(mod, llvm.ReturnStatusAction); err != nil {
@@ -446,9 +446,19 @@ func compileOne(pkg *packages.Package, arch plan9asm.Arch, goarch, triple string
 	}
 	if ccfg.Enabled {
 		objPath := strings.TrimSuffix(t.OutLL, filepath.Ext(t.OutLL)) + ".o"
+		// Never count an artifact left by an earlier invocation as current.
+		tmp, err := os.CreateTemp(filepath.Dir(objPath), ".plan9asm-*.o")
+		if err != nil {
+			return err
+		}
+		tempObj := tmp.Name()
+		defer os.Remove(tempObj)
+		if err := tmp.Close(); err != nil {
+			return err
+		}
 		args := []string{"-mtriple=" + triple}
 		args = append(args, llcExtraArgs(goarch)...)
-		args = append(args, "-filetype=obj", t.OutLL, "-o", objPath)
+		args = append(args, "-filetype=obj", t.OutLL, "-o", tempObj)
 		cmd := exec.Command(ccfg.LLC, args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			s := strings.TrimSpace(string(out))
@@ -457,11 +467,39 @@ func compileOne(pkg *packages.Package, arch plan9asm.Arch, goarch, triple string
 			}
 			return fmt.Errorf("llc compile failed: %w\n%s", err, s)
 		}
-		if !ccfg.KeepObj {
-			_ = os.Remove(objPath)
+		fi, err := os.Stat(tempObj)
+		if err != nil {
+			return fmt.Errorf("check llc object: %w", err)
+		}
+		if !fi.Mode().IsRegular() || fi.Size() == 0 {
+			return fmt.Errorf("llc produced no object for %s", t.AsmFile)
+		}
+		if ccfg.KeepObj {
+			if err := os.Rename(tempObj, objPath); err != nil {
+				return fmt.Errorf("save object: %w", err)
+			}
 		}
 	}
 	return nil
+}
+
+func translateOnePackageFile(pkg *packages.Package, file *plan9asm.File, goarch, triple string, annotate bool) (llvm.Module, error) {
+	resolve := resolveSymFunc(pkg.PkgPath)
+	sigs, err := sigsForAsmFile(pkg, file, resolve, goarch)
+	if err != nil {
+		return llvm.Module{}, fmt.Errorf("infer signatures: %w", err)
+	}
+	mod, err := plan9asm.TranslateModule(file, plan9asm.Options{
+		TargetTriple:   triple,
+		ResolveSym:     resolve,
+		Sigs:           sigs,
+		Goarch:         goarch,
+		AnnotateSource: annotate,
+	})
+	if err != nil {
+		return llvm.Module{}, fmt.Errorf("translate: %w", err)
+	}
+	return mod, nil
 }
 
 func llcExtraArgs(goarch string) []string {
@@ -628,6 +666,10 @@ func targetTriple(goos, goarch string) string {
 		case "386":
 			return "i386-apple-macosx"
 		}
+	case "freebsd", "netbsd", "dragonfly":
+		if goarch == "amd64" {
+			return "x86_64-unknown-" + goos
+		}
 	case "linux":
 		switch goarch {
 		case "amd64":
@@ -715,6 +757,12 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 	}
 
 	scope := pkg.Types.Scope()
+	declSymbol := func(sym string) string {
+		if strings.HasPrefix(sym, pkg.Types.Name()+"·") {
+			return strings.TrimPrefix(sym, pkg.Types.Name())
+		}
+		return sym
+	}
 	linknames := linknameRemoteToLocal(pkg.Syntax)
 
 	for _, fn := range file.Funcs {
@@ -723,7 +771,7 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 		if resolved == "" {
 			continue
 		}
-		fs, ok, err := tryDeclSig(scope, sym, resolved, linknames, goarch, sz)
+		fs, ok, err := tryDeclSig(scope, declSymbol(sym), resolved, linknames, goarch, sz)
 		if err != nil {
 			return nil, err
 		}
@@ -745,7 +793,7 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 		if _, ok := sigs[resolved]; ok {
 			return
 		}
-		fs, ok, err := tryDeclSig(scope, sym, resolved, linknames, goarch, sz)
+		fs, ok, err := tryDeclSig(scope, declSymbol(sym), resolved, linknames, goarch, sz)
 		if err == nil && ok {
 			sigs[resolved] = fs
 			return
@@ -762,6 +810,21 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 	for _, fn := range file.Funcs {
 		caller := sigs[resolve(stripABISuffix(fn.Sym))]
 		for _, ins := range fn.Instrs {
+			if goarch == "386" {
+				if sym := x86.AddressedFunctionCandidate(ins); sym != "" {
+					sym = stripABISuffix(sym)
+					name := resolve(sym)
+					if _, exists := sigs[name]; !exists {
+						fs, ok, err := tryDeclSig(scope, declSymbol(sym), name, linknames, goarch, sz)
+						if err != nil {
+							return nil, err
+						}
+						if ok {
+							sigs[name] = fs
+						}
+					}
+				}
+			}
 			op := strings.ToUpper(string(ins.Op))
 			tail := op == "JMP" || op == "B"
 			if !(tail || op == "CALL" || op == "BL") {

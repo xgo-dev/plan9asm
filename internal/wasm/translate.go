@@ -15,16 +15,26 @@ type wasmValue struct {
 	stackAddr bool
 }
 
+// A direct-ABI result slot can be written on every path, no path, or some
+// paths. The union at structured exits preserves that distinction.
+type resultPaths uint8
+
+const (
+	resultUnset resultPaths = 1 << iota
+	resultStored
+)
+
 type wasmControlFrame struct {
-	kind       string
-	name       string
-	startLabel string
-	elseLabel  string
-	endLabel   string
-	baseStack  []wasmValue
-	resultType asm.LLVMType
-	resultSlot string
-	inElse     bool
+	kind                      string
+	name                      string
+	startLabel                string
+	elseLabel                 string
+	endLabel                  string
+	baseStack                 []wasmValue
+	resultType                asm.LLVMType
+	resultSlot                string
+	inElse                    bool
+	entryResults, exitResults resultPaths
 }
 
 // translateFuncWASM lowers WebAssembly Plan 9 stack instructions into ordinary
@@ -61,17 +71,19 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 	if sig.Attrs != "" {
 		b.WriteString(" " + sig.Attrs)
 	}
-	b.WriteString(" {\nentry:\n")
+	b.WriteString(" null_pointer_is_valid {\nentry:\n")
 
 	var (
 		stack           []wasmValue
 		regSlots        = make(map[asm.Reg]string)
 		regInitialized  = make(map[asm.Reg]bool)
-		results         = make([]wasmValue, len(sig.Frame.Results))
-		haveResult      = make([]bool, len(sig.Frame.Results))
+		resultState     = resultUnset
 		tmp             int
 		blockTerminated bool
 	)
+	if !useGoStack && len(sig.Frame.Results) == 1 {
+		fmt.Fprintf(b, "  %%wasm_fp_result = alloca %s\n", sig.Frame.Results[0].Type)
+	}
 	newTmp := func() string {
 		tmp++
 		return fmt.Sprintf("wasm%d", tmp)
@@ -94,6 +106,8 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		}
 		name := newTmp()
 		switch {
+		case isWasmV128(v.typ) && isWasmV128(to):
+			fmt.Fprintf(b, "  %%%s = bitcast %s %s to %s\n", name, v.typ, v.val, to)
 		case v.typ == asm.Ptr && (to == asm.I32 || to == asm.I64):
 			fmt.Fprintf(b, "  %%%s = ptrtoint ptr %s to %s\n", name, v.val, to)
 		case (v.typ == asm.I32 || v.typ == asm.I64) && to == asm.Ptr:
@@ -168,6 +182,16 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			return asm.LLVMType("<4 x i32>"), nil
 		default:
 			return "", fmt.Errorf("unsupported wasm register %s", reg)
+		}
+	}
+	for i, ins := range fn.Instrs {
+		switch asm.NormalizeInstructionOpcode(ins.Op) {
+		case "IF", "LOOP", "BLOCK":
+			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm {
+				if typ := wasmBlockResultType(ins.Args[0].Imm); typ != "" {
+					fmt.Fprintf(b, "  %%wasm_control_result_%d = alloca %s\n", i, typ)
+				}
+			}
 		}
 	}
 	for _, ins := range fn.Instrs {
@@ -285,7 +309,36 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		regInitialized[reg] = true
 		return value, nil
 	}
-	var addressPtr func(wasmValue, int64) (wasmValue, error)
+	addressPtr := func(v wasmValue, offset int64) (wasmValue, error) {
+		var err error
+		v, err = cast(v, asm.Ptr, false)
+		if err != nil {
+			return wasmValue{}, err
+		}
+		if offset == 0 {
+			return v, nil
+		}
+		name := newTmp()
+		fmt.Fprintf(b, "  %%%s = getelementptr i8, ptr %s, i32 %d\n", name, v.val, offset)
+		return wasmValue{typ: asm.Ptr, val: "%" + name}, nil
+	}
+	// A Wasm memarg adds its unsigned offset without wrapping at 32 bits.
+	// Keep frame-address arithmetic separate; Go frame offsets may be signed.
+	memargPtr := func(base wasmValue, offset int64) (wasmValue, error) {
+		if offset < 0 || offset > 0xffffffff {
+			return wasmValue{}, fmt.Errorf("invalid wasm32 memory offset %d", offset)
+		}
+		if offset > 0 {
+			integer, err := cast(base, asm.I32, false)
+			if err != nil {
+				return wasmValue{}, err
+			}
+			wrap := newTmp()
+			fmt.Fprintf(b, "  %%%s = icmp ugt i32 %s, %d\n", wrap, integer.val, 0xffffffff-offset)
+			emitTrapIf(b, newTmp, wrap)
+		}
+		return addressPtr(base, offset)
+	}
 	goFrameAddress := func(offset int64) (wasmValue, error) {
 		sp, err := loadRegister(asm.SP)
 		if err != nil {
@@ -304,7 +357,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 					return wasmValue{}, err
 				}
 				name := newTmp()
-				fmt.Fprintf(b, "  %%%s = load %s, ptr %s, align 1\n", name, width, address.val)
+				fmt.Fprintf(b, "  %%%s = load volatile %s, ptr %s, align 1\n", name, width, address.val)
 				return wasmValue{typ: width, val: "%" + name}, nil
 			}
 			if slot.Index < 0 || slot.Index >= len(sig.Args) {
@@ -320,17 +373,23 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		}
 		return wasmValue{}, fmt.Errorf("unknown FP parameter %s", arg)
 	}
-	storeResult := func(arg asm.Operand, value wasmValue) error {
-		for i, slot := range sig.Frame.Results {
+	storeResult := func(arg asm.Operand, value wasmValue, explicitBase *wasmValue) error {
+		for _, slot := range sig.Frame.Results {
 			if slot.Offset != arg.FPOffset {
 				continue
 			}
 			if useGoStack {
-				address, err := goFrameAddress(arg.FPOffset)
+				var address wasmValue
+				var err error
+				if explicitBase != nil {
+					address, err = memargPtr(*explicitBase, fn.FrameSize+8+arg.FPOffset)
+				} else {
+					address, err = goFrameAddress(arg.FPOffset)
+				}
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(b, "  store %s %s, ptr %s, align 1\n", value.typ, value.val, address.val)
+				fmt.Fprintf(b, "  store volatile %s %s, ptr %s, align 1\n", value.typ, value.val, address.val)
 				return nil
 			}
 			if value.typ != slot.Type {
@@ -341,11 +400,29 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 					return fmt.Errorf("FP result %s has type %s, want %s: %w", arg, fromType, slot.Type, err)
 				}
 			}
-			results[i] = value
-			haveResult[i] = true
+			if len(sig.Frame.Results) > 1 {
+				return errors.New("multiple FP result slots are unsupported by the direct WebAssembly ABI")
+			}
+			fmt.Fprintf(b, "  store %s %s, ptr %%wasm_fp_result\n", value.typ, value.val)
+			resultState = resultStored
 			return nil
 		}
 		return fmt.Errorf("unknown FP result %s", arg)
+	}
+	// Go wasm store instructions consume an explicit address below the value.
+	// MOV pseudo-instructions synthesize their frame address separately.
+	storeStackResult := func(op string, arg asm.Operand, v wasmValue) error {
+		if useGoStack {
+			base, err := pop(op)
+			if err != nil {
+				return err
+			}
+			return storeResult(arg, v, &base)
+		}
+		if len(stack) != 0 && stack[len(stack)-1].stackAddr {
+			stack = stack[:len(stack)-1]
+		}
+		return storeResult(arg, v, nil)
 	}
 	loadOperand := func(arg asm.Operand, width asm.LLVMType) (wasmValue, error) {
 		var v wasmValue
@@ -369,6 +446,9 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 					if memErr != nil {
 						return wasmValue{}, memErr
 					}
+					if mem.OffRaw != "" {
+						return wasmValue{}, fmt.Errorf("unresolved wasm memory offset %q", mem.OffRaw)
+					}
 					base, loadErr := loadRegister(mem.Base)
 					if loadErr != nil {
 						return wasmValue{}, loadErr
@@ -380,15 +460,29 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 					break
 				}
 			}
+			if !strings.HasSuffix(arg.Sym, "(SB)") {
+				return wasmValue{}, fmt.Errorf("unresolved wasm symbol %s", arg.Sym)
+			}
 			base, offset, ok := asm.ParseSBRef(arg.Sym)
 			if !ok {
 				return wasmValue{}, fmt.Errorf("unsupported wasm symbol address %s", arg)
 			}
 			base = strings.TrimPrefix(base, "$")
-			if !strings.ContainsAny(base, "·/.") {
-				base = "·" + base
+			resolved := resolve(base)
+			if _, fn := sigs[resolved]; !fn && !strings.ContainsAny(base, "·/.") {
+				resolved = resolve("·" + base)
 			}
-			v = wasmValue{typ: asm.Ptr, val: asm.LLVMGlobal(resolve(base))}
+			v = wasmValue{typ: asm.Ptr, val: asm.LLVMGlobal(resolved)}
+			if fsig, found := sigs[resolved]; found && isAddress && useGoStack {
+				if offset != 0 {
+					return wasmValue{}, fmt.Errorf("unsupported Go function PC addend %d", offset)
+				}
+				fnPC := newTmp()
+				v.val = asm.LLVMGlobal(asm.FuncSigSymbol(resolved, fsig))
+				fmt.Fprintf(b, "  %%%s = shl i64 ptrtoint (ptr %s to i64), 16\n", fnPC, v.val)
+				v = wasmValue{typ: asm.I64, val: "%" + fnPC}
+				break
+			}
 			if offset != 0 {
 				v, err = addressPtr(v, offset)
 				if err != nil {
@@ -397,7 +491,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			}
 			if !isAddress {
 				name := newTmp()
-				fmt.Fprintf(b, "  %%%s = load %s, ptr %s, align 1\n", name, width, v.val)
+				fmt.Fprintf(b, "  %%%s = load volatile %s, ptr %s, align 1\n", name, width, v.val)
 				v = wasmValue{typ: width, val: "%" + name}
 			}
 		case asm.OpMem:
@@ -408,12 +502,12 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if loadErr != nil {
 				return wasmValue{}, fmt.Errorf("load %s: %w", arg, loadErr)
 			}
-			address, addressErr := addressPtr(base, arg.Mem.Off)
+			address, addressErr := memargPtr(base, arg.Mem.Off)
 			if addressErr != nil {
 				return wasmValue{}, addressErr
 			}
 			name := newTmp()
-			fmt.Fprintf(b, "  %%%s = load %s, ptr %s, align 1\n", name, width, address.val)
+			fmt.Fprintf(b, "  %%%s = load volatile %s, ptr %s, align 1\n", name, width, address.val)
 			v = wasmValue{typ: width, val: "%" + name}
 		default:
 			return wasmValue{}, fmt.Errorf("unsupported wasm source operand %s", arg)
@@ -432,7 +526,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			_, err := storeRegister(arg.Reg, value)
 			return err
 		case asm.OpFP:
-			return storeResult(arg, value)
+			return storeResult(arg, value, nil)
 		case asm.OpMem:
 			if arg.Mem.Base == asm.SP && !useGoStack {
 				return fmt.Errorf("linear-memory SP operands are not available in the direct Go ABI")
@@ -441,11 +535,11 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err != nil {
 				return fmt.Errorf("store %s: %w", arg, err)
 			}
-			address, err := addressPtr(base, arg.Mem.Off)
+			address, err := memargPtr(base, arg.Mem.Off)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(b, "  store %s %s, ptr %s, align 1\n", value.typ, value.val, address.val)
+			fmt.Fprintf(b, "  store volatile %s %s, ptr %s, align 1\n", value.typ, value.val, address.val)
 			return nil
 		case asm.OpSym:
 			base, offset, ok := asm.ParseSBRef(arg.Sym)
@@ -464,7 +558,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 					return err
 				}
 			}
-			fmt.Fprintf(b, "  store %s %s, ptr %s, align 1\n", value.typ, value.val, address.val)
+			fmt.Fprintf(b, "  store volatile %s %s, ptr %s, align 1\n", value.typ, value.val, address.val)
 			return nil
 		default:
 			return fmt.Errorf("unsupported wasm destination operand %s", arg)
@@ -485,7 +579,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			blockTerminated = true
 			return nil
 		}
-		if len(results) > 1 {
+		if len(sig.Frame.Results) > 1 {
 			return errors.New("multiple FP result slots are unsupported by the direct WebAssembly ABI")
 		}
 		if sig.Ret == asm.Void {
@@ -493,21 +587,32 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			blockTerminated = true
 			return nil
 		}
-		if len(results) == 1 && haveResult[0] {
-			if results[0].typ != sig.Ret {
-				return fmt.Errorf("return type %s does not match stored result %s", sig.Ret, results[0].typ)
+		if resultState == resultStored|resultUnset {
+			return fmt.Errorf("FP result is only written on some paths to RET")
+		}
+		var value wasmValue
+		if resultState == resultStored {
+			typ := sig.Frame.Results[0].Type
+			if typ != sig.Ret && !(isWasmV128(typ) && isWasmV128(sig.Ret)) {
+				return fmt.Errorf("return type %s does not match stored result %s", sig.Ret, typ)
 			}
-			fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, results[0].val)
+			ret := newTmp()
+			fmt.Fprintf(b, "  %%%s = load %s, ptr %%wasm_fp_result\n", ret, typ)
+			value = wasmValue{typ: typ, val: "%" + ret}
+		} else if len(stack) > 0 {
+			value = stack[len(stack)-1]
+		}
+		if isWasmV128(value.typ) && isWasmV128(sig.Ret) {
+			var err error
+			value, err = cast(value, sig.Ret, false)
+			if err != nil {
+				return err
+			}
+		}
+		if !value.stackAddr && value.typ == sig.Ret {
+			fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, value.val)
 			blockTerminated = true
 			return nil
-		}
-		if len(stack) != 0 {
-			v := stack[len(stack)-1]
-			if !v.stackAddr && v.typ == sig.Ret {
-				fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, v.val)
-				blockTerminated = true
-				return nil
-			}
 		}
 		return fmt.Errorf("missing %s return value", sig.Ret)
 	}
@@ -687,6 +792,13 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		push(wasmValue{typ: retType, val: "%" + name})
 		return nil
 	}
+	isSigpanic := func(arg asm.Operand) bool {
+		if arg.Kind != asm.OpSym {
+			return false
+		}
+		raw := strings.TrimSuffix(arg.Sym, "(SB)")
+		return raw == "runtime·sigpanic" || raw == "runtime.sigpanic" || resolve(raw) == "runtime.sigpanic"
+	}
 	emitGoCall := func(arg asm.Operand, pcID int, resumeLabel string, canResume bool) error {
 		if !useGoStack {
 			return fmt.Errorf("Go ABI CALL requires the Go WebAssembly ABI")
@@ -770,7 +882,13 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		} else {
 			continueLabel := "wasm_call_continue_" + newTmp()
 			fmt.Fprintf(b, "  br i1 %%%s, label %%%s, label %%%s\n", isUnwind, unwindLabel, continueLabel)
-			fmt.Fprintf(b, "%s:\n  unreachable\n%s:\n", unwindLabel, continueLabel)
+			fmt.Fprintf(b, "%s:\n", unwindLabel)
+			if isSigpanic(arg) && goABI {
+				b.WriteString("  ret i32 1\n")
+			} else {
+				b.WriteString("  call void @llvm.trap()\n  unreachable\n")
+			}
+			fmt.Fprintf(b, "%s:\n", continueLabel)
 			blockTerminated = false
 			return nil
 		}
@@ -794,6 +912,36 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		rhs, err = cast(rhs, typ, false)
 		if err != nil {
 			return err
+		}
+		width := 32
+		if typ == asm.I64 {
+			width = 64
+		}
+		switch llvmOp {
+		case "shl", "ashr", "lshr":
+			count := newTmp()
+			fmt.Fprintf(b, "  %%%s = and %s %s, %d\n", count, typ, rhs.val, width-1)
+			rhs.val = "%" + count
+		case "sdiv", "udiv", "srem", "urem":
+			invalid := newTmp()
+			fmt.Fprintf(b, "  %%%s = icmp eq %s %s, 0\n", invalid, typ, rhs.val)
+			if llvmOp == "sdiv" {
+				min, negOne, overflow, either := newTmp(), newTmp(), newTmp(), newTmp()
+				fmt.Fprintf(b, "  %%%s = icmp eq %s %s, %d\n", min, typ, lhs.val, int64(-1)<<(width-1))
+				fmt.Fprintf(b, "  %%%s = icmp eq %s %s, -1\n", negOne, typ, rhs.val)
+				fmt.Fprintf(b, "  %%%s = and i1 %%%s, %%%s\n", overflow, min, negOne)
+				fmt.Fprintf(b, "  %%%s = or i1 %%%s, %%%s\n", either, invalid, overflow)
+				invalid = either
+			}
+			emitTrapIf(b, newTmp, invalid)
+			if llvmOp == "srem" {
+				// MIN % -1 is zero in Wasm. A divisor of +1 gives the
+				// same remainder for every dividend without LLVM overflow.
+				negOne, safe := newTmp(), newTmp()
+				fmt.Fprintf(b, "  %%%s = icmp eq %s %s, -1\n", negOne, typ, rhs.val)
+				fmt.Fprintf(b, "  %%%s = select i1 %%%s, %s 1, %s %s\n", safe, negOne, typ, typ, rhs.val)
+				rhs.val = "%" + safe
+			}
 		}
 		name := newTmp()
 		fmt.Fprintf(b, "  %%%s = %s %s %s, %s\n", name, llvmOp, typ, lhs.val, rhs.val)
@@ -828,30 +976,17 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		push(wasmValue{typ: asm.I32, val: "%" + out})
 		return nil
 	}
-	addressPtr = func(v wasmValue, offset int64) (wasmValue, error) {
-		var err error
-		v, err = cast(v, asm.Ptr, false)
-		if err != nil {
-			return wasmValue{}, err
-		}
-		if offset == 0 {
-			return v, nil
-		}
-		name := newTmp()
-		fmt.Fprintf(b, "  %%%s = getelementptr i8, ptr %s, i32 %d\n", name, v.val, offset)
-		return wasmValue{typ: asm.Ptr, val: "%" + name}, nil
-	}
 	emitMemoryLoad := func(op string, offset int64, spec wasmMemoryLoadOp) error {
 		address, err := pop(op)
 		if err != nil {
 			return err
 		}
-		address, err = addressPtr(address, offset)
+		address, err = memargPtr(address, offset)
 		if err != nil {
 			return err
 		}
 		name := newTmp()
-		fmt.Fprintf(b, "  %%%s = load %s, ptr %s, align 1\n", name, spec.loadType, address.val)
+		fmt.Fprintf(b, "  %%%s = load volatile %s, ptr %s, align 1\n", name, spec.loadType, address.val)
 		v := wasmValue{typ: spec.loadType, val: "%" + name}
 		if spec.loadType != spec.resultType {
 			v, err = cast(v, spec.resultType, spec.signed)
@@ -871,7 +1006,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		if err != nil {
 			return err
 		}
-		address, err = addressPtr(address, offset)
+		address, err = memargPtr(address, offset)
 		if err != nil {
 			return err
 		}
@@ -879,7 +1014,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(b, "  store %s %s, ptr %s, align 1\n", spec.storeType, value.val, address.val)
+		fmt.Fprintf(b, "  store volatile %s %s, ptr %s, align 1\n", spec.storeType, value.val, address.val)
 		return nil
 	}
 	root := &wasmControlFrame{kind: "function", endLabel: "wasm_function_return"}
@@ -942,6 +1077,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		if err := storeBlockResult(frame, true); err != nil {
 			return err
 		}
+		frame.exitResults |= resultState
 		fmt.Fprintf(b, "  br label %%%s\n", frame.endLabel)
 		blockTerminated = true
 		return nil
@@ -982,13 +1118,16 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 				return err
 			}
 		}
-		if target.resultType != "" {
+		if target.kind != "loop" && target.resultType != "" {
 			if err := storeBlockResult(target, !conditional); err != nil {
 				return err
 			}
 		}
 		if target.kind == "function" {
 			rootBranchUsed = true
+		}
+		if target.kind != "loop" {
+			target.exitResults |= resultState
 		}
 		label := target.endLabel
 		if target.kind == "loop" {
@@ -1005,29 +1144,46 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		return nil
 	}
 
-	resumeLabels := make(map[int]string)
+	type resumePoint struct {
+		pc    int
+		label string
+	}
+	resumePoints := make(map[int]resumePoint)
 	callPCs := make(map[int]int)
 	if useGoStack {
-		pcID := 0
+		pcID, depth := 0, 0
 		for i, ins := range fn.Instrs {
-			switch asm.NormalizeInstructionOpcode(ins.Op) {
+			op := asm.NormalizeInstructionOpcode(ins.Op)
+			switch op {
+			case "BLOCK", "IF", "LOOP":
+				depth++
+			case "END":
+				depth--
 			case "CALL", "CALLNORESUME":
+				if op == "CALL" && depth != 0 {
+					return errors.New("Go ABI CALL requires top-level control flow; use CALLNORESUME inside a block")
+				}
 				pcID++
 				callPCs[i] = pcID
-				if goABI && asm.NormalizeInstructionOpcode(ins.Op) == "CALL" {
-					resumeLabels[i] = fmt.Sprintf("wasm_resume_%d", pcID)
+				if len(ins.Args) == 1 && isSigpanic(ins.Args[0]) {
+					// Go reserves an extra PC for CALLNORESUME sigpanic so both
+					// PC and PC-1 identify the panicking call.
+					if op == "CALLNORESUME" {
+						pcID++
+					} else {
+						callPCs[i]--
+					}
+				}
+				if goABI && op == "CALL" {
+					// sigpanic saves the PC of the call for its stack trace.
+					// Dispatch by the distinct PC after the call.
+					resumePoints[i] = resumePoint{pc: pcID, label: fmt.Sprintf("wasm_resume_%d", pcID)}
 				}
 			}
 		}
 	}
 	if goABI {
-		b.WriteString("  switch i32 %pc_b, label %wasm_entry_body [")
-		for i := range fn.Instrs {
-			if label := resumeLabels[i]; label != "" {
-				fmt.Fprintf(b, " i32 %d, label %%%s", callPCs[i], label)
-			}
-		}
-		b.WriteString(" ]\nwasm_entry_body:\n")
+		b.WriteString("  br label %wasm_dispatch\nwasm_entry_body:\n")
 		if fn.FrameSize != 0 {
 			sp, err := loadRegister(asm.SP)
 			if err != nil {
@@ -1041,6 +1197,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		}
 	}
 
+	deadDepth := 0
 	for insIndex, ins := range fn.Instrs {
 		op := asm.NormalizeInstructionOpcode(ins.Op)
 		if op == "TEXT" {
@@ -1049,8 +1206,29 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 		if annotateSource && ins.Raw != "" {
 			fmt.Fprintf(b, "  ; %s\n", strings.ReplaceAll(ins.Raw, "\n", " "))
 		}
-		if blockTerminated && op != "ELSE" && op != "END" && op != "LABEL" {
-			continue
+		if blockTerminated {
+			delete(resumePoints, insIndex)
+			switch op {
+			case "BLOCK", "IF", "LOOP":
+				deadDepth++
+				continue
+			case "END":
+				if deadDepth > 0 {
+					deadDepth--
+					continue
+				}
+			case "ELSE":
+				if deadDepth > 0 {
+					continue
+				}
+			default:
+				continue
+			}
+		}
+		for _, arg := range ins.Args {
+			if arg.Kind == asm.OpImm && arg.ImmRaw != "" {
+				return fmt.Errorf("%s: unresolved immediate %s", op, arg.ImmRaw)
+			}
 		}
 		if spec, ok := wasmIntegerBinaryOps[op]; ok {
 			if err := emitIntBinary(op, spec.typ, spec.op); err != nil {
@@ -1107,14 +1285,11 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err != nil {
 				return err
 			}
-			if len(stack) != 0 && stack[len(stack)-1].stackAddr {
-				stack = stack[:len(stack)-1]
-			}
 			v, err = cast(v, spec.storeType, false)
 			if err != nil {
 				return err
 			}
-			if err := storeResult(ins.Args[0], v); err != nil {
+			if err := storeStackResult(op, ins.Args[0], v); err != nil {
 				return err
 			}
 			continue
@@ -1141,16 +1316,16 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 				return fmt.Errorf("%s expects at most one block type", ins.Op)
 			}
 			frame := &wasmControlFrame{
-				kind:       strings.ToLower(op),
-				name:       pendingName,
-				endLabel:   newLabel("wasm_control_end"),
-				baseStack:  copyStack(stack),
-				resultType: resultType,
+				kind:         strings.ToLower(op),
+				entryResults: resultState,
+				name:         pendingName,
+				endLabel:     newLabel("wasm_control_end"),
+				baseStack:    copyStack(stack),
+				resultType:   resultType,
 			}
 			pendingName = ""
 			if resultType != "" {
-				frame.resultSlot = newLabel("wasm_control_result")
-				fmt.Fprintf(b, "  %%%s = alloca %s\n", frame.resultSlot, resultType)
+				frame.resultSlot = fmt.Sprintf("wasm_control_result_%d", insIndex)
 			}
 			switch op {
 			case "LOOP":
@@ -1182,6 +1357,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			}
 			stack = copyStack(frame.baseStack)
 			emitLabel(frame.elseLabel)
+			resultState = frame.entryResults
 			frame.inElse = true
 		case "END":
 			if len(controls) <= 1 {
@@ -1195,6 +1371,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 				}
 				stack = copyStack(frame.baseStack)
 				emitLabel(frame.elseLabel)
+				resultState = frame.entryResults
 				if frame.resultType != "" {
 					return fmt.Errorf("result-producing If requires Else")
 				}
@@ -1204,6 +1381,12 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			}
 			stack = copyStack(frame.baseStack)
 			emitLabel(frame.endLabel)
+			resultState = frame.exitResults
+			if resultState == 0 {
+				b.WriteString("  unreachable\n")
+				blockTerminated = true
+				continue
+			}
 			if frame.resultType != "" {
 				name := newTmp()
 				fmt.Fprintf(b, "  %%%s = load %s, ptr %%%s\n", name, frame.resultType, frame.resultSlot)
@@ -1284,24 +1467,37 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if len(ins.Args) == 0 {
 				return fmt.Errorf("BrTable expects at least one target")
 			}
-			defTgt, err := controlTarget(ins.Args[len(ins.Args)-1])
-			if err != nil {
-				return err
-			}
-			defLbl := defTgt.endLabel
-			if defTgt.kind == "loop" {
-				defLbl = defTgt.startLabel
-			}
-			fmt.Fprintf(b, "  switch i32 %s, label %%%s [", idx.val, defLbl)
-			for ci := 0; ci < len(ins.Args)-1; ci++ {
-				tFrame, err := controlTarget(ins.Args[ci])
+			labels := make([]string, len(ins.Args))
+			var labelType asm.LLVMType
+			for i, arg := range ins.Args {
+				target, err := controlTarget(arg)
 				if err != nil {
 					return err
 				}
-				lbl := tFrame.endLabel
-				if tFrame.kind == "loop" {
-					lbl = tFrame.startLabel
+				typ := target.resultType
+				labels[i] = target.endLabel
+				if target.kind == "loop" {
+					typ = ""
+					labels[i] = target.startLabel
 				}
+				if i != 0 && typ != labelType {
+					return fmt.Errorf("BrTable target result types disagree: %s and %s", labelType, typ)
+				}
+				labelType = typ
+				if typ != "" {
+					if err := storeBlockResult(target, false); err != nil {
+						return err
+					}
+				}
+				if target.kind != "loop" {
+					target.exitResults |= resultState
+				}
+				if target == root {
+					rootBranchUsed = true
+				}
+			}
+			fmt.Fprintf(b, "  switch i32 %s, label %%%s [", idx.val, labels[len(labels)-1])
+			for ci, lbl := range labels[:len(labels)-1] {
 				fmt.Fprintf(b, " i32 %d, label %%%s", ci, lbl)
 			}
 			b.WriteString(" ]\n")
@@ -1325,6 +1521,10 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			typ := asm.I32
 			if op == "I64CONST" {
 				typ = asm.I64
+			}
+			if useGoStack && ins.Args[0].Kind == asm.OpFPAddr {
+				push(wasmValue{typ: typ, val: fmt.Sprintf("%d", fn.FrameSize+8+ins.Args[0].FPOffset)})
+				continue
 			}
 			if ins.Args[0].Kind == asm.OpImm {
 				push(wasmValue{typ: typ, val: fmt.Sprintf("%d", ins.Args[0].Imm)})
@@ -1382,7 +1582,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			push(wasmValue{typ: asm.I64, val: res})
 		case "F32LOAD", "F64LOAD":
 			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm {
-				ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: addressPtr}
+				ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: memargPtr}
 				if _, err := ext.lowerExtOp(op, ins); err != nil {
 					return err
 				}
@@ -1441,6 +1641,12 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err != nil {
 				return err
 			}
+			if ifTrue.typ != ifFalse.typ && isWasmV128(ifTrue.typ) && isWasmV128(ifFalse.typ) {
+				ifFalse, err = cast(ifFalse, ifTrue.typ, false)
+				if err != nil {
+					return err
+				}
+			}
 			if ifTrue.typ != ifFalse.typ {
 				return fmt.Errorf("Select value type mismatch: %s and %s", ifTrue.typ, ifFalse.typ)
 			}
@@ -1469,25 +1675,29 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			name := newTmp()
 			fmt.Fprintf(b, "  %%%s = call double @llvm.%s.f64(double %s)\n", name, intrinsic, v.val)
 			push(wasmValue{typ: asm.LLVMType("double"), val: "%" + name})
-		case "F64STORE":
+		case "F32STORE", "F64STORE":
 			if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm {
-				ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: addressPtr}
+				ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: memargPtr}
 				if _, err := ext.lowerExtOp(op, ins); err != nil {
 					return err
 				}
 				continue
 			}
 			if len(ins.Args) != 1 || ins.Args[0].Kind != asm.OpFP {
-				return fmt.Errorf("F64Store expects an FP slot or offset")
+				return fmt.Errorf("%s expects an FP slot or offset", ins.Op)
 			}
 			v, err := pop(op)
 			if err != nil {
 				return err
 			}
-			if len(stack) != 0 && stack[len(stack)-1].stackAddr {
-				stack = stack[:len(stack)-1]
+			want := asm.LLVMType("double")
+			if op == "F32STORE" {
+				want = "float"
 			}
-			if err := storeResult(ins.Args[0], v); err != nil {
+			if v.typ != want {
+				return fmt.Errorf("%s expects %s, got %s", ins.Op, want, v.typ)
+			}
+			if err := storeStackResult(op, ins.Args[0], v); err != nil {
 				return err
 			}
 		case "CURRENTMEMORY", "MEMORYSIZE":
@@ -1531,6 +1741,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err != nil {
 				return err
 			}
+			emitBulkBoundsCheck(b, newTmp, length.val, dst.val, src.val)
 			fmt.Fprintf(b, "  call void @llvm.memmove.p0.p0.i32(ptr %s, ptr %s, i32 %s, i1 false)\n", dst.val, src.val, length.val)
 		case "MEMORYFILL":
 			length, err := pop(op)
@@ -1557,9 +1768,21 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			if err != nil {
 				return err
 			}
+			emitBulkBoundsCheck(b, newTmp, length.val, dst.val)
 			fmt.Fprintf(b, "  call void @llvm.memset.p0.i32(ptr %s, i8 %s, i32 %s, i1 false)\n", dst.val, fill.val, length.val)
 		case "RET":
 			if len(ins.Args) == 1 {
+				if goABI && fn.FrameSize != 0 {
+					sp, err := loadRegister(asm.SP)
+					if err != nil {
+						return err
+					}
+					name := newTmp()
+					fmt.Fprintf(b, "  %%%s = add i32 %s, %d\n", name, sp.val, fn.FrameSize)
+					if _, err := storeRegister(asm.SP, wasmValue{typ: asm.I32, val: "%" + name}); err != nil {
+						return err
+					}
+				}
 				if err := emitTailCall(ins.Args[0]); err != nil {
 					return err
 				}
@@ -1602,7 +1825,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			// Only the Go ABI entry has a PC_B resume switch. Native helpers
 			// still use the linear Go stack for calls, but continue directly
 			// after a normally returning callee.
-			if err := emitGoCall(target, callPCs[insIndex], resumeLabels[insIndex], op == "CALL" && goABI); err != nil {
+			if err := emitGoCall(target, callPCs[insIndex], resumePoints[insIndex].label, op == "CALL" && goABI); err != nil {
 				return err
 			}
 		case "CALLINDIRECT":
@@ -1652,10 +1875,10 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 				return err
 			}
 		case "UNDEF", "UNREACHABLE":
-			b.WriteString("  unreachable\n")
+			b.WriteString("  call void @llvm.trap()\n  unreachable\n")
 			blockTerminated = true
 		default:
-			ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: addressPtr}
+			ext := wasmExtState{b: b, newTmp: newTmp, push: push, pop: pop, cast: cast, addressPtr: memargPtr}
 			handled, err := ext.lowerExtOp(op, ins)
 			if err != nil {
 				return err
@@ -1665,8 +1888,8 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			}
 		}
 	}
-	if len(controls) != 1 {
-		return fmt.Errorf("%d unterminated wasm control blocks", len(controls)-1)
+	if deadDepth != 0 || len(controls) != 1 {
+		return fmt.Errorf("%d unterminated wasm control blocks", len(controls)-1+deadDepth)
 	}
 	if !blockTerminated {
 		if useGoStack && sig.WASMNative && physicalRet != asm.Void {
@@ -1688,6 +1911,15 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 			fmt.Fprintf(b, "  %%%s = load %s, ptr %%%s\n", name, root.resultType, root.resultSlot)
 			fmt.Fprintf(b, "  ret %s %%%s\n", root.resultType, name)
 		}
+	}
+	if goABI {
+		b.WriteString("wasm_dispatch:\n  switch i32 %pc_b, label %wasm_entry_body [")
+		for i := range fn.Instrs {
+			if point, ok := resumePoints[i]; ok {
+				fmt.Fprintf(b, " i32 %d, label %%%s", point.pc, point.label)
+			}
+		}
+		b.WriteString(" ]\n")
 	}
 	b.WriteString("}\n")
 	return nil

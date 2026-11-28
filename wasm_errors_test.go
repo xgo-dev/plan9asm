@@ -243,7 +243,7 @@ func TestTranslateWasmCallingAndRegisterSuccessPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(ir, "getelementptr i8") || !strings.Contains(ir, "store i64") || !strings.Contains(ir, "load i64") {
+		if !strings.Contains(ir, "getelementptr i8") || !strings.Contains(ir, "store volatile i64") || !strings.Contains(ir, "load volatile i64") {
 			t.Fatalf("memory move IR is incomplete:\n%s", ir)
 		}
 	})
@@ -258,7 +258,7 @@ func TestTranslateWasmCallingAndRegisterSuccessPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(ir, "load i8") || !strings.Contains(ir, "sext i8") {
+		if !strings.Contains(ir, "load volatile i8") || !strings.Contains(ir, "sext i8") {
 			t.Fatalf("narrow memory load IR is incomplete:\n%s", ir)
 		}
 	})

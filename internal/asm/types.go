@@ -202,6 +202,7 @@ const (
 	OpLabel
 	OpMem
 	OpRegList
+	OpTLSOffset // Bound ARM TLSBSS operand. Sym is its resolved TLS global.
 )
 
 type ShiftOp string
@@ -266,14 +267,15 @@ type Operand struct {
 }
 
 type MemRef struct {
-	Base     Reg
-	Sym      string // optional symbol-based address, including the (SB) suffix
-	Off      int64
-	OffRaw   string   // unresolved symbolic displacement, used by generated wasm go_asm.h offsets
-	Index    Reg      // optional; empty if not present
-	IndexExt ExtendOp // optional ARM64 index extension (UXTW, SXTW, UXTX, or SXTX)
-	Scale    int64    // optional; defaults to 1 when Index is present
-	Segment  Reg      // optional x86 segment override (FS or GS)
+	Base        Reg
+	Sym         string // optional symbol-based address, including the (SB) suffix
+	Off         int64
+	OffRaw      string   // unresolved symbolic displacement, used by generated wasm go_asm.h offsets
+	Index       Reg      // optional; empty if not present
+	IndexExt    ExtendOp // optional ARM64 index extension (UXTW, SXTW, UXTX, or SXTX)
+	Scale       int64    // optional; defaults to 1 when Index is present
+	Segment     Reg      // optional x86 segment override (FS or GS)
+	GoTLSOffset bool     // x86 local-exec relocation against the Go runtime TLS slot
 }
 
 func (o Operand) String() string {
@@ -912,12 +914,26 @@ type Instr struct {
 // matching cmd/asm's DATA string semantics.
 type DataStmt struct {
 	// Addr retains a symbol-address initializer, including its (SB) suffix.
-	Addr    string
-	Sym     string
-	Off     int64
-	Width   int64
-	Value   uint64
-	Payload []byte
+	Addr            string
+	Sym             string
+	Off             int64
+	Width           int64
+	Value           uint64
+	Payload         []byte
+	usePointerWidth bool
+	floatLiteral    bool
+}
+
+// WithPointerWidth resolves a symbolic /PTRSIZE after the Go source mode is known.
+// ArchAMD64 covers both 386 and amd64, and parsed files can be reused for either.
+func (d DataStmt) WithPointerWidth(n int64) DataStmt {
+	if d.usePointerWidth && d.Width != n {
+		if d.floatLiteral && n == 4 {
+			d.Value = uint64(math.Float32bits(float32(math.Float64frombits(d.Value))))
+		}
+		d.Width = n
+	}
+	return d
 }
 
 // GloblStmt models a minimal Plan 9 GLOBL directive:
@@ -928,7 +944,7 @@ type DataStmt struct {
 type GloblStmt struct {
 	Sym   string
 	Flags string
-	Size  int64
+	Size  int64 // -1 when a source macro still needs preprocessing
 }
 
 func parseIdent(s string) (string, bool) {

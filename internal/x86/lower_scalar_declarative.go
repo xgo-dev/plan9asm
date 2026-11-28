@@ -2,6 +2,7 @@ package x86
 
 import (
 	"fmt"
+	"math/bits"
 	"strings"
 
 	"github.com/xgo-dev/plan9asm/internal/asm"
@@ -65,8 +66,10 @@ var x86ExtraScalarSpecs = []asm.OpSpec{
 	{Op: "BTQ", Family: asm.FamilyBit, Width: 64, Effect: asm.EffectReadOnly, Flags: asm.FlagsWrite, LLVMOp: "bt"},
 	{Op: "BTSW", Family: asm.FamilyBit, Width: 16, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "bts"},
 	{Op: "BTSL", Family: asm.FamilyBit, Width: 32, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "bts"},
+	{Op: "BTSQ", Family: asm.FamilyBit, Width: 64, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "bts"},
 	{Op: "BTRW", Family: asm.FamilyBit, Width: 16, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "btr"},
 	{Op: "BTRL", Family: asm.FamilyBit, Width: 32, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "btr"},
+	{Op: "BTRQ", Family: asm.FamilyBit, Width: 64, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "btr"},
 	{Op: "BTCW", Family: asm.FamilyBit, Width: 16, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "btc"},
 	{Op: "BTCL", Family: asm.FamilyBit, Width: 32, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "btc"},
 	{Op: "BTCQ", Family: asm.FamilyBit, Width: 64, Effect: asm.EffectReadWrite, Flags: asm.FlagsWrite, LLVMOp: "btc"},
@@ -99,6 +102,7 @@ var x86ExtraScalarSpecs = []asm.OpSpec{
 	{Op: "RORXL", Family: asm.FamilyBit, Width: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "rorx", ArchFeature: "+bmi2"},
 	{Op: "RORXQ", Family: asm.FamilyBit, Width: 64, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "rorx", ArchFeature: "+bmi2"},
 	{Op: "MULXL", Family: asm.FamilyMulDiv, Width: 32, ThreeOp: true, Effect: asm.EffectImplicit, Implicit: asm.ImplicitDX, LLVMOp: "mulx", ArchFeature: "+bmi2"},
+	{Op: "MULXQ", Family: asm.FamilyMulDiv, Width: 64, ThreeOp: true, Effect: asm.EffectImplicit, Implicit: asm.ImplicitDX, LLVMOp: "mulx", ArchFeature: "+bmi2"},
 	{Op: "ADCXL", Family: asm.FamilyALU, Width: 32, Effect: asm.EffectReadWrite, Flags: asm.FlagsReadWrite, LLVMOp: "adcx", ArchFeature: "+adx"},
 	{Op: "ADOXL", Family: asm.FamilyALU, Width: 32, Effect: asm.EffectReadWrite, Flags: asm.FlagsReadWrite, LLVMOp: "adox", ArchFeature: "+adx"},
 
@@ -933,31 +937,71 @@ func (c *amd64Ctx) lowerX86ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		return c.storeRegSized(asm.DX, asm.I16, r)
 
 	case "mulx":
-		// Plan 9 MULXL src, hiReg, loReg => hi:lo = EDX * src
+		// Plan 9 puts the low destination first. When both alias, the
+		// architectural high half is the final value.
 		if len(ins.Args) != 3 || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
-			return fmt.Errorf("amd64 MULXL expects src, hiReg, loReg: %q", ins.Raw)
+			return fmt.Errorf("x86 %s expects src, loReg, hiReg: %q", spec.Op, ins.Raw)
 		}
-		src, err := c.evalIntSized(ins.Args[0], asm.I32)
+		src, err := c.evalIntSized(ins.Args[0], ty)
 		if err != nil {
 			return err
 		}
-		dx, err := c.evalIntSized(asm.Operand{Kind: asm.OpReg, Reg: asm.DX}, asm.I32)
+		dx, err := c.evalIntSized(asm.Operand{Kind: asm.OpReg, Reg: asm.DX}, ty)
 		if err != nil {
 			return err
 		}
-		a64, b64, prod, lo, sh, hi := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", a64, src)
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", b64, dx)
-		fmt.Fprintf(c.b, "  %%%s = mul i64 %%%s, %%%s\n", prod, a64, b64)
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", lo, prod)
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %%%s, 32\n", sh, prod)
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", hi, sh)
-		if err := c.storeRegSized(ins.Args[1].Reg, asm.I32, "%"+hi); err != nil {
+		wide := fmt.Sprintf("i%d", 2*spec.Width)
+		a, b, prod, lo, sh, hi := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", a, ty, src, wide)
+		fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", b, ty, dx, wide)
+		fmt.Fprintf(c.b, "  %%%s = mul %s %%%s, %%%s\n", prod, wide, a, b)
+		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", lo, wide, prod, ty)
+		fmt.Fprintf(c.b, "  %%%s = lshr %s %%%s, %d\n", sh, wide, prod, spec.Width)
+		fmt.Fprintf(c.b, "  %%%s = trunc %s %%%s to %s\n", hi, wide, sh, ty)
+		if err := c.storeRegSized(ins.Args[1].Reg, ty, "%"+lo); err != nil {
 			return err
 		}
-		return c.storeRegSized(ins.Args[2].Reg, asm.I32, "%"+lo)
+		return c.storeRegSized(ins.Args[2].Reg, ty, "%"+hi)
 	}
 	return fmt.Errorf("amd64: unhandled mul/div %s", spec.Op)
+}
+
+// For memory, a register index selects a word by signed division rounded
+// down. An immediate index (and any index on a register base) wraps in-word.
+func (c *amd64Ctx) bitStringPtr(dst, index asm.Operand, ty asm.LLVMType, width uint16, value, ptr, ptrType string) (string, error) {
+	if index.Kind != asm.OpReg {
+		return ptr, nil
+	}
+	if dst.Kind == asm.OpFP || (dst.Kind == asm.OpMem && (dst.Mem.Base == asm.SP || dst.Mem.Index == asm.SP)) {
+		return "", fmt.Errorf("%w: register bit offset on private x86 frame storage", asm.ErrProbeNeedsContext)
+	}
+	word, addr := c.newTmp(), c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = ashr %s %s, %d\n", word, ty, value, bits.TrailingZeros16(width))
+	fmt.Fprintf(c.b, "  %%%s = getelementptr %s, %s %s, %s %%%s\n", addr, ty, ptrType, ptr, ty, word)
+	return "%" + addr, nil
+}
+
+func (c *amd64Ctx) bitStringDestination(dst, index asm.Operand, ty asm.LLVMType, width uint16, value string) (string, func(string) error, error) {
+	if dst.Kind == asm.OpFP && index.Kind == asm.OpReg {
+		return "", nil, fmt.Errorf("%w: register bit offset on private x86 frame storage", asm.ErrProbeNeedsContext)
+	}
+	if !isX86MemOp(dst) || index.Kind != asm.OpReg {
+		return c.loadIntDestination(dst, ty)
+	}
+	ptr, ptrType, err := c.resolveMemPtr(dst)
+	if err != nil {
+		return "", nil, err
+	}
+	ptr, err = c.bitStringPtr(dst, index, ty, width, value, ptr, ptrType)
+	if err != nil {
+		return "", nil, err
+	}
+	v := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load %s, %s %s, align 1\n", v, ty, ptrType, ptr)
+	return "%" + v, func(out string) error {
+		fmt.Fprintf(c.b, "  store %s %s, %s %s, align 1\n", ty, out, ptrType, ptr)
+		return nil
+	}, nil
 }
 
 func (c *amd64Ctx) lowerX86ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
@@ -973,7 +1017,7 @@ func (c *amd64Ctx) lowerX86ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
 		}
 		amt := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and %s %s, %d\n", amt, ty, bitRaw, spec.Width-1)
-		cur, storeDst, err := c.loadIntDestination(ins.Args[1], ty)
+		cur, storeDst, err := c.bitStringDestination(ins.Args[1], ins.Args[0], ty, spec.Width, bitRaw)
 		if err != nil {
 			return err
 		}

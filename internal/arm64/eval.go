@@ -165,6 +165,8 @@ func validateARM64MemoryIndex(mem asm.MemRef, bits int) error {
 
 func (c *arm64Ctx) eval64(op asm.Operand, postInc bool) (string, error) {
 	switch op.Kind {
+	case asm.OpTLSOffset:
+		return asm.EmitTLSOffset(c.b, c.newTmp, op.Sym, 64), nil
 	case asm.OpImm:
 		return c.imm64(op.Imm), nil
 	case asm.OpReg:

@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/plan9asm"
+	"github.com/xgo-dev/plan9asm/cmd/internal/asmfile"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -235,12 +237,9 @@ func transpilePackageMode(patterns []string, outDir, goos, goarch string, annota
 		}
 
 		for _, sfile := range sfiles {
-			tr, ok, err := translateAsmForPackage(pkg, sfile, goos, goarch, annotate)
+			tr, err := translateAsmForPackage(pkg, sfile, goos, goarch, annotate)
 			if err != nil {
 				return fmt.Errorf("transpile %s: %w", sfile, err)
-			}
-			if !ok {
-				continue
 			}
 			outPath := filepath.Join(pkgOutDir, filepath.Base(sfile)+".ll")
 			if err := writeTextFile(outPath, tr.LLVMIR); err != nil {
@@ -308,12 +307,9 @@ func transpileSingleFileMode(inFile, outFile, goos, goarch string, annotate bool
 		return err
 	}
 
-	tr, ok, err := translateAsmForPackage(pkg, asmPath, goos, goarch, annotate)
+	tr, err := translateAsmForPackage(pkg, asmPath, goos, goarch, annotate)
 	if err != nil {
 		return err
-	}
-	if !ok {
-		return fmt.Errorf("%s has no TEXT directive", asmPath)
 	}
 	if err := writeTextFile(outFile, tr.LLVMIR); err != nil {
 		return err
@@ -342,24 +338,35 @@ func transpileSingleFileMode(inFile, outFile, goos, goarch string, annotate bool
 	return nil
 }
 
-func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string, annotate bool) (translation, bool, error) {
+func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string, annotate bool) (translation, error) {
 	src, err := os.ReadFile(asmPath)
 	if err != nil {
-		return translation{}, false, err
+		return translation{}, err
+	}
+	imports := make(map[string]*types.Package, len(pkg.Imports))
+	for path, imported := range pkg.Imports {
+		if imported != nil && imported.Types != nil {
+			imports[path] = imported.Types
+		}
+	}
+	pkgCtx := plan9asm.GoPackage{
+		Path:    pkg.PkgPath,
+		Types:   pkg.Types,
+		Imports: imports,
+		Syntax:  pkg.Syntax,
 	}
 	arch, err := toPlan9Arch(goarch)
 	if err != nil {
-		return translation{}, false, err
+		return translation{}, err
 	}
-	file, err := plan9asm.Parse(arch, string(src))
+	file, expanded, err := asmfile.ParseInput(pkgCtx, src, asmPath, goos, goarch, arch)
 	if err != nil {
-		if strings.Contains(err.Error(), "no TEXT directive found") {
-			return translation{}, false, nil
-		}
-		return translation{}, false, err
+		return translation{}, err
 	}
-	if len(file.Funcs) == 0 {
-		return translation{}, false, nil
+	if file == nil {
+		mod := asmfile.EmptyModule(targetTriple(goos, goarch))
+		defer mod.Dispose()
+		return translation{LLVMIR: mod.String(), Functions: []functionInfo{}}, nil
 	}
 
 	resolve := resolveSymFunc(pkg.PkgPath)
@@ -368,29 +375,22 @@ func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string,
 		if goos == "js" || goos == "wasip1" {
 			wasmABI = plan9asm.WASMABIGo
 		}
-		imports := make(map[string]*types.Package, len(pkg.Imports))
-		for path, imported := range pkg.Imports {
-			if imported != nil && imported.Types != nil {
-				imports[path] = imported.Types
-			}
+		if expanded != nil {
+			src = expanded
 		}
-		tr, err := plan9asm.TranslateGoModule(plan9asm.GoPackage{
-			Path:    pkg.PkgPath,
-			Types:   pkg.Types,
-			Imports: imports,
-			Syntax:  pkg.Syntax,
-		}, src, plan9asm.GoModuleOptions{
-			FileName:       asmPath,
-			GOOS:           goos,
-			GOARCH:         goarch,
-			Sizes:          pkg.TypesSizes,
-			TargetTriple:   targetTriple(goos, goarch),
-			WASMABI:        wasmABI,
-			AnnotateSource: annotate,
-			ResolveSym:     resolve,
+		tr, err := plan9asm.TranslateGoModule(pkgCtx, src, plan9asm.GoModuleOptions{
+			SourcePreprocessed: expanded != nil,
+			FileName:           asmPath,
+			GOOS:               goos,
+			GOARCH:             goarch,
+			Sizes:              pkg.TypesSizes,
+			TargetTriple:       targetTriple(goos, goarch),
+			WASMABI:            wasmABI,
+			AnnotateSource:     annotate,
+			ResolveSym:         resolve,
 		})
 		if err != nil {
-			return translation{}, false, err
+			return translation{}, err
 		}
 		defer tr.Module.Dispose()
 		fns := make([]functionInfo, 0, len(tr.Functions))
@@ -409,11 +409,15 @@ func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string,
 				Args: args, Ret: ret,
 			})
 		}
-		return translation{LLVMIR: tr.Module.String(), Functions: fns}, true, nil
+		return translation{LLVMIR: tr.Module.String(), Functions: fns}, nil
 	}
+	return translatePackageFile(pkg, file, goos, goarch, annotate, resolve)
+}
+
+func translatePackageFile(pkg *packages.Package, file *plan9asm.File, goos, goarch string, annotate bool, resolve func(string) string) (translation, error) {
 	sigs, err := sigsForAsmFile(pkg, file, resolve, goarch)
 	if err != nil {
-		return translation{}, false, err
+		return translation{}, err
 	}
 	ll, err := plan9asm.Translate(file, plan9asm.Options{
 		TargetTriple:   targetTriple(goos, goarch),
@@ -423,10 +427,10 @@ func translateAsmForPackage(pkg *packages.Package, asmPath, goos, goarch string,
 		AnnotateSource: annotate,
 	})
 	if err != nil {
-		return translation{}, false, err
+		return translation{}, err
 	}
 	fns := collectFunctionInfo(file, sigs, resolve)
-	return translation{LLVMIR: ll, Functions: fns}, true, nil
+	return translation{LLVMIR: ll, Functions: fns}, nil
 }
 
 func collectFunctionInfo(file *plan9asm.File, sigs map[string]plan9asm.FuncSig, resolve func(string) string) []functionInfo {
@@ -482,6 +486,10 @@ func targetTriple(goos, goarch string) string {
 			return "arm64-apple-macosx"
 		case "386":
 			return "i386-apple-macosx"
+		}
+	case "freebsd", "netbsd", "dragonfly":
+		if goarch == "amd64" {
+			return "x86_64-unknown-" + goos
 		}
 	case "linux":
 		switch goarch {
@@ -892,6 +900,22 @@ func sigsForAsmFile(pkg *packages.Package, file *plan9asm.File, resolve func(str
 		callerName := resolve(stripABISuffix(fn.Sym))
 		caller := sigs[callerName]
 		for _, ins := range fn.Instrs {
+			if goarch == "386" {
+				if sym := x86.AddressedFunctionCandidate(ins); sym != "" {
+					sym = stripABISuffix(sym)
+					name := resolve(sym)
+					if _, exists := sigs[name]; !exists {
+						fs, ok, err := tryDeclSig(scope, asmDeclLookupSym(pkg, sym), name, linknames, goarch, sz)
+						if err != nil {
+							return nil, err
+						}
+						if ok {
+							sigs[name] = fs
+							declaredSigs[name] = true
+						}
+					}
+				}
+			}
 			op := strings.ToUpper(string(ins.Op))
 			tail := op == "JMP" || op == "B"
 			if !(tail || op == "CALL" || op == "BL") {

@@ -433,27 +433,9 @@ func (c *amd64Ctx) lowerLockedRMW(op asm.Op, ins asm.Instr) (ok bool, terminated
 		if err != nil {
 			return true, false, err
 		}
-		// A register bit index on a memory operand addresses an unbounded
-		// bit string: adjust ptr by floor(idx/bits) * (bits/8) bytes.
-		if ins.Args[0].Kind == asm.OpReg && isX86MemOp(ins.Args[1]) {
-			shiftWord, shiftBytes := 6, 3
-			if bits == 32 {
-				shiftWord, shiftBytes = 5, 2
-			} else if bits == 16 {
-				shiftWord, shiftBytes = 4, 1
-			}
-			word, byteOff := c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = ashr %s %s, %d\n", word, ty, idx, shiftWord)
-			fmt.Fprintf(c.b, "  %%%s = shl %s %%%s, %d\n", byteOff, ty, word, shiftBytes)
-			off64 := "%" + byteOff
-			if ty != asm.I64 {
-				se := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = sext %s %%%s to i64\n", se, ty, byteOff)
-				off64 = "%" + se
-			}
-			adj := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %s\n", adj, ptr, off64)
-			ptr = "%" + adj
+		ptr, err = c.bitStringPtr(ins.Args[1], ins.Args[0], ty, uint16(bits), idx, ptr, "ptr")
+		if err != nil {
+			return true, false, err
 		}
 		amt, bit := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and %s %s, %d\n", amt, ty, idx, bits-1)

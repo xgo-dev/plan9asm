@@ -19,6 +19,9 @@ func verifyDeclarativeIR(t *testing.T, arch Arch, goarch string, src string) str
 		Goarch: goarch,
 		Sigs:   sigs,
 	}
+	if arch == ArchARM64 {
+		opts.TargetTriple = "aarch64-unknown-linux-gnu"
+	}
 	ir, err := Translate(file, opts)
 	if err != nil {
 		t.Fatalf("Translate(%s) failed: %v\n%s", goarch, err, src)
@@ -222,7 +225,7 @@ TEXT ·armEndOnly(SB),0,$0-0
 
 func TestDeclarativeARM64LLVMVerify(t *testing.T) {
 	src := `
-DATA glob<>+0(SB)/16, $0
+DATA glob<>+0(SB)/8, $0
 GLOBL glob<>(SB), 0, $16
 
 TEXT ·arm64All(SB),0,$0-0
@@ -605,7 +608,7 @@ TEXT ·arm64All(SB),0,$0-0
 
 func TestDeclarativeAMD64LLVMVerify(t *testing.T) {
 	src := `
-DATA glob<>+0(SB)/16, $0
+DATA glob<>+0(SB)/8, $0
 GLOBL glob<>(SB), 0, $16
 
 TEXT ·amd64All(SB),0,$0-0

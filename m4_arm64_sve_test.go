@@ -41,14 +41,6 @@ TEXT ·sveAll(SB),NOSPLIT,$0-0
 	// 1. Privileged / System ops (12 ops)
 	ADR gsve<>(SB), R11
 	ADR next, R12
-	DCPS1 $1
-	DCPS2 $2
-	DCPS3 $3
-	DRPS
-	ERET
-	HLT $1
-	HVC $2
-	SMC $3
 	SYS $32768
 	SYS $32768, R1
 	SYSL $285440, R12
@@ -247,6 +239,7 @@ func TestM4_ARM64SVEErrorPaths(t *testing.T) {
 	bad := []string{
 		"ADR R1",
 		"SYSL $1",
+		"DCPS1 $1", "DCPS2 $2", "DCPS3 $3", "DRPS", "ERET", "HLT $1", "HVC $2", "SMC $3",
 		"DRPS R1",
 		"DCPS1 $1, $2",
 		"TLBI",

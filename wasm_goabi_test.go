@@ -331,8 +331,8 @@ func TestWasmGoABIFrameAndSymbolMemory(t *testing.T) {
 	}
 	for _, want := range []string{
 		"getelementptr i8, ptr",
-		"load i64",
-		"store i64",
+		"load volatile i64",
+		"store volatile i64",
 		`@"\C2\B7data"`,
 		"ret i32 0",
 	} {

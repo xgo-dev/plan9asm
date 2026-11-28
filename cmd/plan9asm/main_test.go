@@ -1,12 +1,14 @@
 package main
 
 import (
+	"go/constant"
 	"go/token"
 	"go/types"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/xgo-dev/plan9asm"
@@ -267,5 +269,94 @@ func TestGoListPackagesDisablesCgo(t *testing.T) {
 	}
 	if len(pkgs) != 1 || pkgs[0].ImportPath != "0" {
 		t.Fatalf("goListPackages() = %#v, want one package with CGO disabled", pkgs)
+	}
+}
+
+func TestTranslateX86AssemblyBindsGoConstant(t *testing.T) {
+	decls := types.NewPackage("example", "example")
+	decls.Scope().Insert(types.NewConst(token.NoPos, decls, "Guard", types.Typ[types.Int], constant.MakeInt64(731)))
+	result := types.NewVar(token.NoPos, decls, "ret", types.Typ[types.Int32])
+	decls.Scope().Insert(types.NewFunc(token.NoPos, decls, "read", types.NewSignature(nil, nil, types.NewTuple(result), false)))
+	path := filepath.Join(t.TempDir(), "read.s")
+	if err := os.WriteFile(path, []byte("TEXT ·read(SB),4,$0-4\nMOVL $const_Guard,AX\nMOVL AX,ret+0(FP)\nRET\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arch := range []string{"amd64", "386"} {
+		pkg := &packages.Package{PkgPath: "example", Types: decls, TypesSizes: types.SizesFor("gc", arch)}
+		tr, err := translateAsmForPackage(pkg, path, "linux", arch, false)
+		if err != nil || !strings.Contains(tr.LLVMIR, "731") {
+			t.Fatalf("%s: translate = %v, IR = %s", arch, err, tr.LLVMIR)
+		}
+	}
+}
+
+func TestTranslatePackageDataAndStub(t *testing.T) {
+	dir := t.TempDir()
+	const data = "DATA ·table+0(SB)/4, $0x71426354\nGLOBL ·table(SB),8,$4\n"
+	if err := os.WriteFile(filepath.Join(dir, "payload.h"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.h"), []byte("DATA ·table+0(SB)/4, $UNKNOWN_DATA_VALUE\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := types.NewPackage("example", "example")
+	pkg := &packages.Package{PkgPath: p.Path(), Types: p, TypesSizes: types.SizesFor("gc", "amd64")}
+	for _, tc := range []struct {
+		name, src string
+		hasData   bool
+		fails     bool
+	}{
+		{"data", data, true, false},
+		{"text_and_include", "#include \"payload.h\"\nTEXT ·present(SB),4,$0-0\nRET\n", true, false}, {"include", "#include \"payload.h\"\n", true, false},
+		{"broken", "#include \"broken.h\"\n", false, true},
+		{"stub", "#include \"textflag.h\"\n", false, false}, {"missing", "#include \"not_here.h\"\n", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".s")
+			if err := os.WriteFile(path, []byte(tc.src), 0600); err != nil {
+				t.Fatal(err)
+			}
+			tr, err := translateAsmForPackage(pkg, path, "linux", "amd64", false)
+			if tc.fails {
+				if err == nil {
+					t.Fatal("accepted unresolved assembly header")
+				}
+				return
+			}
+			if err != nil || tr.LLVMIR == "" || strings.Contains(tr.LLVMIR, "example.table") != tc.hasData {
+				t.Fatalf("translation err=%v IR=%s", err, tr.LLVMIR)
+			}
+		})
+	}
+}
+
+func TestTranslateSelectsTargetOperatingSystem(t *testing.T) {
+	p := types.NewPackage("example", "example")
+	pkg := &packages.Package{PkgPath: p.Path(), Types: p, TypesSizes: types.SizesFor("gc", "amd64")}
+	path := filepath.Join(t.TempDir(), "os.s")
+	src := "#ifdef GOOS_windows\nTEXT ·onWindows(SB),4,$0-0\n#else\nTEXT ·onOther(SB),4,$0-0\n#endif\nRET\n"
+	if err := os.WriteFile(path, []byte(src), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ os, sym string }{{"windows", "example.onWindows"}, {"linux", "example.onOther"}} {
+		tr, err := translateAsmForPackage(pkg, path, tc.os, "amd64", false)
+		if err != nil || len(tr.Functions) != 1 || tr.Functions[0].Resolved != tc.sym {
+			t.Errorf("%s: functions=%v err=%v", tc.os, tr.Functions, err)
+		}
+	}
+}
+
+func Test386AddressedABISuffixedDeclaration(t *testing.T) {
+	p := types.NewPackage("pkg", "pkg")
+	result := types.NewTuple(types.NewVar(token.NoPos, p, "", types.Typ[types.Int32]))
+	p.Scope().Insert(types.NewFunc(token.NoPos, p, "callee", types.NewSignature(nil, nil, result, false)))
+	pkg := &packages.Package{PkgPath: p.Path(), Types: p, TypesSizes: types.SizesFor("gc", "386")}
+	file, err := plan9asm.Parse(plan9asm.ArchAMD64, "TEXT ·f(SB),4,$0\n MOVL $·callee<ABI0>(SB),AX\n RET")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigs, err := sigsForAsmFile(pkg, file, func(s string) string { return strings.ReplaceAll(s, "·", "pkg.") }, "386")
+	if err != nil || sigs["pkg.callee"].Ret != plan9asm.I32 {
+		t.Fatalf("callee signature: %v, %v", sigs, err)
 	}
 }

@@ -70,7 +70,7 @@ GLOBL ·symptr<>(SB), NOPTR, $(machTimebaseInfo__size)
 	if gs := file.Globl[0]; gs.Sym != "·tab<>" || gs.Flags != "RODATA" || gs.Size != 16 {
 		t.Fatalf("unexpected first GLOBL: %#v", gs)
 	}
-	if gs := file.Globl[1]; gs.Sym != "·symptr<>" || gs.Flags != "NOPTR" || gs.Size != 64 {
+	if gs := file.Globl[1]; gs.Sym != "·symptr<>" || gs.Flags != "NOPTR" || gs.Size != -1 {
 		t.Fatalf("unexpected macro-sized GLOBL: %#v", gs)
 	}
 
@@ -117,5 +117,29 @@ func TestDataGlobalBounds(t *testing.T) {
 	}
 	if _, err := makeDataGlobal("huge", maxDataGlobalSize+1); err == nil {
 		t.Fatal("oversized global unexpectedly accepted")
+	}
+}
+
+func TestGoPackageDataArchitectureSelection(t *testing.T) {
+	const src = `
+#ifdef GOARCH_386
+#define SIZE 4
+#else
+#define SIZE 8
+#endif
+GLOBL ·ptr+0(SB),RODATA,$SIZE
+DATA ·ptr(SB)/SIZE,$·target(SB)
+`
+	for arch, width := range map[string]int64{"386": 4, "amd64": 8} {
+		f, err := (GoPackage{}).ParseAssembly([]byte(src), arch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g, d := f.Globl[0], f.Data[0]; g.Sym != d.Sym || g.Size != width || d.Width != width {
+			t.Errorf("%s: GLOBL=%+v DATA=%+v", arch, g, d)
+		}
+	}
+	if _, err := Parse(ArchARM, "GLOBL ·word+4(SB),$8"); err == nil {
+		t.Error("nonzero GLOBL offset accepted")
 	}
 }

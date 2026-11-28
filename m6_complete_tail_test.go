@@ -282,6 +282,7 @@ TEXT ·arm64M6AllForms(SB),NOSPLIT,$0-16
 	VUSQADD V0, V1
 	VURECPE V0.S4, V1.S4
 	VURSQRTE V0.S2, V1.S2
+target:
 	RET
 `
 	file, err := Parse(ArchARM64, src)
@@ -314,10 +315,7 @@ TEXT ·arm64M6AllForms(SB),NOSPLIT,$0-16
 	if runtime.GOARCH != "arm64" {
 		return
 	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	mainC := `
 #include <stdint.h>
 #include <stdio.h>
@@ -555,10 +553,7 @@ TEXT ·amd64M6Exec(SB),NOSPLIT,$0-16
 	if runtime.GOARCH != "amd64" {
 		return
 	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	mainC := `
 #include <stdint.h>
 #include <stdio.h>
@@ -589,16 +584,15 @@ func TestM6_ARM32DWordAndErrorPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse arm M6 failed: %v", err)
 	}
-	ll, err := Translate(af, Options{
+	_, err = Translate(af, Options{
 		TargetTriple: "armv7-unknown-linux-gnueabihf",
 		Goarch:       "arm",
 		ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
 		Sigs:         map[string]FuncSig{"armM6": {Name: "armM6", Ret: Void}},
 	})
-	if err != nil {
-		t.Fatalf("Translate arm M6 failed: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported instruction DWORD") {
+		t.Fatalf("expected unmodeled executable DWORD to be rejected, got %v", err)
 	}
-	verifyLLVMWithTargetLLC(t, ll, "armv7-unknown-linux-gnueabihf")
 
 	// Error paths across M6 arm64 & x86/386 lowerers
 	badARM64 := []string{

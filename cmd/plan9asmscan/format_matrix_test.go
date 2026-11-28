@@ -83,6 +83,14 @@ func TestScanOrthogonalFormatMatrixAllArches(t *testing.T) {
 							opName = strings.ToUpper(fields[0])
 						}
 					}
+					// These privileged transitions explicitly require execution state
+					// outside the register ABI supported by the translator.
+					switch opName {
+					case "DRPS", "ERET", "DCPS1", "DCPS2", "DCPS3", "HLT", "HVC", "SMC":
+						if tc.goarch == "arm64" {
+							continue
+						}
+					}
 					if tc.goarch == "arm64" && !strings.HasPrefix(opName, "Z") && !strings.HasPrefix(opName, "P") {
 						nonSVEUnsup++
 						if len(badNonSVE) < 10 && len(fs.Examples) > 0 {

@@ -507,10 +507,6 @@ TEXT trap(SB),NOSPLIT,$0-0
 TEXT undefined(SB),NOSPLIT,$0-0
 	UNDEF
 
-TEXT rawret(SB),NOSPLIT,$0-0
-	BYTE $0xc2
-	WORD $4
-	RET
 
 TEXT cpuidProbe(SB),NOSPLIT,$0-0
 	PUSHFL
@@ -602,7 +598,6 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 		"stackAdjust":   {Name: "stackAdjust", Ret: Void},
 		"trap":          {Name: "trap", Ret: Void},
 		"undefined":     {Name: "undefined", Ret: Void},
-		"rawret":        {Name: "rawret", Ret: Void},
 		"cpuidProbe":    {Name: "cpuidProbe", Ret: I32},
 		"symbolAddress": {Name: "symbolAddress", Ret: I32},
 		"frameAddress": {
@@ -761,7 +756,7 @@ func TestTranslate386X87Codegen(t *testing.T) {
 			args = append(args, "-filetype=asm", llPath, "-o", asmPath)
 			if output, err := exec.Command(llc, args...).CombinedOutput(); err != nil {
 				if unsupported386Target(string(output)) {
-					t.Skipf("llc lacks 386 target: %s", output)
+					t.Fatalf("llc lacks 386 target: %s", output)
 				}
 				t.Fatalf("llc failed: %v\n%s", err, output)
 			}

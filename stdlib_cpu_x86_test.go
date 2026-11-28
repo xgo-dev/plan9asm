@@ -13,10 +13,7 @@ import (
 )
 
 func TestStdlibInternalCPU_X86_CompileX86Triples(t *testing.T) {
-	llc, _, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc not found")
-	}
+	llc := requireLLVM22Tool(t, "llc")
 
 	goroot := runtime.GOROOT()
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "cpu", "cpu_x86.s"))
@@ -132,7 +129,7 @@ func TestStdlibInternalCPU_X86_CompileX86Triples(t *testing.T) {
 					strings.Contains(s, "unknown target triple") ||
 					strings.Contains(s, "unknown target") ||
 					strings.Contains(s, "is not a registered target") {
-					t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+					t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 				}
 				t.Fatalf("llc failed for triple %q: %v\n%s", triple, err, s)
 			}

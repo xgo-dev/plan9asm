@@ -60,15 +60,17 @@ func TestTranslateFuncLinearAdditionalPaths(t *testing.T) {
 		Instrs: []Instr{
 			{Op: "MOVW", Raw: "MOVW 8(R1)(R2*4), R3", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: "R1", Index: "R2", Scale: 4, Off: 8}}, {Kind: OpReg, Reg: "R3"}}},
 			{Op: "MOVW", Raw: "MOVW $runtime·main(SB), R4", Args: []Operand{{Kind: OpSym, Sym: "$runtime·main(SB)"}, {Kind: OpReg, Reg: "R4"}}},
-			{Op: "MOVW", Raw: "MOVW missing+99(FP), R5", Args: []Operand{{Kind: OpFP, FPName: "missing", FPOffset: 99}, {Kind: OpReg, Reg: "R5"}}},
+			{Op: "MOVW", Raw: "MOVW val+0(FP), R5", Args: []Operand{{Kind: OpFP, FPName: "val", FPOffset: 0}, {Kind: OpReg, Reg: "R5"}}},
 			{Op: "MOVW", Raw: "MOVW R5, ret+8(FP)", Args: []Operand{{Kind: OpReg, Reg: "R5"}, {Kind: OpFP, FPName: "ret", FPOffset: 8}}},
 			{Op: "MOVBU", Raw: "MOVBU R5, sink<>(SB)", Args: []Operand{{Kind: OpReg, Reg: "R5"}, {Kind: OpSym, Sym: "sink<>(SB)"}}},
 			{Op: OpRET, Raw: "RET"},
 		},
 	}, FuncSig{
 		Name: "linear_more",
+		Args: []LLVMType{I32},
 		Ret:  I32,
 		Frame: FrameLayout{
+			Params:  []FrameSlot{{Offset: 0, Type: I32, Index: 0, Field: -1}},
 			Results: []FrameSlot{{Offset: 8, Type: I32, Index: 0}},
 		},
 	}, false)

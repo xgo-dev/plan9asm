@@ -1060,7 +1060,6 @@ func TestAMD64TranslateReturnCoverage(t *testing.T) {
 	fn := asm.Func{
 		Instrs: []asm.Instr{
 			{Op: asm.OpTEXT, Raw: "TEXT ·edge(SB),NOSPLIT,$0-0"},
-			{Op: "GET_TLS(CX)", Raw: "GET_TLS(CX)"},
 			{Op: "NOP", Raw: "NOP"},
 		},
 	}
@@ -1354,7 +1353,7 @@ func TestAMD64CmpBtCoverage(t *testing.T) {
 	check("CMPQ", asm.Instr{Raw: "CMPQ example.global(SB), SI", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "example.global(SB)"}, {Kind: asm.OpReg, Reg: asm.SI}}})
 	check("TESTB", asm.Instr{Raw: "TESTB AX, BX", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpReg, Reg: asm.BX}}})
 	check("TESTW", asm.Instr{Raw: "TESTW $7, arg+0(FP)", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 7}, {Kind: asm.OpFP, FPOffset: 0}}})
-	check("TESTL", asm.Instr{Raw: "TESTL $const, 8(BX)", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "$const"}, {Kind: asm.OpMem, Mem: asm.MemRef{Base: asm.BX, Off: 8}}}})
+	check("TESTL", asm.Instr{Raw: "TESTL $1, 8(BX)", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 1}, {Kind: asm.OpMem, Mem: asm.MemRef{Base: asm.BX, Off: 8}}}})
 	check("TESTQ", asm.Instr{Raw: "TESTQ example.global(SB), DI", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "example.global(SB)"}, {Kind: asm.OpReg, Reg: asm.DI}}})
 	check("BTQ", asm.Instr{Raw: "BTQ $3, AX", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 3}, {Kind: asm.OpReg, Reg: asm.AX}}})
 	check("BTSQ", asm.Instr{Raw: "BTSQ DX, AX", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.DX}, {Kind: asm.OpReg, Reg: asm.AX}}})
@@ -1379,7 +1378,7 @@ func TestAMD64CmpBtCoverage(t *testing.T) {
 	if _, _, err := c.lowerCmpBt("BTRQ", asm.Instr{Raw: "BTRQ AX", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}}}); err == nil {
 		t.Fatalf("short BTRQ unexpectedly succeeded")
 	}
-	if got, err := c.evalIntSized(asm.Operand{Kind: asm.OpSym, Sym: "$const"}, asm.I32); err != nil || got != "0" {
+	if got, err := c.evalIntSized(asm.Operand{Kind: asm.OpSym, Sym: "$const"}, asm.I32); err == nil {
 		t.Fatalf("evalIntSized($const) = (%q, %v)", got, err)
 	}
 	if _, err := c.evalIntSized(asm.Operand{Kind: asm.OpSym, Sym: "bad"}, asm.I32); err == nil {
@@ -1534,10 +1533,10 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 	if ok, term, err := c.lowerMov("MOVQ", asm.Instr{Raw: "MOVQ broken, AX", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "broken"}, {Kind: asm.OpReg, Reg: asm.AX}}}); !ok || term || err != nil {
 		t.Fatalf("MOVQ bad sym src = (%v, %v, %v)", ok, term, err)
 	}
-	if ok, term, err := c.lowerMov("MOVQ", asm.Instr{Raw: "MOVQ AX, broken", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpSym, Sym: "broken"}}}); !ok || term || err != nil {
+	if ok, term, err := c.lowerMov("MOVQ", asm.Instr{Raw: "MOVQ AX, broken", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpSym, Sym: "broken"}}}); !ok || term || err == nil {
 		t.Fatalf("MOVQ bad sym dst = (%v, %v, %v)", ok, term, err)
 	}
-	if ok, term, err := c.lowerMov("MOVL", asm.Instr{Raw: "MOVL broken, AX", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "broken"}, {Kind: asm.OpReg, Reg: asm.AX}}}); !ok || term || err != nil {
+	if ok, term, err := c.lowerMov("MOVL", asm.Instr{Raw: "MOVL broken, AX", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "broken"}, {Kind: asm.OpReg, Reg: asm.AX}}}); !ok || term || err == nil {
 		t.Fatalf("MOVL bad sym src = (%v, %v, %v)", ok, term, err)
 	}
 	if _, _, err := c.lowerMov("MOVL", asm.Instr{Raw: "MOVL AX, label", Args: []asm.Operand{{Kind: asm.OpReg, Reg: asm.AX}, {Kind: asm.OpLabel, Sym: "label"}}}); err == nil {
@@ -1562,7 +1561,8 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 			t.Fatalf("sys storeReg(%s) error = %v", tc.r, err)
 		}
 	}
-	if ok, term, err := sysc.lowerSyscall("INT", asm.Instr{Raw: "INT $3"}); !ok || !term || err != nil {
+	sysc.targetTriple = "x86_64-apple-darwin"
+	if ok, term, err := sysc.lowerSyscall("INT", asm.Instr{Raw: "INT $3", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 3}}}); !ok || term || err != nil {
 		t.Fatalf("lowerSyscall(INT) = (%v, %v, %v)", ok, term, err)
 	}
 	if ok, term, err := sysc.lowerSyscall("SYSCALL", asm.Instr{Raw: "SYSCALL"}); !ok || term || err != nil {
@@ -1602,13 +1602,13 @@ func TestAMD64MovSyscallAndCRC32Coverage(t *testing.T) {
 		"zext i8",
 		"store i16",
 		"store i32",
-		"@syscall(i64",
-		"@cliteErrno()",
+		"={@ccc}",
+		"asm sideeffect \"syscall\"",
 		"@llvm.x86.sse42.crc32.32.8",
 		"@llvm.x86.sse42.crc32.32.16",
 		"@llvm.x86.sse42.crc32.32.32",
 		"@llvm.x86.sse42.crc32.64.64",
-		"unreachable",
+		"asm sideeffect \"int3\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
@@ -2163,7 +2163,7 @@ func TestAMD64CtxAliasAndFPFallbackCoverage(t *testing.T) {
 	if err := c.storeFPResult(40, asm.Ptr, "%arg0"); err != nil {
 		t.Fatalf("storeFPResult(ptr->i64) error = %v", err)
 	}
-	for _, off := range []int64{8, 16, 24, 32, 40, 48, 56} {
+	for _, off := range []int64{8, 16, 24, 32, 40, 48} {
 		if got, err := c.evalFPToI64(off); err != nil || got == "" {
 			t.Fatalf("evalFPToI64(%d) = (%q, %v)", off, got, err)
 		}
@@ -2223,7 +2223,7 @@ func TestAMD64EvalI64Coverage(t *testing.T) {
 	if got, err := c.evalI64(asm.Operand{Kind: asm.OpSym, Sym: "$value<>(SB)"}); err != nil || got == "" {
 		t.Fatalf("evalI64(addr sym) = (%q, %v)", got, err)
 	}
-	if got, err := c.evalI64(asm.Operand{Kind: asm.OpSym, Sym: "bad sym"}); err != nil || got != "0" {
+	if got, err := c.evalI64(asm.Operand{Kind: asm.OpSym, Sym: "bad sym"}); err == nil {
 		t.Fatalf("evalI64(unresolved bare sym) = (%q, %v)", got, err)
 	}
 	if _, err := c.evalI64(asm.Operand{Kind: asm.OpLabel, Sym: "loop"}); err == nil {
@@ -2520,8 +2520,8 @@ func Test386LoweringErrorPaths(t *testing.T) {
 	fpCtx := newX86Ctx(&fp, asm.Func{}, asm.FuncSig{Name: "example.fp", Ret: asm.Void}, testResolveSym("example"), nil, "386", "i386-unknown-linux-gnu", false)
 	fpCtx.fpParams[0] = asm.FrameSlot{Offset: 0, Type: asm.I64, Index: 9, Field: -1}
 	fpCtx.fpParams[8] = asm.FrameSlot{Offset: 8, Type: asm.I32, Index: 0, Field: -1}
-	if _, err := fpCtx.evalFPToI64(100); err != nil {
-		t.Fatal(err)
+	if _, err := fpCtx.evalFPToI64(100); err == nil {
+		t.Fatal("unbound FP slot unexpectedly succeeded")
 	}
 	if _, err := fpCtx.evalFPToI64(4); err == nil {
 		t.Fatal("high-word read of an invalid frame parameter unexpectedly succeeded")
@@ -2537,8 +2537,8 @@ func Test386LoweringErrorPaths(t *testing.T) {
 	resultCtx.fpResAllocaIdx[0] = "%result0"
 	resultCtx.classicFrame = "%classic_frame"
 	resultCtx.classicSize = 16
-	if _, err := resultCtx.evalFPToI64(100); err != nil {
-		t.Fatal(err)
+	if _, err := resultCtx.evalFPToI64(100); err == nil {
+		t.Fatal("unbound FP slot unexpectedly succeeded")
 	}
 	if got, err := resultCtx.evalFPToI64(4); err != nil || got == "" {
 		t.Fatalf("high-word result read = (%q, %v)", got, err)

@@ -359,6 +359,7 @@ done:
 	XGETBV
 	RDTSCP
 	SYSCALL
+	MOVQ $1, CX // SYSCALL clobbers the previous count.
 	LAHF
 	SAHF
 	XLAT
@@ -764,9 +765,9 @@ func TestLinuxAMD64HardwareSyscallLowering(t *testing.T) {
 	}
 	ir := b.String()
 	for _, want := range []string{
-		`call { i64, i64 } asm sideeffect "syscall"`,
-		`={ax},={dx},0,{di},{si},1,{r10},{r8},{r9},~{rcx},~{r11}`,
-		`extractvalue { i64, i64 }`,
+		`call { i64, i64, i64, i64 } asm sideeffect "syscall"`,
+		`={ax},={dx},={cx},={r11},0,{di},{si},1,{r10},{r8},{r9}`,
+		`extractvalue { i64, i64, i64, i64 }`,
 	} {
 		if !strings.Contains(ir, want) {
 			t.Fatalf("Linux amd64 SYSCALL missing %q:\n%s", want, ir)
@@ -786,5 +787,58 @@ func TestImplicitRegEffectsAndCanonicalGP(t *testing.T) {
 	}
 	if got := canonicalGP("custom"); got != "CUSTOM" {
 		t.Fatalf("canonicalGP(custom) = %q, want CUSTOM", got)
+	}
+}
+
+func TestABI0NativeSyscallRegisterEffects(t *testing.T) {
+	const linux = "x86_64-unknown-linux-gnu"
+	const bsd = "x86_64-unknown-freebsd"
+	for _, tc := range []struct {
+		name, triple, before, after string
+		accepted                    bool
+	}{
+		{"LinuxCarryUnknown", linux, "", "SETCS AL", false},
+		{"LinuxCarryPreserved", linux, "CLC", "SETCS AL", true},
+		{"BSDCarryProduced", bsd, "", "SETCS AL", true},
+		{"LinuxCXClobbered", linux, "MOVQ $25,CX", "MOVQ CX,AX", false},
+		{"BSDR11Clobbered", bsd, "MOVQ $25,R11", "MOVQ R11,AX", false},
+		{"R11Redefined", bsd, "", "MOVQ $25,R11\nMOVQ R11,AX", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "TEXT probe(SB),4,$0-8\nMOVQ $1,AX\n" + tc.before +
+				"\nSYSCALL\n" + tc.after + "\nMOVQ AX,ret+0(FP)\nRET\n"
+			file, err := asm.Parse(asm.ArchAMD64, src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sig := asm.FuncSig{Name: "probe", Ret: asm.I64, Frame: asm.FrameLayout{Results: []asm.FrameSlot{{Type: asm.I64, Field: -1}}}}
+			_, err = CheckABI0ResultInitWithOptions(file.Funcs[0], sig, "amd64", nil, nil, asm.X87Auto, tc.triple)
+			if tc.accepted && err != nil || !tc.accepted && !errors.Is(err, asm.ErrProbeNeedsContext) {
+				t.Fatalf("accepted=%t, check error=%v", tc.accepted, err)
+			}
+		})
+	}
+}
+
+func TestDecodeRawMoveExtendAndReservedVEX(t *testing.T) {
+	for _, tc := range []struct {
+		bytes []byte
+		want  asm.Op
+	}{
+		{[]byte{0x0f, 0xb7, 0x04, 0x5a}, "MOVWLZX"},
+		{[]byte{0x48, 0x0f, 0xb6, 0x00}, "MOVBQZX"},
+		{[]byte{0x0f, 0xbe, 0xc1}, "MOVBLSX"},
+		{[]byte{0x48, 0x63, 0x00}, "MOVLQSX"},
+		{[]byte{0xc5, 0xfd, 0xf4, 0xc2}, "VPMULUDQ"},
+	} {
+		got, err := DecodeRawBytes(tc.bytes, 64)
+		if err != nil || len(got) != 1 || got[0].Op != tc.want {
+			t.Errorf("%x: %#v, %v (want %s)", tc.bytes, got, err, tc.want)
+		}
+	}
+	for _, raw := range [][]byte{{0xc5, 0xe8, 0x77}, {0xc5, 0xe9, 0x70, 0xc0, 4}} {
+		if _, err := DecodeRawBytes(raw, 64); err == nil {
+			t.Errorf("accepted reserved inverted vvvv field in %x", raw)
+		}
 	}
 }

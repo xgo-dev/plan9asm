@@ -4,6 +4,7 @@
 package plan9asm
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,10 +14,7 @@ import (
 )
 
 func TestStdlibBoringSig_CompileManyTriples(t *testing.T) {
-	llc, _, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc not found")
-	}
+	llc := requireLLVM22Tool(t, "llc")
 
 	goroot := runtime.GOROOT()
 	srcOther, err := os.ReadFile(filepath.Join(goroot, "src", "crypto", "internal", "boring", "sig", "sig_other.s"))
@@ -99,9 +97,19 @@ func TestStdlibBoringSig_CompileManyTriples(t *testing.T) {
 						strings.Contains(s, "unknown target triple") ||
 						strings.Contains(s, "unknown target") ||
 						strings.Contains(s, "is not a registered target") {
-						t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+						t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 					}
 					t.Fatalf("llc failed for triple %q: %v\n%s", triple, err, s)
+				}
+				if f.name == "sig_amd64.s" {
+					obj, err := os.ReadFile(objPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					pattern := []byte{0xeb, 0x1d, 0xf4, 0x48, 0xf4, 0x4b, 0xf4, 0xb3, 0x32}
+					if !bytes.Contains(obj, pattern) {
+						t.Errorf("missing BoringCrypto marker in %s object", triple)
+					}
 				}
 				compiled++
 			})

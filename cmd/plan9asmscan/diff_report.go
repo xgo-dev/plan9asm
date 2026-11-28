@@ -5,35 +5,15 @@ import (
 	"fmt"
 	"os"
 	"sort"
+
+	"github.com/xgo-dev/plan9asm/internal/diffreport"
 )
 
 // diffExecutionReport mirrors the execution report written by
 // TestAMD64MachineCodeDifferentialGate / TestAMD64ConformanceLLVMRuntime when
 // PLAN9ASM_DIFF_REPORT_OUT is set.
-type diffExecutionReport struct {
-	SchemaVersion   int                  `json:"schema_version"`
-	Goarch          string               `json:"goarch"`
-	Goos            string               `json:"goos"`
-	GoVersion       string               `json:"go_version"`
-	LLVMVersion     string               `json:"llvm_version,omitempty"`
-	NativeOracleRan bool                 `json:"native_oracle_ran"`
-	TotalInputs     int                  `json:"total_inputs"`
-	ComparedInputs  int                  `json:"compared_inputs"`
-	FailedInputs    int                  `json:"failed_inputs"`
-	Cases           []diffCaseExecResult `json:"cases"`
-}
-
-type diffCaseExecResult struct {
-	ID                string   `json:"id"`
-	Asm               string   `json:"asm"`
-	Status            string   `json:"status"` // "passed", "hw_pending", "failed", "expected_value_only", "portable_only"
-	VerificationMode  string   `json:"verification_mode,omitempty"`
-	ExecutedInputs    int      `json:"executed_inputs"`
-	ComparedInputs    int      `json:"compared_inputs"`
-	FailedInputs      int      `json:"failed_inputs"`
-	MissingHWFeatures []string `json:"missing_hw_features,omitempty"`
-	Forms             []string `json:"forms"`
-}
+type diffExecutionReport = diffreport.Report
+type diffCaseExecResult = diffreport.Case
 
 func loadDiffExecutionReport(path string) (*diffExecutionReport, error) {
 	data, err := os.ReadFile(path)
@@ -53,12 +33,47 @@ func loadDiffExecutionReport(path string) (*diffExecutionReport, error) {
 	return &dr, nil
 }
 
+// The case, input assembly and supported forms must describe the same test in
+// the current checkout. Otherwise an older report can credit unrelated forms.
+func (m *conformanceManifest) checkDiffCases(r *diffExecutionReport) error {
+	byID := make(map[string]conformanceCase, len(m.Cases))
+	for _, c := range m.Cases {
+		if _, exists := byID[c.ID]; exists {
+			return fmt.Errorf("duplicate manifest case %q", c.ID)
+		}
+		byID[c.ID] = c
+	}
+	for _, c := range r.Cases {
+		want, ok := byID[c.ID]
+		if !ok || want.Validation != "execute" || want.Goarch != r.Goarch || want.Asm != c.Asm || len(want.Forms) != len(c.Forms) || len(c.Forms) == 0 {
+			return fmt.Errorf("diff case %q does not match its executable manifest entry", c.ID)
+		}
+		forms := make(map[string]bool, len(want.Forms))
+		for _, form := range want.Forms {
+			forms[form] = true
+		}
+		for _, form := range c.Forms {
+			if !forms[form] {
+				return fmt.Errorf("unexpected or repeated form %q in diff case %q", form, c.ID)
+			}
+			delete(forms, form)
+		}
+	}
+	return nil
+}
+
 func attachDiffExecutionReport(rep *report, dr *diffExecutionReport) error {
 	if dr == nil {
 		return nil
 	}
-	if dr.Goarch != rep.Goarch {
-		return fmt.Errorf("diff report goarch %q does not match scan goarch %q", dr.Goarch, rep.Goarch)
+	if err := dr.Validate(); err != nil {
+		return err
+	}
+	if dr.Goarch != rep.Goarch || dr.Goos != rep.Goos || dr.GoVersion != rep.GoVersion {
+		return fmt.Errorf("diff target %s/%s %s does not match scan %s/%s %s", dr.Goos, dr.Goarch, dr.GoVersion, rep.Goos, rep.Goarch, rep.GoVersion)
+	}
+	if rep.ObjectCompileLLVMVersion != "" && diffreport.LLVM22(dr.LLVMVersion) != rep.ObjectCompileLLVMVersion {
+		return fmt.Errorf("diff LLVM %q does not match scan LLVM %q", dr.LLVMVersion, rep.ObjectCompileLLVMVersion)
 	}
 
 	type formExecAgg struct {
@@ -118,6 +133,8 @@ func attachDiffExecutionReport(rep *report, dr *diffExecutionReport) error {
 	rep.HWPendingByForm = nil
 
 	for i := range rep.Forms {
+		rep.Forms[i].DiffCases = nil
+		rep.Forms[i].DiffStatus = ""
 		agg := byForm[rep.Forms[i].Form]
 		if agg == nil {
 			continue

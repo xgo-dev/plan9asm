@@ -114,47 +114,7 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 		return true, false, fmt.Errorf("arm64: unsupported instruction DWORD (raw 64-bit data/instruction directive is not modeled): %q", ins.Raw)
 
 	case "srem", "urem":
-		if len(ins.Args) != 2 && len(ins.Args) != 3 {
-			return true, false, fmt.Errorf("arm64 %s expects 2 or 3 operands: %q", op, ins.Raw)
-		}
-		dstOp := ins.Args[len(ins.Args)-1]
-		if dstOp.Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 %s dst must be reg: %q", op, ins.Raw)
-		}
-		ty := fmt.Sprintf("i%d", spec.Width)
-		divisor, err := c.evalWidth(ins.Args[0], spec.Width)
-		if err != nil {
-			return true, false, err
-		}
-		var numer string
-		if len(ins.Args) == 2 {
-			numer, err = c.evalWidth(dstOp, spec.Width)
-		} else {
-			numer, err = c.evalWidth(ins.Args[1], spec.Width)
-		}
-		if err != nil {
-			return true, false, err
-		}
-		zero, safeDiv := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zero, ty, divisor)
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s 1, %s %s\n", safeDiv, zero, ty, ty, divisor)
-		divIn := "%" + safeDiv
-		if spec.LLVMOp == "srem" {
-			minLit := "-9223372036854775808"
-			if spec.Width == 32 {
-				minLit = "-2147483648"
-			}
-			isMin, isNeg1, ov, safeDiv2 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", isMin, ty, numer, minLit)
-			fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, -1\n", isNeg1, ty, divIn)
-			fmt.Fprintf(c.b, "  %%%s = and i1 %%%s, %%%s\n", ov, isMin, isNeg1)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s 1, %s %s\n", safeDiv2, ov, ty, ty, divIn)
-			divIn = "%" + safeDiv2
-		}
-		rem, sel := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", rem, spec.LLVMOp, ty, numer, divIn)
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s 0, %s %%%s\n", sel, zero, ty, ty, rem)
-		return true, false, c.storeWidth(dstOp.Reg, "%"+sel, spec.Width)
+		return true, false, c.lowerARM64ExtraMulDiv(spec, ins)
 
 	case "negw":
 		if len(ins.Args) != 1 && len(ins.Args) != 2 {
@@ -624,13 +584,7 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 			fmt.Fprintf(c.b, "  %%%s = call double @llvm.ceil.f64(double %s)\n", t, v)
 			v = "%" + t
 		}
-		conv := "fptoui"
-		if spec.Signed {
-			conv = "fptosi"
-		}
-		iv := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = %s double %s to i64\n", iv, conv, v)
-		return true, false, c.storeReg(dstOp.Reg, "%"+iv)
+		return true, false, c.storeReg(dstOp.Reg, c.floatToInt(spec.Signed, "i64", "i64", "double", "f64", v))
 
 	case "icvtf":
 		// SCVTF / UCVTF [$fbits,] Rsrc/Vsrc, Fdst/Vdst
@@ -807,7 +761,7 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 		sh := parseNEONShape(regs[0], false)
 		elemBytes := sh.elemBits / 8
 		laneIdx %= sh.lanes
-		addr, base, inc, err := c.addrI64(memOp.Mem, false)
+		addr, err := c.neonStructureAddress(memOp.Mem, postInc)
 		if err != nil {
 			return true, false, err
 		}
@@ -841,13 +795,7 @@ func (c *arm64Ctx) lowerM5Ext(op asm.Op, postInc bool, ins asm.Instr) (ok bool, 
 				fmt.Fprintf(c.b, "  store %s %%%s, ptr %%%s, align 1\n", sh.elemTy(), el, pt)
 			}
 		}
-		if postInc {
-			if inc == 0 {
-				inc = int64(len(regs) * elemBytes)
-			}
-			return true, false, c.updatePostInc(base, inc)
-		}
-		return true, false, nil
+		return true, false, c.neonStructureWriteback(memOp.Mem, postInc, int64(len(regs)*elemBytes))
 	}
 	return false, false, nil
 }

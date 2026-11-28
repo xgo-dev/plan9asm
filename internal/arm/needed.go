@@ -1,10 +1,9 @@
 package arm
 
 import (
-	"github.com/xgo-dev/plan9asm/internal/asm"
 	"strings"
-	// funcNeedsARMCFG decides whether ARM lowering needs the CFG-based path.
-	// The linear prototype only handles straight-line arithmetic/data movement.
+
+	"github.com/xgo-dev/plan9asm/internal/asm"
 )
 
 func FuncNeedsCFG(fn asm.Func) bool {
@@ -18,20 +17,20 @@ func FuncNeedsCFG(fn asm.Func) bool {
 			op = op[:dot]
 		}
 		switch asm.Op(op) {
-		case asm.OpTEXT, asm.OpBYTE:
+		case asm.OpTEXT:
 			continue
 		case asm.OpRET:
-			if len(ins.Args) != 0 {
+			if len(ins.Args) != 0 || rawOp != "RET" {
 				return true
 			}
 			continue
-		case "MOVW", "MOVB", "MOVBU", "ADD", "SUB", "AND", "ORR", "EOR", "RSB":
+		case "MOVW", "ADD", "SUB", "AND", "ORR", "EOR", "RSB":
 			// The linear ARM path cannot handle conditional execution or post-inc.
 			if strings.Contains(rawOp, ".") {
 				return true
 			}
 			for _, arg := range ins.Args {
-				if arg.Kind == asm.OpIdent ||
+				if arg.Kind == asm.OpTLSOffset || arg.Kind == asm.OpMem || arg.Kind == asm.OpRegShift || arg.Kind == asm.OpIdent ||
 					(arg.Kind == asm.OpReg && (arg.Reg == "R15" || arg.Reg == asm.PC)) ||
 					(arg.Kind == asm.OpSym && strings.HasSuffix(arg.Sym, "(SB)")) ||
 					(arg.Kind == asm.OpReg && strings.HasPrefix(string(arg.Reg), "F")) {

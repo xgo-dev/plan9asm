@@ -1457,9 +1457,7 @@ func (c *amd64Ctx) evalFPToI64(off int64) (string, error) {
 				return "%" + hi, nil
 			}
 		}
-		// Keep translating when FP offsets can't be recovered from signature
-		// inference (common in low-level runtime assembly).
-		return "0", nil
+		return "", fmt.Errorf("%w: x86 FP offset %d has no bound argument or result slot", asm.ErrProbeNeedsContext, off)
 	}
 	idx := slot.Index
 	if idx < 0 || idx >= len(c.sig.Args) {
@@ -1819,6 +1817,33 @@ func (c *amd64Ctx) addrFromMem(mem asm.MemRef) (addrI64 string, err error) {
 }
 
 func (c *amd64Ctx) addrFromPlainMem(mem asm.MemRef) (addrI64 string, err error) {
+	if mem.GoTLSOffset {
+		// Let the ELF linker resolve the Go runtime TLS symbol. For 386,
+		// general-register operands denote an explicit thread pointer plus
+		// the relocation; a bare (TLS) denotes this thread's actual slot.
+		slot := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call ptr @llvm.threadlocal.address.p0(ptr @runtime.tlsg)\n", slot)
+		addr := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i64\n", addr, slot)
+		if mem.Base != "" {
+			base, err := c.loadReg(mem.Base)
+			if err != nil {
+				return "", err
+			}
+			tp, ti, delta, combined := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = call ptr @llvm.thread.pointer()\n", tp)
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i64\n", ti, tp)
+			fmt.Fprintf(c.b, "  %%%s = sub i64 %%%s, %%%s\n", delta, addr, ti)
+			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %%%s\n", combined, base, delta)
+			addr = combined
+		}
+		if mem.Off != 0 {
+			v := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %d\n", v, addr, mem.Off)
+			addr = v
+		}
+		return "%" + addr, nil
+	}
 	var cur string
 	if mem.Sym != "" {
 		base, err := c.ptrFromSB(mem.Sym)

@@ -13,10 +13,7 @@ import (
 )
 
 func TestStdlibHashCRC32_AMD64_Compile(t *testing.T) {
-	_, clang, ok := findLlcAndClang(t)
-	if !ok || clang == "" {
-		t.Skip("clang not found")
-	}
+	clang := requireLLVM22Tool(t, "clang")
 
 	goroot := runtime.GOROOT()
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "hash", "crc32", "crc32_amd64.s"))

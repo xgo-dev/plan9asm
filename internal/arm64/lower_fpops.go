@@ -76,7 +76,7 @@ func (c *arm64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCSlot)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", uno, c.flagsVSlot)
-		c.flagsWritten = true
+		c.flagsDefined = flagAll
 		return true, false, nil
 
 	case "FCSELD":
@@ -251,9 +251,7 @@ func (c *arm64Ctx) lowerFP(op asm.Op, ins asm.Instr) (ok bool, terminated bool, 
 		if err != nil {
 			return true, false, err
 		}
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fptosi double %s to i64\n", t, src)
-		return true, false, c.storeReg(ins.Args[1].Reg, "%"+t)
+		return true, false, c.storeReg(ins.Args[1].Reg, c.floatToInt(true, "i64", "i64", "double", "f64", src))
 
 	case "SCVTFD":
 		// SCVTFD srcReg, dst

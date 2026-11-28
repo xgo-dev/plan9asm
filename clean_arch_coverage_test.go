@@ -176,6 +176,7 @@ TEXT tailbody<>(SB),NOSPLIT,$0-0
 	tr, err := TranslateGoModule(pkg, []byte(asmSrc), GoModuleOptions{
 		SourcePreprocessed: true,
 		FileName:           "copy_arm64.s",
+		TargetTriple:       "arm64-apple-darwin",
 		GOOS:               "darwin",
 		GOARCH:             "arm64",
 		ResolveSym:         testResolveSym("example.com/p"),
@@ -201,6 +202,7 @@ TEXT tailbody<>(SB),NOSPLIT,$0-0
 	if _, err := TranslateGoModule(badPkg, []byte(asmSrc), GoModuleOptions{
 		SourcePreprocessed: true,
 		FileName:           "copy_arm64.s",
+		TargetTriple:       "arm64-apple-darwin",
 		GOOS:               "darwin",
 		GOARCH:             "arm64",
 		ResolveSym:         testResolveSym("example.com/p"),

@@ -30,15 +30,12 @@ func (c *amd64Ctx) evalI64(op asm.Operand) (string, error) {
 			if mem, ok := asm.ParseMem(s); ok {
 				return c.addrFromMem(mem)
 			}
+			if !strings.HasSuffix(s, "(SB)") {
+				return "", fmt.Errorf("%w: unresolved x86 immediate %s", asm.ErrProbeNeedsContext, op.Sym)
+			}
 		}
 		p, err := c.ptrFromSB(s)
 		if err != nil {
-			// Some runtime asm constants (e.g. $const_stackGuard) come from
-			// includes/macros that we don't fully materialize. Treat unresolved
-			// bare symbols as immediate zero to keep translation progressing.
-			if !strings.Contains(s, "(SB)") {
-				return "0", nil
-			}
 			return "", err
 		}
 		if addrOnly {

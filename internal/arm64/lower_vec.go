@@ -241,14 +241,11 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 
 	case "AESE", "AESD", "AESMC", "AESIMC",
 		"SHA1C", "SHA1H", "SHA1M", "SHA1P", "SHA1SU0", "SHA1SU1",
-		"SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1",
-		"SHA512H", "SHA512H2", "SHA512SU0", "SHA512SU1",
-		"VEOR3", "VBCAX", "VRAX1", "VXAR",
-		"VPMULL", "VPMULL2",
-		"VREV32", "VREV64", "VSHL", "VSRI", "VTBL", "VZIP1", "VZIP2", "VEXT", "VUSHR",
-		"VLD1R", "VLD4R", "VDUP":
-		// Keep translation permissive for crypto/NEON ops not yet modeled.
-		return true, false, nil
+		"SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1", "SHA512H", "SHA512H2", "SHA512SU0", "SHA512SU1",
+		"VEOR3", "VBCAX", "VRAX1", "VXAR", "VPMULL", "VPMULL2":
+		return true, false, c.lowerCrypto(op, ins)
+	case "VSHL", "VSRI", "VUSHR", "VEXT", "VDUP":
+		return true, false, c.lowerVecImmediate(op, ins)
 
 	case "VMOV":
 		// Patterns used by stdlib:
@@ -441,7 +438,7 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 				return true, false, fmt.Errorf("arm64 VLD1 expects mem, lane or [v,...]: %q", ins.Raw)
 			}
 			mem := ins.Args[0].Mem
-			addr, base, inc, err := c.addrI64(mem, postInc)
+			addr, err := c.neonStructureAddress(mem, postInc)
 			if err != nil {
 				return true, false, err
 			}
@@ -457,9 +454,6 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 				width = 4
 			case 'H':
 				width = 2
-			}
-			if postInc && inc == 0 {
-				inc = width
 			}
 			pt := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, addr)
@@ -509,12 +503,7 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 					return true, false, err
 				}
 			}
-			if postInc {
-				if err := c.updatePostInc(base, inc); err != nil {
-					return true, false, err
-				}
-			}
-			return true, false, nil
+			return true, false, c.neonStructureWriteback(mem, postInc, width)
 		}
 
 		// VLD1.P (R0), [V1.B16, V2.B16] (or 4-reg form for D2 lists)
@@ -524,37 +513,7 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 		if n := len(ins.Args[1].RegList); n != 1 && n != 2 && n != 3 && n != 4 {
 			return true, false, fmt.Errorf("arm64 VLD1 unsupported reglist len=%d: %q", n, ins.Raw)
 		}
-		mem := ins.Args[0].Mem
-		addr, base, inc, err := c.addrI64(mem, false)
-		if err != nil {
-			return true, false, err
-		}
-		// Plan9 VLD1.P increments by loaded size even when mem.Off == 0.
-		if postInc && inc == 0 {
-			inc = int64(16 * len(ins.Args[1].RegList))
-		}
-
-		for i, r := range ins.Args[1].RegList {
-			ai := addr
-			if i != 0 {
-				at := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", at, addr, 16*i)
-				ai = "%" + at
-			}
-			pt := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, ai)
-			vt := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %%%s, align 1\n", vt, pt)
-			if err := c.storeVReg(r, "%"+vt); err != nil {
-				return true, false, err
-			}
-		}
-		if postInc {
-			if err := c.updatePostInc(base, inc); err != nil {
-				return true, false, err
-			}
-		}
-		return true, false, nil
+		return true, false, c.vectorListMemory(ins.Args[0].Mem, ins.Args[1].RegList, postInc, true)
 
 	case "VST1":
 		// VST1 Vn.lane[i], mem (single-lane store) or VST1.P [Vn...], mem
@@ -564,7 +523,7 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 				if err != nil {
 					return true, false, err
 				}
-				addr, base, inc, err := c.addrI64(ins.Args[1].Mem, false)
+				addr, err := c.neonStructureAddress(ins.Args[1].Mem, postInc)
 				if err != nil {
 					return true, false, err
 				}
@@ -596,13 +555,7 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 					fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 %d\n", ex, bc, lane)
 					fmt.Fprintf(c.b, "  store i64 %%%s, ptr %%%s, align 1\n", ex, pt)
 				}
-				if postInc {
-					if inc == 0 {
-						inc = elemBytes
-					}
-					return true, false, c.updatePostInc(base, inc)
-				}
-				return true, false, nil
+				return true, false, c.neonStructureWriteback(ins.Args[1].Mem, postInc, elemBytes)
 			}
 		}
 		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || ins.Args[1].Kind != asm.OpMem {
@@ -611,35 +564,7 @@ func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, te
 		if n := len(ins.Args[0].RegList); n != 1 && n != 2 && n != 3 && n != 4 {
 			return true, false, fmt.Errorf("arm64 VST1 unsupported reglist len=%d: %q", n, ins.Raw)
 		}
-		mem := ins.Args[1].Mem
-		addr, base, inc, err := c.addrI64(mem, false)
-		if err != nil {
-			return true, false, err
-		}
-		if postInc && inc == 0 {
-			inc = int64(16 * len(ins.Args[0].RegList))
-		}
-		for i, r := range ins.Args[0].RegList {
-			ai := addr
-			if i != 0 {
-				at := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %d\n", at, addr, 16*i)
-				ai = "%" + at
-			}
-			v, err := c.loadVReg(r)
-			if err != nil {
-				return true, false, err
-			}
-			pt := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, ai)
-			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %%%s, align 1\n", v, pt)
-		}
-		if postInc {
-			if err := c.updatePostInc(base, inc); err != nil {
-				return true, false, err
-			}
-		}
-		return true, false, nil
+		return true, false, c.vectorListMemory(ins.Args[1].Mem, ins.Args[0].RegList, postInc, false)
 
 	case "VCMEQ":
 		// VCMEQ Va, Vb, Vd or VCMEQ $0, Vb, Vd (any arrangement .B8/.B16/.H4/.H8/.S2/.S4/.D2)
@@ -899,4 +824,67 @@ func (c *arm64Ctx) broadcastI32ToV16(v32 string) (string, error) {
 	bc := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", bc, shuf)
 	return "%" + bc, nil
+}
+
+// A post-indexed structure transfer always accesses the original base. The
+// following writeback uses either the encoded immediate or the index register.
+func (c *arm64Ctx) neonStructureAddress(mem asm.MemRef, post bool) (string, error) {
+	if post {
+		return c.loadReg(mem.Base)
+	}
+	addr, _, _, err := c.addrI64(mem, false)
+	return addr, err
+}
+
+func (c *arm64Ctx) neonStructureWriteback(mem asm.MemRef, post bool, transferBytes int64) error {
+	if !post {
+		return nil
+	}
+	if mem.Index != "" {
+		addr, _, _, err := c.addrI64(mem, false)
+		if err != nil {
+			return err
+		}
+		return c.storeReg(mem.Base, addr)
+	}
+	if mem.Off != 0 {
+		transferBytes = mem.Off
+	}
+	return c.updatePostInc(mem.Base, transferBytes)
+}
+
+// LD1/ST1 transfer one whole arrangement per register, 8 or 16 bytes each.
+func (c *arm64Ctx) vectorListMemory(mem asm.MemRef, regs []asm.Reg, post, load bool) error {
+	sh := parseNEONShape(regs[0], false)
+	size := sh.elemBits * sh.lanes / 8
+	addr, err := c.neonStructureAddress(mem, post)
+	if err != nil {
+		return err
+	}
+	for i, r := range regs {
+		if parseNEONShape(r, false) != sh {
+			return fmt.Errorf("arm64 LD1/ST1 inconsistent arrangements")
+		}
+		ptr := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, addr)
+		if i != 0 {
+			p := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %%%s, i64 %d\n", p, ptr, i*size)
+			ptr = p
+		}
+		if load {
+			v := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", v, sh.vecTy(), ptr)
+			if err := c.storeVShape(r, "%"+v, sh); err != nil {
+				return err
+			}
+		} else {
+			v, err := c.loadVShape(r, sh)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(c.b, "  store %s %s, ptr %%%s, align 1\n", sh.vecTy(), v, ptr)
+		}
+	}
+	return c.neonStructureWriteback(mem, post, int64(size*len(regs)))
 }

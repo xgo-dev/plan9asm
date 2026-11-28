@@ -101,10 +101,7 @@ TEXT ·extrKernel(SB),NOSPLIT,$0-24
 		}
 	}
 
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	mainC := fmt.Sprintf(`
 #include <stdint.h>
 #include <stdio.h>

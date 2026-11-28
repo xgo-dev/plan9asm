@@ -153,6 +153,7 @@ func TestARM64AtomicCoverage(t *testing.T) {
 		}
 	}
 
+	c.nativeAArch64 = true
 	mem := arm64MemOp("R10", 32)
 	for _, tc := range []asm.Instr{
 		{Op: "LDARW", Args: []asm.Operand{mem, arm64RegOp("R0")}, Raw: "LDARW 32(R10), R0"},
@@ -188,23 +189,11 @@ func TestARM64AtomicCoverage(t *testing.T) {
 	if ptr, err := c.atomicMemPtr(asm.MemRef{Base: "R10", Off: 48}); err != nil || ptr == "" {
 		t.Fatalf("atomicMemPtr() = (%q, %v)", ptr, err)
 	}
-	if ty, align := arm64AtomicLoadStoreType("LDAXRB"); ty != asm.I64 || align != 8 {
-		t.Fatalf("arm64AtomicLoadStoreType(LDAXRB) = (%s, %d)", ty, align)
-	}
-	if ty, align := arm64AtomicStoreExclusiveType("STLXRB"); ty != asm.I8 || align != 1 {
-		t.Fatalf("arm64AtomicStoreExclusiveType(STLXRB) = (%s, %d)", ty, align)
-	}
 	if ty, err := arm64AtomicRMWType("LDCLRALW"); err != nil || ty != asm.I32 {
 		t.Fatalf("arm64AtomicRMWType(LDCLRALW) = (%s, %v)", ty, err)
 	}
 	if _, err := arm64AtomicRMWType("BAD"); err == nil {
 		t.Fatalf("arm64AtomicRMWType(BAD) unexpectedly succeeded")
-	}
-	if size, err := arm64AtomicTypeSize(asm.I64); err != nil || size != 8 {
-		t.Fatalf("arm64AtomicTypeSize(I64) = (%d, %v)", size, err)
-	}
-	if _, err := arm64AtomicTypeSize(asm.Ptr); err == nil {
-		t.Fatalf("arm64AtomicTypeSize(ptr) unexpectedly succeeded")
 	}
 	if got, err := c.atomicTruncFromI64("99", asm.I16); err != nil || got == "" {
 		t.Fatalf("atomicTruncFromI64() = (%q, %v)", got, err)
@@ -231,8 +220,8 @@ func TestARM64AtomicCoverage(t *testing.T) {
 		"atomicrmw add",
 		"atomicrmw or",
 		"atomicrmw and",
-		"phi i64",
-		"store i1 false, ptr %exclusive_valid",
+		"ldaxrb",
+		"stlxrb",
 		"zext i8",
 		"trunc i64",
 	} {
@@ -265,7 +254,7 @@ func TestARM64ArithmeticCoverage(t *testing.T) {
 		}
 	}
 	c.storeFlag(c.flagsCSlot, "true")
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 
 	for _, tc := range []asm.Instr{
 		{Op: "MRS_TPIDR_R0", Raw: "MRS_TPIDR_R0"},
@@ -352,13 +341,6 @@ func TestARM64ArithmeticCoverage(t *testing.T) {
 	if got := CanonicalSysReg("DIT"); got != "S3_3_C4_C2_5" {
 		t.Fatalf("arm64CanonicalSysReg(DIT) = %q", got)
 	}
-	if v, ok := CompileSafeMRSValue("MIDR_EL1"); !ok || v != "0" {
-		t.Fatalf("arm64CompileSafeMRSValue(MIDR_EL1) = (%q, %v)", v, ok)
-	}
-	if _, ok := CompileSafeMRSValue("TPIDR_EL0"); ok {
-		t.Fatalf("arm64CompileSafeMRSValue(TPIDR_EL0) unexpectedly succeeded")
-	}
-
 	out := b.String()
 	for _, want := range []string{
 		`asm sideeffect "mrs $0, TPIDR_EL0"`,
@@ -506,13 +488,14 @@ func TestARM64DataVectorAndBranchCoverage(t *testing.T) {
 		{"VUADDLV", false, asm.Instr{Op: "VUADDLV", Args: []asm.Operand{arm64RegOp("V6.B16"), arm64RegOp("V7")}, Raw: "VUADDLV V6.B16, V7"}, "vec"},
 		{"VADD", false, asm.Instr{Op: "VADD", Args: []asm.Operand{arm64RegOp("V4.S4"), arm64RegOp("V5.S4"), arm64RegOp("V6.S4")}, Raw: "VADD V4.S4, V5.S4, V6.S4"}, "vec"},
 		{"VADD", false, asm.Instr{Op: "VADD", Args: []asm.Operand{arm64RegOp("V6.D2"), arm64RegOp("V7.D2")}, Raw: "VADD V6.D2, V7.D2"}, "vec"},
-		{"AESE", false, asm.Instr{Op: "AESE", Args: []asm.Operand{arm64RegOp("V0"), arm64RegOp("V1"), arm64RegOp("V2")}, Raw: "AESE V0, V1, V2"}, "vec"},
+		{"AESE", false, asm.Instr{Op: "AESE", Args: []asm.Operand{arm64RegOp("V0.B16"), arm64RegOp("V1.B16")}, Raw: "AESE V0.B16, V1.B16"}, "vec"},
 	} {
 		switch tc.kind {
 		case "data":
 			ok, _, err := c.lowerData(tc.op, tc.postInc, tc.ins)
 			mustLowerARM64(t, "lowerData", tc.ins, ok, err)
 		case "vec":
+			c.nativeAArch64 = true
 			ok, _, err := c.lowerVec(tc.op, tc.postInc, tc.ins)
 			mustLowerARM64(t, "lowerVec", tc.ins, ok, err)
 		}
@@ -562,9 +545,9 @@ func TestARM64DataVectorAndBranchCoverage(t *testing.T) {
 		{Op: "BMI", Args: []asm.Operand{arm64IdentOp("done")}, Raw: "BMI done"},
 		{Op: "BPL", Args: []asm.Operand{arm64IdentOp("done")}, Raw: "BPL done"},
 		{Op: "CBZ", Args: []asm.Operand{arm64RegOp("R2"), arm64IdentOp("done")}, Raw: "CBZ R2, done"},
-		{Op: "CBNZ", Args: []asm.Operand{arm64RegOp("R3"), arm64MemOp(asm.PC, 4)}, Raw: "CBNZ R3, 4(PC)"},
+		{Op: "CBNZ", Args: []asm.Operand{arm64RegOp("R3"), arm64IdentOp("done")}, Raw: "CBNZ R3, done"},
 		{Op: "TBZ", Args: []asm.Operand{arm64ImmOp(1), arm64RegOp("R4"), arm64IdentOp("done")}, Raw: "TBZ $1, R4, done"},
-		{Op: "TBNZ", Args: []asm.Operand{arm64ImmOp(2), arm64RegOp("R5"), arm64MemOp(asm.PC, 0)}, Raw: "TBNZ $2, R5, 0(PC)"},
+		{Op: "TBNZ", Args: []asm.Operand{arm64ImmOp(2), arm64RegOp("R5"), arm64IdentOp("done")}, Raw: "TBNZ $2, R5, done"},
 		{Op: "CBZW", Args: []asm.Operand{arm64RegOp("R6"), arm64IdentOp("done")}, Raw: "CBZW R6, done"},
 		{Op: "CBNZW", Args: []asm.Operand{arm64RegOp("R7"), arm64IdentOp("done")}, Raw: "CBNZW R7, done"},
 	} {
@@ -572,12 +555,6 @@ func TestARM64DataVectorAndBranchCoverage(t *testing.T) {
 		mustLowerARM64(t, "lowerBranch", tc, ok, err)
 	}
 
-	if tgt, ok := c.resolveBranchTarget(1, arm64MemOp(asm.PC, -4)); !ok || tgt != c.blocks[1].name {
-		t.Fatalf("resolveBranchTarget(-4(PC)) = (%q, %v)", tgt, ok)
-	}
-	if tgt, ok := c.resolveBranchTarget(1, arm64MemOp(asm.PC, 4)); !ok || tgt != c.blocks[2].name {
-		t.Fatalf("resolveBranchTarget(4(PC)) = (%q, %v)", tgt, ok)
-	}
 	if got, err := c.castI64RegToArg("9", asm.I32); err != nil || got == "" {
 		t.Fatalf("castI64RegToArg(i32) = (%q, %v)", got, err)
 	}
@@ -785,7 +762,7 @@ func TestARM64FPOpsCoverage(t *testing.T) {
 		"@llvm.trunc.f64",
 		"@llvm.floor.f64",
 		"@llvm.ceil.f64",
-		"fptosi double",
+		"@llvm.fptosi.sat.i64.f64",
 		"sitofp i64",
 		"fpext float",
 		"ptrtoint ptr",
@@ -806,7 +783,7 @@ func TestARM64BranchAndReturnEdgeCoverage(t *testing.T) {
 		},
 	}
 	var translated strings.Builder
-	if err := TranslateFunc(&translated, fn, asm.FuncSig{Name: "example.edge", Ret: asm.I64}, testResolveSym("example"), nil, true); err != nil {
+	if err := TranslateFunc(&translated, fn, asm.FuncSig{Name: "example.edge", Ret: asm.I64}, testResolveSym("example"), nil, true, "aarch64-unknown-linux-gnu"); err != nil {
 		t.Fatalf("translateFuncARM64() error = %v", err)
 	}
 	if !strings.Contains(translated.String(), "ret i64 0") || !strings.Contains(translated.String(), "; s: NOP") {
@@ -979,6 +956,7 @@ func TestARM64FPEdgeErrors(t *testing.T) {
 
 func TestARM64SyscallCoverage(t *testing.T) {
 	c, b := newARM64CtxWithFuncForTest(t, asm.Func{}, asm.FuncSig{Name: "example.syscall", Ret: asm.Void}, nil)
+	c.nativeAArch64, c.targetTriple = true, "aarch64-unknown-linux-gnu"
 	for _, tc := range []struct {
 		r asm.Reg
 		v string
@@ -1002,7 +980,7 @@ func TestARM64SyscallCoverage(t *testing.T) {
 	}
 
 	darwin, db := newARM64CtxWithFuncForTest(t, asm.Func{}, asm.FuncSig{Name: "example.darwin", Ret: asm.Void}, nil)
-	delete(darwin.regSlot, asm.Reg("R8"))
+	darwin.nativeAArch64, darwin.targetTriple = true, "arm64-apple-darwin"
 	for _, tc := range []struct {
 		r asm.Reg
 		v string
@@ -1031,11 +1009,7 @@ func TestARM64SyscallCoverage(t *testing.T) {
 
 	out := b.String() + db.String()
 	for _, want := range []string{
-		"call i64 @syscall(i64 %t",
-		"@cliteErrno()",
-		"sub i64 0",
-		"store i1 %t",
-		"store i1 false, ptr %flags_v",
+		"svc #0", "svc #128", "cset $2, cs", "{x16}", "store i1 %t",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
@@ -1271,7 +1245,6 @@ func TestARM64VectorEdgeCoverage(t *testing.T) {
 		}
 	}
 
-	check("VLD1R", false, asm.Instr{Op: "VLD1R", Raw: "VLD1R (R20), V0"})
 	check("VMOV", false, asm.Instr{Op: "VMOV", Raw: "VMOV R0, V0.S4", Args: []asm.Operand{arm64RegOp("R0"), arm64RegOp("V0.S4")}})
 	check("VMOV", false, asm.Instr{Op: "VMOV", Raw: "VMOV V0.S[2], R3", Args: []asm.Operand{arm64RegOp("V0.S[2]"), arm64RegOp("R3")}})
 	check("VMOV", false, asm.Instr{Op: "VMOV", Raw: "VMOV V1.H[4], R4", Args: []asm.Operand{arm64RegOp("V1.H[4]"), arm64RegOp("R4")}})
@@ -1366,11 +1339,8 @@ func TestARM64BranchErrorCoverage(t *testing.T) {
 	emitBr := arm64TestEmitBr(c)
 	emitCondBr := arm64TestEmitCondBr(c)
 
-	if tgt, ok := c.resolveBranchTarget(2, arm64MemOp(asm.PC, 4)); !ok || tgt != c.blocks[2].name {
-		t.Fatalf("resolveBranchTarget(last,+4) = (%q, %v)", tgt, ok)
-	}
-	if tgt, ok := c.resolveBranchTarget(0, arm64MemOp(asm.PC, 0)); !ok || tgt != c.blocks[0].name {
-		t.Fatalf("resolveBranchTarget(0(PC)) = (%q, %v)", tgt, ok)
+	if _, ok := c.resolveBranchTarget(2, arm64MemOp(asm.PC, 4)); ok {
+		t.Fatal("out-of-function branch accepted")
 	}
 	if _, ok := c.resolveBranchTarget(0, arm64ImmOp(1)); ok {
 		t.Fatalf("resolveBranchTarget($1) unexpectedly succeeded")

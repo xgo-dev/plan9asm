@@ -2,16 +2,26 @@ package asm
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
-	"github.com/xgo-dev/plan9asm/internal/preprocess"
+	"math"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/preprocess"
 )
+
+// ErrEmptyFile means the preprocessed source contains no TEXT, DATA or GLOBL.
+var ErrEmptyFile = errors.New("no TEXT directive found")
 
 // File is a parsed Plan 9 asm source file (subset).
 type File struct {
-	Arch  Arch
-	Funcs []Func
+	// SourceGoVersion selects version-dependent assembler ABI conventions.
+	// An empty value uses the toolchain that built the translator.
+	SourceGoVersion string
+	Arch            Arch
+	Funcs           []Func
 	// UnlinkedPrelude records instructions before the first TEXT.
 	UnlinkedPrelude []string
 
@@ -229,6 +239,13 @@ func ParsePreprocessed(arch Arch, pp string) (*File, error) {
 				if err != nil {
 					return nil, fmt.Errorf("line %d: %v", lineno, err)
 				}
+				// funcdata.h expands NO_LOCAL_POINTERS to this exact directive.
+				// Other stack map symbols still require runtime metadata support.
+				if arch == ArchWASM && op == "FUNCDATA" && len(args) == 2 &&
+					args[0].Kind == OpImm && args[0].ImmRaw == "" && args[0].Imm == 1 &&
+					args[1].Kind == OpSym && args[1].Sym == "no_pointers_stackmap(SB)" {
+					op, args = "NO_LOCAL_POINTERS", nil
+				}
 				cur.Instrs = append(cur.Instrs, Instr{Op: op, Args: args, Raw: stmt})
 				continue
 			}
@@ -238,7 +255,7 @@ func ParsePreprocessed(arch Arch, pp string) (*File, error) {
 		return nil, err
 	}
 	if len(f.Funcs) == 0 && len(f.Data) == 0 && len(f.Globl) == 0 {
-		return nil, fmt.Errorf("no TEXT directive found")
+		return nil, ErrEmptyFile
 	}
 	return f, nil
 }
@@ -283,10 +300,11 @@ func ParseDATAStmt(arch Arch, rest string) (DataStmt, error) {
 	}
 
 	// lhs: sym+off(SB)/width
-	symPart, widthStr, ok := strings.Cut(lhs, "/")
-	if !ok {
+	widthAt := strings.LastIndexByte(lhs, '/')
+	if widthAt < 0 {
 		return DataStmt{}, fmt.Errorf("DATA missing /width: %q", "DATA "+rest)
 	}
+	symPart, widthStr := lhs[:widthAt], lhs[widthAt+1:]
 	width, err := parseWidth(arch, widthStr)
 	if err != nil || width <= 0 {
 		return DataStmt{}, fmt.Errorf("DATA invalid width %q: %q", widthStr, "DATA "+rest)
@@ -302,36 +320,48 @@ func ParseDATAStmt(arch Arch, rest string) (DataStmt, error) {
 		return DataStmt{}, fmt.Errorf("DATA empty symbol: %q", "DATA "+rest)
 	}
 
-	sym, off := SplitSymPlusOff(symPart)
+	sym, off, err := ParseDataSymbol(symPart)
+	if err != nil {
+		return DataStmt{}, err
+	}
 
-	val, ok := ParseImm(rhs)
-	var payload []byte
-	var addr string
-	if !ok {
-		trimRHS := strings.TrimSpace(rhs)
-		if strings.HasPrefix(trimRHS, "$\"") {
-			str, err := strconv.Unquote(strings.TrimPrefix(trimRHS, "$"))
-			if err == nil && int64(len(str)) <= width {
-				payload = []byte(str)
-				ok = true
+	ds := DataStmt{Sym: sym, Off: off, Width: width, usePointerWidth: strings.EqualFold(strings.TrimSpace(widthStr), "PTRSIZE")}
+	expr, immediate := strings.CutPrefix(rhs, "$")
+	if !immediate {
+		return DataStmt{}, fmt.Errorf("DATA requires an immediate value: %q", rhs)
+	}
+	switch {
+	case strings.HasPrefix(expr, "\""):
+		str, err := strconv.Unquote(expr)
+		if err != nil || int64(len(str)) > width {
+			return DataStmt{}, fmt.Errorf("invalid DATA string of width %d: %q", width, rhs)
+		}
+		ds.Payload = []byte(str)
+	case strings.HasSuffix(expr, "(SB)"):
+		ds.Addr = expr
+	default:
+		if value, ok := ParseImmExpr(expr); ok {
+			switch width {
+			case 1, 2, 4, 8:
+				ds.Value = value
+			default:
+				return DataStmt{}, fmt.Errorf("invalid DATA width %d for integer", width)
 			}
+		} else if value, ok := ParseImmFloatExpr(expr); ok {
+			ds.floatLiteral = true
+			switch width {
+			case 4:
+				ds.Value = uint64(math.Float32bits(float32(value)))
+			case 8:
+				ds.Value = math.Float64bits(value)
+			default:
+				return DataStmt{}, fmt.Errorf("invalid DATA width %d for float", width)
+			}
+		} else {
+			return DataStmt{}, fmt.Errorf("DATA invalid or unresolved immediate %q: %q", rhs, "DATA "+rest)
 		}
 	}
-	if !ok {
-		// Accept symbol-address initializers (e.g. $runtime·main(SB)) even when
-		// relocation details are not modeled; encode as zero placeholder.
-		if strings.HasPrefix(strings.TrimSpace(rhs), "$") {
-			if sym, symOK := ParseSym(strings.TrimPrefix(strings.TrimSpace(rhs), "$")); symOK {
-				addr = sym
-				val = 0
-				ok = true
-			}
-		}
-	}
-	if !ok {
-		return DataStmt{}, fmt.Errorf("DATA invalid immediate %q: %q", rhs, "DATA "+rest)
-	}
-	return DataStmt{Sym: sym, Off: off, Width: width, Value: uint64(val), Payload: payload, Addr: addr}, nil
+	return ds, nil
 }
 
 func parseWidth(arch Arch, s string) (int64, error) {
@@ -368,17 +398,45 @@ func parseGLOBLStmt(rest string) (GloblStmt, error) {
 	if sym == "" {
 		return GloblStmt{}, fmt.Errorf("GLOBL empty symbol: %q", "GLOBL "+rest)
 	}
-	sz, ok := ParseImm(sizePart)
-	if (!ok || sz < 0) && strings.HasPrefix(sizePart, "$(") && strings.HasSuffix(sizePart, ")") {
-		// Some platform asm uses symbolic struct-size macros in GLOBL sizes
-		// (e.g. $(machTimebaseInfo__size)). We don't evaluate include-time
-		// macros here, so keep a conservative non-zero placeholder size.
-		sz, ok = 64, true
+	sym, off, err := ParseDataSymbol(sym)
+	if err != nil {
+		return GloblStmt{}, err
 	}
-	if !ok || sz < 0 {
-		return GloblStmt{}, fmt.Errorf("GLOBL invalid size %q: %q", sizePart, "GLOBL "+rest)
+	if off != 0 {
+		return GloblStmt{}, fmt.Errorf("GLOBL symbol must not be offset from SB: %q", symPart)
 	}
-	return GloblStmt{Sym: sym, Flags: flags, Size: int64(sz)}, nil
+	expr, immediate := strings.CutPrefix(sizePart, "$")
+	if immediate {
+		if n, ok := ParseImmExpr(expr); ok && int64(n) >= 0 {
+			return GloblStmt{Sym: sym, Flags: flags, Size: int64(n)}, nil
+		} else if !ok && strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") {
+			// Keep the declaration visible to source inventory. Object emission
+			// requires the caller's generated assembly header to resolve its size.
+			return GloblStmt{Sym: sym, Flags: flags, Size: -1}, nil
+		}
+	}
+	return GloblStmt{}, fmt.Errorf("GLOBL invalid size %q: %q", sizePart, "GLOBL "+rest)
+}
+
+// ParseDataSymbol separates a package-qualified symbol and its assembler addend.
+func ParseDataSymbol(s string) (string, int64, error) {
+	s = strings.TrimSpace(s)
+	// Operators in a package path precede the assembler symbol separator.
+	nameAt := strings.LastIndex(s, "·")
+	if nameAt >= 0 {
+		nameAt += len("·")
+	} else {
+		nameAt = strings.LastIndexByte(s, '/') + 1
+	}
+	if i := strings.IndexAny(s[nameAt:], "+-"); i >= 0 {
+		i += nameAt
+		base := strings.TrimSpace(s[:i])
+		if delta, ok := ParseImmExpr(s[i:]); base != "" && ok {
+			return base, int64(delta), nil
+		}
+		return base, 0, fmt.Errorf("unresolved DATA address %q: %w", s, ErrProbeNeedsContext)
+	}
+	return s, 0, nil
 }
 
 func SplitSymPlusOff(s string) (sym string, off int64) {
@@ -422,6 +480,22 @@ func parseOperandsCSV(arch Arch, op Op, s string) ([]Operand, error) {
 		if part == "" {
 			continue
 		}
+		// Decimal floating literals carry binary64 bits in ParseOperand.
+		// F32Const instead encodes the rounded IEEE binary32 payload.
+		if arch == ArchWASM && op == "F32CONST" && strings.HasPrefix(part, "$") {
+			expr := strings.TrimSpace(part[1:])
+			if _, integer := ParseImmExpr(expr); !integer {
+				value, err := strconv.ParseFloat(expr, 32)
+				ok := err == nil
+				if !ok {
+					value, ok = ParseImmFloatExpr(expr)
+				}
+				if ok {
+					out = append(out, Operand{Kind: OpImm, Imm: int64(math.Float32bits(float32(value)))})
+					continue
+				}
+			}
+		}
 		legacy := []string{part}
 		if arch == ArchAMD64 && op == "SHLL" {
 			legacy = splitLegacyColonOperand(part)
@@ -434,6 +508,20 @@ func parseOperandsCSV(arch Arch, op Op, s string) ([]Operand, error) {
 			out = append(out, op)
 		}
 	}
+	// Go 1.20 and 1.21 accepted SHA1C/M/P Vm, Rn, Vd and encoded Rn's
+	// register number in the SIMD Sn field. Normalize before register use
+	// analysis so the legacy spelling reads the same vector slot as Vn.
+	if arch == ArchARM64 && len(out) == 3 && (op == "SHA1C" || op == "SHA1M" || op == "SHA1P") &&
+		out[0].Kind == OpReg && out[2].Kind == OpReg && plainARM64Vector(out[0].Reg) && plainARM64Vector(out[2].Reg) && out[1].Kind == OpReg {
+		r := string(out[1].Reg)
+		if r == "ZR" {
+			out[1].Reg = Reg("V31")
+		} else if strings.HasPrefix(r, "R") {
+			if n, err := strconv.Atoi(r[1:]); err == nil && n >= 0 && n <= 31 {
+				out[1].Reg = Reg(fmt.Sprintf("V%d", n))
+			}
+		}
+	}
 	// Direct branches treat a bare token as a label even when it also looks like
 	// an architecture register (for example amd64 JL V1 and ARM BEQ X7 in Go
 	// 1.23's math/big assembly). Indirect branch and call opcodes stay outside
@@ -444,7 +532,46 @@ func parseOperandsCSV(arch Arch, op Op, s string) ([]Operand, error) {
 	return out, nil
 }
 
+func plainARM64Vector(r Reg) bool {
+	if !strings.HasPrefix(string(r), "V") {
+		return false
+	}
+	n, err := strconv.Atoi(string(r[1:]))
+	return err == nil && n >= 0 && n <= 31
+}
+
+// Go's ARM assembler accepts decimal R(n) and F(n) wherever an operand
+// takes a register, including both registers of a shifted operand.
+var armNumberedRegister = regexp.MustCompile(`(?:^|[[:space:]($\[,<>@+\-])([RF])[[:space:]]*\([[:space:]]*([0-9]+)[[:space:]]*\)`)
+
+func normalizeARMNumberedRegisters(s string) (string, error) {
+	matches := armNumberedRegister.FindAllStringSubmatchIndex(s, -1)
+	if len(matches) == 0 {
+		return s, nil
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		n, err := strconv.ParseUint(s[m[4]:m[5]], 10, 4)
+		if err != nil {
+			return "", fmt.Errorf("invalid ARM register %q", s[m[2]:m[1]])
+		}
+		b.WriteString(s[last:m[3]])
+		b.WriteString(strconv.FormatUint(n, 10))
+		last = m[1]
+	}
+	b.WriteString(s[last:])
+	return b.String(), nil
+}
+
 func parseOperandForArch(arch Arch, s string) (Operand, error) {
+	if arch == ArchARM && strings.Contains(s, "(") {
+		var err error
+		s, err = normalizeARMNumberedRegisters(s)
+		if err != nil {
+			return Operand{}, err
+		}
+	}
 	if arch == ArchWASM {
 		if reg, ok := parseWASMReg(s); ok {
 			return Operand{Kind: OpReg, Reg: reg}, nil

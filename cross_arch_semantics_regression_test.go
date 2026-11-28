@@ -13,40 +13,6 @@ import (
 	"testing"
 )
 
-func runOptO2(t *testing.T, ir string) string {
-	t.Helper()
-	opt := findLLVM22Tool("opt")
-	if opt == "" {
-		t.Fatal("LLVM 22 opt not found")
-	}
-	cmd := exec.Command(opt, "-O2", "-S", "-")
-	cmd.Stdin = strings.NewReader(ir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("opt -O2 failed: %v\n%s\nIR:\n%s", err, out, ir)
-	}
-	return string(out)
-}
-
-func extractLLVMFuncBody(t *testing.T, ir, fnName string) string {
-	t.Helper()
-	needle := "@" + fnName + "("
-	idx := strings.Index(ir, needle)
-	if idx < 0 {
-		t.Fatalf("function %s not found in IR:\n%s", fnName, ir)
-	}
-	start := strings.Index(ir[idx:], "{")
-	if start < 0 {
-		t.Fatalf("function %s missing body open brace", fnName)
-	}
-	rest := ir[idx+start:]
-	end := strings.Index(rest, "\n}")
-	if end < 0 {
-		t.Fatalf("function %s missing body close brace", fnName)
-	}
-	return rest[:end+2]
-}
-
 // TestCrossArchARM64MultiplyAccumulateAndCarryFlags verifies:
 //   - Plan 9 ARM64 4-operand order (Rm, Ra, Rn, Rd => Ra +/- Rm*Rn) for all 8
 //     integer multiply-accumulate ops: SMADDL, UMADDL, SMSUBL, UMSUBL, MADD,
@@ -335,10 +301,7 @@ TEXT ·constADCSWCarry(SB),NOSPLIT,$0-8
 	if runtime.GOARCH != "arm64" {
 		return
 	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	mainC := `
 #include <stdint.h>
 #include <stdio.h>
@@ -1643,7 +1606,8 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 			{
 				name: "MULAL_S_does_not_define_C",
 				body: "MOVW $2, R1\nMOVW $3, R2\nMOVW $0, R3\nMOVW $0, R4\nMULAL.S R1, R2, (R3, R4)\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
-			}}
+			},
+		}
 		for _, tc := range rejectCases {
 			t.Run("Reject_"+tc.name, func(t *testing.T) {
 				f, err := Parse(ArchARM, "TEXT ·f(SB),NOSPLIT,$0-4\n"+tc.body)
@@ -2261,10 +2225,7 @@ TEXT ·divbRuntime64(SB),NOSPLIT,$0-24
 	// On Windows/amd64, verify real object compilation & linking succeeds with
 	// zero __chkstk / ___chkstk_ms link errors.
 	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
-		llc, clang, ok := findLlcAndClang(t)
-		if !ok {
-			t.Skip("llc/clang not found")
-		}
+		llc, clang := requireLlcAndClang(t)
 		winTriple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
 		winC := `
 #include <stdint.h>
@@ -2287,10 +2248,7 @@ int main(void) {
 
 	// On native Linux/amd64, fork-test actual SIGFPE (#DE) delivery!
 	if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
-		llc, clang, ok := findLlcAndClang(t)
-		if !ok {
-			t.Skip("llc/clang not found")
-		}
+		llc, clang := requireLlcAndClang(t)
 		mainC := `
 #include <stdint.h>
 #include <stdio.h>
@@ -2512,17 +2470,7 @@ TEXT ·rtDropI32F64S(SB),NOSPLIT,$0-12
 	})
 
 	t.Run("NodeWasmExec", func(t *testing.T) {
-		requireExec := os.Getenv("PLAN9ASM_REQUIRE_WASM_EXEC") == "1" || os.Getenv("PLAN9ASM_REQUIRE_AMD64_DIFF") == "1"
-		wasmLD := findLLVM22Tool("wasm-ld")
-		nodeBin, _ := exec.LookPath("node")
-		llc := findLLVM22Tool("llc")
-		if wasmLD == "" || nodeBin == "" || llc == "" {
-			msg := fmt.Sprintf("Wasm execution prerequisites missing (wasm-ld-22=%q node=%q llc-22=%q)", wasmLD, nodeBin, llc)
-			if requireExec {
-				t.Fatal("PLAN9ASM_REQUIRE_WASM_EXEC=1: " + msg)
-			}
-			t.Skip(msg)
-		}
+		llc, wasmLD, nodeBin := wasmExecutionTools(t)
 		tmpDir := t.TempDir()
 		llPath := filepath.Join(tmpDir, "trunc.ll")
 		objPath := filepath.Join(tmpDir, "trunc.o")
@@ -2821,6 +2769,88 @@ func TestCrossArchARMv7KuserTransfers(t *testing.T) {
 				t.Fatalf("missing atomic update in %s", body)
 			}
 		})
+	}
+}
+
+func TestCrossArchARMv7ConditionalReturn(t *testing.T) {
+	for _, tc := range []struct {
+		cond string
+		want string
+	}{{"EQ", "ret i32 2"}, {"NE", "ret i32 1"}} {
+		f, err := Parse(ArchARM, "TEXT f(SB),4,$0\nMOVW $1,R0\nCMP $0,R0\nRET."+tc.cond+"\nMOVW $2,R0\nRET\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ir, err := Translate(f, Options{Goarch: "arm", Sigs: map[string]FuncSig{"f": {Ret: I32}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body := extractLLVMFuncBody(t, runOptO2(t, ir), "f"); !strings.Contains(body, tc.want) {
+			t.Errorf("RET.%s: %s", tc.cond, body)
+		}
+	}
+}
+
+func TestCrossArchARMv7BarrierEncoding(t *testing.T) {
+	const triple = "armv7-unknown-linux-gnueabihf"
+	for _, tc := range []struct {
+		operand  string
+		encoding uint32
+	}{
+		{"", 15}, {"MB_SY", 15}, {"MB_ST", 14}, {"MB_ISH", 11}, {"MB_ISHST", 10}, {"MB_NSH", 7}, {"MB_NSHST", 6}, {"MB_OSH", 3}, {"MB_OSHST", 2}, {"$11", 11},
+	} {
+		f, err := Parse(ArchARM, "TEXT barrier(SB),4,$0\nDMB "+tc.operand+"\nRET\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ir, err := Translate(f, Options{Goarch: "arm", TargetTriple: triple, Sigs: map[string]FuncSig{"barrier": {Ret: Void}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ir, fmt.Sprintf(".inst 0x%08x", 0xf57ff050|tc.encoding)) {
+			t.Errorf("DMB %s lost its domain/order:\n%s", tc.operand, ir)
+		}
+		verifyLLVMWithTargetLLC(t, ir, triple)
+	}
+}
+
+func TestCrossArchDefaultAMD64SourceMode(t *testing.T) {
+	file, err := Parse(ArchAMD64, "TEXT negate(SB),4,$0\nMOVQ $7, AX\nNEGQ AX\nRET\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, annotate := range []bool{false, true} {
+		ll, err := Translate(file, Options{Sigs: map[string]FuncSig{"negate": {Ret: I64}}, AnnotateSource: annotate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := extractLLVMFuncBody(t, runOptO2(t, ll), "negate")
+		if !strings.Contains(body, "ret i64 -7") {
+			t.Errorf("annotate=%v: NEGQ lost in translation: %s", annotate, body)
+		}
+	}
+}
+
+func TestCrossArchARMv7NumberedShiftRegisters(t *testing.T) {
+	const src = `TEXT calc(SB),4,$0
+	MOVW $3, R1
+	MOVW $2, R2
+	MOVW $7, R3
+	ADD R(1)<<R(2), R(3), R(4)
+	MOVW R4, R0
+	RET`
+	f, err := Parse(ArchARM, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const triple = "armv7-unknown-linux-gnueabihf"
+	ir, err := Translate(f, Options{Goarch: "arm", TargetTriple: triple, Sigs: map[string]FuncSig{"calc": {Ret: I32}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyLLVMWithTargetLLC(t, ir, triple)
+	if body := extractLLVMFuncBody(t, runOptO2(t, ir), "calc"); !strings.Contains(body, "ret i32 19") {
+		t.Fatalf("numbered registers gave unexpected shift/add result:\n%s", body)
 	}
 }
 

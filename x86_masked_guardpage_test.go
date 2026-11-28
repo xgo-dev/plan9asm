@@ -14,10 +14,7 @@ import (
 // NOT read or write memory; touching them triggers SIGSEGV/SIGBUS.
 func TestX86MaskedMemoryGuardPage(t *testing.T) {
 	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 
 	src := `
 // 1. VMOVDQU32 Z0, K1, (AX): masked store of 32-bit lanes

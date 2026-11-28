@@ -29,10 +29,7 @@ func TestAMD64ConformanceLLVMRuntime(t *testing.T) {
 	if runtime.GOARCH != "amd64" && !crossRosetta {
 		t.Skip("runtime execution test only runs on amd64 host")
 	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 
 	src, err := os.ReadFile(filepath.Join("testdata", "conformance", "amd64", "conformance_amd64.s"))
 	if err != nil {

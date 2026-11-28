@@ -14,8 +14,28 @@ func EmitPrelude(b *strings.Builder, goarch string, file *asm.File) {
 }
 
 func EmitPreludeWithX87Mode(b *strings.Builder, goarch string, x87Mode asm.X87Mode, file *asm.File) {
-	b.WriteString("declare i64 @syscall(i64, i64, i64, i64, i64, i64, i64)\n")
-	b.WriteString("declare i32 @cliteErrno()\n")
+	if file != nil {
+		usesTLS := false
+		for _, fn := range file.Funcs {
+			for _, ins := range fn.Instrs {
+				for _, arg := range ins.Args {
+					if arg.Kind == asm.OpMem && arg.Mem.GoTLSOffset {
+						usesTLS = true
+						break
+					}
+				}
+				if usesTLS {
+					break
+				}
+			}
+			if usesTLS {
+				break
+			}
+		}
+		if usesTLS {
+			b.WriteString("@runtime.tlsg = external thread_local(localexec) global i8\ndeclare ptr @llvm.threadlocal.address.p0(ptr)\ndeclare ptr @llvm.thread.pointer()\n")
+		}
+	}
 	// Generic LLVM intrinsics used by amd64 lowering.
 	b.WriteString("declare i64 @llvm.cttz.i64(i64, i1)\n")
 	b.WriteString("declare i32 @llvm.cttz.i32(i32, i1)\n")
@@ -185,6 +205,9 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 }
 
 func TranslateFuncWithOptions(b *strings.Builder, fn asm.Func, sig asm.FuncSig, opt asm.Options) error {
+	if ok, err := translateWindows386Entry(b, fn, sig, opt); ok {
+		return err
+	}
 	fmt.Fprintf(b, "define %s %s(", sig.Ret, asm.LLVMGlobal(sig.Name))
 	for i, t := range sig.Args {
 		if i > 0 {
@@ -195,6 +218,42 @@ func TranslateFuncWithOptions(b *strings.Builder, fn asm.Func, sig asm.FuncSig, 
 	b.WriteString(")")
 	if sig.Attrs != "" {
 		b.WriteString(" " + sig.Attrs)
+	}
+	for _, ins := range fn.Instrs {
+		if readsCallerPC(ins, opt.Goarch) {
+			b.WriteString(" noinline")
+			break
+		}
+	}
+	if marker, thunk := rawFunctionPayload(fn); marker != nil {
+		if !thunk && sig.Ret != asm.Void {
+			return fmt.Errorf("%w: raw jump-to-return marker has no defined result", asm.ErrProbeNeedsContext)
+		}
+		// Prefix data stays in the owning function's text section. On x86 the
+		// original sequence can execute directly at the function entry.
+		kind := "prefix"
+		t := opt.TargetTriple
+		if matchesX86Target(opt.Goarch, t) {
+			kind = "prologue"
+		}
+		if thunk && (opt.Goarch != "amd64" || !matchesX86Target("amd64", t)) {
+			return fmt.Errorf("%w: native x86-64 register thunk requires an explicit x86-64 target", asm.ErrProbeNeedsContext)
+		}
+		fmt.Fprintf(b, " noinline %s [%d x i8] c\"", kind, len(marker))
+		for _, v := range marker {
+			fmt.Fprintf(b, "\\%02X", v)
+		}
+		b.WriteString("\" {\n  call void asm sideeffect \"\", \"~{memory}\"()\n")
+		if sig.Ret == asm.Void {
+			b.WriteString("  ret void\n")
+		} else {
+			if sig.Ret != asm.I64 && sig.Ret != asm.I32 {
+				return fmt.Errorf("%w: unsupported register thunk result %s", asm.ErrProbeNeedsContext, sig.Ret)
+			}
+			fmt.Fprintf(b, "  %%native_result = call %s asm sideeffect \"\", \"={ax}\"()\n  ret %s %%native_result\n", sig.Ret, sig.Ret)
+		}
+		b.WriteString("}\n")
+		return nil
 	}
 	b.WriteString(" {\n")
 
@@ -286,9 +345,8 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 			return false, fmt.Errorf("386 %s prefix is unsupported for %s", prefix, op)
 		}
 	}
-	if strings.HasPrefix(op, "GET_TLS(") {
-		// Macro-expanded helper from go_tls.h. Keep current simplified model.
-		return false, nil
+	if strings.HasPrefix(op, "GET_TLS(") || op == "PUSH_REGS_HOST_TO_ABI0()" || op == "POP_REGS_HOST_TO_ABI0()" {
+		return false, fmt.Errorf("%w: expand runtime assembly macro %s before x86 translation", asm.ErrProbeNeedsContext, op)
 	}
 	switch asm.Op(op) {
 	case asm.OpTEXT, asm.OpBYTE, asm.OpWORD, asm.OpLONG, asm.OpQUAD:
@@ -301,8 +359,7 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins asm.Instr, emitBr amd64EmitBr,
 			return true, fmt.Errorf("amd64 RET expects at most 1 operand: %q", ins.Raw)
 		}
 		return true, c.lowerRET()
-	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "NOP",
-		"PUSH_REGS_HOST_TO_ABI0()", "POP_REGS_HOST_TO_ABI0()":
+	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "NOP":
 		// Alignment directive emitted by stdlib asm; no semantic effect in our IR.
 		return false, nil
 	case "PREFETCHT0", "PREFETCHT1", "PREFETCHT2", "PREFETCHNTA", "PREFETCHW":

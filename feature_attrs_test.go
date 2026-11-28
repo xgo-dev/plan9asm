@@ -115,3 +115,14 @@ func TestInferARMVFPFeatureFromRuntimeSaveRestore(t *testing.T) {
 		t.Fatalf("ARM runtime VFP feature = %q, want +vfp2", got)
 	}
 }
+
+func TestRequiredFeaturesMergeWithExplicitAttrs(t *testing.T) {
+	r := newFeatureAttrRegistry()
+	attrs, err := r.merge(`noinline "target-features"="+avx,+crc32"`, inferFuncTargetFeatures(ArchAMD64, Func{Instrs: []Instr{{Op: "CRC32L"}}}))
+	if err != nil || attrs != `noinline "target-features"="+avx,+crc32,+sse4.2"` {
+		t.Fatalf("merged attrs = %q, %v", attrs, err)
+	}
+	if _, err = r.merge(`"target-features"="-sve"`, "+sve,+sve2"); err == nil {
+		t.Fatal("accepted explicitly disabled required SVE")
+	}
+}

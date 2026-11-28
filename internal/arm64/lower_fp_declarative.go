@@ -77,7 +77,9 @@ var arm64DeclarativeFPSpecs = []asm.OpSpec{
 	// Moves & pairs
 	{Op: "FMOVS", Family: asm.FamilyFP, Width: 32, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "fmov"},
 	{Op: "FLDPS", Family: asm.FamilyFP, Width: 32, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "fldp"},
+	{Op: "FLDPD", Family: asm.FamilyFP, Width: 64, Float: true, Effect: asm.EffectWriteOnly, LLVMOp: "fldp"},
 	{Op: "FSTPS", Family: asm.FamilyFP, Width: 32, Float: true, Effect: asm.EffectReadOnly, LLVMOp: "fstp"},
+	{Op: "FSTPD", Family: asm.FamilyFP, Width: 64, Float: true, Effect: asm.EffectReadOnly, LLVMOp: "fstp"},
 }
 
 var arm64FPTable = asm.NewOpTable(arm64DeclarativeFPSpecs)
@@ -295,7 +297,7 @@ func (c *arm64Ctx) lowerFPDeclarative(op asm.Op, postInc bool, ins asm.Instr) (o
 		c.storeFlag(c.flagsZSlot, "%"+eq)
 		c.storeFlag(c.flagsCSlot, "%"+cf)
 		c.storeFlag(c.flagsVSlot, "%"+uno)
-		c.flagsWritten = true
+		c.flagsDefined = flagAll
 		return true, false, nil
 
 	case "fccmp":
@@ -341,7 +343,7 @@ func (c *arm64Ctx) lowerFPDeclarative(op asm.Op, postInc bool, ins asm.Instr) (o
 		c.storeFlag(c.flagsZSlot, selFlag("%"+eq, nzcv&4 != 0))
 		c.storeFlag(c.flagsCSlot, selFlag("%"+cf, nzcv&2 != 0))
 		c.storeFlag(c.flagsVSlot, selFlag("%"+uno, nzcv&1 != 0))
-		c.flagsWritten = true
+		c.flagsDefined = flagAll
 		return true, false, nil
 
 	case "fcsel":
@@ -386,16 +388,10 @@ func (c *arm64Ctx) lowerFPDeclarative(op asm.Op, postInc bool, ins asm.Instr) (o
 			srcTy = "float"
 		}
 		dstTy := fmt.Sprintf("i%d", spec.Width)
-		conv := "fptoui"
-		if spec.Signed {
-			conv = "fptosi"
-		}
-		iv := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", iv, conv, srcTy, src, dstTy)
-		out := "%" + iv
+		out := c.floatToInt(spec.Signed, dstTy, dstTy, srcTy, fmt.Sprintf("f%d", spec.SrcWidth), src)
 		if spec.Width == 32 {
 			z := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, iv)
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", z, out)
 			out = "%" + z
 		}
 		return true, false, c.storeReg(ins.Args[1].Reg, out)
@@ -475,54 +471,44 @@ func (c *arm64Ctx) lowerFPDeclarative(op asm.Op, postInc bool, ins asm.Instr) (o
 
 	case "fldp", "fstp":
 		preInc := strings.Contains(strings.ToUpper(string(ins.Op)), ".W")
-		if spec.LLVMOp == "fldp" {
-			if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpRegList || len(ins.Args[1].RegList) != 2 {
-				return true, false, fmt.Errorf("arm64 FLDPS expects mem/sym, (F1, F2): %q", ins.Raw)
-			}
-			ptr, base, inc, update, err := c.arm64PairPtr(ins.Args[0], preInc, postInc)
-			if err != nil {
-				return true, false, err
-			}
-			for i, r := range ins.Args[1].RegList {
-				p := ptr
-				if i != 0 {
-					gp := c.newTmp()
-					fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 4\n", gp, ptr)
-					p = "%" + gp
-				}
-				ld, z := c.newTmp(), c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s\n", ld, p)
-				fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, ld)
-				if err := c.storeReg(r, "%"+z); err != nil {
-					return true, false, err
-				}
-			}
-			if update {
-				return true, false, c.updatePostInc(base, inc)
-			}
-			return true, false, nil
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("arm64 %s expects a register pair and memory: %q", op, ins.Raw)
 		}
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || len(ins.Args[0].RegList) != 2 {
-			return true, false, fmt.Errorf("arm64 FSTPS expects (F1, F2), mem/sym: %q", ins.Raw)
+		load := spec.LLVMOp == "fldp"
+		pair, mem := ins.Args[0], ins.Args[1]
+		if load {
+			mem, pair = pair, mem
 		}
-		ptr, base, inc, update, err := c.arm64PairPtr(ins.Args[1], preInc, postInc)
+		if pair.Kind != asm.OpRegList || len(pair.RegList) != 2 {
+			return true, false, fmt.Errorf("arm64 %s expects an FP register pair: %q", op, ins.Raw)
+		}
+		ptr, base, inc, update, err := c.arm64PairPtr(mem, preInc, postInc)
 		if err != nil {
 			return true, false, err
 		}
-		for i, r := range ins.Args[0].RegList {
+		for i, r := range pair.RegList {
+			if _, ok := arm64ParseFReg(r); !ok {
+				return true, false, fmt.Errorf("arm64 %s invalid FP register %q", op, r)
+			}
 			p := ptr
 			if i != 0 {
-				gp := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 4\n", gp, ptr)
-				p = "%" + gp
+				g := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 %d\n", g, ptr, spec.Width/8)
+				p = "%" + g
 			}
-			v, err := c.loadReg(r)
-			if err != nil {
-				return true, false, err
+			if load {
+				ld := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i%d, ptr %s, align 1\n", ld, spec.Width, p)
+				if err := c.storeWidth(r, "%"+ld, spec.Width); err != nil {
+					return true, false, err
+				}
+			} else {
+				v, err := c.evalWidth(asm.Operand{Kind: asm.OpReg, Reg: r}, spec.Width)
+				if err != nil {
+					return true, false, err
+				}
+				fmt.Fprintf(c.b, "  store i%d %s, ptr %s, align 1\n", spec.Width, v, p)
 			}
-			tr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v)
-			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s\n", tr, p)
 		}
 		if update {
 			return true, false, c.updatePostInc(base, inc)
@@ -552,4 +538,15 @@ func (c *arm64Ctx) arm64PairPtr(op asm.Operand, preInc, postInc bool) (ptr strin
 	pt := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, addr)
 	return "%" + pt, base, inc, postInc, nil
+}
+
+// ARM float-to-integer conversions saturate on overflow and return zero for NaN.
+func (c *arm64Ctx) floatToInt(signed bool, dstTy, dstSuffix, srcTy, srcSuffix, src string) string {
+	op := "fptoui"
+	if signed {
+		op = "fptosi"
+	}
+	t := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.sat.%s.%s(%s %s)\n", t, dstTy, op, dstSuffix, srcSuffix, srcTy, src)
+	return "%" + t
 }

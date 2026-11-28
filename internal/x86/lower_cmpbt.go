@@ -61,106 +61,9 @@ func (c *amd64Ctx) lowerCmpBt(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		c.setTestFlagsSized(ty, a, b)
 		return true, false, nil
 
-	case "BTQ":
-		// BTQ bit(imm|reg), dst(reg|mem): sets CF to selected bit.
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("amd64 BTQ expects bit, dst: %q", ins.Raw)
-		}
-		return true, false, c.lowerX86ExtraBit(asm.OpSpec{Op: "BTQ", Width: 64, LLVMOp: "bt"}, ins)
-
-	case "BTSQ", "BTRQ":
-		// BTSQ/BTRQ src, dstReg|dstMem: CF = old bit, then set or
-		// clear the selected destination bit.
-		if len(ins.Args) != 2 {
-			return true, false, fmt.Errorf("amd64 %s expects src, dst: %q", op, ins.Raw)
-		}
-		var amt string
-		var registerIndex string
-		switch ins.Args[0].Kind {
-		case asm.OpImm:
-			amt = fmt.Sprintf("%d", ins.Args[0].Imm&63)
-		case asm.OpReg:
-			av, err := c.loadReg(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			m := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 63\n", m, av)
-			amt = "%" + m
-			registerIndex = av
-		default:
-			return true, false, fmt.Errorf("amd64 %s expects imm/reg bit index: %q", op, ins.Raw)
-		}
-
-		var dst string
-		var storeDst func(string) error
-		switch ins.Args[1].Kind {
-		case asm.OpReg:
-			dv, err := c.loadReg(ins.Args[1].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			dst = dv
-			storeDst = func(v string) error { return c.storeReg(ins.Args[1].Reg, v) }
-		case asm.OpMem, asm.OpSym:
-			addr, err := c.resolveMemAddrI64(ins.Args[1])
-			if err != nil {
-				return true, false, err
-			}
-			// A register bit index on a memory operand selects a bit in an
-			// unbounded bit string, not merely within the first qword. Adjust
-			// the address by floor(index/64)*8 and retain index&63 within it.
-			if registerIndex != "" {
-				word := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = ashr i64 %s, 6\n", word, registerIndex)
-				byteOff := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, 3\n", byteOff, word)
-				adjusted := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = add i64 %s, %%%s\n", adjusted, addr, byteOff)
-				addr = "%" + adjusted
-			}
-			p := c.ptrFromAddrI64(addr)
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
-			dst = "%" + ld
-			storeDst = func(v string) error {
-				fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
-				return nil
-			}
-		case asm.OpFP:
-			dv, err := c.evalFPToI64(ins.Args[1].FPOffset)
-			if err != nil {
-				return true, false, err
-			}
-			dst = dv
-			storeDst = func(v string) error {
-				return c.storeFPResult(ins.Args[1].FPOffset, asm.I64, v)
-			}
-		default:
-			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
-		}
-
-		sh := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %s\n", sh, dst, amt)
-		and := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", and, sh)
-		cf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, and)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
-		one := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl i64 1, %s\n", one, amt)
-		out := c.newTmp()
-		if op == "BTSQ" {
-			fmt.Fprintf(c.b, "  %%%s = or i64 %s, %%%s\n", out, dst, one)
-		} else {
-			mask := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = xor i64 %%%s, -1\n", mask, one)
-			fmt.Fprintf(c.b, "  %%%s = and i64 %s, %%%s\n", out, dst, mask)
-		}
-		if err := storeDst("%" + out); err != nil {
-			return true, false, err
-		}
-		return true, false, nil
+	case "BTQ", "BTSQ", "BTRQ":
+		spec, _ := x86ExtraScalarTable.Lookup(op)
+		return true, false, c.lowerX86ExtraBit(spec, ins)
 	}
 	return false, false, nil
 }
@@ -233,10 +136,7 @@ func (c *amd64Ctx) evalIntSized(op asm.Operand, ty asm.LLVMType) (string, error)
 				fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to %s\n", value, wide, ty)
 				return "%" + value, nil
 			}
-			// Macro-style symbolic immediates (e.g. $const_avxSupported) may
-			// survive preprocessing when include constants are unavailable.
-			// Keep translation progressing with a conservative zero value.
-			return "0", nil
+			return "", fmt.Errorf("%w: unresolved x86 immediate %s", asm.ErrProbeNeedsContext, s)
 		}
 		if strings.HasSuffix(s, "(SB)") {
 			p, err := c.ptrFromSB(s)
@@ -250,6 +150,15 @@ func (c *amd64Ctx) evalIntSized(op asm.Operand, ty asm.LLVMType) (string, error)
 			}
 			fmt.Fprintf(c.b, "  %%%s = %s %s, ptr %s, align 1\n", t, loadKW, ty, p)
 			return "%" + t, nil
+		}
+		if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") {
+			address, ok := asm.ParseImmExpr(s)
+			if !ok {
+				return "", fmt.Errorf("%w: unresolved x86 address %s", asm.ErrProbeNeedsContext, s)
+			}
+			v := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load volatile %s, ptr inttoptr (i64 %d to ptr), align 1\n", v, ty, address)
+			return "%" + v, nil
 		}
 		return "", fmt.Errorf("amd64: unsupported sym int operand: %s", op.String())
 	case asm.OpIdent:

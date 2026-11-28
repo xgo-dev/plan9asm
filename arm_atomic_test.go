@@ -25,7 +25,7 @@ func TestTranslateARMLdrexStrex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Translate() error = %v", err)
 	}
-	for _, want := range []string{"load atomic i32", "cmpxchg ptr", "%exclusive_valid"} {
+	for _, want := range []string{".inst 0xe1910f9f", ".inst 0xe1810f93"} {
 		if !strings.Contains(ll, want) {
 			t.Fatalf("missing %q in output:\n%s", want, ll)
 		}

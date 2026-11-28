@@ -17,9 +17,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"testing"
+
+	"github.com/xgo-dev/plan9asm/internal/diffreport"
 )
 
 func loadAMD64DiffGatePackage(t *testing.T) (GoPackage, []byte) {
@@ -97,14 +98,8 @@ func TestAMD64MachineCodeDifferentialGate(t *testing.T) {
 		t.Fatalf("PLAN9ASM_REQUIRE_AMD64_DIFF=1 requires GOARCH=amd64, got %s", runtime.GOARCH)
 	}
 
-	optTool := findLLVM22Tool("opt")
-	llcTool, clangTool, haveTools := findLlcAndClang(t)
-	if optTool == "" || !haveTools {
-		if requireDiff {
-			t.Fatalf("PLAN9ASM_REQUIRE_AMD64_DIFF=1 requires LLVM 22 opt/llc/clang (opt=%q llc=%q clang=%q)", optTool, llcTool, clangTool)
-		}
-		t.Skipf("LLVM 22 opt/llc/clang unavailable (opt=%q llc=%q clang=%q)", optTool, llcTool, clangTool)
-	}
+	optTool := requireLLVM22Tool(t, "opt")
+	llcTool, clangTool := requireLlcAndClang(t)
 
 	hostTriple := hostLLVMTriple()
 	if hostTriple == "" {
@@ -558,30 +553,8 @@ int main(void) {
 		len(llvmMap), compared, hwPending)
 }
 
-type amd64DiffExecutionReport struct {
-	SchemaVersion   int                       `json:"schema_version"`
-	Goarch          string                    `json:"goarch"`
-	Goos            string                    `json:"goos"`
-	GoVersion       string                    `json:"go_version"`
-	LLVMVersion     string                    `json:"llvm_version,omitempty"`
-	NativeOracleRan bool                      `json:"native_oracle_ran"`
-	TotalInputs     int                       `json:"total_inputs"`
-	ComparedInputs  int                       `json:"compared_inputs"`
-	FailedInputs    int                       `json:"failed_inputs"`
-	Cases           []amd64DiffCaseExecResult `json:"cases"`
-}
-
-type amd64DiffCaseExecResult struct {
-	ID                string   `json:"id"`
-	Asm               string   `json:"asm"`
-	Status            string   `json:"status"`
-	VerificationMode  string   `json:"verification_mode,omitempty"`
-	ExecutedInputs    int      `json:"executed_inputs"`
-	ComparedInputs    int      `json:"compared_inputs"`
-	FailedInputs      int      `json:"failed_inputs"`
-	MissingHWFeatures []string `json:"missing_hw_features,omitempty"`
-	Forms             []string `json:"forms"`
-}
+type amd64DiffExecutionReport = diffreport.Report
+type amd64DiffCaseExecResult = diffreport.Case
 
 func mergeAndWriteAMD64DiffReport(t *testing.T, nativeOracle bool, llvmVersion string, newCases []amd64DiffCaseExecResult) {
 	t.Helper()
@@ -597,36 +570,27 @@ func mergeAndWriteAMD64DiffReport(t *testing.T, nativeOracle bool, llvmVersion s
 		LLVMVersion:     llvmVersion,
 		NativeOracleRan: nativeOracle,
 	}
-	byID := map[string]amd64DiffCaseExecResult{}
-	if existing, err := os.ReadFile(reportPath); err == nil && len(existing) > 0 {
-		var prev amd64DiffExecutionReport
-		if err := json.Unmarshal(existing, &prev); err == nil && prev.SchemaVersion == 1 && prev.Goarch == "amd64" {
-			if prev.LLVMVersion != "" && rep.LLVMVersion == "" {
-				rep.LLVMVersion = prev.LLVMVersion
-			}
-			rep.NativeOracleRan = rep.NativeOracleRan || prev.NativeOracleRan
-			for _, c := range prev.Cases {
-				byID[c.ID] = c
-			}
-		}
-	}
+	rep.Cases = newCases
 	for _, c := range newCases {
-		byID[c.ID] = c
-	}
-	ids := make([]string, 0, len(byID))
-	for id := range byID {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	rep.Cases = make([]amd64DiffCaseExecResult, 0, len(ids))
-	for _, id := range ids {
-		c := byID[id]
-		rep.Cases = append(rep.Cases, c)
 		rep.TotalInputs += c.ExecutedInputs
-		if c.VerificationMode == "native_diff" {
-			rep.ComparedInputs += c.ComparedInputs
-		}
+		rep.ComparedInputs += c.ComparedInputs
 		rep.FailedInputs += c.FailedInputs
+	}
+	if err := rep.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	existing, err := os.ReadFile(reportPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err == nil {
+		var prev amd64DiffExecutionReport
+		if err := json.Unmarshal(existing, &prev); err != nil {
+			t.Fatalf("read existing diff report: %v", err)
+		}
+		if err := rep.Merge(prev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	data, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
@@ -694,6 +658,9 @@ func writeAMD64ManifestDiffExecutionReport(t *testing.T, asmRel, llcTool string,
 		}
 		for k := range oracleMap {
 			if matchesAny(k, prefixes) {
+				if _, ok := llvmMap[k]; !ok {
+					t.Fatalf("missing LLVM execution for oracle input %s in case %s", k, tc.ID)
+				}
 				cmpCnt++
 				if failedKeys[k] {
 					failCnt++
@@ -713,9 +680,9 @@ func writeAMD64ManifestDiffExecutionReport(t *testing.T, asmRel, llcTool string,
 			switch {
 			case failCnt > 0:
 				status = "failed"
-			case len(missingHW) > 0 && cmpCnt == 0:
+			case len(missingHW) > 0 && (cmpCnt < execCnt || execCnt == 0):
 				status = "hw_pending"
-			case cmpCnt > 0:
+			case cmpCnt > 0 && cmpCnt == execCnt:
 				status = "passed"
 			default:
 				status = "failed"

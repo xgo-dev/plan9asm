@@ -103,7 +103,8 @@ type Options struct {
 	// Sigs maps resolved symbol name -> signature.
 	Sigs map[string]FuncSig
 
-	// Goarch is used for arch-specific translations (e.g. x86 CPUID / 386).
+	// Goarch selects the source instruction mode. ArchAMD64 defaults to amd64;
+	// specify "386" for 32-bit x86 assembly.
 	Goarch string
 
 	// WASMABI selects the WebAssembly physical ABI.

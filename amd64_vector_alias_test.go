@@ -13,10 +13,7 @@ func TestAMD64VectorRegisterAliases(t *testing.T) {
 	if runtime.GOARCH != "amd64" && !crossRosetta {
 		t.Skip("requires amd64 execution")
 	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	triple := testTargetTriple(runtime.GOOS, "amd64")
 	var prefix []string
 	if crossRosetta {

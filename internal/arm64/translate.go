@@ -3,6 +3,7 @@ package arm64
 import (
 	"fmt"
 	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/exclusive"
 	"strings"
 )
 
@@ -32,7 +33,7 @@ func EmitPrelude(b *strings.Builder) {
 	b.WriteString("\n")
 }
 
-func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, annotateSource bool) error {
+func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, annotateSource bool, targetTriple string) error {
 	fmt.Fprintf(b, "define %s %s(", sig.Ret, asm.LLVMGlobal(sig.Name))
 	for i, t := range sig.Args {
 		if i > 0 {
@@ -47,6 +48,17 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 	b.WriteString(" {\n")
 
 	c := newARM64Ctx(b, fn, sig, resolve, sigs, annotateSource)
+	lowered, groups, err := exclusive.Rewrite(fn, true, false)
+	if err != nil {
+		return err
+	}
+	if len(groups) > 0 {
+		c.exclusive = groups
+		c.blocks = arm64SplitBlocks(lowered)
+	}
+
+	c.nativeAArch64 = IsTarget(targetTriple)
+	c.targetTriple = strings.ToLower(targetTriple)
 	if err := c.emitEntryAllocasAndArgInit(); err != nil {
 		return err
 	}
@@ -59,7 +71,9 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 }
 
 func (c *arm64Ctx) lowerBlocks() error {
+	flows := make([]flagBlock, len(c.blocks))
 	emitBr := func(target string) {
+		c.flagFlow.successors[0] = target
 		fmt.Fprintf(c.b, "  br label %%%s\n", asm.LLVMBlockName(target))
 	}
 	emitCondBr := func(cond string, target string, fall string) error {
@@ -67,18 +81,20 @@ func (c *arm64Ctx) lowerBlocks() error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(c.b, "  br i1 %s, label %%%s, label %%%s\n", cv, asm.LLVMBlockName(target), asm.LLVMBlockName(fall))
+		c.branchIf(cv, target, fall)
 		return nil
 	}
 
 	for bi := 0; bi < len(c.blocks); bi++ {
 		blk := c.blocks[bi]
+		c.flagFlow, c.flagsDefined = &flows[bi], 0
 		if bi != 0 {
 			fmt.Fprintf(c.b, "\n%s:\n", asm.LLVMBlockName(blk.name))
 		}
 
 		terminated := false
-		for _, ins := range blk.instrs {
+		for i, ins := range blk.instrs {
+			c.pc = blk.startPC + int64(i)
 			c.emitSourceComment(ins)
 			term, err := c.lowerInstr(bi, ins, emitBr, emitCondBr)
 			if err != nil {
@@ -90,6 +106,7 @@ func (c *arm64Ctx) lowerBlocks() error {
 			}
 		}
 
+		c.flagFlow.defines = c.flagsDefined
 		if terminated {
 			continue
 		}
@@ -101,7 +118,7 @@ func (c *arm64Ctx) lowerBlocks() error {
 		// Last block: implicit return zero.
 		c.lowerRetZero()
 	}
-	return nil
+	return c.validateFlagInputs(flows)
 }
 
 func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCondBr arm64EmitCondBr) (terminated bool, err error) {
@@ -110,7 +127,12 @@ func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCon
 	c.curPreInc = strings.Contains(rawOp, ".W")
 	defer func() { c.curPreInc = false }()
 	baseOp := rawOp
-	if dot := strings.IndexByte(baseOp, '.'); dot >= 0 {
+	if strings.HasPrefix(baseOp, "B.") {
+		baseOp = "B" + baseOp[2:]
+		if baseOp == "BAL" {
+			baseOp = "B"
+		}
+	} else if dot := strings.IndexByte(baseOp, '.'); dot >= 0 {
 		baseOp = baseOp[:dot]
 	}
 	op := asm.Op(baseOp)
@@ -121,8 +143,41 @@ func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCon
 		return false, nil
 	}
 
+	if ins.Op == exclusive.ExitOpcode {
+		if bi+1 >= len(c.blocks) || c.exclusiveExit == "" {
+			return false, fmt.Errorf("invalid exclusive exit: missing predicate or fallthrough")
+		}
+		target, ok := c.resolveBranchTarget(bi, ins.Args[0])
+		if !ok {
+			return false, fmt.Errorf("invalid exclusive exit target")
+		}
+		c.branchIf(c.exclusiveExit, target, c.blocks[bi+1].name)
+		c.exclusiveExit = ""
+		return true, nil
+	}
+	if ins.Op == exclusive.Opcode {
+		if !c.nativeAArch64 {
+			return false, fmt.Errorf("%w: exclusive region requires a native target", asm.ErrProbeNeedsContext)
+		}
+		id := ins.Args[0].Imm
+		region := c.exclusive[id]
+		entryNZCV := ""
+		writeFlags := c.unpackNZCV
+		if region.ExitPreservesFlags && region.Flags {
+			// The early exit precedes CMP. Preserve the incoming NZCV on that
+			// edge and only add definitions on the path that actually ran CMP.
+			entryNZCV = c.packNZCV()
+			writeFlags = func(computed string) {
+				defined := c.flagsDefined
+				c.unpackNZCV(computed)
+				c.flagsDefined = defined
+				c.flagFlow.fallDefines = flagAll
+			}
+		}
+		return false, region.Emit(c.b, c.newTmp, c.loadReg, c.storeReg, writeFlags, entryNZCV, &c.exclusiveExit, nil)
+	}
 	switch op {
-	case asm.OpTEXT, asm.OpBYTE:
+	case asm.OpTEXT:
 		return false, nil
 	case asm.OpRET:
 		if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpSym && strings.HasSuffix(ins.Args[0].Sym, "(SB)") {
@@ -132,17 +187,24 @@ func (c *arm64Ctx) lowerInstr(bi int, ins asm.Instr, emitBr arm64EmitBr, emitCon
 			return true, fmt.Errorf("arm64 RET expects at most 1 operand: %q", ins.Raw)
 		}
 		return true, c.lowerRET()
-	case asm.OpWORD:
-		return false, c.lowerRawWord(ins)
-	case "SB":
-		if len(ins.Args) != 0 {
-			return false, fmt.Errorf("arm64 SB expects no operands: %q", ins.Raw)
+	case asm.OpBYTE, "DWORD", asm.OpWORD:
+		var err error
+		if op == asm.OpWORD {
+			err = c.lowerRawWord(ins)
+		} else {
+			err = fmt.Errorf("arm64: unsupported executable directive %s", ins.Raw)
 		}
-		fmt.Fprintln(c.b, `  call void asm sideeffect ".inst 0xd50330ff", "~{memory}"()`)
-		return false, nil
-	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "DMB", "DSB", "ISB", "DC", "PRFM",
-		"BREAK", "BRK", "UNDEF", "#UNDEF", "YIELD", "NOP",
-		"FLDPD", "FSTPD", "STY",
+		if err != nil && c.flagFlow != nil {
+			// A literal pool after an unconditional branch is valid data.
+			// Only reachable execution of an unmodeled word fails translation.
+			c.flagFlow.rawErr = err
+			return false, nil
+		}
+		return false, err
+	case "BREAK", "BRK", "UNDEF", "SB", "ISB", "DMB", "DSB", "DC":
+		return c.lowerSystemEffect(op, ins)
+	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "PRFM", "#UNDEF", "YIELD", "NOP",
+		"STY",
 		"P256ADDINLINE", "P256MULBY2INLINE", "MOV",
 		"#IFDEF", "#ELSE", "#ENDIF":
 		return false, nil
@@ -279,4 +341,9 @@ func (c *arm64Ctx) lowerRetZero() {
 	default:
 		fmt.Fprintf(c.b, "  ret %s 0\n", c.sig.Ret)
 	}
+}
+
+func IsTarget(triple string) bool {
+	arch, _, _ := strings.Cut(strings.ToLower(triple), "-")
+	return arch == "aarch64" || arch == "arm64" || arch == "arm64e" || arch == "aarch64_be"
 }

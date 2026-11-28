@@ -17,6 +17,15 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 		return true, false, fmt.Errorf("amd64 %s expects 2 operands: %q", op, ins.Raw)
 	}
 	src, dst := ins.Args[0], ins.Args[1]
+	if readsCallerPC(ins, c.goarch) {
+		if !matchesX86Target(c.goarch, c.targetTriple) {
+			return true, false, fmt.Errorf("%w: x86 caller return PC requires a matching explicit target", asm.ErrProbeNeedsContext)
+		}
+		ptr, word := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call ptr @llvm.returnaddress(i32 0)\n", ptr)
+		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i64\n", word, ptr)
+		return true, false, c.storeReg(dst.Reg, "%"+word)
+	}
 	zeroExtendSmallDst := false
 	if op == "MOVLQZX" || op == "MOVQL" {
 		op = "MOVL"
@@ -247,14 +256,6 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 					t := c.newTmp()
 					fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", t, p)
 					v = "%" + t
-				} else if src.Kind == asm.OpSym {
-					p, err2 := c.ptrFromSB(src.Sym)
-					if err2 != nil {
-						return true, false, err2
-					}
-					t := c.newTmp()
-					fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", t, p)
-					v = "%" + t
 				} else {
 					return true, false, err
 				}
@@ -285,7 +286,7 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			return true, false, nil
 		case asm.OpSym:
 			if !strings.HasSuffix(strings.TrimSpace(dst.Sym), "(SB)") {
-				return true, false, nil
+				return true, false, fmt.Errorf("%w: unresolved store destination: %s", asm.ErrProbeNeedsContext, dst.Sym)
 			}
 			v, err := c.evalI64(src)
 			if err != nil {
@@ -325,10 +326,7 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			if (src.Kind == asm.OpIdent && isX86SystemOrSegIdent(src.Ident)) || (src.Kind == asm.OpReg && isX86SystemOrSegIdent(string(src.Reg))) {
 				return true, false, fmt.Errorf("%s: unsupported MOVL reading segment/system register: %q", c.goarch, ins.Raw)
 			}
-			if src.Kind != asm.OpSym || strings.Contains(src.Sym, "(SB)") {
-				return true, false, err
-			}
-			i32v = "0"
+			return true, false, err
 		}
 		switch dst.Kind {
 		case asm.OpReg:
@@ -348,12 +346,19 @@ func (c *amd64Ctx) lowerMov(op asm.Op, ins asm.Instr) (ok bool, terminated bool,
 			fmt.Fprintf(c.b, "  store i32 %s, %s %s, align 1\n", i32v, ptrType, p)
 			return true, false, nil
 		case asm.OpImm:
-			// Some runtime stubs intentionally encode a crashing instruction as
-			// "MOVL $0xf1, 0xf1". Keep translation progressing.
+			// Absolute-address writes in crash stubs must survive optimization.
+			if dst.ImmRaw != "" {
+				return true, false, fmt.Errorf("unresolved MOVL destination %s", dst.ImmRaw)
+			}
+			fmt.Fprintf(c.b, "  store volatile i32 %s, ptr inttoptr (i64 %d to ptr), align 1\n", i32v, dst.Imm)
 			return true, false, nil
 		case asm.OpSym:
 			if !strings.HasSuffix(strings.TrimSpace(dst.Sym), "(SB)") {
-				// Crash marker form (e.g. MOVL $0xf1, 0xf1) in runtime stubs.
+				addr, ok := asm.ParseImmExpr(dst.Sym)
+				if !ok {
+					return true, false, fmt.Errorf("%w: unresolved store destination: %s", asm.ErrProbeNeedsContext, dst.Sym)
+				}
+				fmt.Fprintf(c.b, "  store volatile i32 %s, ptr inttoptr (i64 %d to ptr), align 1\n", i32v, addr)
 				return true, false, nil
 			}
 			p, err := c.ptrFromSB(dst.Sym)

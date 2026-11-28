@@ -9,30 +9,6 @@ import (
 	"testing"
 )
 
-func verifyLLVMWithTargetLLC(t *testing.T, ir string, triple string, extraLLCArgs ...string) {
-	t.Helper()
-	opt := findLLVM22Tool("opt")
-	if opt == "" {
-		t.Fatal("LLVM 22 opt not found")
-	}
-	cmd := exec.Command(opt, "-passes=verify", "-disable-output", "-")
-	cmd.Stdin = strings.NewReader(ir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("opt verify (%s) failed: %v\n%s\nIR:\n%s", triple, err, out, ir)
-	}
-	llc := findLLVM22Tool("llc")
-	if llc == "" {
-		t.Fatal("LLVM 22 llc not found")
-	}
-	args := []string{"-mtriple=" + triple, "-filetype=null", "-"}
-	args = append(args, extraLLCArgs...)
-	cmd = exec.Command(llc, args...)
-	cmd.Stdin = strings.NewReader(ir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("llc (%s) failed: %v\n%s\nIR:\n%s", triple, err, out, ir)
-	}
-}
-
 // TestM5_ARM64DiffSemantics verifies bit-for-bit execution semantics of M4 SVE
 // (VL=128) and M5 ARM64 scalar/bitfield/FP/NEON lowering against architectural
 // reference values on native arm64 (or Linux qemu-aarch64) hosts, and runs full
@@ -248,10 +224,7 @@ TEXT ·arm64M5Forms(SB),NOSPLIT,$0-16
 	if runtime.GOARCH != "arm64" {
 		return
 	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	mainC := `
 #include <stdint.h>
 #include <stdio.h>
@@ -269,7 +242,7 @@ int main(void) {
         2ULL,                      // [0] REM 100 % 7
         0x00000000fffffffeULL,     // [1] REMW -100 % 7
         2ULL,                      // [2] UREM 100 % 7
-        0ULL,                      // [3] UREMW / 0
+        2ULL,                      // [3] UREMW by zero preserves the numerator
         (uint64_t)-42LL,           // [4] NEG 42
         0x00000000fffffffbULL,     // [5] NEGW 5
         5ULL,                      // [6] NEGW -5
@@ -554,10 +527,7 @@ TEXT ·amd64M5Exec(SB),NOSPLIT,$0-16
 	if runtime.GOARCH != "amd64" && !crossRosetta {
 		return
 	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	triple := testTargetTriple(runtime.GOOS, runtime.GOARCH)
 	var runPrefix []string
 	if crossRosetta {
@@ -642,9 +612,9 @@ TEXT ·armM5(SB),NOSPLIT,$0-0
 	NMULAF F0, F1
 	NMULSD F0, F1
 	NMULSF F0, F1
-	STREX 4(R1), R0, R2
-	STREXB 4(R1), R0, R2
-	STREXD 4(R1), R0, R2
+	STREX R0, (R2), R3
+	STREXB R0, (R2), R3
+	STREXD R0, (R2), R3
 	SWPW 4(R1), R0, R2
 	SWPBU 4(R1), R0, R2
 	BXRET R14

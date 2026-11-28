@@ -331,13 +331,8 @@ func (c *arm64Ctx) lowerARM64VecFCVTInt(kind string, signed bool, fbits int64, s
 		cur = "%" + t
 	}
 	intSh := neonShape{lanes: sh.lanes, elemBits: sh.elemBits, half64: sh.half64}
-	conv := "fptoui"
-	if signed {
-		conv = "fptosi"
-	}
-	out := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", out, conv, fpTy, cur, intSh.vecTy())
-	return c.storeVShape(dst, "%"+out, intSh)
+	out := c.floatToInt(signed, intSh.vecTy(), intSh.intrSuffix(), fpTy, suf, cur)
+	return c.storeVShape(dst, out, intSh)
 }
 
 func (c *arm64Ctx) lowerARM64VecIntCVTF(signed bool, fbits int64, srcOp asm.Operand, dst asm.Reg) error {
@@ -456,20 +451,7 @@ func (c *arm64Ctx) lowerM6XArch(op asm.Op, postInc bool, ins asm.Instr) (ok bool
 	}
 	switch spec.LLVMOp {
 	case "adrp":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("arm64 ADRP expects sym, Rd: %q", ins.Raw)
-		}
-		if ins.Args[0].Kind == asm.OpSym {
-			p, err := c.ptrFromSB(ins.Args[0].Sym)
-			if err != nil {
-				return true, false, c.storeReg(ins.Args[1].Reg, "0")
-			}
-			pi, pg := c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", pi, p)
-			fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, -4096\n", pg, pi)
-			return true, false, c.storeReg(ins.Args[1].Reg, "%"+pg)
-		}
-		return true, false, c.storeReg(ins.Args[1].Reg, "0")
+		return true, false, c.lowerAddress(op, ins)
 
 	case "movp":
 		// Pair load/store aliases MOVP/MOVPD/MOVPW/MOVPS/MOVPSW
@@ -705,13 +687,9 @@ func (c *arm64Ctx) lowerM6XArch(op asm.Op, postInc bool, ins asm.Instr) (ok bool
 		}[spec.LLVMOp]
 		rd := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call double %s(double %s)\n", rd, intr, v)
-		conv := "fptoui"
-		if spec.Signed {
-			conv = "fptosi"
-		}
-		i32, z := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = %s double %%%s to i32\n", i32, conv, rd)
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, i32)
+		v32 := c.floatToInt(spec.Signed, "i32", "i32", "double", "f64", "%"+rd)
+		z := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", z, v32)
 		return true, false, c.storeReg(ins.Args[1].Reg, "%"+z)
 
 	case "f2i_freg", "i2f_freg":
@@ -727,16 +705,10 @@ func (c *arm64Ctx) lowerM6XArch(op asm.Op, postInc bool, ins asm.Instr) (ok bool
 			if spec.Width == 32 {
 				fpTy, iTy = "float", "i32"
 			}
-			conv := "fptoui"
-			if spec.Signed {
-				conv = "fptosi"
-			}
-			iv := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", iv, conv, fpTy, fv, iTy)
-			out := "%" + iv
+			out := c.floatToInt(spec.Signed, iTy, iTy, fpTy, fmt.Sprintf("f%d", spec.Width), fv)
 			if spec.Width == 32 {
 				z := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, iv)
+				fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", z, out)
 				out = "%" + z
 			}
 			return true, false, c.storeReg(ins.Args[1].Reg, out)
@@ -814,12 +786,8 @@ func (c *arm64Ctx) lowerM6XArch(op asm.Op, postInc bool, ins asm.Instr) (ok bool
 		return true, false, c.lowerARM64M6AddLV(ins)
 	case "sqdmul2":
 		return true, false, c.lowerARM64M6SQDMul2(spec, ins)
-	case "var_rshl":
-		return true, false, c.lowerARM64M6VarRShl(spec, ins)
-	case "imm_rshr":
-		return true, false, c.lowerARM64M6ImmRShr(spec, ins)
-	case "sqshlu":
-		return true, false, c.lowerARM64M6SQShlu(ins)
+	case "var_rshl", "imm_rshr", "sqshlu":
+		return true, false, c.lowerNEONShift(spec, ins)
 	case "shrn_ext":
 		return true, false, c.lowerARM64M6ShrnExt(spec, ins)
 	case "mixed_qadd":
@@ -1431,100 +1399,6 @@ func (c *arm64Ctx) lowerARM64M6SQDMul2(spec asm.OpSpec, ins asm.Instr) error {
 	return c.storeVShape(ins.Args[2].Reg, out, dstSh)
 }
 
-func (c *arm64Ctx) lowerARM64M6VarRShl(spec asm.OpSpec, ins asm.Instr) error {
-	if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
-		return fmt.Errorf("arm64 %s expects Vshift, Vn, Vd: %q", spec.Op, ins.Raw)
-	}
-	sh := arm64ScalarOrVecShape(ins.Args[2].Reg, false)
-	shAmt, err := c.loadVShape(ins.Args[0].Reg, sh)
-	if err != nil {
-		return err
-	}
-	val, err := c.loadVShape(ins.Args[1].Reg, sh)
-	if err != nil {
-		return err
-	}
-	// Signed shift amount in low byte of each lane: >=0 left shift, <0 right shift.
-	mask := arm64IntSplat(sh.lanes, sh.elemBits, int64(sh.elemBits-1))
-	zero := "zeroinitializer"
-	neg := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, %s\n", neg, sh.vecTy(), shAmt, zero)
-	lAmt, rNeg, rAmt := c.newTmp(), c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", lAmt, sh.vecTy(), shAmt, mask)
-	fmt.Fprintf(c.b, "  %%%s = sub %s %s, %s\n", rNeg, sh.vecTy(), zero, shAmt)
-	fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", rAmt, sh.vecTy(), rNeg, mask)
-	shrOp := "lshr"
-	if spec.Signed {
-		shrOp = "ashr"
-	}
-	lRes, rRes, sel := c.newTmp(), c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = shl %s %s, %%%s\n", lRes, sh.vecTy(), val, lAmt)
-	fmt.Fprintf(c.b, "  %%%s = %s %s %s, %%%s\n", rRes, shrOp, sh.vecTy(), val, rAmt)
-	fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s %%%s, %s %%%s\n", sel, sh.lanes, neg, sh.vecTy(), rRes, sh.vecTy(), lRes)
-	return c.storeVShape(ins.Args[2].Reg, "%"+sel, sh)
-}
-
-func (c *arm64Ctx) lowerARM64M6ImmRShr(spec asm.OpSpec, ins asm.Instr) error {
-	if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
-		return fmt.Errorf("arm64 %s expects $shift, Vn, Vd: %q", spec.Op, ins.Raw)
-	}
-	isRound := (spec.SubOp & 1) != 0
-	isAcc := (spec.SubOp & 2) != 0
-	sh := arm64ScalarOrVecShape(ins.Args[2].Reg, false)
-	v, err := c.loadVShape(ins.Args[1].Reg, sh)
-	if err != nil {
-		return err
-	}
-	amt := ins.Args[0].Imm
-	if amt < 0 {
-		amt = 0
-	}
-	if amt >= int64(sh.elemBits) {
-		amt = int64(sh.elemBits - 1)
-	}
-	shrOp := "lshr"
-	if spec.Signed {
-		shrOp = "ashr"
-	}
-	shifted := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", shifted, shrOp, sh.vecTy(), v, arm64IntSplat(sh.lanes, sh.elemBits, amt))
-	out := "%" + shifted
-	if isRound && amt > 0 {
-		rb, rbit, rd := c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %s\n", rb, sh.vecTy(), v, arm64IntSplat(sh.lanes, sh.elemBits, amt-1))
-		fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", rbit, sh.vecTy(), rb, arm64IntSplat(sh.lanes, sh.elemBits, 1))
-		fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", rd, sh.vecTy(), shifted, rbit)
-		out = "%" + rd
-	}
-	if isAcc {
-		cur, err := c.loadVShape(ins.Args[2].Reg, sh)
-		if err != nil {
-			return err
-		}
-		acc := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add %s %s, %s\n", acc, sh.vecTy(), cur, out)
-		out = "%" + acc
-	}
-	return c.storeVShape(ins.Args[2].Reg, out, sh)
-}
-
-func (c *arm64Ctx) lowerARM64M6SQShlu(ins asm.Instr) error {
-	if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
-		return fmt.Errorf("arm64 VSQSHLU expects $shift, Vn, Vd: %q", ins.Raw)
-	}
-	sh := arm64ScalarOrVecShape(ins.Args[2].Reg, false)
-	v, err := c.loadVShape(ins.Args[1].Reg, sh)
-	if err != nil {
-		return err
-	}
-	amt := ins.Args[0].Imm & int64(sh.elemBits-1)
-	neg, clamp, shifted := c.newTmp(), c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = icmp slt %s %s, zeroinitializer\n", neg, sh.vecTy(), v)
-	fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s zeroinitializer, %s %s\n", clamp, sh.lanes, neg, sh.vecTy(), sh.vecTy(), v)
-	fmt.Fprintf(c.b, "  %%%s = shl %s %%%s, %s\n", shifted, sh.vecTy(), clamp, arm64IntSplat(sh.lanes, sh.elemBits, amt))
-	return c.storeVShape(ins.Args[2].Reg, "%"+shifted, sh)
-}
-
 func (c *arm64Ctx) lowerARM64M6ShrnExt(spec asm.OpSpec, ins asm.Instr) error {
 	if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
 		return fmt.Errorf("arm64 %s expects $shift, Vn, Vd: %q", spec.Op, ins.Raw)
@@ -1633,23 +1507,17 @@ func (c *arm64Ctx) lowerARM64M6UEst(spec asm.OpSpec, ins asm.Instr) error {
 	if err != nil {
 		return err
 	}
-	// Fixed-point unsigned reciprocal / rsqrt estimate via double conversion + round-trip.
-	fpTy := fmt.Sprintf("<%d x double>", sh.lanes)
-	c232 := make([]string, sh.lanes)
-	for i := range c232 {
-		c232[i] = "double 4294967296.0"
+	if !c.nativeAArch64 {
+		return fmt.Errorf("%w: %s needs an AArch64 target", asm.ErrProbeNeedsContext, spec.Op)
 	}
-	f0, nz, safe, resF, out := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = uitofp %s %s to %s\n", f0, sh.vecTy(), v, fpTy)
-	fmt.Fprintf(c.b, "  %%%s = fcmp oeq %s %%%s, zeroinitializer\n", nz, fpTy, f0)
-	fmt.Fprintf(c.b, "  %%%s = select <%d x i1> %%%s, %s <%s>, %s %%%s\n", safe, sh.lanes, nz, fpTy, strings.Join(c232, ", "), fpTy, f0)
-	denom := "%" + safe
+	if sh.elemBits != 32 || (sh.lanes != 2 && sh.lanes != 4) || parseNEONShape(ins.Args[0].Reg, false) != sh {
+		return fmt.Errorf("invalid lane shape for %s: %q", spec.Op, ins.Raw)
+	}
+	name := "urecpe"
 	if spec.SubOp != 0 {
-		sq := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.sqrt.v%df64(%s %%%s)\n", sq, fpTy, sh.lanes, fpTy, safe)
-		denom = "%" + sq
+		name = "ursqrte"
 	}
-	fmt.Fprintf(c.b, "  %%%s = fdiv %s <%s>, %s\n", resF, fpTy, strings.Join(c232, ", "), denom)
-	fmt.Fprintf(c.b, "  %%%s = fptoui %s %%%s to %s\n", out, fpTy, resF, sh.vecTy())
+	out := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s @llvm.aarch64.neon.%s.%s(%s %s)\n", out, sh.vecTy(), name, sh.intrSuffix(), sh.vecTy(), v)
 	return c.storeVShape(ins.Args[1].Reg, "%"+out, sh)
 }

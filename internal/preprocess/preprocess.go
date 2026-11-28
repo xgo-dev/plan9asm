@@ -67,13 +67,29 @@ func stripAssemblyComments(line string, inBlock *bool) string {
 	return out.String()
 }
 
+// HasDirective reports whether a source line begins with a preprocessing directive.
+func HasDirective(src []byte) bool {
+	if bytes.IndexByte(src, '#') < 0 {
+		return false
+	}
+	var inBlock bool
+	for len(src) != 0 {
+		line, tail, _ := bytes.Cut(src, []byte{'\n'})
+		if strings.HasPrefix(strings.TrimSpace(stripAssemblyComments(string(line), &inBlock)), "#") {
+			return true
+		}
+		src = tail
+	}
+	return false
+}
+
 // preprocess applies a very small preprocessor needed for some stdlib asm:
 //   - strips // comments
 //   - ignores #include
 //   - supports #define NAME <body> with optional single-line continuation via '\'
 //   - expands macros only when a statement is exactly NAME
 func Preprocess(src string) (string, error) {
-	return preprocessWithDefines(src, nil)
+	return PreprocessWithDefines(src, nil)
 }
 
 // GoAssemblerDefines returns the predefined symbols cmd/go passes to cmd/asm.
@@ -151,7 +167,9 @@ func PreprocessAssemblySource(src string, opt AssemblyPreprocessOptions) (string
 	return preprocessGoAssembly(src, opt)
 }
 
-func preprocessWithDefines(src string, defines []string) (string, error) {
+// PreprocessWithDefines expands source-local macros with the selected target defines.
+// As with Preprocess, include files must be supplied separately.
+func PreprocessWithDefines(src string, defines []string) (string, error) {
 	return preprocessAssembly(src, defines, nil)
 }
 
@@ -821,7 +839,7 @@ func ExpandPPLine(line string, macros map[string]Macro, macroNames []string, dep
 		return []string{""}
 	}
 	// Conditional directives embedded in a continued macro are evaluated by
-	// preprocessWithDefines after expansion. Their identifiers are macro names,
+	// PreprocessWithDefines after expansion. Their identifiers are macro names,
 	// not replacement tokens; keep the directive text intact for that pass.
 	if strings.HasPrefix(trimLine, "#") {
 		return []string{trimLine}

@@ -26,9 +26,10 @@ func TestTranslateARMLinearCoverageDeep(t *testing.T) {
 		},
 	})
 	for _, want := range []string{
-		"trunc i64 1 to i8",
+		"trunc i32 1 to i8",
+		"sext i8",
 		"zext i8",
-		"add i32 %arg0, %arg1",
+		"add i32",
 		"sub i32",
 		"and i32",
 		"or i32",

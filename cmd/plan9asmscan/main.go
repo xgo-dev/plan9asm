@@ -175,12 +175,16 @@ type opcodeCatalogReport struct {
 }
 
 type conformanceManifest struct {
-	Cases []struct {
-		Goarch     string   `json:"goarch"`
-		Forms      []string `json:"forms"`
-		Validation string   `json:"validation"`
-		HWFeatures []string `json:"hw_features"`
-	} `json:"cases"`
+	Cases []conformanceCase `json:"cases"`
+}
+
+type conformanceCase struct {
+	ID         string   `json:"id"`
+	Asm        string   `json:"asm"`
+	Goarch     string   `json:"goarch"`
+	Forms      []string `json:"forms"`
+	Validation string   `json:"validation"`
+	HWFeatures []string `json:"hw_features"`
 }
 
 var (
@@ -283,27 +287,34 @@ func main() {
 			fatalf("build official opcode catalog: %v", err)
 		}
 	}
-	verified, compileOnly, hwFeatures, err := loadConformanceForms(*repoRoot)
+	manifest, err := readConformanceManifest(*repoRoot)
+	if err != nil {
+		fatalf("read executable conformance manifest: %v", err)
+	}
+	verified, compileOnly, hwFeatures, err := manifest.formSets()
 	if err != nil {
 		fatalf("load executable conformance manifest: %v", err)
 	}
 	rep := buildReport(*corpus, goVersion(*goroot), *goos, *goarch, len(pkgs), pkgWithSFiles, asmFiles, ops, forms, supported, catalog, verified, compileOnly, parseErrs)
 	attachManifestHWFeatures(&rep, hwFeatures)
-	if strings.TrimSpace(*diffReport) != "" {
-		dr, err := loadDiffExecutionReport(*diffReport)
-		if err != nil {
-			fatalf("load diff report: %v", err)
-		}
-		if err := attachDiffExecutionReport(&rep, dr); err != nil {
-			fatalf("attach diff report: %v", err)
-		}
-	}
 	if *verifyObj {
 		compiled, failed, llvmVer, err := verifyObjectCompilation(arch, *goarch, forms)
 		if err != nil {
 			fatalf("verify object compilation: %v", err)
 		}
 		attachObjectCompilation(&rep, compiled, failed, llvmVer)
+	}
+	if strings.TrimSpace(*diffReport) != "" {
+		dr, err := loadDiffExecutionReport(*diffReport)
+		if err != nil {
+			fatalf("load diff report: %v", err)
+		}
+		if err := manifest.checkDiffCases(dr); err != nil {
+			fatalf("match differential evidence to the manifest: %v", err)
+		}
+		if err := attachDiffExecutionReport(&rep, dr); err != nil {
+			fatalf("attach diff report: %v", err)
+		}
 	}
 	attachEncoderCatalog(&rep, ops, encoderCatalog)
 
@@ -886,19 +897,23 @@ func buildOpcodeCatalog(
 	return out, nil
 }
 
-func loadConformanceForms(repoRoot string) (map[string]struct{}, map[string]struct{}, map[string][]string, error) {
+func readConformanceManifest(repoRoot string) (conformanceManifest, error) {
+	var manifest conformanceManifest
 	path := filepath.Join(repoRoot, "testdata", "conformance", "manifest.json")
 	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return manifest, nil
+	}
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return map[string]struct{}{}, map[string]struct{}{}, map[string][]string{}, nil
-		}
-		return nil, nil, nil, err
+		return manifest, err
 	}
-	var manifest conformanceManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse %s: %w", path, err)
+		return manifest, fmt.Errorf("parse %s: %w", path, err)
 	}
+	return manifest, nil
+}
+
+func (manifest *conformanceManifest) formSets() (map[string]struct{}, map[string]struct{}, map[string][]string, error) {
 	runtimeForms := map[string]struct{}{}
 	compileOnlyForms := map[string]struct{}{}
 	hwFeatures := map[string][]string{}

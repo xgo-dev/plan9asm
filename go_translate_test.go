@@ -71,7 +71,7 @@ TEXT ·gogo(SB),NOSPLIT,$0-8
 	defer tr.Module.Dispose()
 	ir := tr.Module.String()
 	if !strings.Contains(ir, "getelementptr i8") || !strings.Contains(ir, "i32 16") ||
-		!strings.Contains(ir, "load i64") {
+		!strings.Contains(ir, "load volatile i64") {
 		t.Fatalf("generated gobuf_g offset was not resolved through go_asm.h:\n%s", ir)
 	}
 }

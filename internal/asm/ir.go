@@ -159,3 +159,15 @@ func ParseSBRef(sym string) (base string, off int64, ok bool) {
 	}
 	return base, off, true
 }
+
+// EmitTLSOffset computes a Go local-exec relocation from actual TLS storage.
+func EmitTLSOffset(b *strings.Builder, tmp func() string, symbol string, bits int) string {
+	addr, tp := tmp(), tmp()
+	a, t, offset := tmp(), tmp(), tmp()
+	fmt.Fprintf(b, "  %%%s = call ptr @llvm.threadlocal.address.p0(ptr %s)\n", addr, LLVMGlobal(symbol))
+	fmt.Fprintf(b, "  %%%s = call ptr @llvm.thread.pointer()\n", tp)
+	fmt.Fprintf(b, "  %%%s = ptrtoint ptr %%%s to i%d\n", a, addr, bits)
+	fmt.Fprintf(b, "  %%%s = ptrtoint ptr %%%s to i%d\n", t, tp, bits)
+	fmt.Fprintf(b, "  %%%s = sub i%d %%%s, %%%s\n", offset, bits, a, t)
+	return "%" + offset
+}

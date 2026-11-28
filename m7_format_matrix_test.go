@@ -708,10 +708,7 @@ func hostLLVMTriple() string {
 
 func runMultiIRWithC(t *testing.T, triple string, irs []string, mainC string, wantOut string) {
 	t.Helper()
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	dir := t.TempDir()
 	var objs []string
 	for i, ir := range irs {

@@ -132,3 +132,34 @@ func TestTranslateARMSystemRegisterMoves(t *testing.T) {
 		}
 	}
 }
+
+func TestARMExecutableWord(t *testing.T) {
+	const triple = "armv7-unknown-linux-gnueabihf"
+	for _, tc := range []struct{ src, want string }{
+		{"WORD $0xe7f001f0", ".inst 0xe7f001f0"},
+		{"WORD $0xe320f001", ".inst 0xe320f001"},
+		{"WORD $0xeef1ba10", "={r0}"},
+		{"WORD $0xeee1ba10", "{r0}"},
+		{"WORD $0xee1d0f70", "={r0}"},
+		{"WORD $0xec510f1e", "={r0},={r1}"},
+		{"WORD $0xf57ff01f", ".inst 0xf57ff01f"},
+		{"WORD $0xffffffff", ""}, {"BYTE $0xff", ""}, {"DWORD $17", ""},
+	} {
+		t.Run(tc.src, func(t *testing.T) {
+			f, err := Parse(ArchARM, "TEXT raw(SB),4,$0\n"+tc.src+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ir, err := Translate(f, Options{TargetTriple: triple, Goarch: "arm", Sigs: map[string]FuncSig{"raw": {Ret: Void}}})
+			if tc.want == "" {
+				if err == nil {
+					t.Fatal("unmodeled executable raw directive silently translated")
+				}
+				return
+			}
+			if err != nil || !strings.Contains(ir, tc.want) {
+				t.Fatalf("expected %q in translation: %v\n%s", tc.want, err, ir)
+			}
+		})
+	}
+}

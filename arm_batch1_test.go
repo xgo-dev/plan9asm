@@ -53,7 +53,7 @@ func TestTranslateARMSWI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Translate() error = %v", err)
 	}
-	if !strings.Contains(ll, "call i64 @syscall(") {
+	if !strings.Contains(ll, ".inst 0xef000000") {
 		t.Fatalf("missing syscall call in output:\n%s", ll)
 	}
 }

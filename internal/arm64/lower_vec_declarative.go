@@ -160,6 +160,13 @@ var arm64NEONSpecs = []asm.OpSpec{
 	{Op: "VMOVS", Family: asm.FamilyMove, Width: 32, Effect: asm.EffectWriteOnly, LLVMOp: "vmovimm"},
 	{Op: "VMOVD", Family: asm.FamilyMove, Width: 64, Effect: asm.EffectWriteOnly, LLVMOp: "vmovimm"},
 	{Op: "VMOVQ", Family: asm.FamilyMove, Width: 128, Effect: asm.EffectWriteOnly, LLVMOp: "vmovimm"},
+	{Op: "VLD1R", Family: asm.FamilyMove, LLVMOp: "vldnr"},
+	{Op: "VLD4R", Family: asm.FamilyMove, LLVMOp: "vldnr"},
+	{Op: "VREV32", Family: asm.FamilyVecUnary, LLVMOp: "rev32"},
+	{Op: "VREV64", Family: asm.FamilyVecUnary, LLVMOp: "rev64"},
+	{Op: "VZIP1", Family: asm.FamilyVecShuffle, LLVMOp: "zip1"},
+	{Op: "VZIP2", Family: asm.FamilyVecShuffle, LLVMOp: "zip2"},
+	{Op: "VTBL", Family: asm.FamilyVecShuffle, LLVMOp: "tbl"},
 	{Op: "VLD2", Family: asm.FamilyMove, Effect: asm.EffectWriteOnly, LLVMOp: "vldn"},
 	{Op: "VLD2R", Family: asm.FamilyMove, Effect: asm.EffectWriteOnly, LLVMOp: "vldnr"},
 	{Op: "VLD3", Family: asm.FamilyMove, Effect: asm.EffectWriteOnly, LLVMOp: "vldn"},
@@ -390,7 +397,7 @@ func (c *arm64Ctx) lowerNEONMoveStruct(spec asm.OpSpec, postInc bool, ins asm.In
 		n := len(ins.Args[1].RegList)
 		sh := parseNEONShape(ins.Args[1].RegList[0], false)
 		elemBytes := sh.elemBits / 8
-		addr, base, inc, err := c.addrI64(ins.Args[0].Mem, false)
+		addr, err := c.neonStructureAddress(ins.Args[0].Mem, postInc)
 		if err != nil {
 			return err
 		}
@@ -412,13 +419,7 @@ func (c *arm64Ctx) lowerNEONMoveStruct(spec asm.OpSpec, postInc bool, ins asm.In
 					return err
 				}
 			}
-			if postInc {
-				if inc == 0 {
-					inc = int64(n * elemBytes)
-				}
-				return c.updatePostInc(base, inc)
-			}
-			return nil
+			return c.neonStructureWriteback(ins.Args[0].Mem, postInc, int64(n*elemBytes))
 		}
 		// De-interleaved load of N vectors across sh.lanes elements.
 		vecs := make([]string, n)
@@ -446,13 +447,7 @@ func (c *arm64Ctx) lowerNEONMoveStruct(spec asm.OpSpec, postInc bool, ins asm.In
 				return err
 			}
 		}
-		if postInc {
-			if inc == 0 {
-				inc = int64(n * sh.lanes * elemBytes)
-			}
-			return c.updatePostInc(base, inc)
-		}
-		return nil
+		return c.neonStructureWriteback(ins.Args[0].Mem, postInc, int64(n*sh.lanes*elemBytes))
 
 	case "vstn":
 		if len(ins.Args) != 2 {
@@ -468,7 +463,7 @@ func (c *arm64Ctx) lowerNEONMoveStruct(spec asm.OpSpec, postInc bool, ins asm.In
 		n := len(listArg.RegList)
 		sh := parseNEONShape(listArg.RegList[0], false)
 		elemBytes := sh.elemBits / 8
-		addr, base, inc, err := c.addrI64(memArg.Mem, false)
+		addr, err := c.neonStructureAddress(memArg.Mem, postInc)
 		if err != nil {
 			return err
 		}
@@ -494,13 +489,7 @@ func (c *arm64Ctx) lowerNEONMoveStruct(spec asm.OpSpec, postInc bool, ins asm.In
 				fmt.Fprintf(c.b, "  store %s %%%s, ptr %%%s, align 1\n", sh.elemTy(), ex, pt)
 			}
 		}
-		if postInc {
-			if inc == 0 {
-				inc = int64(n * sh.lanes * elemBytes)
-			}
-			return c.updatePostInc(base, inc)
-		}
-		return nil
+		return c.neonStructureWriteback(memArg.Mem, postInc, int64(n*sh.lanes*elemBytes))
 	}
 	return fmt.Errorf("arm64: unhandled NEON move %s", spec.Op)
 }
@@ -559,10 +548,14 @@ func (c *arm64Ctx) lowerNEONUnary(spec asm.OpSpec, ins asm.Instr) error {
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %s)\n", t, vty, spec.LLVMOp, srcSh.intrSuffix(), vty, src)
 		out = "%" + t
-	case "rev16":
+	case "rev16", "rev32", "rev64":
+		group := map[string]int{"rev16": 16, "rev32": 32, "rev64": 64}[spec.LLVMOp] / srcSh.elemBits
+		if group < 2 {
+			return fmt.Errorf("invalid %s element size", spec.Op)
+		}
 		mask := make([]string, srcSh.lanes)
 		for i := 0; i < srcSh.lanes; i++ {
-			mask[i] = fmt.Sprintf("i32 %d", i^1)
+			mask[i] = fmt.Sprintf("i32 %d", i^(group-1))
 		}
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = shufflevector %s %s, %s poison, <%d x i32> <%s>\n", t, vty, src, vty, srcSh.lanes, strings.Join(mask, ", "))
@@ -575,7 +568,9 @@ func (c *arm64Ctx) lowerNEONUnary(spec asm.OpSpec, ins asm.Instr) error {
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.%s.%s(%s %s)\n", t, vty, spec.LLVMOp, srcSh.intrSuffix(), vty, src)
 		out = "%" + t
-	case "fptosi", "fptoui", "sitofp", "uitofp":
+	case "fptosi", "fptoui":
+		out = c.floatToInt(spec.Signed, dstSh.vecTy(), dstSh.intrSuffix(), vty, srcSh.intrSuffix(), src)
+	case "sitofp", "uitofp":
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = %s %s %s to %s\n", t, spec.LLVMOp, vty, src, dstSh.vecTy())
 		out = "%" + t
@@ -763,47 +758,113 @@ func (c *arm64Ctx) lowerNEONCompare(spec asm.OpSpec, ins asm.Instr) error {
 	return c.storeVShape(ins.Args[2].Reg, "%"+sx, dstSh)
 }
 
+// SSHL and USHL take a signed low-byte shift count in each lane. SQSHL and
+// UQSHL also set the sticky FPSR.QC bit on saturation. Run the instruction on
+// native targets so a later FPSR read observes the same architectural state.
+func (c *arm64Ctx) lowerNEONVariableShift(spec asm.OpSpec, ins asm.Instr, sh neonShape, src string) error {
+	if !c.nativeAArch64 {
+		return fmt.Errorf("%w: %s needs native AArch64 shift semantics", asm.ErrProbeNeedsContext, spec.Op)
+	}
+	vty := sh.vecTy()
+	operands := []string{vty + " " + src}
+	elem := map[int]string{8: "b", 16: "h", 32: "s", 64: "d"}[sh.elemBits]
+	reg := func(i int) string {
+		if sh.lanes == 1 {
+			return fmt.Sprintf("${%d:%s}", i, elem)
+		}
+		return fmt.Sprintf("$%d.%d%s", i, sh.lanes, elem)
+	}
+	var shift string
+	cons := "=w,w"
+	switch arg := ins.Args[0]; arg.Kind {
+	case asm.OpReg:
+		if spec.Op == "VSQSHLU" {
+			return fmt.Errorf("arm64 %s needs an immediate", spec.Op)
+		}
+		if neonShiftShape(arg.Reg) != sh {
+			return fmt.Errorf("arm64 %s incompatible shift lanes: %q", spec.Op, ins.Raw)
+		}
+		amount, err := c.loadVShape(arg.Reg, sh)
+		if err != nil {
+			return err
+		}
+		operands = append(operands, vty+" "+amount)
+		cons += ",w"
+		shift = reg(2)
+	case asm.OpImm:
+		if !spec.Saturating || spec.LLVMOp == "var_rshl" || arg.ImmRaw != "" || arg.Imm < 0 || arg.Imm >= int64(sh.elemBits) {
+			return fmt.Errorf("arm64 %s invalid immediate: %q", spec.Op, ins.Raw)
+		}
+		shift = fmt.Sprintf("#%d", arg.Imm)
+	default:
+		return fmt.Errorf("arm64 %s invalid shift: %q", spec.Op, ins.Raw)
+	}
+	tmp := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s asm sideeffect \"%s %s, %s, %s\", %q(%s)\n", tmp, vty, strings.ToLower(strings.TrimPrefix(string(spec.Op), "V")), reg(0), reg(1), shift, cons, strings.Join(operands, ", "))
+	return c.storeVShape(ins.Args[2].Reg, "%"+tmp, sh)
+}
+
 func (c *arm64Ctx) lowerNEONShift(spec asm.OpSpec, ins asm.Instr) error {
 	if len(ins.Args) != 3 || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
 		return fmt.Errorf("arm64 %s expects shift, Vsrc, Vdst: %q", spec.Op, ins.Raw)
 	}
-	sh := parseNEONShape(ins.Args[2].Reg, false)
+	sh := neonShiftShape(ins.Args[2].Reg)
+	if neonShiftShape(ins.Args[1].Reg) != sh {
+		return fmt.Errorf("arm64 %s incompatible lane shapes: %q", spec.Op, ins.Raw)
+	}
 	vty := sh.vecTy()
 	src, err := c.loadVShape(ins.Args[1].Reg, sh)
 	if err != nil {
 		return err
 	}
-	var shiftVec string
-	if ins.Args[0].Kind == asm.OpImm {
-		amt := ins.Args[0].Imm
-		if amt < 0 {
-			amt = 0
-		}
-		if amt >= int64(sh.elemBits) {
-			amt = int64(sh.elemBits - 1)
-		}
-		shiftVec = neonSplatInt(sh, amt)
-	} else if ins.Args[0].Kind == asm.OpReg {
-		rv, err := c.loadVShape(ins.Args[0].Reg, sh)
-		if err != nil {
-			return err
-		}
-		m := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", m, vty, rv, neonSplatInt(sh, int64(sh.elemBits-1)))
-		shiftVec = "%" + m
-	} else {
-		return fmt.Errorf("arm64 %s expects imm or Vreg shift: %q", spec.Op, ins.Raw)
+	if spec.ThreeOp || spec.LLVMOp == "var_rshl" || spec.LLVMOp == "sqshlu" {
+		return c.lowerNEONVariableShift(spec, ins, sh, src)
 	}
+	count := ins.Args[0]
+	lower, upper := int64(1), int64(sh.elemBits)
+	if spec.LLVMOp == "sli" {
+		lower, upper = 0, int64(sh.elemBits-1)
+	}
+	if count.Kind != asm.OpImm || count.ImmRaw != "" || count.Imm < lower || count.Imm > upper {
+		return fmt.Errorf("arm64 %s invalid shift count: %q", spec.Op, ins.Raw)
+	}
+	amount := count.Imm
+	if amount == int64(sh.elemBits) {
+		amount--
+	}
+	shiftVec := neonSplatInt(sh, amount)
 	var out string
 	switch spec.LLVMOp {
-	case "sshl", "ushl", "sqshl", "uqshl":
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = shl %s %s, %s\n", t, vty, src, shiftVec)
-		out = "%" + t
-	case "ashr", "srshr":
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = ashr %s %s, %s\n", t, vty, src, shiftVec)
-		out = "%" + t
+	case "ashr", "srshr", "usra", "imm_rshr":
+		// For n == width an unsigned quotient is zero and a signed quotient
+		// is its sign. Add the top discarded bit *after* shifting so rounding
+		// an all-ones lane cannot wrap before the division.
+		out = "zeroinitializer"
+		if spec.Signed || count.Imm != int64(sh.elemBits) {
+			op := "lshr"
+			if spec.Signed {
+				op = "ashr"
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", t, op, vty, src, shiftVec)
+			out = "%" + t
+		}
+		if spec.LLVMOp == "srshr" || spec.SubOp&1 != 0 {
+			round, bit, sum := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %s\n", round, vty, src, neonSplatInt(sh, count.Imm-1))
+			fmt.Fprintf(c.b, "  %%%s = and %s %%%s, %s\n", bit, vty, round, neonSplatInt(sh, 1))
+			fmt.Fprintf(c.b, "  %%%s = add %s %s, %%%s\n", sum, vty, out, bit)
+			out = "%" + sum
+		}
+		if spec.Effect == asm.EffectReadWrite {
+			dst, err := c.loadVShape(ins.Args[2].Reg, sh)
+			if err != nil {
+				return err
+			}
+			sum := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add %s %s, %s\n", sum, vty, dst, out)
+			out = "%" + sum
+		}
 	case "sli":
 		dstV, err := c.loadVShape(ins.Args[2].Reg, sh)
 		if err != nil {
@@ -816,15 +877,6 @@ func (c *arm64Ctx) lowerNEONShift(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", kept, vty, dstV, neonSplatInt(sh, int64(lowMask)))
 		fmt.Fprintf(c.b, "  %%%s = or %s %%%s, %%%s\n", res, vty, shv, kept)
 		out = "%" + res
-	case "usra":
-		dstV, err := c.loadVShape(ins.Args[2].Reg, sh)
-		if err != nil {
-			return err
-		}
-		shv, sum := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %s\n", shv, vty, src, shiftVec)
-		fmt.Fprintf(c.b, "  %%%s = add %s %s, %%%s\n", sum, vty, dstV, shv)
-		out = "%" + sum
 	default:
 		return fmt.Errorf("arm64: unhandled NEON shift %s", spec.Op)
 	}
@@ -919,7 +971,7 @@ func (c *arm64Ctx) lowerNEONShuffleWidenReduce(spec asm.OpSpec, ins asm.Instr) e
 		}
 		return c.storeVShape(ins.Args[2].Reg, cur, sh)
 
-	case spec.LLVMOp == "trn1" || spec.LLVMOp == "trn2" || spec.LLVMOp == "uzp1" || spec.LLVMOp == "uzp2":
+	case spec.LLVMOp == "zip1" || spec.LLVMOp == "zip2" || spec.LLVMOp == "trn1" || spec.LLVMOp == "trn2" || spec.LLVMOp == "uzp1" || spec.LLVMOp == "uzp2":
 		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
 			return fmt.Errorf("arm64 %s expects Vm, Vn, Vd: %q", spec.Op, ins.Raw)
 		}
@@ -936,6 +988,11 @@ func (c *arm64Ctx) lowerNEONShuffleWidenReduce(spec asm.OpSpec, ins asm.Instr) e
 		for i := 0; i < sh.lanes; i++ {
 			var idx int
 			switch spec.LLVMOp {
+			case "zip1", "zip2":
+				idx = i/2 + (i%2)*sh.lanes
+				if spec.LLVMOp == "zip2" {
+					idx += sh.lanes / 2
+				}
 			case "trn1":
 				if i%2 == 0 {
 					idx = i
@@ -959,59 +1016,10 @@ func (c *arm64Ctx) lowerNEONShuffleWidenReduce(spec asm.OpSpec, ins asm.Instr) e
 		fmt.Fprintf(c.b, "  %%%s = shufflevector %s %s, %s %s, <%d x i32> <%s>\n", out, sh.vecTy(), a, sh.vecTy(), b, sh.lanes, strings.Join(mask, ", "))
 		return c.storeVShape(ins.Args[2].Reg, "%"+out, sh)
 
-	case spec.LLVMOp == "tbx":
-		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpRegList || ins.Args[2].Kind != asm.OpReg {
-			return fmt.Errorf("arm64 VTBX expects Vidx, [Vtbl...], Vdst: %q", ins.Raw)
-		}
-		// Keep dst intact for out-of-range indices; perform table lookup per byte lane.
-		idxV, err := c.loadVReg(ins.Args[0].Reg)
-		if err != nil {
-			return err
-		}
-		dstV, err := c.loadVReg(ins.Args[2].Reg)
-		if err != nil {
-			return err
-		}
-		tblRegs := make([]string, len(ins.Args[1].RegList))
-		for i, tr := range ins.Args[1].RegList {
-			tblRegs[i], err = c.loadVReg(tr)
-			if err != nil {
-				return err
-			}
-		}
-		// Store table bytes into a small stack array for indexed byte lookup.
-		nBytes := len(tblRegs) * 16
-		buf := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = alloca [%d x i8], align 16\n", buf, nBytes)
-		for i, tv := range tblRegs {
-			p := "%" + buf
-			if i > 0 {
-				gp := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %%%s, i64 %d\n", gp, buf, i*16)
-				p = "%" + gp
-			}
-			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", tv, p)
-		}
-		sh := parseNEONShape(ins.Args[2].Reg, false)
-		cur := dstV
-		for i := 0; i < sh.lanes; i++ {
-			idb, inR, clamped, id64, gp, ld, oldB, sel, insv := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", idb, idxV, i)
-			fmt.Fprintf(c.b, "  %%%s = icmp ult i8 %%%s, %d\n", inR, idb, nBytes)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 0\n", clamped, inR, idb)
-			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", id64, clamped)
-			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %%%s, i64 %%%s\n", gp, buf, id64)
-			fmt.Fprintf(c.b, "  %%%s = load i8, ptr %%%s\n", ld, gp)
-			fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", oldB, cur, i)
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 %%%s\n", sel, inR, ld, oldB)
-			fmt.Fprintf(c.b, "  %%%s = insertelement <16 x i8> %s, i8 %%%s, i32 %d\n", insv, cur, sel, i)
-			cur = "%" + insv
-		}
-		return c.storeVReg(ins.Args[2].Reg, cur)
-
-	default:
-		return c.lowerNEONWidenNarrow(spec, ins)
+	case spec.LLVMOp == "tbx" || spec.LLVMOp == "tbl":
+		return c.lowerTableLookup(ins, spec.LLVMOp == "tbx")
 	}
+	return c.lowerNEONWidenNarrow(spec, ins)
 }
 
 func (c *arm64Ctx) lowerNEONWidenNarrow(spec asm.OpSpec, ins asm.Instr) error {

@@ -9,7 +9,7 @@ import (
 
 func FuncNeedsCFG(fn asm.Func) bool {
 	for _, ins := range fn.Instrs {
-		if ins.Op == asm.OpLABEL {
+		if ins.Op == asm.OpLABEL || readsCallerPC(ins, "amd64") {
 			return true
 		}
 		op := strings.ToUpper(string(ins.Op))
@@ -23,7 +23,7 @@ func FuncNeedsCFG(fn asm.Func) bool {
 		}
 		// Keep the linear path only for the tiny subset it currently lowers.
 		switch asm.Op(op) {
-		case asm.OpTEXT, asm.OpBYTE, asm.OpMOVQ, asm.OpMOVL, asm.OpADDQ, asm.OpSUBQ, asm.OpXORQ, asm.
+		case asm.OpTEXT, asm.OpMOVQ, asm.OpMOVL, asm.OpADDQ, asm.OpSUBQ, asm.OpXORQ, asm.
 			// For MOVQ/MOVL, linear lowering supports immediate/reg/FP value flow.
 			// Addressing forms (mem/sym) require CFG lowering.
 			OpCPUID, asm.OpXGETBV:

@@ -14,6 +14,7 @@ import (
 
 	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/preprocess"
 	"github.com/xgo-dev/plan9asm/internal/wasm"
 	"github.com/xgo-dev/plan9asm/internal/x86"
 )
@@ -32,6 +33,8 @@ type GoPackage struct {
 // GOARCH is required and accepts "amd64", "386", "arm", "arm64", and "wasm".
 // If ResolveSym is nil, the default resolver only strips ABI suffixes.
 type GoModuleOptions struct {
+	// SourceGoVersion is the Go assembler version for the input (for example, go1.20.14).
+	SourceGoVersion    string
 	SourcePreprocessed bool
 	FileName           string
 	GOOS               string
@@ -114,19 +117,12 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 			return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
 		}
 	} else {
-		if bytes.Contains(src, []byte("const_")) {
-			src = goExpandConsts(src, pkg.Types, pkg.Imports)
-		}
-		// Struct layout macros only exist when the assembly includes go_asm.h.
-		// Keep the common path cheap: building them walks every package-scope type.
-		if bytes.Contains(src, []byte("go_asm.h")) {
-			src = goExpandAsmHeaderTypes(src, pkg.Types, opt.GOARCH)
-		}
-		file, err = Parse(arch, string(src))
+		file, err = pkg.parseAssemblyForTarget(src, opt.GOOS, opt.GOARCH)
 		if err != nil {
 			return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
 		}
 	}
+	file.SourceGoVersion = opt.SourceGoVersion
 	if opt.KeepFunc != nil {
 		keep := make([]Func, 0, len(file.Funcs))
 		for _, fn := range file.Funcs {
@@ -165,7 +161,7 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		return nil, fmt.Errorf("%s: globals %s: %w", pkgPath, asmName, err)
 	}
 	if opt.GOARCH == "amd64" {
-		if err := validateAMD64PhysicalFrameLeasesWithX87Mode(file, resolve, sigs, opt.X87Mode); err != nil {
+		if err := validateAMD64PhysicalFrameLeasesForTarget(file, resolve, sigs, opt.X87Mode, opt.TargetTriple); err != nil {
 			return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
 		}
 	}
@@ -427,6 +423,13 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 		callerResolved := b.resolve(goTextSymbolForResolution(fn.Sym))
 		callerSig, hasCallerSig := b.sigs[callerResolved]
 		for _, ins := range fn.Instrs {
+			if b.goarch == "386" {
+				if sym := x86.AddressedFunctionCandidate(ins); sym != "" {
+					if err := b.addGoDeclSig(sym); err != nil {
+						return err
+					}
+				}
+			}
 			base, tailJump, ok := goReferencedFunc(ins)
 			if !ok {
 				continue
@@ -589,10 +592,10 @@ func DeriveGoFuncABI0Signature(name string, fn *types.Func, goarch string, sz ty
 }
 
 func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, sigs map[string]FuncSig) error {
-	return validateAMD64PhysicalFrameLeasesWithX87Mode(file, resolve, sigs, X87Auto)
+	return validateAMD64PhysicalFrameLeasesForTarget(file, resolve, sigs, X87Auto, "")
 }
 
-func validateAMD64PhysicalFrameLeasesWithX87Mode(file *File, resolve func(string) string, sigs map[string]FuncSig, x87Mode X87Mode) error {
+func validateAMD64PhysicalFrameLeasesForTarget(file *File, resolve func(string) string, sigs map[string]FuncSig, x87Mode X87Mode, targetTriple string) error {
 	checkedLeases := make(map[uintptr]bool)
 	resolveCallee := func(s string) string { return resolve(goStripABISuffix(s)) }
 	for _, fn := range file.Funcs {
@@ -605,7 +608,7 @@ func validateAMD64PhysicalFrameLeasesWithX87Mode(file *File, resolve func(string
 			// initialization verification before translation.
 			if ok && len(sig.ArgRegs) == 0 && (len(sig.Frame.Results) > 0 || x86.FuncUsesX87OrMMX(fn)) &&
 				!strings.Contains(strings.TrimSuffix(fn.Sym, "<>"), "<") {
-				if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode); err != nil {
+				if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode, targetTriple); err != nil {
 					return err
 				}
 			}
@@ -625,7 +628,7 @@ func validateAMD64PhysicalFrameLeasesWithX87Mode(file *File, resolve func(string
 				checkedLeases[leasePtr] = true
 			}
 			if x87Mode == X87Software && x86.FuncUsesX87OrMMX(fn) {
-				if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode); err != nil {
+				if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode, targetTriple); err != nil {
 					return err
 				}
 			}
@@ -646,7 +649,7 @@ func validateAMD64PhysicalFrameLeasesWithX87Mode(file *File, resolve func(string
 				}
 			}
 		}
-		if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode); err != nil {
+		if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode, targetTriple); err != nil {
 			return err
 		}
 	}
@@ -1092,6 +1095,30 @@ func goLinknameRemoteToLocal(files []*ast.File) map[string]string {
 	return m
 }
 
+// ParseAssembly parses assembly with the constants and field offsets of the
+// selected Go package and architecture.
+func (pkg GoPackage) ParseAssembly(src []byte, goarch string) (*File, error) {
+	return pkg.parseAssemblyForTarget(src, "", goarch)
+}
+
+func (pkg GoPackage) parseAssemblyForTarget(src []byte, goos, goarch string) (*File, error) {
+	arch, err := goArchFor(goarch)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.Contains(src, []byte("const_")) {
+		src = goExpandConsts(src, pkg.Types, pkg.Imports)
+	}
+	if bytes.Contains(src, []byte("go_asm.h")) {
+		src = goExpandAsmHeaderTypes(src, pkg.Types, goarch)
+	}
+	expanded, err := preprocess.PreprocessWithDefines(string(src), GoAssemblerDefines(goos, goarch))
+	if err != nil {
+		return nil, err
+	}
+	return asm.ParsePreprocessed(arch, expanded)
+}
+
 func goExpandConsts(src []byte, pkgTypes *types.Package, imports map[string]*types.Package) []byte {
 	if pkgTypes == nil || pkgTypes.Scope() == nil {
 		return src
@@ -1185,7 +1212,7 @@ func goExpandAsmHeaderTypes(src []byte, pkgTypes *types.Package, goarch string) 
 			continue
 		}
 		st, ok := obj.Type().Underlying().(*types.Struct)
-		if !ok {
+		if !ok || goTypeHasUnboundTypeParams(obj.Type()) {
 			continue
 		}
 		size := sizes.Sizeof(obj.Type())

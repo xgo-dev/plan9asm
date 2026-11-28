@@ -6,21 +6,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/xgo-dev/plan9asm"
+	"github.com/xgo-dev/plan9asm/internal/diffreport"
 )
 
 type objProbeItem struct {
 	form string
 	ins  plan9asm.Instr
 }
-
-var llvm22VersionRE = regexp.MustCompile(`(?im)\bLLVM version (22(?:\.[0-9A-Za-z._-]+)?)`)
 
 func llcTripleForGoarch(goarch string) string {
 	switch goarch {
@@ -81,8 +79,8 @@ func findLLCTool() (string, string, error) {
 			rejected = append(rejected, fmt.Sprintf("%s (--version failed: %v)", p, err))
 			continue
 		}
-		if m := llvm22VersionRE.FindSubmatch(out); m != nil {
-			return p, string(m[1]), nil
+		if version := diffreport.LLVM22(string(out)); version != "" {
+			return p, version, nil
 		}
 		firstLine := strings.TrimSpace(strings.Split(string(out), "\n")[0])
 		rejected = append(rejected, fmt.Sprintf("%s (%s)", p, firstLine))

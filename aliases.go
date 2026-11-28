@@ -1,11 +1,13 @@
 package plan9asm
 
 import (
+	"fmt"
 	"github.com/xgo-dev/llvm"
 	"github.com/xgo-dev/plan9asm/internal/asm"
 	"github.com/xgo-dev/plan9asm/internal/native"
 	"github.com/xgo-dev/plan9asm/internal/preprocess"
 	"github.com/xgo-dev/plan9asm/internal/wasm"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 )
 
 // Core IR & ABI types re-exported from internal/asm so root package plan9asm
@@ -151,7 +153,22 @@ func InstructionFamily(arch Arch, op string) string {
 
 // ProbeInstruction runs one instruction through the real lowering pipeline.
 func ProbeInstruction(arch Arch, goarch string, ins Instr) error {
-	return asm.ProbeInstructionWith(arch, goarch, ins, translateIRText)
+	if arch == ArchAMD64 {
+		switch ins.Op {
+		case asm.OpBYTE, asm.OpWORD, asm.OpLONG, asm.OpQUAD:
+			return fmt.Errorf("%w: x86 raw directives require their entire contiguous instruction stream", ErrProbeNeedsContext)
+		}
+	}
+	return asm.ProbeInstructionWith(arch, goarch, ins, func(file *File, opt Options) (string, error) {
+		if arch == ArchAMD64 {
+			prepared, err := x86.PrepareFile(file, goarch, opt.TargetTriple)
+			if err != nil {
+				return "", err
+			}
+			file = prepared
+		}
+		return translateIRText(file, opt)
+	})
 }
 
 // InferWASMAssemblyFuncSig derives a direct WebAssembly signature for fn.

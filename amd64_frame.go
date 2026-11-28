@@ -433,7 +433,7 @@ func (s *GoAMD64FrameSource) BindFixedLocal(ctx context.Context, pkg GoPackage, 
 			out.Sigs[callee] = csig
 		}
 		// Verify register initialization, private SP confinement, outgoing CALLs, and result init.
-		if _, err := x86.CheckABI0ResultInitWithSigs(fn, sig, "amd64", resolveCallee, out.Sigs); err != nil {
+		if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, out.Sigs, out.X87Mode, out.TargetTriple); err != nil {
 			return Options{}, err
 		}
 		sig.FrameLease = leaseCheck

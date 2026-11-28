@@ -23,7 +23,14 @@ func FuncNeedsCFG(fn asm.Func) bool {
 		}
 		switch asm.Op(op) {
 		// Keep the linear path only for the tiny subset it can currently lower.
-		case asm.OpTEXT, asm.OpBYTE, asm.OpMRS:
+		case asm.OpMRS:
+			if len(ins.Args) > 0 {
+				if sysreg, ok := SystemRegOperand(ins.Args[0]); ok && sysreg == "NZCV" {
+					return true
+				}
+			}
+			continue
+		case asm.OpTEXT:
 			continue
 		case asm.OpRET:
 			if len(ins.Args) != 0 {

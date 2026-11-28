@@ -16,7 +16,7 @@ func (c *arm64Ctx) setFlagsSub(dst, src, res string) {
 	// N: res<0 (signed)
 	// C: dst >= src (unsigned, no borrow)
 	// V: signed overflow for dst - src
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 
 	z := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", z, res)
@@ -44,7 +44,7 @@ func (c *arm64Ctx) setFlagsSub(dst, src, res string) {
 func (c *arm64Ctx) setFlagsSub32(dst, src, res string) {
 	// SUBSW computes NZCV from the low 32 bits, before the architectural
 	// zero-extension of the result into the 64-bit register file.
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 
 	z := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
@@ -73,7 +73,7 @@ func (c *arm64Ctx) setFlagsAdd(dst, src, res string) {
 	// N: res<0 (signed)
 	// C: carry out (unsigned overflow) => res < dst
 	// V: signed overflow for dst + src
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 
 	z := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", z, res)
@@ -101,7 +101,7 @@ func (c *arm64Ctx) setFlagsAdd(dst, src, res string) {
 }
 
 func (c *arm64Ctx) setFlagsAdd32(dst, src, res string) {
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 
 	z := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
@@ -130,7 +130,7 @@ func (c *arm64Ctx) setFlagsAdd32(dst, src, res string) {
 // setFlagsAddWithCarry computes exact AArch64 AddWithCarry(x, y, cIn) NZCV flags
 // for ADCS/ADCSW (y=src), SBCS/SBCSW (y=~src), and NGCS/NGCSW (x=0, y=~src).
 func (c *arm64Ctx) setFlagsAddWithCarry(width uint16, x, y, cIn, res string) {
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 
 	ty, wideTy, shift := "i64", "i128", 64
 	if width == 32 {
@@ -209,7 +209,7 @@ func (c *arm64Ctx) setConditionalCompareFlags(cond, lhs, rhs string, nzcv int64,
 		fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %t\n", selected, predicate, computed, fallback)
 		return "%" + selected
 	}
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 	c.storeFlag(c.flagsNSlot, selectFlag("%"+n, nzcv&8 != 0))
 	c.storeFlag(c.flagsZSlot, selectFlag("%"+z, nzcv&4 != 0))
 	c.storeFlag(c.flagsCSlot, selectFlag("%"+carry, nzcv&2 != 0))
@@ -219,7 +219,7 @@ func (c *arm64Ctx) setConditionalCompareFlags(cond, lhs, rhs string, nzcv int64,
 
 func (c *arm64Ctx) setFlagsLogic(res string) {
 	// ANDS-like: update N/Z; set C/V to 0 (good enough for current corpus).
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 
 	z := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", z, res)
@@ -233,7 +233,7 @@ func (c *arm64Ctx) setFlagsLogic(res string) {
 }
 
 func (c *arm64Ctx) setFlagsLogic32(res string) {
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 
 	z := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
@@ -247,8 +247,11 @@ func (c *arm64Ctx) setFlagsLogic32(res string) {
 }
 
 func (c *arm64Ctx) condValue(cond string) (string, error) {
-	if !c.flagsWritten {
-		return "", fmt.Errorf("%w: arm64 condition %s has no prior flags write", asm.ErrProbeNeedsContext, cond)
+	if cond == "AL" || cond == "NV" {
+		return "true", nil
+	}
+	if err := c.requireFlags(cond); err != nil {
+		return "", err
 	}
 	ldN := c.newTmp()
 	ldZ := c.newTmp()
@@ -323,9 +326,129 @@ func (c *arm64Ctx) condValue(cond string) (string, error) {
 		return v, nil
 	case "VC":
 		return not(v), nil
-	case "AL", "NV":
-		return "true", nil
 	default:
 		return "", fmt.Errorf("arm64: unsupported condition %q", cond)
 	}
+}
+
+// Carry has a separate definition state because some operating systems
+// return it from SVC. Ordinary arithmetic defines NZCV together.
+type flagMask uint8
+
+const (
+	flagC   flagMask = 1
+	flagNZV flagMask = 2
+	flagAll          = flagC | flagNZV
+)
+
+type flagBlock struct {
+	rawErr                   error
+	successors               [2]string
+	requiresInput            flagMask
+	readName, readsClobbered string
+	defines                  flagMask
+	fallDefines              flagMask // NZCV written only on the exclusive region fallthrough.
+	clobbers                 bool
+}
+
+func (c *arm64Ctx) requireFlags(op string) error {
+	need := flagC // ADC, SBC, NGC and carry-only conditions.
+	switch op {
+	case "MRS NZCV", "HI", "LS":
+		need = flagAll
+	case "EQ", "NE", "MI", "PL", "VS", "VC", "GE", "LT", "GT", "LE":
+		need = flagNZV
+	}
+	missing := need &^ c.flagsDefined
+	if missing == 0 {
+		return nil
+	}
+	if c.flagFlow == nil {
+		return fmt.Errorf("%w: arm64 %s has no prior flags write", asm.ErrProbeNeedsContext, op)
+	}
+	if c.flagFlow.clobbers {
+		c.flagFlow.readsClobbered = op
+	} else {
+		c.flagFlow.requiresInput |= missing
+		c.flagFlow.readName = op
+	}
+	return nil
+}
+
+func (c *arm64Ctx) branchIf(value, target, fall string) {
+	if c.flagFlow != nil {
+		c.flagFlow.successors = [2]string{target, fall}
+	}
+	fmt.Fprintf(c.b, "  br i1 %s, label %%%s, label %%%s\n", value, asm.LLVMBlockName(target), asm.LLVMBlockName(fall))
+}
+
+func (c *arm64Ctx) validateFlagInputs(flows []flagBlock) error {
+	byName := make(map[string]int, len(c.blocks))
+	for i, b := range c.blocks {
+		byName[b.name] = i
+	}
+	type state struct {
+		index   int
+		defined flagMask
+	}
+	work := []state{{0, 0}}
+	visited := make(map[state]bool)
+	for len(work) > 0 {
+		at := work[len(work)-1]
+		work = work[:len(work)-1]
+		if visited[at] {
+			continue
+		}
+		visited[at] = true
+		f := flows[at.index]
+		if f.rawErr != nil {
+			return f.rawErr
+		}
+		read := f.readsClobbered
+		if f.requiresInput&^at.defined != 0 {
+			read = f.readName
+		}
+		if read != "" {
+			return fmt.Errorf("%w: arm64 %s has no prior flags write on a path to %s", asm.ErrProbeNeedsContext, read, c.blocks[at.index].name)
+		}
+		defined := f.defines
+		if !f.clobbers {
+			defined |= at.defined
+		}
+		for edge, name := range f.successors {
+			if name == "" {
+				continue
+			}
+			i, ok := byName[name]
+			if !ok {
+				return fmt.Errorf("%w: arm64 branch to unknown label %q", asm.ErrProbeNeedsContext, name)
+			}
+			edgeDefined := defined
+			if edge == 1 {
+				edgeDefined |= f.fallDefines
+			}
+			work = append(work, state{i, edgeDefined})
+		}
+	}
+	return nil
+}
+
+func (c *arm64Ctx) packNZCV() string {
+	out := "0"
+	for i, slot := range []string{c.flagsNSlot, c.flagsZSlot, c.flagsCSlot, c.flagsVSlot} {
+		bit, z, sh, or := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n  %%%s = zext i1 %%%s to i64\n", bit, slot, z, bit)
+		fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, %d\n  %%%s = or i64 %s, %%%s\n", sh, z, 31-i, or, out, sh)
+		out = "%" + or
+	}
+	return out
+}
+
+func (c *arm64Ctx) unpackNZCV(value string) {
+	for i, slot := range []string{c.flagsNSlot, c.flagsZSlot, c.flagsCSlot, c.flagsVSlot} {
+		sh, bit := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n  %%%s = trunc i64 %%%s to i1\n", sh, value, 31-i, bit, sh)
+		c.storeFlag(slot, "%"+bit)
+	}
+	c.flagsDefined = flagAll
 }

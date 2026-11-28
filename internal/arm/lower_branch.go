@@ -108,6 +108,7 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 		}
 		emitBr(tgt)
 		return true, true, nil
+
 	}
 	return false, false, nil
 }

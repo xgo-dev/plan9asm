@@ -93,10 +93,7 @@ TEXT ·x87SqrtSum(SB),NOSPLIT,$0-24
 	if err != nil {
 		t.Fatalf("Translate(amd64, X87Software, with FINIT) failed: %v", err)
 	}
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 	mainC := `
 #include <stdio.h>
 #if defined(_WIN32) && !defined(_MSC_VER)
@@ -1034,18 +1031,14 @@ func TestTranslateGoModuleAMD64FlagProducerConsumerMatrix(t *testing.T) {
 //     amd64 hosts (mandatory when PLAN9ASM_REQUIRE_AMD64_DIFF=1), writing real
 //     native-diff counts into PLAN9ASM_DIFF_REPORT_OUT.
 func TestTranslateGoModuleAMD64X87StackAndConstants(t *testing.T) {
-	requireDiff := os.Getenv("PLAN9ASM_REQUIRE_AMD64_DIFF") == "1"
+	if os.Getenv("PLAN9ASM_REQUIRE_AMD64_DIFF") == "1" && runtime.GOARCH != "amd64" {
+		t.Fatal("native x87 differential gate requires an amd64 host")
+	}
 	optTool := findLLVM22Tool("opt")
 	if optTool == "" {
 		t.Fatal("LLVM 22 opt is required for TestTranslateGoModuleAMD64X87StackAndConstants (check LLVM_CONFIG / PATH)")
 	}
-	llcTool, clangTool, haveTools := findLlcAndClang(t)
-	if !haveTools {
-		if requireDiff {
-			t.Fatalf("PLAN9ASM_REQUIRE_AMD64_DIFF=1 requires LLVM 22 llc/clang (llc=%q clang=%q)", llcTool, clangTool)
-		}
-		t.Skipf("LLVM 22 llc/clang unavailable (llc=%q clang=%q)", llcTool, clangTool)
-	}
+	llcTool, clangTool := requireLlcAndClang(t)
 
 	// Part A (Round 10 P2 #3): Every one of the 7 FLD* constants must translate
 	// cleanly via public TranslateGoModule (matching shared x87ConstSpecs).

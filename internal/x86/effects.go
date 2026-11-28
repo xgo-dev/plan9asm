@@ -971,26 +971,34 @@ func FuncUsesX87OrMMX(fn asm.Func) bool {
 // Driven directly by OpTable so adding new instructions automatically participates
 // in effect tracking without per-opcode boilerplate.
 func CheckABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string) (*ABI0EffectReport, error) {
-	return CheckABI0ResultInitWithOptions(fn, sig, goarch, nil, nil, asm.X87Auto)
+	return CheckABI0ResultInitWithOptions(fn, sig, goarch, nil, nil, asm.X87Auto, "")
 }
 
 // CheckABI0ResultInitWithSigs extends CheckABI0ResultInit with callee ABI0
 // signatures so outgoing CALLs can verify outgoing parameter bytes and mark
 // callee ABI0 result stack bytes initialized.
 func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, resolve func(string) string, sigs map[string]asm.FuncSig) (*ABI0EffectReport, error) {
-	return CheckABI0ResultInitWithOptions(fn, sig, goarch, resolve, sigs, asm.X87Auto)
+	return CheckABI0ResultInitWithOptions(fn, sig, goarch, resolve, sigs, asm.X87Auto, "")
 }
 
 // CheckABI0ResultInitWithOptions extends CheckABI0ResultInitWithSigs with the
-// active x87 lowering mode so X87Software requires explicit FINIT/FLDCW on all
+// target kernel syscall ABI and x87 lowering mode. X87Software requires explicit FINIT/FLDCW on all
 // reaching paths before any control-word-dependent x87 operation (unlike
 // X87Hardware, which natively reads the caller's live hardware FCW).
-func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string, resolve func(string) string, sigs map[string]asm.FuncSig, x87Mode asm.X87Mode) (*ABI0EffectReport, error) {
-	instrs, err := DecodeRawDirectives(fn.Instrs, goarch)
+func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string, resolve func(string) string, sigs map[string]asm.FuncSig, x87Mode asm.X87Mode, targetTriple string) (*ABI0EffectReport, error) {
+	_, bsdSyscall := syscallTarget(goarch, targetTriple)
+	if payload, thunk := rawFunctionPayload(fn); payload != nil {
+		if sig.Ret != asm.Void || len(sig.Frame.Results) != 0 || thunk && (goarch != "amd64" || targetTriple != "" && !matchesX86Target(goarch, targetTriple)) {
+			return nil, fmt.Errorf("%w: native payload has no proven ABI0 result", asm.ErrProbeNeedsContext)
+		}
+		return &ABI0EffectReport{}, nil
+	}
+	prepared, err := PrepareFile(&asm.File{Funcs: []asm.Func{fn}}, goarch, targetTriple)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", asm.ErrProbeNeedsContext, err)
 	}
 
+	instrs := prepared.Funcs[0].Instrs
 	wordMask := uint8(0xff)
 	wordBitMask := ^uint64(0)
 	ptrBytes := int64(8)
@@ -2875,6 +2883,9 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 		// ops, DIV/IDIV, SYSCALL, XLAT) hard-require initialized implicit inputs;
 		// nontrapping ALU ops propagate definedness to their outputs.
 		impReads, impWrites := implicitRegByteEffects(op, spec, curRep, wordMask)
+		if op == "SYSCALL" && bsdSyscall {
+			impWrites = append(impWrites, regMaskEffect{reg: asm.DX, mask: wordMask})
+		}
 		allInputsInit := true
 		allInputsBitDef := true
 		srcAnyTaint := false
@@ -3108,7 +3119,20 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 		}
 		// Update status flags independently per architectural semantics.
 		flagsInputsInit := computeX86FlagInputsInit(op, ins.Args, readBytes, writeBytes, arg0BitDef, dstInBitDef, allInputsInit, allInputsBitDef)
-		updateX86FlagsAfter(st, op, ins.Args, flagsInputsInit)
+		if op == "SYSCALL" {
+			// RCX and R11 are the SYSCALL hardware return address and saved
+			// physical RFLAGS, neither of which is a translated input register.
+			for _, r := range []asm.Reg{asm.CX, "R11"} {
+				delete(st.gpBytesInit, r)
+				delete(st.gpBitDef, r)
+				delete(st.gpBytesTaintedSP, r)
+			}
+			if bsdSyscall {
+				st.cfInit = true
+			}
+		} else {
+			updateX86FlagsAfter(st, op, ins.Args, flagsInputsInit)
+		}
 		if pc+1 < len(instrs) {
 			enqueue(pc+1, st, false)
 		} else {
@@ -3568,7 +3592,7 @@ func implicitRegByteEffects(op asm.Op, spec asm.OpSpec, repeated bool, wordMask 
 	case "RDTSCP":
 		return nil, []regMaskEffect{full(asm.AX), full(asm.DX), full(asm.CX)}
 	case "SYSCALL":
-		return []regMaskEffect{full(asm.AX)}, []regMaskEffect{full(asm.AX), full(asm.DX), full(asm.CX)}
+		return []regMaskEffect{full(asm.AX)}, []regMaskEffect{full(asm.AX)}
 	case "LAHF":
 		return nil, []regMaskEffect{part(asm.AX, 0x02, false)}
 	case "SAHF":
@@ -3970,10 +3994,6 @@ func updateX86FlagsAfter(st *abi0State, op asm.Op, args []asm.Operand, allInputs
 		return
 	}
 	switch op {
-	case "SYSCALL":
-		// On Darwin/BSD amd64, SYSCALL returns error status in CF (tested via JCC).
-		st.cfInit = true
-		return
 	case "ADCXL", "ADCXQ":
 		// ADCX updates CF only; OF/AF/ZF/SF/PF are preserved.
 		st.cfInit = allInputsInit

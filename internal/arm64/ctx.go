@@ -3,19 +3,25 @@ package arm64
 import (
 	"fmt"
 	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/exclusive"
 	"sort"
 	"strconv"
 	"strings"
 )
 
 type arm64Ctx struct {
-	b        *strings.Builder
-	sig      asm.FuncSig
-	resolve  func(string) string
-	sigs     map[string]asm.FuncSig
-	annotate bool
+	exclusive     []exclusive.Region
+	exclusiveExit string
+	nativeAArch64 bool
+	targetTriple  string
+	b             *strings.Builder
+	sig           asm.FuncSig
+	resolve       func(string) string
+	sigs          map[string]asm.FuncSig
+	annotate      bool
 
 	tmp int
+	pc  int64
 
 	blocks []arm64Block
 
@@ -33,21 +39,15 @@ type arm64Ctx struct {
 
 	usedPRegs map[int]bool
 	pRegSlot  map[int]string // SVE predicate P0..P15/PN0..PN15 -> alloca <vscale x 16 x i1>
-	ffrSlot   string         // SVE First-Fault Register -> alloca <vscale x 16 x i1>
-	usesSVE   bool
 
 	flagsNSlot   string
 	flagsZSlot   string
 	flagsCSlot   string
 	flagsVSlot   string
-	flagsWritten bool
+	flagsDefined flagMask
+	flagFlow     *flagBlock
 
 	curPreInc bool
-
-	exclusiveValidSlot string
-	exclusivePtrSlot   string
-	exclusiveSizeSlot  string
-	exclusiveValueSlot string
 
 	fpParams       map[int64]asm.FrameSlot // off(FP) -> slot
 	fpResults      []asm.FrameSlot         // result slots (Index is result index)
@@ -157,12 +157,10 @@ func (c *arm64Ctx) scanUsedRegs() {
 		}
 		if idx, _, _, ok := arm64ParseZReg(string(r)); ok {
 			c.usedZRegs[idx] = true
-			c.usesSVE = true
 			return
 		}
 		if idx, _, _, ok := arm64ParsePReg(string(r)); ok {
 			c.usedPRegs[idx] = true
-			c.usesSVE = true
 			return
 		}
 		c.usedRegs[r] = true
@@ -174,10 +172,8 @@ func (c *arm64Ctx) scanUsedRegs() {
 		case asm.OpSym:
 			if idx, _, _, ok := arm64ParseZReg(op.Sym); ok {
 				c.usedZRegs[idx] = true
-				c.usesSVE = true
 			} else if idx, _, _, ok := arm64ParsePReg(op.Sym); ok {
 				c.usedPRegs[idx] = true
-				c.usesSVE = true
 			}
 		case asm.OpMem:
 			markReg(op.Mem.Base)
@@ -353,14 +349,6 @@ func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 			fmt.Fprintf(c.b, "  store <vscale x 16 x i1> zeroinitializer, ptr %s\n", name)
 		}
 	}
-	if c.usesSVE {
-		c.ffrSlot = "%sve_ffr"
-		allTrue := c.newTmp()
-		fmt.Fprintf(c.b, "  %s = alloca <vscale x 16 x i1>\n", c.ffrSlot)
-		fmt.Fprintf(c.b, "  %%%s = call <vscale x 16 x i1> @llvm.aarch64.sve.ptrue.nxv16i1(i32 31)\n", allTrue)
-		fmt.Fprintf(c.b, "  store <vscale x 16 x i1> %%%s, ptr %s\n", allTrue, c.ffrSlot)
-	}
-
 	// Flags state: model "last CMP/SUBS/ANDS result" as two i64 slots.
 	// This avoids SSA-phi complexity across CFG edges while we bootstrap.
 	// We keep the actual NZCV bits, since stdlib asm relies on carry-based
@@ -377,20 +365,6 @@ func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCSlot)
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsVSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-
-	// Exclusive monitor state for LDAXR*/STLXR* lowering.
-	c.exclusiveValidSlot = "%exclusive_valid"
-	c.exclusivePtrSlot = "%exclusive_ptr"
-	c.exclusiveSizeSlot = "%exclusive_size"
-	c.exclusiveValueSlot = "%exclusive_value"
-	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.exclusiveValidSlot)
-	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.exclusiveValidSlot)
-	fmt.Fprintf(c.b, "  %s = alloca ptr\n", c.exclusivePtrSlot)
-	fmt.Fprintf(c.b, "  store ptr null, ptr %s\n", c.exclusivePtrSlot)
-	fmt.Fprintf(c.b, "  %s = alloca i8\n", c.exclusiveSizeSlot)
-	fmt.Fprintf(c.b, "  store i8 0, ptr %s\n", c.exclusiveSizeSlot)
-	fmt.Fprintf(c.b, "  %s = alloca i64\n", c.exclusiveValueSlot)
-	fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", c.exclusiveValueSlot)
 
 	// Frame result slots: allocate addressable storage so patterns like
 	// `$ret+off(FP)` and `MOVD x, ret+off(FP)` can work.

@@ -279,8 +279,10 @@ jobs:
         run: |
           set -o pipefail
           rm -f "$PLAN9ASM_DIFF_REPORT_OUT"
-          go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate|TestTranslateGoModuleAMD64PopAndPushfqInitPropagation|TestTranslateGoModuleAMD64PrivateSPConfinement|TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix|TestTranslateGoModuleAMD64X87StatusAndStackPrecision|TestTranslateGoModuleAMD64VecLaneSelectPrecision|TestTranslateGoModuleAMD64PerBitEntryFlagDifferential|TestTranslateGoModuleAMD64X87StackAndConstants|TestStep1ExplicitUnsupportedAuditRegistry|TestCrossArchARM64MultiplyAccumulateAndCarryFlags|TestCrossArchARMv7ShiftCarryFlags|TestCrossArchX86DivTrapsAndResults|TestCrossArchWasmNonSaturatingTruncTraps)$' . | tee "$RUNNER_TEMP/diff-gate-test.log"
+          go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate|TestTranslateGoModuleAMD64PopAndPushfqInitPropagation|TestTranslateGoModuleAMD64PrivateSPConfinement|TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix|TestTranslateGoModuleAMD64X87StatusAndStackPrecision|TestTranslateGoModuleAMD64VecLaneSelectPrecision|TestTranslateGoModuleAMD64PerBitEntryFlagDifferential|TestTranslateGoModuleAMD64X87StackAndConstants|TestStep1ExplicitUnsupportedAuditRegistry|TestCrossArch.*|TestWasmGoABIResumeAndFrameExecution|TestWasmInvalidControlAndConstants|TestX86BitStringRegisterOffset|TestX86MULXOperandOrder)$' . | tee "$RUNNER_TEMP/diff-gate-test.log"
           grep -Fq -- '--- PASS: TestCrossArchWasmNonSaturatingTruncTraps/NodeWasmExec' "$RUNNER_TEMP/diff-gate-test.log"
+          grep -Fq -- '--- PASS: TestWasmGoABIResumeAndFrameExecution' "$RUNNER_TEMP/diff-gate-test.log"
+          grep -Fq -- '--- PASS: TestCrossArchWasmObservableSemantics' "$RUNNER_TEMP/diff-gate-test.log"
           grep -Fq -- 'wasm_trunc_executed_cases=44' "$RUNNER_TEMP/diff-gate-test.log"
           grep -Fq -- '--- PASS: TestCrossArchX86DivTrapsAndResults' "$RUNNER_TEMP/diff-gate-test.log"
           go test -v -count=1 ./testdata/conformance/amd64

@@ -119,11 +119,8 @@ func TestTranslateARMAdditionalAtomicForms(t *testing.T) {
 		"example.atomics": {Name: "example.atomics", Ret: Void},
 	})
 	for _, want := range []string{
-		"load atomic i8",
-		"load atomic i64",
-		"cmpxchg ptr",
-		"trunc i64",
-		"store i1 false, ptr %exclusive_valid",
+		".inst 0xe1d10f9f", ".inst 0xe1c10f93",
+		".inst 0xe1b12f9f", ".inst 0xe1a10f92",
 	} {
 		if !strings.Contains(ll, want) {
 			t.Fatalf("missing %q in output:\n%s", want, ll)

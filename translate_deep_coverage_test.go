@@ -379,13 +379,13 @@ func TestTranslateModuleDirectAndFallbackCoverage(t *testing.T) {
 	defer tmpMod.Dispose()
 	if err := emitDataGlobalsModule(tmpMod, &File{
 		Data: []DataStmt{{Sym: "bad", Width: -1, Value: 1}},
-	}, resolve); err == nil {
+	}, resolve, ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(invalid width) unexpectedly succeeded")
 	}
 	if err := emitDataGlobalsModule(tmpMod, &File{
 		Globl: []GloblStmt{{Sym: "bad", Size: 2}},
 		Data:  []DataStmt{{Sym: "bad", Off: -1, Width: 1, Value: 1}},
-	}, resolve); err == nil {
+	}, resolve, ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(oob) unexpectedly succeeded")
 	}
 
@@ -743,19 +743,19 @@ func TestDirectModuleTypeHelperCoverage(t *testing.T) {
 
 	mod := ctx.NewModule("data-helper")
 	defer mod.Dispose()
-	if err := emitDataGlobalsModule(mod, &File{Globl: []GloblStmt{{Sym: "huge", Size: maxDataGlobalSize + 1}}}, testResolveSym("example")); err == nil {
+	if err := emitDataGlobalsModule(mod, &File{Globl: []GloblStmt{{Sym: "huge", Size: maxDataGlobalSize + 1}}}, testResolveSym("example"), ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(huge) unexpectedly succeeded")
 	}
-	if err := emitDataGlobalsModule(mod, &File{Data: []DataStmt{{Sym: "bad", Width: 0}}}, testResolveSym("example")); err == nil {
+	if err := emitDataGlobalsModule(mod, &File{Data: []DataStmt{{Sym: "bad", Width: 0}}}, testResolveSym("example"), ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(width=0) unexpectedly succeeded")
 	}
-	if err := emitDataGlobalsModule(mod, &File{Data: []DataStmt{{Sym: "dataOnly", Width: 1, Value: 1}}}, testResolveSym("example")); err != nil {
+	if err := emitDataGlobalsModule(mod, &File{Data: []DataStmt{{Sym: "dataOnly", Width: 1, Value: 1}}}, testResolveSym("example"), ""); err != nil {
 		t.Fatalf("emitDataGlobalsModule(data-only) error = %v", err)
 	}
 	if err := emitDataGlobalsModule(mod, &File{
 		Globl: []GloblStmt{{Sym: "small", Size: 1}},
 		Data:  []DataStmt{{Sym: "small", Off: -1, Width: 1, Value: 1}},
-	}, testResolveSym("example")); err == nil {
+	}, testResolveSym("example"), ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(oob) unexpectedly succeeded")
 	}
 }
@@ -912,7 +912,6 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 				{Op: OpTEXT, Raw: "TEXT ·aggLinear(SB),NOSPLIT,$0-0"},
 				{Op: OpMOVQ, Args: []Operand{{Kind: OpFP, FPOffset: 0}, {Kind: OpReg, Reg: AX}}, Raw: "MOVQ pair+0(FP), AX"},
 				{Op: OpMOVL, Args: []Operand{{Kind: OpFP, FPOffset: 8}, {Kind: OpReg, Reg: BX}}, Raw: "MOVL pair+8(FP), BX"},
-				{Op: OpMOVQ, Args: []Operand{{Kind: OpFP, FPOffset: 99}, {Kind: OpReg, Reg: CX}}, Raw: "MOVQ missing+99(FP), CX"},
 				{Op: OpMOVQ, Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX, Index: BX, Scale: 0, Off: 4}}, {Kind: OpReg, Reg: DX}}, Raw: "MOVQ 4(AX)(BX*0), DX"},
 				{Op: OpMOVQ, Args: []Operand{{Kind: OpReg, Reg: DX}, {Kind: OpFP, FPOffset: 24}}, Raw: "MOVQ DX, ret+24(FP)"},
 				{Op: OpRET, Raw: "RET"},
@@ -958,6 +957,13 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 			wantErr string
 			wantIR  string
 		}{
+			{
+				name:    "UnboundFPRead",
+				arch:    ArchAMD64,
+				fn:      Func{Instrs: []Instr{{Op: OpMOVQ, Args: []Operand{{Kind: OpFP, FPOffset: 99}, {Kind: OpReg, Reg: CX}}}}},
+				sig:     FuncSig{Name: "unbound", Ret: I64},
+				wantErr: "unbound FP read at offset 99",
+			},
 			{
 				name: "AggregateMemBaseFallsBackToZero",
 				arch: ArchAMD64,
@@ -1018,7 +1024,7 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 					Sym: "·badmrs",
 					Instrs: []Instr{
 						{Op: OpTEXT, Raw: "TEXT ·badmrs(SB),NOSPLIT,$0-0"},
-						{Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: "R0"}}, Raw: "MRS $1, R0"},
+						{Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 32768}, {Kind: OpReg, Reg: "R0"}}, Raw: "MRS $32768, R0"},
 						{Op: OpRET, Raw: "RET"},
 					},
 				},
@@ -1147,8 +1153,8 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 		for _, want := range []string{
 			"call { i32, i32, i32, i32 } asm sideeffect \"cpuid\"",
 			"call { i32, i32 } asm sideeffect \"xgetbv\"",
-			"call i64 asm \"mrs $0, TPIDR_EL0\"",
-			"ret i64 0",
+			"call i64 asm sideeffect \"mrs $0, TPIDR_EL0\"",
+			"call i64 asm sideeffect \"mrs $0, MIDR_EL1\"",
 		} {
 			if !strings.Contains(ir, want) {
 				t.Fatalf("missing %q in module IR:\n%s", want, ir)
@@ -1269,7 +1275,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 				name: "BadMRSKinds",
 				fn: Func{
 					Sym:    "badmrskind",
-					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MRS $1, AX"}, {Op: OpRET}},
+					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 32768}, {Kind: OpReg, Reg: AX}}, Raw: "MRS $32768, AX"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badmrskind", Ret: I64},
 			},

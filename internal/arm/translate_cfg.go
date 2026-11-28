@@ -3,6 +3,7 @@ package arm
 import (
 	"fmt"
 	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/exclusive"
 	"strings"
 )
 
@@ -58,8 +59,18 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 
 func TranslateFuncWithKuserCAS(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, kuserCAS map[string]bool, targetTriple string, annotateSource bool) error {
 	c := newARMCtx(b, fn, sig, resolve, sigs, annotateSource)
-	c.kuserCAS = kuserCAS
 	targetTriple = strings.ToLower(targetTriple)
+	apple := strings.Contains(targetTriple, "-apple-") || strings.Contains(targetTriple, "-darwin") || strings.Contains(targetTriple, "-ios")
+	lowered, groups, err := exclusive.Rewrite(fn, false, apple)
+	if err != nil {
+		return err
+	}
+	if len(groups) > 0 {
+		c.exclusive = groups
+		c.blocks = armSplitBlocks(lowered)
+	}
+
+	c.kuserCAS = kuserCAS
 	c.nativeA32 = supportsA32(targetTriple)
 	c.linuxA32 = c.nativeA32 && strings.Contains("-"+targetTriple+"-", "-linux-")
 	blockDef, blockTouched, reachable := c.computeBlockFlagsDefIn()
@@ -102,6 +113,11 @@ func (c *armCtx) lowerBlocks(blockFlagsDefIn, blockFlagsTouchedIn []armFlagMask,
 		fmt.Fprintf(c.b, "  br label %%%s\n", armLLVMBlockName(target))
 	}
 	emitCondBr := func(cond string, target string, fall string) error {
+		if c.exclusiveExit != "" {
+			fmt.Fprintf(c.b, "  br i1 %s, label %%%s, label %%%s\n", c.exclusiveExit, armLLVMBlockName(target), armLLVMBlockName(fall))
+			c.exclusiveExit = ""
+			return nil
+		}
 		cv, err := c.condValue(cond)
 		if err != nil {
 			return err
@@ -158,32 +174,52 @@ func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr 
 		c.curPreInc = false
 		c.curSubOff = false
 	}()
+	if (baseOp == "WORD" || baseOp == "DMB" || strings.HasPrefix(baseOp, "LDREX") || strings.HasPrefix(baseOp, "STREX")) && (setFlags || preInc || postInc || subOff) {
+		return false, fmt.Errorf("arm: unsupported suffix on %s", rawOp)
+	}
+	if ins.Op == exclusive.Opcode {
+		if !c.nativeA32 {
+			return false, fmt.Errorf("%w: exclusive region requires a native target", asm.ErrProbeNeedsContext)
+		}
+		id := ins.Args[0].Imm
+		return false, c.exclusive[id].Emit(c.b, c.newTmp, c.loadReg, c.storeReg, c.storeFlagsFromStatus, "", &c.exclusiveExit, c.ptrFromSB)
+	}
 	switch baseOp {
-	case string(asm.OpTEXT), string(asm.OpBYTE):
+	case string(asm.OpTEXT):
 		return false, nil
 	case string(asm.OpRET):
-		if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpSym && strings.HasSuffix(ins.Args[0].Sym, "(SB)") {
-			return true, c.tailCallAndRet(ins.Args[0])
+		if cond != "" && cond != "AL" {
+			pred, err := c.condValue(cond)
+			if err != nil {
+				return false, err
+			}
+			id := c.newTmp()
+			fmt.Fprintf(c.b, "  br i1 %s, label %%ret_%s, label %%continue_%s\nret_%s:\n", pred, id, id, id)
+			def, touched := c.flagsDef, c.flagsTouched
+			if err := c.returnToCaller(ins); err != nil {
+				return false, err
+			}
+			c.flagsDef, c.flagsTouched = def, touched
+			fmt.Fprintf(c.b, "continue_%s:\n", id)
+			return false, nil
 		}
-		if len(ins.Args) > 1 {
-			return true, fmt.Errorf("arm RET expects at most 1 operand: %q", ins.Raw)
-		}
-		return true, c.lowerRET()
+		return true, c.returnToCaller(ins)
 	case "UNDEF":
 		c.b.WriteString("  call void asm sideeffect \"udf #0\", \"~{memory}\"()\n")
 		c.b.WriteString("  unreachable\n")
 		return true, nil
+	case string(asm.OpWORD):
+		return false, c.emitConditionalEffect(cond, func() error { _, err := c.lowerRawWord(ins); return err })
+	case "SWI":
+		return false, c.lowerSyscall(cond, ins)
 	case "DMB":
-		if setFlags || preInc || postInc || subOff {
-			return false, fmt.Errorf("unsupported DMB suffix %q", rawOp)
-		}
 		return false, c.emitConditionalEffect(cond, func() error { return c.emitDMB(ins) })
 	case "MOVM":
 		if ok, term, err := c.lowerMOVM(rawOp, ins); ok {
 			return term, err
 		}
 		return false, fmt.Errorf("arm: unsupported instruction %s", ins.Op)
-	case "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", string(asm.OpWORD), "DWORD", "NOP", "#IFDEF", "#ELSE", "#ENDIF":
+	case "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", "NOP", "#IFDEF", "#ELSE", "#ENDIF":
 		return false, nil
 	}
 	if ok, term, err := c.lowerDataWithFlags(baseOp, cond, postInc, setFlags, ins); ok {
@@ -195,10 +231,7 @@ func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr 
 	if ok, term, err := c.lowerArith(baseOp, cond, setFlags, ins); ok {
 		return term, err
 	}
-	if ok, term, err := c.lowerAtomic(baseOp, ins); ok {
-		return term, err
-	}
-	if ok, term, err := c.lowerSyscall(baseOp, ins); ok {
+	if ok, term, err := c.lowerAtomic(baseOp, cond, ins); ok {
 		return term, err
 	}
 	if ok, term, err := c.lowerBranch(bi, baseOp, cond, ins, emitBr, emitCondBr); ok {
@@ -207,9 +240,20 @@ func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr 
 	return false, fmt.Errorf("arm: unsupported instruction %s", ins.Op)
 }
 
+func (c *armCtx) returnToCaller(ins asm.Instr) error {
+	if len(ins.Args) > 1 {
+		return fmt.Errorf("arm RET expects at most 1 operand: %q", ins.Raw)
+	}
+	if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpSym {
+		return c.tailCallAndRet(ins.Args[0])
+	}
+	return c.lowerRET()
+}
+
 func (c *armCtx) lowerRET() error {
 	if len(c.fpResults) == 0 {
 		return c.returnRegisters()
+
 	}
 	if len(c.fpResults) == 1 {
 		slot := c.fpResults[0]

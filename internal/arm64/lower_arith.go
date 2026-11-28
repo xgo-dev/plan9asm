@@ -16,13 +16,19 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 
 	case "MRS":
 		// MRS <sysreg>, Rn
-		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpIdent || ins.Args[1].Kind != asm.OpReg {
+		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
 			return true, false, fmt.Errorf("arm64 MRS expects ident, reg: %q", ins.Raw)
 		}
-		sysreg := CanonicalSysReg(ins.Args[0].Ident)
+		sysreg, ok := SystemRegOperand(ins.Args[0])
+		if !ok {
+			return true, false, fmt.Errorf("arm64 MRS expects ident, reg: %q", ins.Raw)
+		}
 		dst := ins.Args[1].Reg
-		if v, ok := CompileSafeMRSValue(sysreg); ok {
-			return true, false, c.storeReg(dst, v)
+		if sysreg == "NZCV" {
+			if err := c.requireFlags("MRS NZCV"); err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeReg(dst, c.packNZCV())
 		}
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call i64 asm sideeffect %q, %q()\n", t, "mrs $0, "+sysreg, "=r,~{memory}")
@@ -34,9 +40,37 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 			return true, false, fmt.Errorf("arm64 MSR expects src, ident: %q", ins.Raw)
 		}
 		sysreg := CanonicalSysReg(ins.Args[1].Ident)
+		if sysreg == "NZCV" && ins.Args[0].Kind == asm.OpReg {
+			val, err := c.loadReg(ins.Args[0].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			c.unpackNZCV(val)
+			return true, false, nil
+		}
 		switch ins.Args[0].Kind {
 		case asm.OpImm:
 			imm := ins.Args[0].Imm
+			if ins.Args[0].ImmRaw != "" {
+				return true, false, fmt.Errorf("unresolved MSR immediate")
+			}
+			if sysreg == "NZCV" {
+				c.unpackNZCV(fmt.Sprint(imm))
+				return true, false, nil
+			}
+			if strings.EqualFold(ins.Args[1].Ident, "DIT") {
+				if imm < 0 || imm > 1 {
+					return true, false, fmt.Errorf("invalid DIT immediate")
+				}
+				imm <<= 24
+			}
+			if strings.EqualFold(sysreg, "DAIFSet") || strings.EqualFold(sysreg, "DAIFClr") || strings.EqualFold(sysreg, "SPSel") {
+				if ins.Args[0].ImmRaw != "" || imm < 0 || imm > 15 {
+					return true, false, fmt.Errorf("invalid %s immediate", sysreg)
+				}
+				fmt.Fprintf(c.b, "  call void asm sideeffect %q, \"~{memory}\"()\n", fmt.Sprintf("msr %s, #%d", sysreg, imm))
+				return true, false, nil
+			}
 			// Route immediates through a GPR so both ordinary sysregs and aliases
 			// (e.g. DIT) compile on LLVM's inline asm parser.
 			fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i64 %d)\n", "msr "+sysreg+", $0", "r,~{memory}", imm)
@@ -136,6 +170,9 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 				return true, false, fmt.Errorf("arm64 %s dst must be reg: %q", op, ins.Raw)
 			}
 			dst = ins.Args[2].Reg
+		}
+		if err := c.requireFlags(string(op)); err != nil {
+			return true, false, err
 		}
 		cf := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCSlot)
@@ -1093,45 +1130,7 @@ func (c *arm64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, c.storeReg(dstReg, "%"+t)
 
 	case "UDIV":
-		if len(ins.Args) != 2 && len(ins.Args) != 3 {
-			return true, false, fmt.Errorf("arm64 UDIV expects 2 or 3 operands: %q", ins.Raw)
-		}
-		var a, bval string
-		var dst asm.Reg
-		if len(ins.Args) == 2 {
-			a, err = c.eval64(ins.Args[0], false)
-			if err != nil {
-				return true, false, err
-			}
-			if ins.Args[1].Kind != asm.OpReg {
-				return true, false, fmt.Errorf("arm64 UDIV expects src, dstReg: %q", ins.Raw)
-			}
-			dst = ins.Args[1].Reg
-			bval, err = c.loadReg(dst)
-			if err != nil {
-				return true, false, err
-			}
-		} else {
-			a, err = c.eval64(ins.Args[0], false)
-			if err != nil {
-				return true, false, err
-			}
-			bval, err = c.eval64(ins.Args[1], false)
-			if err != nil {
-				return true, false, err
-			}
-			if ins.Args[2].Kind != asm.OpReg {
-				return true, false, fmt.Errorf("arm64 UDIV expects src, src2, dstReg: %q", ins.Raw)
-			}
-			dst = ins.Args[2].Reg
-		}
-		nonzero := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %s, 0\n", nonzero, a)
-		div := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = udiv i64 %s, %s\n", div, bval, a)
-		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 0\n", out, nonzero, div)
-		return true, false, c.storeReg(dst, "%"+out)
+		return c.lowerScalarDeclarative(op, false, ins)
 
 	case "EXTR":
 		// EXTR $lsb, rm, rn, dst  =>  dst = (rn:rm) >> lsb
@@ -1527,24 +1526,31 @@ func arm64IntConstant(typeName string, value uint64) int64 {
 	return int64(value)
 }
 
+// SystemRegOperand accepts both names and x/arch's packed 15-bit operand.
+func SystemRegOperand(a asm.Operand) (string, bool) {
+	if a.Kind == asm.OpIdent && a.Ident != "" {
+		return CanonicalSysReg(a.Ident), true
+	}
+	if a.Kind != asm.OpImm || a.ImmRaw != "" || a.Imm < 0 || a.Imm > 0x7fff {
+		return "", false
+	}
+	v := a.Imm
+	return CanonicalSysReg(fmt.Sprintf("S%d_%d_C%d_C%d_%d", 2+(v>>14), v>>11&7, v>>7&15, v>>3&15, v&7)), true
+}
+
 func CanonicalSysReg(name string) string {
+	name = strings.ToUpper(name)
 	switch name {
+	case "S3_3_C4_C2_0":
+		return "NZCV"
+	case "ID_AA64ZFR0_EL1":
+		// The symbolic spelling requires +sve in LLVM even for feature detection.
+		return "S3_0_C0_C4_4"
 	case "DIT":
 		// LLVM inline-asm parser on current toolchains does not accept the DIT
 		// alias directly; use its canonical system-register encoding name.
 		return "S3_3_C4_C2_5"
 	default:
 		return name
-	}
-}
-
-func CompileSafeMRSValue(sysreg string) (string, bool) {
-	switch sysreg {
-	case "ID_AA64ISAR0_EL1", "ID_AA64PFR0_EL1", "ID_AA64ZFR0_EL1", "MIDR_EL1":
-		// LLVM 19's inline-asm parser lags behind newer arm64 feature register names.
-		// For compile-only corpus coverage, return a conservative zero value.
-		return "0", true
-	default:
-		return "", false
 	}
 }

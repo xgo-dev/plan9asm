@@ -9,6 +9,9 @@ import (
 )
 
 func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string, goarch string, wasmABI WASMABI, x87Mode X87Mode) {
+	if len(file.Funcs) == 0 {
+		return
+	}
 	switch file.Arch {
 	case ArchARM:
 		arm.EmitPrelude(b)
@@ -59,10 +62,12 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 			case "F64TRUNC":
 				want["trunc"] = true
 			case "MEMORYCOPY":
+				want["memory.size"] = true
 				want["memmove"] = true
 			case "MEMORYFILL":
+				want["memory.size"] = true
 				want["memset"] = true
-			case "CURRENTMEMORY":
+			case "CURRENTMEMORY", "MEMORYSIZE", "V128STORE":
 				want["memory.size"] = true
 			case "GROWMEMORY":
 				want["memory.grow"] = true

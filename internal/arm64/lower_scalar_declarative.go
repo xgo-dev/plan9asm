@@ -49,6 +49,7 @@ var arm64ExtraScalarSpecs = []asm.OpSpec{
 	// Mul / Div
 	{Op: "SDIV", Family: asm.FamilyMulDiv, Width: 64, Signed: true, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "sdiv"},
 	{Op: "SDIVW", Family: asm.FamilyMulDiv, Width: 32, Signed: true, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "sdiv"},
+	{Op: "UDIV", Family: asm.FamilyMulDiv, Width: 64, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "udiv"},
 	{Op: "UDIVW", Family: asm.FamilyMulDiv, Width: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "udiv"},
 	{Op: "MNEG", Family: asm.FamilyMulDiv, Width: 64, ThreeOp: true, Effect: asm.EffectWriteOnly, LLVMOp: "mneg"},
 	{Op: "MNEGW", Family: asm.FamilyMulDiv, Width: 32, ThreeOp: true, Effect: asm.EffectWriteZeroUpper, LLVMOp: "mneg"},
@@ -79,7 +80,6 @@ var arm64ExtraScalarSpecs = []asm.OpSpec{
 	{Op: "SEVL", Family: asm.FamilySystem, Effect: asm.EffectNone, InlineAsm: "sevl"},
 	{Op: "CLREX", Family: asm.FamilySystem, Effect: asm.EffectNone, LLVMOp: "clrex"},
 	{Op: "RPRFM", Family: asm.FamilySystem, Effect: asm.EffectReadOnly, LLVMOp: "nop"},
-	{Op: "SETFFR", Family: asm.FamilySystem, Effect: asm.EffectNone, LLVMOp: "nop"},
 }
 
 var arm64ExtraScalarTable = asm.NewOpTable(arm64ExtraScalarSpecs)
@@ -94,7 +94,10 @@ func (c *arm64Ctx) lowerScalarDeclarative(op asm.Op, postInc bool, ins asm.Instr
 		return true, false, nil
 	case asm.FamilySystem:
 		if spec.LLVMOp == "clrex" {
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.exclusiveValidSlot)
+			if !c.nativeAArch64 {
+				return true, false, fmt.Errorf("%w: CLREX needs an AArch64 target", asm.ErrProbeNeedsContext)
+			}
+			c.b.WriteString("  call void asm sideeffect \"clrex\", \"~{memory}\"()\n")
 			return true, false, nil
 		}
 		if spec.InlineAsm != "" {
@@ -247,6 +250,9 @@ func (c *arm64Ctx) lowerARM64ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 			res = "%" + t
 		} else {
 			cf = c.newTmp()
+			if err := c.requireFlags(string(spec.Op)); err != nil {
+				return err
+			}
 			fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCSlot)
 			ncf := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", ncf, cf)
@@ -313,6 +319,9 @@ func (c *arm64Ctx) lowerARM64ExtraALU(spec asm.OpSpec, ins asm.Instr) error {
 			return nil
 		case "adc", "sbc":
 			cf := c.newTmp()
+			if err := c.requireFlags(string(spec.Op)); err != nil {
+				return err
+			}
 			fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCSlot)
 			cin := c.newTmp()
 			if spec.LLVMOp == "sbc" {
@@ -436,7 +445,7 @@ func (c *arm64Ctx) lowerARM64ExtraBit(spec asm.OpSpec, ins asm.Instr) error {
 func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 	ty := fmt.Sprintf("i%d", spec.Width)
 	switch spec.LLVMOp {
-	case "sdiv", "udiv":
+	case "sdiv", "udiv", "srem", "urem":
 		if (len(ins.Args) != 2 && len(ins.Args) != 3) || ins.Args[len(ins.Args)-1].Kind != asm.OpReg {
 			return fmt.Errorf("arm64 %s expects divisor, [numer,] dstReg: %q", spec.Op, ins.Raw)
 		}
@@ -453,7 +462,7 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, 0\n", zero, ty, divisor)
 		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s 1, %s %s\n", safeDiv, zero, ty, ty, divisor)
 		divIn := "%" + safeDiv
-		if spec.LLVMOp == "sdiv" {
+		if spec.Signed {
 			minLit := "-9223372036854775808"
 			if spec.Width == 32 {
 				minLit = "-2147483648"
@@ -467,7 +476,12 @@ func (c *arm64Ctx) lowerARM64ExtraMulDiv(spec asm.OpSpec, ins asm.Instr) error {
 		}
 		q, sel := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = %s %s %s, %s\n", q, spec.LLVMOp, ty, numer, divIn)
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s 0, %s %%%s\n", sel, zero, ty, ty, q)
+		zeroResult := "0"
+		if spec.LLVMOp == "srem" || spec.LLVMOp == "urem" {
+			// Go expands REM to DIV and MSUB: n - (n / d) * d.
+			zeroResult = numer
+		}
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %s, %s %%%s\n", sel, zero, ty, zeroResult, ty, q)
 		return c.storeWidth(dstReg, "%"+sel, spec.Width)
 
 	case "mneg":

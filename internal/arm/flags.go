@@ -3,6 +3,7 @@ package arm
 import (
 	"fmt"
 	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/exclusive"
 	"strings"
 )
 
@@ -383,6 +384,9 @@ func armImmShiftEffAmount(op string, raw int64) int64 {
 }
 
 func (c *armCtx) armInstrUpdateFlags(cur, touched armFlagMask, baseOp, cond string, setFlags bool, ins asm.Instr) (armFlagMask, armFlagMask) {
+	if ins.Op == exclusive.Opcode && c.exclusive[ins.Args[0].Imm].Flags {
+		return armFlagAll, touched | armFlagAll
+	}
 	uncond := cond == "" || strings.EqualFold(cond, "AL")
 	switch baseOp {
 	case "BL", "CALL":
@@ -606,7 +610,9 @@ func (c *armCtx) computeBlockFlagsDefIn() ([]armFlagMask, []armFlagMask, []bool)
 				op = "B"
 			}
 			switch op {
-			case string(asm.OpRET), "UNDEF", "RFE":
+			case string(asm.OpRET):
+				terminated = cond == "" || cond == "AL"
+			case "UNDEF", "RFE":
 				terminated = true
 			case "BX", "BXRET":
 				if cond == "" {

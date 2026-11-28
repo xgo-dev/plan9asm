@@ -94,10 +94,7 @@ func TestARM64ConformanceLLVMRuntime(t *testing.T) {
 		runPrefix = []string{"qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"}
 		triple = "aarch64-unknown-linux-gnu"
 	} else {
-		_, clang, ok := findLlcAndClang(t)
-		if !ok {
-			t.Skip("clang not found")
-		}
+		clang := requireLLVM22Tool(t, "clang")
 		compiler = []string{clang}
 	}
 

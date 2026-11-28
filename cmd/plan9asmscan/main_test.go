@@ -371,13 +371,14 @@ GLOBL foo(SB), RODATA, $8
 		t.Fatalf("static manifest hw_gated=%d hw_pending=%d, want 1 and 0 before diff report", rep.ManifestHWGatedForms, rep.HWPendingForms)
 	}
 	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
-		SchemaVersion:   1,
-		Goarch:          "amd64",
+		SchemaVersion: 1,
+		Goarch:        "amd64",
+		Goos:          "linux", GoVersion: "go1.test", LLVMVersion: "LLVM version 22.1.8",
 		NativeOracleRan: true,
-		ComparedInputs:  7,
+
 		Cases: []diffCaseExecResult{
 			{
-				ID:                "case-pending",
+				ID: "case-pending", VerificationMode: "native_diff",
 				Status:            "hw_pending",
 				MissingHWFeatures: []string{"sse4.2"},
 				Forms:             []string{"MOVQ immediate,gpr64"},
@@ -390,10 +391,11 @@ GLOBL foo(SB), RODATA, $8
 		t.Fatalf("after hw_pending diff report: loaded=%v diff=%d pending=%d (%#v)", rep.DiffReportLoaded, rep.DiffVerifiedForms, rep.HWPendingForms, rep.HWPendingByForm)
 	}
 	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
-		SchemaVersion:   1,
-		Goarch:          "amd64",
+		SchemaVersion: 1,
+		Goarch:        "amd64",
+		Goos:          "linux", GoVersion: "go1.test", LLVMVersion: "LLVM version 22.1.8",
 		NativeOracleRan: true,
-		ComparedInputs:  7,
+		TotalInputs:     7,
 		Cases: []diffCaseExecResult{
 			{
 				ID:               "case-expected-only",
@@ -412,10 +414,11 @@ GLOBL foo(SB), RODATA, $8
 			rep.DiffReportLoaded, rep.DiffVerifiedForms, rep.DiffExpectedOnlyForms, rep.DiffReportComparedInputs)
 	}
 	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
-		SchemaVersion:   1,
-		Goarch:          "amd64",
+		SchemaVersion: 1,
+		Goarch:        "amd64",
+		Goos:          "linux", GoVersion: "go1.test", LLVMVersion: "LLVM version 22.1.8",
 		NativeOracleRan: true,
-		ComparedInputs:  7,
+		TotalInputs:     7, ComparedInputs: 7,
 		Cases: []diffCaseExecResult{
 			{
 				ID:               "case-pass",
@@ -462,10 +465,10 @@ func TestVerifyObjRequiresLLVM22AndRealObjectEmission(t *testing.T) {
 	// 1. Verify findLLCTool rejects non-LLVM-22 binaries instead of accepting any llc.
 	fakeDir := t.TempDir()
 	fakeName := "llc"
-	fakeScript := "#!/bin/sh\necho 'LLVM (http://llvm.org/):'\necho '  LLVM version 19.1.0'\n"
+	fakeScript := "#!/bin/sh\necho 'LLVM (http://llvm.org/):'\necho '  LLVM version 220.1.0'\n"
 	if runtime.GOOS == "windows" {
 		fakeName = "llc.cmd"
-		fakeScript = "@echo off\r\necho LLVM version 19.1.0\r\n"
+		fakeScript = "@echo off\r\necho LLVM version 220.1.0\r\n"
 	}
 	fakePath := filepath.Join(fakeDir, fakeName)
 	if err := os.WriteFile(fakePath, []byte(fakeScript), 0o755); err != nil {
@@ -490,7 +493,7 @@ func TestVerifyObjRequiresLLVM22AndRealObjectEmission(t *testing.T) {
 	// symbol-difference relocation that -filetype=null silently accepts).
 	llcPath, ver, err := findLLCTool()
 	if err != nil {
-		t.Skipf("LLVM 22 llc unavailable: %v", err)
+		t.Fatalf("LLVM 22 llc unavailable: %v", err)
 	}
 	if !strings.HasPrefix(ver, "22.") && ver != "22" {
 		t.Fatalf("findLLCTool returned unexpected version %q", ver)
@@ -779,5 +782,60 @@ func TestMainAndFatalfSubprocess(t *testing.T) {
 	}
 	if !strings.Contains(string(fout), "boom 7") {
 		t.Fatalf("fatalf output = %q, want boom 7", string(fout))
+	}
+}
+
+func TestDiffReportRejectsInconsistentEvidence(t *testing.T) {
+	scan := report{Goos: "linux", Goarch: "amd64", GoVersion: "go1.27.3", ObjectCompileLLVMVersion: "22.1.8"}
+	base := diffExecutionReport{SchemaVersion: 1, Goos: scan.Goos, Goarch: scan.Goarch, GoVersion: scan.GoVersion, LLVMVersion: "Debian LLVM version 22.1.8", NativeOracleRan: true, TotalInputs: 2, ComparedInputs: 2}
+	testCase := diffCaseExecResult{ID: "bits", Asm: "amd64/bits.s", Status: "passed", VerificationMode: "native_diff", ExecutedInputs: 2, ComparedInputs: 2, Forms: []string{"BTQ gpr64,gpr64"}}
+	for name, mutate := range map[string]func(*diffExecutionReport){
+		"os":             func(d *diffExecutionReport) { d.Goos = "windows" },
+		"go":             func(d *diffExecutionReport) { d.GoVersion = "go1.26.0" },
+		"llvm_major":     func(d *diffExecutionReport) { d.LLVMVersion = "LLVM version 220.1" },
+		"llvm_minor":     func(d *diffExecutionReport) { d.LLVMVersion = "LLVM version 22.1.7" },
+		"overcount":      func(d *diffExecutionReport) { d.Cases[0].ComparedInputs++ },
+		"partial":        func(d *diffExecutionReport) { d.Cases[0].ComparedInputs--; d.ComparedInputs-- },
+		"failed_pass":    func(d *diffExecutionReport) { d.Cases[0].FailedInputs = 1; d.FailedInputs = 1 },
+		"negative":       func(d *diffExecutionReport) { d.Cases[0].ExecutedInputs = -1 },
+		"bad_total":      func(d *diffExecutionReport) { d.TotalInputs++ },
+		"bad_status":     func(d *diffExecutionReport) { d.Cases[0].Status = "ok" },
+		"missing_oracle": func(d *diffExecutionReport) { d.NativeOracleRan = false },
+		"duplicate": func(d *diffExecutionReport) {
+			d.Cases = append(d.Cases, d.Cases[0])
+			d.ComparedInputs *= 2
+			d.TotalInputs *= 2
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := scan
+			d := base
+			d.Cases = []diffCaseExecResult{testCase}
+			mutate(&d)
+			if err := attachDiffExecutionReport(&r, &d); err == nil || r.DiffReportLoaded {
+				t.Fatal("invalid evidence accepted")
+			}
+		})
+	}
+}
+
+func TestDiffCaseManifestIdentity(t *testing.T) {
+	manifest := conformanceManifest{Cases: []conformanceCase{{ID: "abi", Asm: "amd64/cmp.s", Goarch: "amd64", Validation: "execute", Forms: []string{"CMPQ reg,reg", "RET "}}}}
+	c := diffCaseExecResult{ID: "abi", Asm: "amd64/cmp.s", Forms: []string{"RET ", "CMPQ reg,reg"}}
+	r := diffExecutionReport{Goarch: "amd64", Cases: []diffCaseExecResult{c}}
+	if err := manifest.checkDiffCases(&r); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*diffCaseExecResult){
+		func(c *diffCaseExecResult) { c.ID = "unknown" },
+		func(c *diffCaseExecResult) { c.Asm = "amd64/other.s" },
+		func(c *diffCaseExecResult) { c.Forms = []string{"RET ", "RET "} },
+		func(c *diffCaseExecResult) { c.Forms = []string{"RET ", "ADDQ reg,reg"} },
+	} {
+		r.Cases[0] = c
+		change(&r.Cases[0])
+		if err := manifest.checkDiffCases(&r); err == nil {
+			t.Errorf("accepted stale evidence %+v", r.Cases[0])
+		}
 	}
 }

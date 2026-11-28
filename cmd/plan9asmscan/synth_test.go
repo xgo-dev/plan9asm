@@ -67,6 +67,20 @@ func TestSynthesizeEncoderLines(t *testing.T) {
 		}
 	}
 
+	for _, tc := range []struct {
+		row  encoderFormReport
+		want string
+	}{
+		{encoderFormReport{Opcode: "SETFFR", OperandClasses: []string{"args=oc"}}, "SETFFR"},
+		{encoderFormReport{Opcode: "DC", OperandClasses: []string{"from=C_SPOP", "to=C_ZREG"}}, "DC ZVA, R1"},
+		{encoderFormReport{Opcode: "TLBI", OperandClasses: []string{"from=C_SPOP"}}, "TLBI VMALLE1"},
+		{encoderFormReport{Opcode: "TLBI", OperandClasses: []string{"from=C_SPOP", "to=C_ZREG"}}, "TLBI VAE1, R1"},
+	} {
+		lines := synthesizeARM64Lines(tc.row)
+		if len(lines) != 1 || lines[0] != tc.want {
+			t.Errorf("%s: got %v, want %s", tc.row.Opcode, lines, tc.want)
+		}
+	}
 	// arm64 optab + inst_gen
 	if got := synthesizeEncoderLines("arm64", encoderFormReport{
 		Opcode:         "MADD",

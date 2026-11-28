@@ -2,8 +2,9 @@ package preprocess
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/goversion"
 )
 
 // GoAssemblerDefinesForEnvironment returns the CPU and target macros passed by
@@ -18,9 +19,8 @@ func GoAssemblerDefinesForEnvironment(goos, goarch string, environment map[strin
 	if goos == "" || environment["GOOS"] != goos || environment["GOARCH"] != goarch {
 		return nil, fmt.Errorf("assembler profile target does not match its observed environment")
 	}
-	version := strings.Split(strings.TrimPrefix(environment["GOVERSION"], "go1."), ".")[0]
-	minor, err := strconv.Atoi(version)
-	if !strings.HasPrefix(environment["GOVERSION"], "go1.") || err != nil || minor < 20 || minor > 27 {
+	minor, ok := goversion.ParseMinor(environment["GOVERSION"])
+	if !ok || minor < 20 || minor > 27 {
 		return nil, fmt.Errorf("assembler profile requires an audited observed Go 1.20–1.27 GOVERSION")
 	}
 	defines := []string{"GOOS_" + goos, "GOARCH_" + goarch}

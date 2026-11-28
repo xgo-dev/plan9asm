@@ -154,11 +154,10 @@ func (c *arm64Ctx) sveAllTruePred(baseLanes int) string {
 	return "%" + t
 }
 
-func (c *arm64Ctx) sveSetPredFlags(p16 string) {
+func (c *arm64Ctx) sveSetPredFlags(pg, p16 string) {
 	// Architectural scalable SVE predicate flag semantics:
 	// N = first active element is true, Z = no active element is true,
 	// C = last active element is NOT true, V = 0.
-	pg := c.sveAllTruePred(16)
 	n, any, z, last, cf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = call i1 @llvm.aarch64.sve.ptest.first(<vscale x 16 x i1> %s, <vscale x 16 x i1> %s)\n", n, pg, p16)
 	fmt.Fprintf(c.b, "  %%%s = call i1 @llvm.aarch64.sve.ptest.any(<vscale x 16 x i1> %s, <vscale x 16 x i1> %s)\n", any, pg, p16)
@@ -169,7 +168,7 @@ func (c *arm64Ctx) sveSetPredFlags(p16 string) {
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", z, c.flagsZSlot)
 	fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-	c.flagsWritten = true
+	c.flagsDefined = flagAll
 }
 
 func (c *arm64Ctx) svePredToI1Vec(pIdx, baseLanes int) string {
@@ -242,39 +241,11 @@ func (c *arm64Ctx) lowerSVEOrSys(op asm.Op, ins asm.Instr) (ok bool, terminated 
 func (c *arm64Ctx) lowerARM64SysExt(op asm.Op, ins asm.Instr) error {
 	switch op {
 	case "ADR":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return fmt.Errorf("arm64 ADR expects label/sym, dstReg: %q", ins.Raw)
-		}
-		if ins.Args[0].Kind == asm.OpSym && strings.HasSuffix(ins.Args[0].Sym, "(SB)") {
-			p, err := c.ptrFromSB(ins.Args[0].Sym)
-			if err != nil {
-				return err
-			}
-			pi := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", pi, p)
-			return c.storeReg(ins.Args[1].Reg, "%"+pi)
-		}
-		return c.storeReg(ins.Args[1].Reg, "0")
-	case "SYSL":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != asm.OpReg {
-			return fmt.Errorf("arm64 SYSL expects $imm, dstReg: %q", ins.Raw)
-		}
-		return c.storeReg(ins.Args[1].Reg, "0")
-	case "DRPS", "ERET":
-		if len(ins.Args) != 0 {
-			return fmt.Errorf("arm64 %s takes no operands: %q", op, ins.Raw)
-		}
-		return nil
-	case "DCPS1", "DCPS2", "DCPS3", "HLT", "HVC", "SMC":
-		if len(ins.Args) > 1 {
-			return fmt.Errorf("arm64 %s expects at most 1 immediate: %q", op, ins.Raw)
-		}
-		return nil
-	case "SYS", "TLBI":
-		if len(ins.Args) < 1 || len(ins.Args) > 2 {
-			return fmt.Errorf("arm64 %s expects 1 or 2 operands: %q", op, ins.Raw)
-		}
-		return nil
+		return c.lowerAddress(op, ins)
+	case "SYS", "SYSL", "TLBI":
+		return c.lowerSystemRegisterOp(op, ins)
+	case "DRPS", "ERET", "DCPS1", "DCPS2", "DCPS3", "HLT", "HVC", "SMC":
+		return fmt.Errorf("arm64: unsupported %s exception-level execution contract", op)
 	}
 	return fmt.Errorf("arm64: unsupported system instruction %s", op)
 }
@@ -342,7 +313,7 @@ func (c *arm64Ctx) lowerARM64SVEScalar(op asm.Op, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", eq, c.flagsZSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCSlot)
 		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-		c.flagsWritten = true
+		c.flagsDefined = flagAll
 		return nil
 	}
 }
@@ -738,6 +709,12 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 		c.storePIdx(pi, c.sveI1VecToPred(p, baseLanes))
 		return nil
 
+	case name == "SETFFR":
+		if len(ins.Args) != 0 {
+			return fmt.Errorf("arm64 SETFFR expects no operands: %q", ins.Raw)
+		}
+		fmt.Fprintln(c.b, "  call void @llvm.aarch64.sve.setffr()")
+		return nil
 	case name == "PWRFFR":
 		if len(ins.Args) != 1 {
 			return fmt.Errorf("arm64 PWRFFR expects Pn: %q", ins.Raw)
@@ -746,27 +723,25 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 		if !ok {
 			return fmt.Errorf("arm64 PWRFFR expects P src: %q", ins.Raw)
 		}
-		if c.ffrSlot != "" {
-			fmt.Fprintf(c.b, "  store <vscale x 16 x i1> %s, ptr %s\n", c.loadPIdx(pi), c.ffrSlot)
-		}
+		fmt.Fprintf(c.b, "  call void @llvm.aarch64.sve.wrffr(<vscale x 16 x i1> %s)\n", c.loadPIdx(pi))
 		return nil
 
 	case name == "PRDFFR" || name == "PRDFFRS":
-		if len(ins.Args) < 1 {
+		if len(ins.Args) < 1 || len(ins.Args) > 2 || (name == "PRDFFRS" && len(ins.Args) != 2) {
 			return fmt.Errorf("arm64 %s expects [Pg,] Pd: %q", name, ins.Raw)
 		}
-		val := c.sveAllTruePred(16)
-		if c.ffrSlot != "" {
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load <vscale x 16 x i1>, ptr %s\n", t, c.ffrSlot)
-			val = "%" + t
-		}
+		result := c.newTmp()
+		val := "%" + result
+		var pg string
 		if len(ins.Args) == 2 {
-			if gi, _, _, ok := arm64ParsePReg(arm64OpText(ins.Args[0])); ok {
-				a := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = and <vscale x 16 x i1> %s, %s\n", a, val, c.loadPIdx(gi))
-				val = "%" + a
+			i, _, _, ok := arm64ParsePReg(arm64OpText(ins.Args[0]))
+			if !ok {
+				return fmt.Errorf("arm64 %s expects predicate guard: %q", name, ins.Raw)
 			}
+			pg = c.loadPIdx(i)
+			fmt.Fprintf(c.b, "  %%%s = call <vscale x 16 x i1> @llvm.aarch64.sve.rdffr.z(<vscale x 16 x i1> %s)\n", result, pg)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = call <vscale x 16 x i1> @llvm.aarch64.sve.rdffr()\n", result)
 		}
 		di, _, _, ok := arm64ParsePReg(arm64OpText(ins.Args[len(ins.Args)-1]))
 		if !ok {
@@ -774,7 +749,7 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 		}
 		c.storePIdx(di, val)
 		if name == "PRDFFRS" {
-			c.sveSetPredFlags(val)
+			c.sveSetPredFlags(pg, val)
 		}
 		return nil
 
@@ -788,17 +763,7 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 			return fmt.Errorf("arm64 PPTEST expects P operands: %q", ins.Raw)
 		}
 		pg, pn := c.loadPIdx(p2), c.loadPIdx(p1)
-		n, any, z, last, cf := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i1 @llvm.aarch64.sve.ptest.first(<vscale x 16 x i1> %s, <vscale x 16 x i1> %s)\n", n, pg, pn)
-		fmt.Fprintf(c.b, "  %%%s = call i1 @llvm.aarch64.sve.ptest.any(<vscale x 16 x i1> %s, <vscale x 16 x i1> %s)\n", any, pg, pn)
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", z, any)
-		fmt.Fprintf(c.b, "  %%%s = call i1 @llvm.aarch64.sve.ptest.last(<vscale x 16 x i1> %s, <vscale x 16 x i1> %s)\n", last, pg, pn)
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", cf, last)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", n, c.flagsNSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", z, c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-		c.flagsWritten = true
+		c.sveSetPredFlags(pg, pn)
 		return nil
 
 	case name == "PWHILELT" || name == "PWHILELTW" || name == "PWHILELE" || name == "PWHILELEW" ||
@@ -844,7 +809,7 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 			w, baseLanes, intrName, baseLanes, ty, ty, start, ty, limit)
 		p16 := c.sveI1VecToPred("%"+w, baseLanes)
 		c.storePIdx(pi, p16)
-		c.sveSetPredFlags(p16)
+		c.sveSetPredFlags(c.sveI1VecToPred(c.sveAllTruePred(baseLanes), baseLanes), p16)
 		return nil
 
 	case name == "PCNTP" || name == "PINCP" || name == "PDECP" ||
@@ -1086,7 +1051,10 @@ func (c *arm64Ctx) lowerARM64SVEPred(op asm.Op, ins asm.Instr) error {
 			return fmt.Errorf("arm64 %s expects P dst: %q", name, ins.Raw)
 		}
 		if setFlags {
-			c.sveSetPredFlags(res)
+			if gVal == "" {
+				gVal = allTrue
+			}
+			c.sveSetPredFlags(gVal, res)
 		}
 		return nil
 
@@ -1567,13 +1535,15 @@ func (c *arm64Ctx) lowerARM64SVECmp(op asm.Op, ins asm.Instr) error {
 		cmpVec = "%" + cmp
 	}
 	res16 := c.sveI1VecToPred(cmpVec, baseLanes)
+	pg := c.sveI1VecToPred(c.sveAllTruePred(baseLanes), baseLanes)
 	if gIdx >= 0 {
+		pg = c.sveI1VecToPred(c.svePredToI1Vec(gIdx, baseLanes), baseLanes)
 		an := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and <vscale x 16 x i1> %s, %s\n", an, res16, c.loadPIdx(gIdx))
+		fmt.Fprintf(c.b, "  %%%s = and <vscale x 16 x i1> %s, %s\n", an, res16, pg)
 		res16 = "%" + an
 	}
 	c.storePIdx(dstIdx, res16)
-	c.sveSetPredFlags(res16)
+	c.sveSetPredFlags(pg, res16)
 	return nil
 }
 
@@ -1658,13 +1628,9 @@ func (c *arm64Ctx) lowerARM64SVEFP(op asm.Op, ins asm.Instr) error {
 			return fmt.Errorf("arm64 %s mismatched source/dest lane widths (%d vs %d): %q", name, srcLBs[0], laneBits, ins.Raw)
 		}
 		intTy := fmt.Sprintf("<vscale x %d x i%d>", baseLanes, laneBits)
-		cvt := "fptosi"
-		if name == "ZFCVTZU" {
-			cvt = "fptoui"
-		}
-		cv, bo := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = %s %s %%%s to %s\n", cv, cvt, fpTy, ab, intTy)
-		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to <vscale x 16 x i8>\n", bo, intTy, cv)
+		cv := c.floatToInt(name == "ZFCVTZS", intTy, fmt.Sprintf("nxv%di%d", baseLanes, laneBits), fpTy, mangle, "%"+ab)
+		bo := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast %s %s to <vscale x 16 x i8>\n", bo, intTy, cv)
 		return c.sveStoreVecResult(dstZ, nil, gIdx, gMode, baseLanes, laneBits, "%"+bo)
 	}
 
@@ -1705,7 +1671,7 @@ func (c *arm64Ctx) lowerARM64SVEFP(op asm.Op, ins asm.Instr) error {
 		resFP = "%" + t
 	case "ZFSUB":
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fsub %s %%%s, %s\n", t, fpTy, ab, bb)
+		fmt.Fprintf(c.b, "  %%%s = fsub %s %s, %s\n", t, fpTy, bb, "%"+ab)
 		resFP = "%" + t
 	case "ZFMUL":
 		t := c.newTmp()
@@ -1713,7 +1679,7 @@ func (c *arm64Ctx) lowerARM64SVEFP(op asm.Op, ins asm.Instr) error {
 		resFP = "%" + t
 	case "ZFDIV":
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = fdiv %s %%%s, %s\n", t, fpTy, ab, bb)
+		fmt.Fprintf(c.b, "  %%%s = fdiv %s %s, %s\n", t, fpTy, bb, "%"+ab)
 		resFP = "%" + t
 	case "ZFMAX":
 		t := c.newTmp()
@@ -1788,6 +1754,9 @@ func (c *arm64Ctx) lowerARM64SVEALU(op asm.Op, ins asm.Instr) error {
 	elemTy := fmt.Sprintf("i%d", laneBits)
 	vecTy := fmt.Sprintf("<vscale x %d x %s>", baseLanes, elemTy)
 
+	if name == "ZTBL" || name == "ZUMULLB" {
+		return c.lowerSVETableOrMultiply(op, ins, dstZ, laneBits)
+	}
 	gIdx := -1
 	var gMode byte
 	var vecSrcs []string
@@ -1853,6 +1822,26 @@ func (c *arm64Ctx) lowerARM64SVEALU(op asm.Op, ins asm.Instr) error {
 	switch name {
 	case "ZMOV", "ZDUP", "ZCPY":
 		resVec = aVec
+		if _, w, lane, ok := arm64ParseZReg(arm64OpText(ins.Args[0])); ok && lane >= 0 && name == "ZDUP" {
+			if w == 128 && dstLB == 128 && lane < 4 {
+				r := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = call <vscale x 16 x i8> asm \"dup $0.q, $1.q[%d]\", \"=w,w\"(<vscale x 16 x i8> %s)\n", r, lane, vecSrcs[0])
+				return c.storeZIdx(dstZ, "%"+r)
+			}
+			if w != laneBits || w == 128 {
+				return fmt.Errorf("unsupported ZDUP indexed width: %s", ins.Raw)
+			}
+			e := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i64 %d\n", e, vecTy, aVec, lane)
+			if lane >= baseLanes {
+				valid, clamped := c.newTmp(), c.newTmp()
+				count := c.sveScaledVLBytes(1, int64(baseLanes))
+				fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %d, %s\n", valid, lane, count)
+				fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, %s %%%s, %s 0\n", clamped, valid, elemTy, e, elemTy)
+				e = clamped
+			}
+			resVec = c.sveSplatVal(baseLanes, elemTy, "%"+e)
+		}
 	case "ZABS":
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.abs.nxv%di%d(%s %s, i1 false)\n", t, vecTy, baseLanes, laneBits, vecTy, aVec)
@@ -1887,10 +1876,16 @@ func (c *arm64Ctx) lowerARM64SVEALU(op asm.Op, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.uadd.sat.nxv%di%d(%s %s, %s %s)\n", t, vecTy, baseLanes, laneBits, vecTy, aVec, vecTy, bVec)
 		resVec = "%" + t
 	case "ZSQSUB":
+		if !hasScalar {
+			aVec, bVec = bVec, aVec
+		}
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.ssub.sat.nxv%di%d(%s %s, %s %s)\n", t, vecTy, baseLanes, laneBits, vecTy, aVec, vecTy, bVec)
 		resVec = "%" + t
 	case "ZUQSUB":
+		if !hasScalar {
+			aVec, bVec = bVec, aVec
+		}
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.usub.sat.nxv%di%d(%s %s, %s %s)\n", t, vecTy, baseLanes, laneBits, vecTy, aVec, vecTy, bVec)
 		resVec = "%" + t
@@ -1923,6 +1918,9 @@ func (c *arm64Ctx) lowerARM64SVEALU(op asm.Op, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", t, vecTy, aVec, bVec)
 		resVec = "%" + t
 	case "ZBIC":
+		if !hasScalar {
+			aVec, bVec = bVec, aVec
+		}
 		allOnes := c.sveSplatVal(baseLanes, elemTy, "-1")
 		n, t := c.newTmp(), c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor %s %s, %s\n", n, vecTy, bVec, allOnes)
@@ -1933,6 +1931,9 @@ func (c *arm64Ctx) lowerARM64SVEALU(op asm.Op, ins asm.Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = add %s %s, %s\n", t, vecTy, aVec, bVec)
 		resVec = "%" + t
 	case "ZSUB":
+		if !hasScalar {
+			aVec, bVec = bVec, aVec
+		}
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = sub %s %s, %s\n", t, vecTy, aVec, bVec)
 		resVec = "%" + t
@@ -1940,31 +1941,28 @@ func (c *arm64Ctx) lowerARM64SVEALU(op asm.Op, ins asm.Instr) error {
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = mul %s %s, %s\n", t, vecTy, aVec, bVec)
 		resVec = "%" + t
-	case "ZLSL":
-		mask := c.sveSplatVal(baseLanes, elemTy, fmt.Sprintf("%d", laneBits-1))
-		m, t := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", m, vecTy, bVec, mask)
-		fmt.Fprintf(c.b, "  %%%s = shl %s %s, %%%s\n", t, vecTy, aVec, m)
-		resVec = "%" + t
-	case "ZLSR":
-		mask := c.sveSplatVal(baseLanes, elemTy, fmt.Sprintf("%d", laneBits-1))
-		m, t := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", m, vecTy, bVec, mask)
-		fmt.Fprintf(c.b, "  %%%s = lshr %s %s, %%%s\n", t, vecTy, aVec, m)
-		resVec = "%" + t
-	case "ZASR":
-		mask := c.sveSplatVal(baseLanes, elemTy, fmt.Sprintf("%d", laneBits-1))
-		m, t := c.newTmp(), c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and %s %s, %s\n", m, vecTy, bVec, mask)
-		fmt.Fprintf(c.b, "  %%%s = ashr %s %s, %%%s\n", t, vecTy, aVec, m)
-		resVec = "%" + t
+	case "ZLSL", "ZLSR", "ZASR":
+		data, count, countsTy := bVec, aVec, vecTy
+		fn := strings.ToLower(strings.TrimPrefix(name, "Z"))
+		if ins.Args[0].Kind == asm.OpImm {
+			data, count = aVec, bVec
+		} else if _, width, _, ok := arm64ParseZReg(arm64OpText(ins.Args[0])); ok && width == 64 && laneBits < 64 {
+			fn += ".wide"
+			countsTy = "<vscale x 2 x i64>"
+			raw := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast <vscale x 16 x i8> %s to %s\n", raw, vecSrcs[0], countsTy)
+			count = "%" + raw
+		}
+		r := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call %s @llvm.aarch64.sve.%s.nxv%di%d(<vscale x %d x i1> %s, %s %s, %s %s)\n", r, vecTy, fn, baseLanes, laneBits, baseLanes, c.sveAllTruePred(baseLanes), vecTy, data, countsTy, count)
+		resVec = "%" + r
 	case "ZSEL":
 		if gIdx < 0 {
 			return fmt.Errorf("arm64 ZSEL requires predicate register: %q", ins.Raw)
 		}
 		mv := c.svePredToI1Vec(gIdx, baseLanes)
 		sel := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select <vscale x %d x i1> %s, %s %s, %s %s\n", sel, baseLanes, mv, vecTy, aVec, vecTy, bVec)
+		fmt.Fprintf(c.b, "  %%%s = select <vscale x %d x i1> %s, %s %s, %s %s\n", sel, baseLanes, mv, vecTy, bVec, vecTy, aVec)
 		outB := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to <vscale x 16 x i8>\n", outB, vecTy, sel)
 		return c.sveStoreVecResult(dstZ, dstList, -1, 0, baseLanes, laneBits, "%"+outB)

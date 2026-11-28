@@ -143,6 +143,8 @@ func (c *armCtx) storeMem(mem asm.MemRef, bits int, postInc bool, v32 string) er
 
 func (c *armCtx) eval32(op asm.Operand, postInc bool) (string, error) {
 	switch op.Kind {
+	case asm.OpTLSOffset:
+		return asm.EmitTLSOffset(c.b, c.newTmp, op.Sym, 32), nil
 	case asm.OpImm:
 		if op.ImmRaw != "" {
 			return "", fmt.Errorf("arm: unresolved symbolic immediate %q", op.ImmRaw)

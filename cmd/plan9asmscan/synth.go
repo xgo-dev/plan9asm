@@ -285,6 +285,15 @@ func synthesizeARMLines(row encoderFormReport) []string {
 	if op == "END" {
 		return nil
 	}
+	// These optab rows use general memory classes, but asmout requires a
+	// zero displacement and distinct address/status registers. The doubleword
+	// data register also names an even/odd pair.
+	switch op {
+	case "LDREX", "LDREXB", "LDREXD":
+		return []string{op + " (R2), R0"}
+	case "STREX", "STREXB", "STREXD":
+		return []string{op + " R0, (R2), R3"}
+	}
 	if len(row.OperandClasses) == 0 {
 		return []string{op}
 	}
@@ -298,6 +307,14 @@ func synthesizeARMLines(row encoderFormReport) []string {
 			return nil
 		}
 		arg, ok := synthARMOperand(cls, i)
+		if op == "DMB" {
+			switch cls {
+			case "C_SPR":
+				arg = "MB_ISH"
+			case "C_LCON":
+				arg = "$11"
+			}
+		}
 		if !ok {
 			return nil
 		}
@@ -356,6 +373,23 @@ func synthesizeARM64Lines(row encoderFormReport) []string {
 	if len(row.OperandClasses) == 1 && strings.HasPrefix(row.OperandClasses[0], "args=") {
 		return synthesizeARM64InstGenLines(op, strings.TrimPrefix(row.OperandClasses[0], "args="))
 	}
+	// VRAX1 inherits VADD optab rows but encodes three 2D vectors only.
+	if op == "VRAX1" {
+		if strings.Join(row.OperandClasses, ",") == "from=C_ARNG,reg=C_ARNG,to=C_ARNG" {
+			return []string{"VRAX1 V0.D2, V1.D2, V2.D2"}
+		}
+		return nil
+	}
+	// DC shares TLBI's optab rows. Every Go DC alias requires an Xt;
+	// the no-register row is used only by specific TLBI aliases.
+	if len(row.OperandClasses) == 1 && row.OperandClasses[0] == "from=C_SPOP" {
+		switch op {
+		case "DC":
+			return nil
+		case "TLBI":
+			return []string{"TLBI VMALLE1"}
+		}
+	}
 	args := make([]string, 0, len(row.OperandClasses))
 	for i, entry := range row.OperandClasses {
 		role, cls, ok := strings.Cut(entry, "=")
@@ -384,6 +418,11 @@ func synthesizeARM64Lines(row encoderFormReport) []string {
 }
 
 func synthARM64OptabOperand(op, cls string, idx int) (string, bool) {
+	// SYSARG4 encodes op1:Cn:Cm:op2 in bits 18:5. The low five bits
+	// select Rt and cannot be used as part of the source immediate.
+	if (op == "SYS" || op == "SYSL") && strings.HasSuffix(cls, "CON") {
+		return "$32768", true
+	}
 	switch cls {
 	case "C_ZREG", "C_REG":
 		return fmt.Sprintf("R%d", idx%4), true
@@ -429,7 +468,22 @@ func synthARM64OptabOperand(op, cls string, idx int) (string, bool) {
 	case "C_SPR":
 		return "NZCV", true
 	case "C_SPOP":
-		return "ISH", true
+		switch op {
+		case "DC":
+			return "ZVA", true
+		case "TLBI":
+			return "VAE1", true
+		case "BTI":
+			return "C", true
+		case "MSR":
+			return "DAIFSet", true
+		case "PRFM":
+			return "PLDL1KEEP", true
+		case "RPRFM":
+			return "PLDKEEP", true
+		default:
+			return "", false
+		}
 	default:
 		switch {
 		case strings.Contains(cls, "AUTO"):
@@ -475,7 +529,7 @@ func isInstGenModifierToken(tok string) bool {
 		return true
 	}
 	switch tok {
-	case "V2", "MUL_VL", "mod", "shift", "mod_amount":
+	case "oc", "V2", "MUL_VL", "mod", "shift", "mod_amount":
 		return true
 	}
 	return strings.HasPrefix(tok, "LSL_") || strings.HasPrefix(tok, "mod_") || strings.HasPrefix(tok, "UXTW") || strings.HasPrefix(tok, "SXTW")

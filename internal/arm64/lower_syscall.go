@@ -2,109 +2,91 @@ package arm64
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/xgo-dev/plan9asm/internal/asm"
 )
 
-func (c *arm64Ctx) lowerSyscall(op asm.Op, ins asm.Instr) (ok bool, terminated bool, err error) {
-	switch op {
-	case "SVC":
-		if len(ins.Args) > 1 || (len(ins.Args) == 1 && ins.Args[0].Kind != asm.OpImm) {
-			return true, false, fmt.Errorf("arm64 SVC expects optional immediate operand: %q", ins.Raw)
-		}
-
-		darwinMode := false
-		if len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].Imm == 0x80 {
-			darwinMode = true
-		}
-
-		numReg := asm.Reg("R8")
-		if _, ok := c.regSlot[numReg]; !ok {
-			// Darwin syscall asm passes trap number via R16.
-			numReg = asm.Reg("R16")
-		}
-		num, err := c.loadReg(numReg)
-		if err != nil {
-			return true, false, err
-		}
-		loadArg := func(r asm.Reg) (string, error) {
-			if _, ok := c.regSlot[r]; !ok {
-				return "0", nil
-			}
-			return c.loadReg(r)
-		}
-
-		a1, err := loadArg(asm.Reg("R0"))
-		if err != nil {
-			return true, false, err
-		}
-		a2, err := loadArg(asm.Reg("R1"))
-		if err != nil {
-			return true, false, err
-		}
-		a3, err := loadArg(asm.Reg("R2"))
-		if err != nil {
-			return true, false, err
-		}
-		a4, err := loadArg(asm.Reg("R3"))
-		if err != nil {
-			return true, false, err
-		}
-		a5, err := loadArg(asm.Reg("R4"))
-		if err != nil {
-			return true, false, err
-		}
-		a6, err := loadArg(asm.Reg("R5"))
-		if err != nil {
-			return true, false, err
-		}
-
-		r := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i64 @syscall(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n", r, num, a1, a2, a3, a4, a5, a6)
-		isErr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, -1\n", isErr, r)
-		errno32 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 @cliteErrno()\n", errno32)
-		errno64 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", errno64, errno32)
-
-		if darwinMode {
-			// Darwin syscall asm checks carry flag (BCC) after SVC:
-			// - C=0 success, R0=r1
-			// - C=1 error,   R0=errno
-			r0 := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 %%%s\n", r0, isErr, errno64, r)
-			if err := c.storeReg(asm.Reg("R0"), "%"+r0); err != nil {
-				return true, false, err
-			}
-			if err := c.storeReg(asm.Reg("R1"), "0"); err != nil {
-				return true, false, err
-			}
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsNSlot)
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
-			fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", isErr, c.flagsCSlot)
-			fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-			c.flagsWritten = true
-			return true, false, nil
-		}
-
-		// Default path (Linux-like): return -errno on failure in R0.
-		negErr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = sub i64 0, %%%s\n", negErr, errno64)
-		r0 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 %%%s\n", r0, isErr, negErr, r)
-		if err := c.storeReg(asm.Reg("R0"), "%"+r0); err != nil {
-			return true, false, err
-		}
-		// libc syscall has a single return value; keep R1 zero.
-		if err := c.storeReg(asm.Reg("R1"), "0"); err != nil {
-			return true, false, err
-		}
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsNSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
-		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", isErr, c.flagsCSlot)
-		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-		c.flagsWritten = true
-		return true, false, nil
+// SVC uses the kernel register ABI. A C library wrapper changes the error
+// convention and cannot return both x0 and x1.
+func (c *arm64Ctx) lowerSyscall(op asm.Op, ins asm.Instr) (bool, bool, error) {
+	if op != "SVC" {
+		return false, false, nil
 	}
-	return false, false, nil
+	imm := int64(0)
+	if len(ins.Args) > 0 {
+		a := ins.Args[0]
+		if len(ins.Args) != 1 || a.Kind != asm.OpImm || a.ImmRaw != "" || a.Imm < 0 || a.Imm > 65535 {
+			return true, false, fmt.Errorf("arm64 SVC expects optional imm16: %q", ins.Raw)
+		}
+		imm = a.Imm
+	}
+	num, last, carry := 8, 5, false
+	switch {
+	case !c.nativeAArch64:
+		return true, false, fmt.Errorf("%w: SVC requires a native AArch64 kernel ABI", asm.ErrProbeNeedsContext)
+	case strings.Contains(c.targetTriple, "-linux"):
+	case strings.Contains(c.targetTriple, "-darwin"), strings.Contains(c.targetTriple, "-macos"), strings.Contains(c.targetTriple, "-ios"):
+		if imm != 128 {
+			return true, false, fmt.Errorf("arm64: unsupported Darwin SVC immediate %d", imm)
+		}
+		num, last, carry = 16, 8, true
+	case strings.Contains(c.targetTriple, "-freebsd"), strings.Contains(c.targetTriple, "-openbsd"):
+		last, carry = 7, true
+	case strings.Contains(c.targetTriple, "-netbsd"):
+		num, last, carry = 17, 7, true
+	default:
+		return true, false, fmt.Errorf("%w: unknown SVC ABI for %s", asm.ErrProbeNeedsContext, c.targetTriple)
+	}
+
+	tpl := fmt.Sprintf("svc #%d", imm)
+	resultTy := "{ i64, i64 }"
+	constraints := []string{"={x0}", "={x1}"}
+	if carry {
+		resultTy = "{ i64, i64, i64 }"
+		tpl += "\\0A\\09cset $2, cs"
+		constraints = append(constraints, "=r")
+	}
+	var args []string
+	addInput := func(reg int, constraint string) error {
+		v, err := c.loadReg(asm.Reg(fmt.Sprintf("R%d", reg)))
+		if err != nil {
+			return err
+		}
+		args = append(args, "i64 "+v)
+		constraints = append(constraints, constraint)
+		return nil
+	}
+	for reg := 0; reg <= last; reg++ {
+		con := fmt.Sprintf("{x%d}", reg)
+		if reg < 2 {
+			con = fmt.Sprint(reg)
+		}
+		if err := addInput(reg, con); err != nil {
+			return true, false, err
+		}
+	}
+	if err := addInput(num, fmt.Sprintf("{x%d}", num)); err != nil {
+		return true, false, err
+	}
+	constraints = append(constraints, "~{cc}", "~{memory}")
+	out := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = call %s asm sideeffect \"%s\", \"%s\"(%s)\n", out, resultTy, tpl, strings.Join(constraints, ","), strings.Join(args, ", "))
+	for i, r := range []asm.Reg{"R0", "R1"} {
+		v := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, %d\n", v, resultTy, out, i)
+		if err := c.storeReg(r, "%"+v); err != nil {
+			return true, false, err
+		}
+	}
+	if carry {
+		v, bit := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractvalue %s %%%s, 2\n  %%%s = trunc i64 %%%s to i1\n", v, resultTy, out, bit, v)
+		c.storeFlag(c.flagsCSlot, "%"+bit)
+		if c.flagFlow != nil {
+			c.flagFlow.clobbers = true
+		}
+		c.flagsDefined = flagC
+	}
+	return true, false, nil
 }

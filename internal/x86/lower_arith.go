@@ -2074,37 +2074,8 @@ func (c *amd64Ctx) lowerArith(op asm.Op, ins asm.Instr) (ok bool, terminated boo
 		return true, false, nil
 
 	case "MULXQ":
-		// BMI2 MULXQ src, loDst, hiDst: {hi,lo} = RDX * src (unsigned).
-		if len(ins.Args) != 3 || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
-			return true, false, fmt.Errorf("amd64 MULXQ expects src, loDst, hiDst: %q", ins.Raw)
-		}
-		src, err := c.evalI64(ins.Args[0])
-		if err != nil {
-			return true, false, err
-		}
-		dx, err := c.loadReg(asm.DX)
-		if err != nil {
-			return true, false, err
-		}
-		a128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", a128, dx)
-		b128 := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", b128, src)
-		p := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", p, a128, b128)
-		lo := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", lo, p)
-		hiShift := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = lshr i128 %%%s, 64\n", hiShift, p)
-		hi := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", hi, hiShift)
-		if err := c.storeReg(ins.Args[1].Reg, "%"+lo); err != nil {
-			return true, false, err
-		}
-		if err := c.storeReg(ins.Args[2].Reg, "%"+hi); err != nil {
-			return true, false, err
-		}
-		return true, false, nil
+		spec, _ := x86ExtraScalarTable.Lookup(op)
+		return true, false, c.lowerX86ExtraMulDiv(spec, ins)
 
 	case "MULL":
 		// MULL src: EDX:EAX = EAX * src (unsigned 32-bit)

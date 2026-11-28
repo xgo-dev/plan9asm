@@ -3,16 +3,19 @@ package arm
 import (
 	"fmt"
 	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/exclusive"
 	"sort"
 	"strings"
 )
 
 type armCtx struct {
-	b        *strings.Builder
-	sig      asm.FuncSig
-	resolve  func(string) string
-	sigs     map[string]asm.FuncSig
-	annotate bool
+	exclusive     []exclusive.Region
+	exclusiveExit string
+	b             *strings.Builder
+	sig           asm.FuncSig
+	resolve       func(string) string
+	sigs          map[string]asm.FuncSig
+	annotate      bool
 
 	tmp int
 
@@ -36,11 +39,6 @@ type armCtx struct {
 
 	curPreInc bool
 	curSubOff bool
-
-	exclusiveValidSlot string
-	exclusivePtrSlot   string
-	exclusiveSizeSlot  string
-	exclusiveValueSlot string
 
 	fpParams       map[int64]asm.FrameSlot
 	fpParamAlloca  map[int64]string
@@ -184,19 +182,6 @@ func (c *armCtx) emitEntryAllocasAndArgInit() error {
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCSlot)
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsVSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
-
-	c.exclusiveValidSlot = "%exclusive_valid"
-	c.exclusivePtrSlot = "%exclusive_ptr"
-	c.exclusiveSizeSlot = "%exclusive_size"
-	c.exclusiveValueSlot = "%exclusive_value"
-	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.exclusiveValidSlot)
-	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.exclusiveValidSlot)
-	fmt.Fprintf(c.b, "  %s = alloca ptr\n", c.exclusivePtrSlot)
-	fmt.Fprintf(c.b, "  store ptr null, ptr %s\n", c.exclusivePtrSlot)
-	fmt.Fprintf(c.b, "  %s = alloca i8\n", c.exclusiveSizeSlot)
-	fmt.Fprintf(c.b, "  store i8 0, ptr %s\n", c.exclusiveSizeSlot)
-	fmt.Fprintf(c.b, "  %s = alloca i64\n", c.exclusiveValueSlot)
-	fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", c.exclusiveValueSlot)
 
 	for _, p := range c.sig.Frame.Params {
 		if p.Index < 0 || p.Index >= len(c.sig.Args) {

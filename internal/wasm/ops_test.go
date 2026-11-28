@@ -41,7 +41,7 @@ func TestTranslateWasmMemoryOperations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(ir, "load "+string(spec.loadType)) {
+			if !strings.Contains(ir, "load volatile "+string(spec.loadType)) {
 				t.Fatalf("translated %s IR does not load %s:\n%s", op, spec.loadType, ir)
 			}
 			if spec.loadType != spec.resultType {
@@ -75,7 +75,7 @@ func TestTranslateWasmMemoryOperations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(ir, "store "+string(spec.storeType)) {
+			if !strings.Contains(ir, "store volatile "+string(spec.storeType)) {
 				t.Fatalf("translated %s IR does not store %s:\n%s", op, spec.storeType, ir)
 			}
 		})
@@ -127,5 +127,24 @@ func TestWasmRegisterMetadata(t *testing.T) {
 	}
 	if got := wasmRegOrder("CTXT"); got != 1000 {
 		t.Fatalf("wasmRegOrder(CTXT) = %d, want fallback order 1000", got)
+	}
+}
+
+func TestSIMDRejectsInvalidLaneImmediate(t *testing.T) {
+	for _, body := range []string{
+		"V128Const $1,$2\nI32x4ExtractLane $4",
+		"V128Const $1,$2\nI32x4ExtractLane $-1",
+		"V128Const $1,$2\nI32Const $1\nI32x4ReplaceLane $4",
+		"I32Const $0\nV128Const $1,$2\nV128Load8Lane $0,$16",
+		"I32Const $0\nV128Const $1,$2\nV128Store64Lane $0,$2",
+		"V128Const $1,$2\nV128Const $3,$4\nI8x16Shuffle $0",
+	} {
+		f, err := asm.Parse(asm.ArchWASM, "TEXT op(SB),NOSPLIT,$0\n"+body+"\nRET\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := translateWasmForTest(f, asm.FuncSig{Name: "op", Ret: asm.Void}); err == nil {
+			t.Errorf("accepted invalid lane in %s", body)
+		}
 	}
 }
