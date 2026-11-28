@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/xgo-dev/plan9asm"
+	"github.com/xgo-dev/plan9asm/cmd/internal/asmfile"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -82,87 +83,17 @@ func TestExternalCorpusTargetArchitectureAndTriple(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.goos+"/"+test.goarch, func(t *testing.T) {
-			arch, err := toPlan9Arch(test.goarch)
+			arch, err := asmfile.Architecture(test.goarch)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if arch != test.wantArch {
-				t.Fatalf("toPlan9Arch(%q) = %q, want %q", test.goarch, arch, test.wantArch)
+				t.Fatalf("asmfile.Architecture(%q) = %q, want %q", test.goarch, arch, test.wantArch)
 			}
 			if got := targetTriple(test.goos, test.goarch); got != test.wantTriple {
 				t.Fatalf("targetTriple(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.wantTriple)
 			}
 		})
-	}
-}
-
-func TestLLVMArgsAndFrameSlotsForTupleSliceParam(t *testing.T) {
-	tup := types.NewTuple(types.NewVar(token.NoPos, nil, "b", types.NewSlice(types.Typ[types.Byte])))
-	sz := types.SizesFor("gc", "amd64")
-	args, slots, nextOff, err := llvmArgsAndFrameSlotsForTuple(tup, "amd64", sz, 0, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(args, []plan9asm.LLVMType{"{ ptr, i64, i64 }"}) {
-		t.Fatalf("args mismatch: %#v", args)
-	}
-	wantSlots := []plan9asm.FrameSlot{
-		{Offset: 0, Type: plan9asm.Ptr, Index: 0, Field: 0},
-		{Offset: 8, Type: plan9asm.I64, Index: 0, Field: 1},
-		{Offset: 16, Type: plan9asm.I64, Index: 0, Field: 2},
-	}
-	if !reflect.DeepEqual(slots, wantSlots) {
-		t.Fatalf("slots mismatch: got=%#v want=%#v", slots, wantSlots)
-	}
-	if nextOff != 24 {
-		t.Fatalf("nextOff mismatch: got=%d want=24", nextOff)
-	}
-}
-
-func TestLLVMArgsAndFrameSlotsForTupleSliceResultFlatten(t *testing.T) {
-	tup := types.NewTuple(types.NewVar(token.NoPos, nil, "r", types.NewSlice(types.Typ[types.Byte])))
-	sz := types.SizesFor("gc", "amd64")
-	args, slots, nextOff, err := llvmArgsAndFrameSlotsForTuple(tup, "amd64", sz, 0, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(args, []plan9asm.LLVMType{plan9asm.Ptr, plan9asm.I64, plan9asm.I64}) {
-		t.Fatalf("args mismatch: %#v", args)
-	}
-	wantSlots := []plan9asm.FrameSlot{
-		{Offset: 0, Type: plan9asm.Ptr, Index: 0, Field: -1},
-		{Offset: 8, Type: plan9asm.I64, Index: 1, Field: -1},
-		{Offset: 16, Type: plan9asm.I64, Index: 2, Field: -1},
-	}
-	if !reflect.DeepEqual(slots, wantSlots) {
-		t.Fatalf("slots mismatch: got=%#v want=%#v", slots, wantSlots)
-	}
-	if nextOff != 24 {
-		t.Fatalf("nextOff mismatch: got=%d want=24", nextOff)
-	}
-}
-
-func TestLLVMArgsAndFrameSlotsForTupleInterfaceParam(t *testing.T) {
-	iface := types.NewInterfaceType(nil, nil)
-	iface.Complete()
-	tup := types.NewTuple(types.NewVar(token.NoPos, nil, "v", iface))
-	sz := types.SizesFor("gc", "amd64")
-	args, slots, nextOff, err := llvmArgsAndFrameSlotsForTuple(tup, "amd64", sz, 0, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(args, []plan9asm.LLVMType{"{ ptr, ptr }"}) {
-		t.Fatalf("args mismatch: %#v", args)
-	}
-	wantSlots := []plan9asm.FrameSlot{
-		{Offset: 0, Type: plan9asm.Ptr, Index: 0, Field: 0},
-		{Offset: 8, Type: plan9asm.Ptr, Index: 0, Field: 1},
-	}
-	if !reflect.DeepEqual(slots, wantSlots) {
-		t.Fatalf("slots mismatch: got=%#v want=%#v", slots, wantSlots)
-	}
-	if nextOff != 16 {
-		t.Fatalf("nextOff mismatch: got=%d want=16", nextOff)
 	}
 }
 
@@ -239,20 +170,5 @@ func TestCompileOneDataAndStubEmitObjects(t *testing.T) {
 				t.Errorf("DATA symbol found=%t, want %t", found, tc.want)
 			}
 		})
-	}
-}
-
-func Test386AddressedABISuffixedDeclaration(t *testing.T) {
-	p := types.NewPackage("pkg", "pkg")
-	result := types.NewTuple(types.NewVar(token.NoPos, p, "", types.Typ[types.Int32]))
-	p.Scope().Insert(types.NewFunc(token.NoPos, p, "callee", types.NewSignature(nil, nil, result, false)))
-	pkg := &packages.Package{PkgPath: p.Path(), Types: p, TypesSizes: types.SizesFor("gc", "386")}
-	file, err := plan9asm.Parse(plan9asm.ArchAMD64, "TEXT ·f(SB),4,$0\n MOVL $·callee<ABI0>(SB),AX\n RET")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sigs, err := sigsForAsmFile(pkg, file, func(s string) string { return strings.ReplaceAll(s, "·", "pkg.") }, "386")
-	if err != nil || sigs["pkg.callee"].Ret != plan9asm.I32 {
-		t.Fatalf("callee signature: %v, %v", sigs, err)
 	}
 }

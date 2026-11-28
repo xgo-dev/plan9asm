@@ -26,7 +26,7 @@ func goTLSInstructions(ins asm.Instr, goarch, target string, legacyWindowsTLS bo
 		arg := ins.Args[index]
 		if strings.HasSuffix(arg.Sym, "(TLS*1)") {
 			mem, ok := asm.ParseMem(strings.TrimSuffix(arg.Sym, "(TLS*1)"))
-			if !ok || mem.Base == "" || mem.Index != "" || mem.Segment != "" || mem.Sym != "" {
+			if !ok || mem.Base == "" || mem.Base == "FP" || mem.Base == "PC" || mem.Base == "SB" || mem.Index != "" || mem.Segment != "" || mem.Sym != "" {
 				return nil, fmt.Errorf("invalid Go TLS reference %q", arg.Sym)
 			}
 			switch target {

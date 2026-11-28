@@ -406,3 +406,14 @@ int main(void) {
 }`, nil)
 	}
 }
+
+func TestARMExclusiveExitAtEnd(t *testing.T) {
+	f, err := Parse(ArchARM, "TEXT guard(SB),4,$0\nstart:\nLDREX (R0), R1\nCMP $0, R1\nBNE start\nSTREX R2, (R0), R3\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, err := Translate(f, Options{TargetTriple: "armv7-unknown-linux-gnueabihf", Goarch: "arm", Sigs: map[string]FuncSig{"guard": {Name: "guard", Args: []LLVMType{Ptr, I32, I32}, ArgRegs: []Reg{"R0", "R1", "R2"}, Ret: Void}}})
+	if err != nil || !strings.Contains(ir, "br i1") || !strings.Contains(ir, "ret void") {
+		t.Fatalf("exclusive fallthrough: %v\n%s", err, ir)
+	}
+}

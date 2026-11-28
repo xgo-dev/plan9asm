@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var release = regexp.MustCompile(`^go1\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)|(beta|rc)(0|[1-9][0-9]*))?(-[^[:space:]]+)?$`)
+var release = regexp.MustCompile(`^go1\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)|(beta|rc)(0|[1-9][0-9]*))?(-[^[:space:]]+)?( X:[a-zA-Z0-9_]+(,[a-zA-Z0-9_]+)*)?$`)
 
 // ParseMinor recognizes releases and versioned development toolchains. A devel
 // identifier can include the commit date and build metadata after the version.

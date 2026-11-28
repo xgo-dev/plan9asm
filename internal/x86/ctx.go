@@ -1883,7 +1883,7 @@ func (c *amd64Ctx) addrFromPlainMem(mem asm.MemRef) (addrI64 string, err error) 
 }
 
 func (c *amd64Ctx) ptrFromMem(mem asm.MemRef) (ptr, ptrType string, err error) {
-	if mem.Segment == "" && mem.Base == asm.SP && mem.Index == "" && c.localStackSlot != "" {
+	if !mem.GoTLSOffset && mem.Segment == "" && mem.Base == asm.SP && mem.Index == "" && c.localStackSlot != "" {
 		spVal, err := c.loadReg(asm.SP)
 		if err != nil {
 			return "", "", err

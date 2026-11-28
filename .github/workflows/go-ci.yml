@@ -213,6 +213,10 @@ jobs:
           chmod +x scripts/check-stdlib-corpus.sh
           scripts/check-stdlib-corpus.sh
 
+      - name: Verify plan9asmll standard library objects
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.27.x'
+        run: scripts/check-plan9asmll-stdlib.sh
+
       - name: Official Go assembler coverage regression
         shell: bash
         run: |

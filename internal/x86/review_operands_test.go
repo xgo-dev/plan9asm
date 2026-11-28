@@ -275,3 +275,31 @@ func TestUnmodeledTLSOperandsRejected(t *testing.T) {
 		}
 	}
 }
+
+func Test386IndexedGoTLSBase(t *testing.T) {
+	for _, base := range []string{"SP", "FP", "PC", "SB"} {
+		src := "TEXT f(SB),4,$0-4\n MOVL 0(" + base + ")(TLS*1), AX\n RET"
+		file, err := asm.Parse(asm.ArchAMD64, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := PrepareFile(file, "386", "i686-unknown-linux-gnu")
+		if base != "SP" {
+			if err == nil {
+				t.Fatalf("accepted TLS base %s", base)
+			}
+			continue
+		}
+		found := false
+		if err == nil {
+			for _, ins := range f.Funcs[0].Instrs {
+				if ins.Op == "MOVL" && ins.Args[0].Mem.GoTLSOffset {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("SP TLS rewrite: %v, %v", f, err)
+		}
+	}
+}

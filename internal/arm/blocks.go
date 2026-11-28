@@ -2,8 +2,9 @@ package arm
 
 import (
 	"fmt"
-	"github.com/xgo-dev/plan9asm/internal/asm"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/asm"
 )
 
 type armBlock struct {
@@ -111,6 +112,13 @@ func armSplitBlocks(fn asm.Func) []armBlock {
 	}
 
 	if len(blocks) > 1 && len(blocks[len(blocks)-1].instrs) == 0 && strings.HasPrefix(blocks[len(blocks)-1].name, "anon_") {
+		prev := blocks[len(blocks)-2].instrs
+		if len(prev) != 0 {
+			op, cond, _, _ := armDecodeOp(string(prev[len(prev)-1].Op))
+			if armIsConditionalBranch(op) || (op == "B" || op == "JMP") && cond != "" && cond != "AL" {
+				return blocks
+			}
+		}
 		blocks = blocks[:len(blocks)-1]
 	}
 	return blocks
