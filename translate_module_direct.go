@@ -6,6 +6,10 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/llvm"
+	"github.com/xgo-dev/plan9asm/internal/arm"
+	"github.com/xgo-dev/plan9asm/internal/arm64"
+	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 )
 
 var errDirectModuleUnsupported = errors.New("direct module lowering unsupported")
@@ -40,7 +44,7 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 	if opt.TargetTriple != "" {
 		mod.SetTarget(opt.TargetTriple)
 	}
-	if err := emitDataGlobalsModule(mod, file, resolve); err != nil {
+	if err := emitDataGlobalsModule(mod, file, resolve, opt.Goarch); err != nil {
 		mod.Dispose()
 		if errors.Is(err, errDirectModuleUnsupported) {
 			return llvm.Module{}, err
@@ -71,21 +75,25 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("%s: %v", name, err)
 		}
-		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
+		if file.Arch == ArchARM && arm.FuncNeedsCFG(*fn) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("arm CFG lowering required for %s", name)
 		}
-		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
+		if file.Arch == ArchARM64 && arm64.FuncNeedsCFG(*fn) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("arm64 CFG lowering required for %s", name)
 		}
-		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && funcNeedsAMD64CFG(*fn))) {
+		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && x86.FuncNeedsCFG(*fn))) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("x86 CFG lowering required for %s", name)
 		}
 		if file.Arch == ArchWASM {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("wasm stack lowering required for %s", name)
+		}
+		if sig.Attrs != "" || inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, *fn) != "" {
+			mod.Dispose()
+			return llvm.Module{}, directUnsupportedf("function attributes require textual lowering")
 		}
 		if err := translateFuncLinearModule(mod, file.Arch, *fn, sig); err != nil {
 			mod.Dispose()
@@ -309,20 +317,13 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 				return directUnsupportedf("MRS expects 2 args")
 			}
 			src, dst := ins.Args[0], ins.Args[1]
-			if src.Kind != OpIdent || dst.Kind != OpReg {
+			sysreg, valid := arm64.SystemRegOperand(src)
+			if !valid || dst.Kind != OpReg {
 				return directUnsupportedf("MRS expects ident, reg: %q", ins.Raw)
 			}
 			i64Ty, _ := llvmTypeFromLLVMType(ctx, I64)
-			sysreg := arm64CanonicalSysReg(src.Ident)
-			if v, ok := arm64CompileSafeMRSValue(sysreg); ok {
-				if v != "0" {
-					return directUnsupportedf("unexpected compile-safe MRS value %q", v)
-				}
-				reg[dst.Reg] = directValue{typ: I64, val: llvm.ConstInt(i64Ty, 0, false)}
-				continue
-			}
 			asmTy := llvm.FunctionType(i64Ty, nil, false)
-			asmv := llvm.InlineAsm(asmTy, "mrs $0, "+sysreg, "=r", false, false, llvm.InlineAsmDialectATT, false)
+			asmv := llvm.InlineAsm(asmTy, "mrs $0, "+sysreg, "=r", true, false, llvm.InlineAsmDialectATT, false)
 			callv := b.CreateCall(asmTy, asmv, nil, "")
 			reg[dst.Reg] = directValue{typ: I64, val: callv}
 		case OpMOVD, OpMOVQ:
@@ -548,80 +549,42 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 	return nil
 }
 
-func emitDataGlobalsModule(mod llvm.Module, file *File, resolve func(string) string) error {
-	type symData struct {
-		size  int64
-		bytes map[int64][]byte
+func emitDataGlobalsModule(mod llvm.Module, file *File, resolve func(string) string, goarch string) error {
+	layouts, err := dataGlobalLayouts(file, resolve, goarch)
+	if err != nil {
+		return err
 	}
-	syms := map[string]*symData{}
-	resolveData := func(sym string) string {
-		if strings.Contains(sym, "·") || strings.Contains(sym, "/") || strings.Contains(sym, ".") {
-			return resolve(sym)
-		}
-		return resolve("·" + sym)
-	}
-	for _, g := range file.Globl {
-		name := resolveData(g.Sym)
-		sd := syms[name]
-		if sd == nil {
-			sd = &symData{bytes: map[int64][]byte{}}
-			syms[name] = sd
-		}
-		if g.Size > sd.size {
-			sd.size = g.Size
-		}
-	}
-	for _, d := range file.Data {
-		name := resolveData(d.Sym)
-		sd := syms[name]
-		if sd == nil {
-			sd = &symData{bytes: map[int64][]byte{}}
-			syms[name] = sd
-		}
-		end, err := dataStmtEnd(d)
-		if err != nil {
-			return err
-		}
-		payload, err := dataStmtPayload(d)
-		if err != nil {
-			return err
-		}
-		sd.bytes[d.Off] = payload
-		if end > sd.size {
-			sd.size = end
-		}
-	}
-	if len(syms) == 0 {
-		return nil
-	}
-
 	ctx := mod.Context()
-	i8Ty := ctx.Int8Type()
-
-	for name, sd := range syms {
-		if sd.size <= 0 {
-			continue
+	for _, layout := range layouts {
+		if layout.tlsOffset {
+			return directUnsupportedf("TLSBSS needs a thread-relative relocation")
 		}
-		buf, err := makeDataGlobal(name, sd.size)
+		for _, d := range layout.stmts {
+			if d.Addr != "" {
+				// The textual emitter constructs packed constant expressions
+				// and declares relocation targets, including forward references.
+				return directUnsupportedf("symbolic DATA initializer")
+			}
+		}
+		buf, err := layout.initialBytes()
 		if err != nil {
 			return err
 		}
-		for off, p := range sd.bytes {
-			if off < 0 || off+int64(len(p)) > int64(len(buf)) {
-				return fmt.Errorf("DATA %s: out of bounds off=%d len=%d size=%d", name, off, len(p), len(buf))
-			}
-			copy(buf[off:], p)
+		typ := llvm.ArrayType(ctx.Int8Type(), int(layout.size))
+		init := llvm.ConstNull(typ)
+		if buf != nil {
+			init = ctx.ConstString(string(buf), false)
 		}
-		arrTy := llvm.ArrayType(i8Ty, len(buf))
-		elems := make([]llvm.Value, len(buf))
-		for i, b := range buf {
-			elems[i] = llvm.ConstInt(i8Ty, uint64(b), false)
-		}
-		init := llvm.ConstArray(i8Ty, elems)
-		g := llvm.AddGlobal(mod, arrTy, name)
+		g := llvm.AddGlobal(mod, typ, layout.name)
 		g.SetInitializer(init)
-		g.SetGlobalConstant(true)
-		g.SetAlignment(int(bestAlign(int64(len(buf)))))
+		if layout.duplicateOK {
+			g.SetLinkage(llvm.WeakAnyLinkage)
+		}
+		if layout.local {
+			g.SetVisibility(llvm.HiddenVisibility)
+		}
+		g.SetGlobalConstant(layout.readOnly)
+		g.SetAlignment(int(bestAlign(layout.size)))
 	}
 	return nil
 }
@@ -647,7 +610,7 @@ func llvmTypeFromLLVMType(ctx llvm.Context, ty LLVMType) (llvm.Type, error) {
 	case "double":
 		return ctx.DoubleType(), nil
 	default:
-		fields, ok := parseLiteralStructFields(ty)
+		fields, ok := asm.ParseLiteralStructFields(ty)
 		if !ok {
 			return llvm.Type{}, directUnsupportedf("unsupported LLVM type %q", ty)
 		}

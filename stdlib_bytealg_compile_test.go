@@ -13,10 +13,7 @@ import (
 )
 
 func TestStdlibInternalBytealg_ARM64_Compile(t *testing.T) {
-	llc, _, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc not found")
-	}
+	llc := requireLLVM22Tool(t, "llc")
 
 	goroot := runtime.GOROOT()
 	if goroot == "" {
@@ -80,7 +77,7 @@ func TestStdlibInternalBytealg_ARM64_Compile(t *testing.T) {
 				strings.Contains(s, "unknown target triple") ||
 				strings.Contains(s, "unknown target") ||
 				strings.Contains(s, "is not a registered target") {
-				t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+				t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 			}
 			t.Fatalf("llc failed for %s: %v\n%s", path, err, s)
 		}

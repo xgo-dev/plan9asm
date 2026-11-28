@@ -64,6 +64,11 @@ jobs:
       - name: Go build
         run: go build ./...
 
+      - name: Go vet (native & 32-bit host)
+        run: |
+          go vet ./...
+          GOOS=linux GOARCH=386 go vet ./gotoolprofile ./internal/preprocess ./internal/asm ./internal/x86 ./internal/arm64 ./internal/arm ./internal/wasm
+
       - name: Go build (cmd/plan9asm)
         run: go build ./...
         working-directory: cmd/plan9asm
@@ -208,6 +213,10 @@ jobs:
           chmod +x scripts/check-stdlib-corpus.sh
           scripts/check-stdlib-corpus.sh
 
+      - name: Verify plan9asmll standard library objects
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.27.x'
+        run: scripts/check-plan9asmll-stdlib.sh
+
       - name: Official Go assembler coverage regression
         shell: bash
         run: |
@@ -243,6 +252,88 @@ jobs:
         env:
           PLAN9ASM_CROSS_EXEC: '1'
         run: go test . -run '^(TestCrossLinuxRuntimeMatrix|TestARM64Conformance)' -count=1 -v
+
+  amd64-diff-gate:
+    name: amd64-diff-gate (Linux, LLVM 22)
+    runs-on: ${{ github.repository_owner == 'xgo-dev' && fromJSON('["qiniu", "ubuntu-24.04-large"]') || 'ubuntu-24.04' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install LLVM 22
+        run: |
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y llvm-22-dev clang-22 libclang-22-dev lld-22 libunwind-22-dev libc++-22-dev
+          echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> "$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.27.x'
+          cache: true
+
+      - name: Mandatory amd64 machine-code differential gate
+        env:
+          PLAN9ASM_REQUIRE_AMD64_DIFF: '1'
+          PLAN9ASM_REQUIRE_WASM_EXEC: '1'
+          PLAN9ASM_DIFF_REPORT_OUT: ${{ runner.temp }}/amd64-diff-report.json
+        run: |
+          set -o pipefail
+          rm -f "$PLAN9ASM_DIFF_REPORT_OUT"
+          go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate|TestTranslateGoModuleAMD64PopAndPushfqInitPropagation|TestTranslateGoModuleAMD64PrivateSPConfinement|TestTranslateGoModuleAMD64UndefinedFlagPropagationMatrix|TestTranslateGoModuleAMD64X87StatusAndStackPrecision|TestTranslateGoModuleAMD64VecLaneSelectPrecision|TestTranslateGoModuleAMD64PerBitEntryFlagDifferential|TestTranslateGoModuleAMD64X87StackAndConstants|TestStep1ExplicitUnsupportedAuditRegistry|TestCrossArch.*|TestWasmGoABIResumeAndFrameExecution|TestWasmInvalidControlAndConstants|TestX86BitStringRegisterOffset|TestX86MULXOperandOrder)$' . | tee "$RUNNER_TEMP/diff-gate-test.log"
+          grep -Fq -- '--- PASS: TestCrossArchWasmNonSaturatingTruncTraps/NodeWasmExec' "$RUNNER_TEMP/diff-gate-test.log"
+          grep -Fq -- '--- PASS: TestWasmGoABIResumeAndFrameExecution' "$RUNNER_TEMP/diff-gate-test.log"
+          grep -Fq -- '--- PASS: TestCrossArchWasmObservableSemantics' "$RUNNER_TEMP/diff-gate-test.log"
+          grep -Fq -- 'wasm_trunc_executed_cases=44' "$RUNNER_TEMP/diff-gate-test.log"
+          grep -Fq -- '--- PASS: TestCrossArchX86DivTrapsAndResults' "$RUNNER_TEMP/diff-gate-test.log"
+          go test -v -count=1 ./testdata/conformance/amd64
+          go run ./cmd/plan9asmscan \
+            -corpus=go-asm \
+            -goroot="$(go env GOROOT)" \
+            -goos=linux \
+            -goarch=amd64 \
+            -repo-root=. \
+            -verify-obj \
+            -diff-report="$PLAN9ASM_DIFF_REPORT_OUT" \
+            -format=json \
+            -out="$RUNNER_TEMP/amd64-coverage.json"
+          python3 - "$RUNNER_TEMP/amd64-coverage.json" "$PLAN9ASM_DIFF_REPORT_OUT" <<'PY'
+          import json, sys
+          cov = json.load(open(sys.argv[1], encoding="utf-8"))
+          diff = json.load(open(sys.argv[2], encoding="utf-8"))
+          assert cov.get("object_compiled_verified") is True, "object_compiled_verified must be true"
+          llvm_ver = cov.get("object_compile_llvm_version", "")
+          assert llvm_ver.startswith("22."), f"expected LLVM 22 object verification, got {llvm_ver!r}"
+          assert cov.get("object_compile_failed_forms", 0) == 0, f"object compile failures: {cov.get('object_compile_failed_forms')}"
+          assert cov["object_compiled_forms"] == cov["ir_generated_forms"], (
+              f"object_compiled ({cov['object_compiled_forms']}) != ir_generated ({cov['ir_generated_forms']})"
+          )
+          assert cov.get("diff_report_loaded") is True, "diff_report_loaded must be true"
+          assert cov.get("diff_report_native_oracle") is True, "diff_report_native_oracle must be true"
+          assert cov.get("diff_failed_forms", 0) == 0, f"diff_failed_forms={cov.get('diff_failed_forms')}"
+          assert cov.get("diff_expected_only_forms", 0) == 0, f"diff_expected_only_forms={cov.get('diff_expected_only_forms')}"
+          for c in diff.get("cases", []):
+              if c.get("status") == "passed":
+                  assert c.get("verification_mode") == "native_diff", f"passed case {c.get('id')} missing native_diff mode: {c}"
+                  assert c.get("compared_inputs", 0) > 0, f"passed case {c.get('id')} has zero compared_inputs"
+          verified = cov["diff_verified_forms"]
+          pending = cov.get("hw_pending_forms", 0)
+          manifest = cov["manifest_execute_forms"]
+          compared_inputs = cov.get("diff_report_compared_inputs", 0)
+          assert verified > 0 and verified + pending == manifest, (
+              f"execution-traceable diff count mismatch: verified={verified} + hw_pending={pending} != manifest_execute={manifest}"
+          )
+          assert compared_inputs >= 2262, f"expected >= 2262 per-input native diff comparisons, got {compared_inputs}"
+          print(
+              f"amd64-diff-gate coverage verified: llvm={llvm_ver} ir_generated={cov['ir_generated_forms']} "
+              f"object_compiled={cov['object_compiled_forms']} diff_verified={verified} hw_pending={pending} "
+              f"expected_only={cov.get('diff_expected_only_forms', 0)} manifest_execute={manifest} "
+              f"compared_inputs={compared_inputs} cases={len(diff.get('cases', []))} unsupported={cov['unsupported_forms']}"
+          )
+          PY
 
   test:
     name: test (${{ matrix.os }}, ${{ matrix.go-version }}, ${{ matrix.nested_modules }})
@@ -321,7 +412,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test ./... -coverprofile=coverage-windows-root.out
+          go test -coverpkg=./... ./... -coverprofile=coverage-windows-root.out
           (cd cmd/plan9asm && go test ./... -coverprofile=../../coverage-windows-plan9asm.out)
           (cd cmd/plan9asmll && go test ./... -coverprofile=../../coverage-windows-plan9asmll.out)
 
@@ -456,7 +547,7 @@ jobs:
 
       - name: Go test with coverage
         run: |
-          go test ./... -coverprofile=coverage-root.out
+          go test -coverpkg=./... ./... -coverprofile=coverage-root.out
           go tool cover -func=coverage-root.out | tail -n 1
 
       - name: Go test with coverage (cmd/plan9asm)

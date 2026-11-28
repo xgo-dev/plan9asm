@@ -71,7 +71,7 @@ TEXT ·gogo(SB),NOSPLIT,$0-8
 	defer tr.Module.Dispose()
 	ir := tr.Module.String()
 	if !strings.Contains(ir, "getelementptr i8") || !strings.Contains(ir, "i32 16") ||
-		!strings.Contains(ir, "load i64") {
+		!strings.Contains(ir, "load volatile i64") {
 		t.Fatalf("generated gobuf_g offset was not resolved through go_asm.h:\n%s", ir)
 	}
 }
@@ -191,6 +191,7 @@ func TestTranslateGoModule_X87Mode(t *testing.T) {
 func Round(x float64) int64
 `)
 	asm := []byte(`TEXT ·Round(SB),NOSPLIT,$0-16
+	FINIT
 	FMOVD x+0(FP), F0
 	FRNDINT
 	FMOVVP F0, ret+8(FP)
@@ -210,7 +211,7 @@ func Round(x float64) int64
 	defer tr.Module.Dispose()
 
 	ir := tr.Module.String()
-	if !strings.Contains(ir, "@llvm.floor.f64") || strings.Contains(ir, "frndint") {
+	if !strings.Contains(ir, "@llvm.ctlz.i64") || strings.Contains(ir, "asm sideeffect") {
 		t.Fatalf("software x87 mode was not propagated:\n%s", ir)
 	}
 }
@@ -242,4 +243,154 @@ func testResolveSym(pkgPath string) func(string) string {
 		sym = strings.ReplaceAll(sym, "∕", "/")
 		return strings.ReplaceAll(sym, "·", ".")
 	}
+}
+
+func TestGoModule386StackResult(t *testing.T) {
+	pkg := mustGoPackage(t, "example", "package example\nfunc F() uint32")
+	for _, tc := range []struct {
+		name, body string
+		accepted   bool
+	}{
+		{"uninitialized", "MOVL 0(SP), AX", false},
+		{"TLS-relocation-SP-rejected", "MOVL 0(SP)(TLS*1), AX", false},
+		{"TLS-relocation", "MOVL $0, BX\nMOVL 0(BX)(TLS*1), AX", true},
+		{"partial", "MOVB $1, 0(SP)\nMOVL 0(SP), AX", false},
+		{"adjust", "ADJSP $4\nMOVL $11, 0(SP)\nMOVL 0(SP), AX\nADJSP $-4", true},
+		{"different-slot", "SUBL $4, SP\nMOVL $1, 0(SP)\nADDL $4, SP\nMOVL 0(SP), AX", false},
+		{"lea", "MOVL $11, 0(SP)\nLEAL -4(SP), SP\nMOVL 4(SP), AX\nLEAL 4(SP), SP", true},
+		{"save", "MOVL $11, AX\nPUSHAL\nXORL AX, AX\nPOPAL", true},
+		{"save-undefined", "PUSHAL\nMOVL $11, AX\nPOPAL", false},
+		{"int80", "MOVL $20, AX\nINT $0x80", true},
+		{"int80-undefined", "INT $0x80", false},
+		{"branch", "MOVL $0, AX\nTESTL AX, AX\nJE done\nMOVL $11, 0(SP)\ndone:\nMOVL 0(SP), AX", false},
+		{"xadd-uninit-stack", "XORL AX, AX\nLOCK\nXADDL AX, 0(SP)", false},
+		{"cmpxchg-uninit-stack", "XORL AX, AX\nXORL BX, BX\nLOCK\nCMPXCHGL BX, 0(SP)", false},
+		{"leavel-rebase", "MOVL $11, 0(SP)\nLEAL 4(SP), BP\nLEAVEL\nMOVL 0(SP), AX", false},
+		{"spb-alias", "MOVL $11, 0(SP)\nMOVB $0, SPB\nMOVL 0(SP), AX", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := TranslateGoModule(pkg, []byte("TEXT ·F(SB),4,$8-4\n"+tc.body+"\nMOVL AX, ret+0(FP)\nRET"), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")})
+			if tr != nil {
+				defer tr.Module.Dispose()
+				if tc.name == "TLS-relocation" && !strings.Contains(tr.Module.String(), "call ptr @llvm.threadlocal.address.p0(ptr @runtime.tlsg)") {
+					t.Fatal("indexed TLS load lost the runtime TLS relocation")
+				}
+			}
+			if (err == nil) != tc.accepted {
+				t.Fatalf("accepted=%t err=%v", tc.accepted, err)
+			}
+		})
+	}
+}
+
+func TestGoModule386FramePointerStore(t *testing.T) {
+	pkg := mustGoPackage(t, "example", "package example\nfunc F() uint32")
+	for _, tc := range []struct {
+		name, body string
+		accepted   bool
+	}{
+		{"full", "MOVL $11, (DX)", true},
+		{"partial", "MOVB $11, (DX)", false},
+		{"replaced", "MOVL $1024, DX\nMOVL $11, (DX)", false},
+		{"join", "MOVL $0, AX\nTESTL AX, AX\nJE store\nMOVL $1024, DX\nstore:\nMOVL $11, (DX)", false},
+		{"orl-uninit-fp", "XORL BX, BX\nORL (DX), BX\nMOVL BX, ret+0(FP)", false},
+		{"copy-uninit-fp", "MOVL DX, CX\nMOVL (CX), AX\nMOVL AX, ret+0(FP)", false},
+		{"xadd-forge-ret", "XORL AX, AX\nLOCK\nXADDL AX, ret+0(FP)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := TranslateGoModule(pkg, []byte("TEXT ·F(SB),4,$0-4\nLEAL ret+0(FP), DX\n"+tc.body+"\nRET"), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")})
+			if tr != nil {
+				defer tr.Module.Dispose()
+			}
+			if (err == nil) != tc.accepted {
+				t.Fatalf("accepted=%t, err=%v", tc.accepted, err)
+			}
+		})
+	}
+}
+
+func TestGoModule386SyscallResultOnSuccess(t *testing.T) {
+	pkg := mustGoPackage(t, "example", "package example\nfunc F() int64")
+	const argsInit = "MOVL $1, BX\nMOVL $0, CX\nMOVL $0, DX\nMOVL $0, DI\n"
+	const setup = argsInit + "MOVL $140, AX\nLEAL ret+0(FP), SI\n"
+	const trap = "INT $0x80\n"
+	const failure = "MOVL $-1, ret+0(FP)\nMOVL $-1, ret+4(FP)\n"
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"zero-taken", setup + trap + "CMPL AX, $0\nJE done\n" + failure + "done:\nRET", true},
+		{"zero-fallthrough", setup + trap + "TESTL AX, AX\nJNE fail\nRET\nfail:\n" + failure + "RET", true},
+		{"errno-bound-taken", setup + trap + "CMPL AX, $0xfffff001\nJLS done\n" + failure + "done:\nRET", true},
+		{"errno-bound-fallthrough", setup + trap + "CMPL AX, $0xfffff001\nJHI fail\nRET\nfail:\n" + failure + "RET", true},
+		{"error-can-return", setup + trap + "RET", false},
+		{"other-syscall", setup + "MOVL $20, AX\n" + trap + "CMPL AX, $0\nJE done\n" + failure + "done:\nRET", false},
+		{"subreg-clobber-AL", setup + "MOVL $20, AL\n" + trap + "CMPL AX, $0\nJE done\n" + failure + "done:\nRET", false},
+		{"uninit-args", "MOVL $140, AX\nLEAL ret+0(FP), SI\n" + trap + "CMPL AX, $0\nJE done\n" + failure + "done:\nRET", false},
+		{"other-buffer", setup + "MOVL BX, SI\n" + trap + "CMPL AX, $0\nJE done\n" + failure + "done:\nRET", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := TranslateGoModule(pkg, []byte("TEXT ·F(SB),4,$0-8\n"+tc.body), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")})
+			if tr != nil {
+				defer tr.Module.Dispose()
+			}
+			if (err == nil) != tc.want {
+				t.Fatalf("accepted=%t, err=%v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestGoModuleABI0SoundnessRegressions(t *testing.T) {
+	t.Run("386-void-physical-SP", func(t *testing.T) {
+		pkg := mustGoPackage(t, "example", "package example\nfunc Leak(dst *uint32)")
+		src := "TEXT ·Leak(SB),4,$8-4\nMOVL dst+0(FP), BX\nMOVL 0(SP), AX\nMOVL AX, 0(BX)\nRET"
+		if _, err := TranslateGoModule(pkg, []byte(src), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")}); err == nil {
+			t.Fatal("expected uninitialized SP read in void 386 function to be rejected")
+		}
+	})
+	t.Run("386-ABIInternal-checked", func(t *testing.T) {
+		pkg := mustGoPackage(t, "example", "package example\nfunc F() uint32")
+		src := "TEXT ·F<ABIInternal>(SB),4,$8-4\nMOVL 0(SP), AX\nMOVL AX, ret+0(FP)\nRET"
+		if _, err := TranslateGoModule(pkg, []byte(src), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")}); err == nil {
+			t.Fatal("expected uninitialized SP read in 386 ABIInternal function to be rejected")
+		}
+	})
+	t.Run("386-param-FP-preserves-SP-taint", func(t *testing.T) {
+		pkg := mustGoPackage(t, "example", "package example\nfunc F(arg uintptr) uintptr")
+		src := "TEXT ·F(SB),4,$8-8\nLEAL 0(SP), AX\nMOVL AX, arg+0(FP)\nLEAL arg+0(FP), DX\nXORL BX, BX\nORL (DX), BX\nMOVL BX, ret+4(FP)\nRET"
+		if _, err := TranslateGoModule(pkg, []byte(src), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")}); err == nil {
+			t.Fatal("expected SP taint to persist across indirect param FP read")
+		}
+	})
+	t.Run("386-stale-below-SP-after-CALL", func(t *testing.T) {
+		pkg := mustGoPackage(t, "example", "package example\nfunc noop()\nfunc F() uint32")
+		src := "TEXT ·noop(SB),4,$0-0\nRET\nTEXT ·F(SB),4,$8-4\nSUBL $4, SP\nMOVL $42, 0(SP)\nADDL $4, SP\nCALL ·noop(SB)\nSUBL $4, SP\nMOVL 0(SP), AX\nADDL $4, SP\nMOVL AX, ret+0(FP)\nRET"
+		if _, err := TranslateGoModule(pkg, []byte(src), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")}); err == nil {
+			t.Fatal("expected freed stack slot read after CALL to be rejected")
+		}
+	})
+	t.Run("386-lock-xadd-sp-fence-allowed", func(t *testing.T) {
+		pkg := mustGoPackage(t, "example", "package example\nfunc Fence()")
+		src := "TEXT ·Fence(SB),4,$0-0\nXORL AX, AX\nLOCK\nXADDL AX, 0(SP)\nRET"
+		tr, err := TranslateGoModule(pkg, []byte(src), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")})
+		if err != nil {
+			t.Fatalf("LOCK XADDL AX, (SP) fence unexpectedly rejected: %v", err)
+		}
+		tr.Module.Dispose()
+	})
+	t.Run("amd64-xadd-spb-leaveq", func(t *testing.T) {
+		pkg := mustGoPackage(t, "example", "package example\nfunc F() uint64")
+		for name, body := range map[string]string{
+			"xadd-uninit": "XORQ AX, AX\nLOCK\nXADDQ AX, 0(SP)\nMOVQ AX, ret+0(FP)\nRET",
+			"spb-alias":   "MOVQ $11, 0(SP)\nMOVB $0, SPB\nMOVQ 0(SP), AX\nMOVQ AX, ret+0(FP)\nRET",
+			"leaveq":      "MOVQ $11, 0(SP)\nLEAQ 8(SP), BP\nLEAVEQ\nMOVQ 0(SP), AX\nMOVQ AX, ret+0(FP)\nRET",
+		} {
+			t.Run(name, func(t *testing.T) {
+				if _, err := TranslateGoModule(pkg, []byte("TEXT ·F(SB),4,$16-8\n"+body), GoModuleOptions{GOOS: "linux", GOARCH: "amd64", TargetTriple: "x86_64-unknown-linux-gnu", ResolveSym: testResolveSym("example")}); err == nil {
+					t.Fatalf("expected amd64 %s to be rejected", name)
+				}
+			})
+		}
+	})
 }

@@ -17,6 +17,7 @@ type testConformanceManifest struct {
 		Forms      []string `json:"forms"`
 		References []string `json:"references"`
 		Validation string   `json:"validation"`
+		HWFeatures []string `json:"hw_features"`
 		Reason     string   `json:"reason"`
 	} `json:"cases"`
 }

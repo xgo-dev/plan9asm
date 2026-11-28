@@ -11,10 +11,7 @@ import (
 )
 
 func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
-	llc, _, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc not found")
-	}
+	llc := requireLLVM22Tool(t, "llc")
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "cpu", "cpu_arm64.s"))

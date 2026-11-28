@@ -135,7 +135,7 @@ func TestGoTranslateTypeCoverage(t *testing.T) {
 		{alias, "arm64", I64, true},
 		{types.Typ[types.Complex64], "amd64", "", false},
 		{types.NewStruct(nil, nil), "amd64", LLVMType("[0 x i8]"), true},
-		{types.NewStruct([]*types.Var{types.NewVar(token.NoPos, nil, "x", types.Typ[types.Int])}, nil), "amd64", "", false},
+		{types.NewStruct([]*types.Var{types.NewVar(token.NoPos, nil, "x", types.Typ[types.Int])}, nil), "amd64", LLVMType("{ i64 }"), true},
 	} {
 		got, err := goLLVMTypeForType(tc.typ, tc.goarch)
 		if (err == nil) != tc.ok || got != tc.want {
@@ -223,10 +223,13 @@ func cmp(a, b int) int { return a }
 	if err != nil {
 		t.Fatalf("goSigsForAsmFile() error = %v", err)
 	}
-	for _, want := range []string{"test/pkg.Plain", "runtime.cmp", "test/pkg.localhelper", "test/pkg.localtarget"} {
+	for _, want := range []string{"test/pkg.Plain", "runtime.cmp", "test/pkg.localhelper"} {
 		if _, ok := sigs[want]; !ok {
 			t.Fatalf("missing signature %q", want)
 		}
+	}
+	if _, ok := sigs["test/pkg.localtarget"]; ok {
+		t.Fatalf("ARM64 private tail target<> should defer to BindGoARM64ABI0TailDeclarations")
 	}
 	if _, ok := sigs["test/pkg.undeclared_call"]; ok {
 		t.Fatalf("ordinary unresolved CALL unexpectedly received a synthesized signature")

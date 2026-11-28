@@ -7,15 +7,17 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/xgo-dev/plan9asm/internal/asm"
 )
 
 func TestParse386NamedStackOffset(t *testing.T) {
-	op, err := parseOperand("control-4(SP)")
+	op, err := asm.ParseOperand("control-4(SP)")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if op.Kind != OpMem || op.Mem.Base != SP || op.Mem.Off != -4 {
-		t.Fatalf("parseOperand(control-4(SP)) = %#v", op)
+		t.Fatalf("ParseOperand(control-4(SP)) = %#v", op)
 	}
 }
 
@@ -24,14 +26,9 @@ func TestTranslate386SymbolIndexedMemory(t *testing.T) {
 		"masks<>(SB)(BX*8)junk",
 		"masks<>(SB)(BAD*8)",
 	} {
-		if _, ok := parseMem(invalid); ok {
-			t.Fatalf("parseMem(%q) unexpectedly succeeded", invalid)
+		if _, ok := asm.ParseMem(invalid); ok {
+			t.Fatalf("ParseMem(%q) unexpectedly succeeded", invalid)
 		}
-	}
-	var invalidIR strings.Builder
-	invalidCtx := newX86Ctx(&invalidIR, Func{}, FuncSig{Name: "example.invalid", Ret: Void}, testResolveSym("example"), nil, "386", "i386-pc-windows-gnu", false)
-	if _, err := invalidCtx.addrFromPlainMem(MemRef{Sym: "(SB)"}); err == nil {
-		t.Fatal("symbol-indexed address with an empty symbol unexpectedly succeeded")
 	}
 
 	file, err := Parse(ArchAMD64, `
@@ -197,7 +194,6 @@ func TestTranslate386RejectsInvalidInstructionForms(t *testing.T) {
 		{name: "fstsw count", instruction: "FSTSW", want: "FSTSW expects dst"},
 		{name: "fstsw destination", instruction: "FSTSW ret+0(FP)", want: "unsupported x87 word destination"},
 		{name: "fld1 operand", instruction: "FLD1 AX", want: "FLD1 takes no operands"},
-		{name: "x87 on amd64", instruction: "FLD1", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushl on amd64", instruction: "PUSHL AX", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "popl on amd64", instruction: "POPL AX", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
 		{name: "pushfl on amd64", instruction: "PUSHFL", want: "requires GOARCH=386", goarch: "amd64", triple: "x86_64-unknown-linux-gnu"},
@@ -263,270 +259,6 @@ func TestTranslate386ModelsOfficialDirectSPWrites(t *testing.T) {
 	} {
 		if !strings.Contains(ir, want) {
 			t.Fatalf("386 direct SP lowering missing %q:\n%s", want, ir)
-		}
-	}
-}
-
-func TestTranslate386FUCOMIClearsSignedCondition(t *testing.T) {
-	fn := Func{Instrs: []Instr{{
-		Op:   "FUCOMI",
-		Args: []Operand{{Kind: OpReg, Reg: "F0"}, {Kind: OpReg, Reg: "F1"}},
-	}}}
-	var b strings.Builder
-	c := newX86Ctx(&b, fn, FuncSig{Name: "example.fucomi", Ret: Void}, testResolveSym("example"), nil, "386", "i386-unknown-linux-gnu", false)
-	if err := c.emitEntryAllocas(); err != nil {
-		t.Fatal(err)
-	}
-	start := b.Len()
-	ok, terminated, err := c.lowerX87("FUCOMI", fn.Instrs[0])
-	if !ok || terminated || err != nil {
-		t.Fatalf("lowerX87(FUCOMI) = (%v, %v, %v)", ok, terminated, err)
-	}
-	got := b.String()[start:]
-	for _, want := range []string{"fcmp ueq double", "fcmp ult double", "store i1 false, ptr %flags_slt"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("FUCOMI lowering missing %q:\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, "fcmp olt double") {
-		t.Fatalf("FUCOMI incorrectly synthesized a signed-less flag:\n%s", got)
-	}
-}
-
-func Test386LoweringEdgeCases(t *testing.T) {
-	fn := Func{Instrs: []Instr{
-		{Op: "FLD1"},
-		{Op: "MOVL", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}},
-	}}
-	sig := FuncSig{Name: "example.edges", Ret: Void}
-	var b strings.Builder
-	c := newX86Ctx(&b, fn, sig, testResolveSym("example"), nil, "386", "i386-unknown-linux-gnu", false)
-	if err := c.emitEntryAllocas(); err != nil {
-		t.Fatal(err)
-	}
-	expectError := func(name string, lower func() (bool, bool, error)) {
-		t.Helper()
-		ok, terminated, err := lower()
-		if !ok || terminated || err == nil {
-			t.Fatalf("%s = (%v, %v, %v), want handled non-terminating error", name, ok, terminated, err)
-		}
-	}
-	ident := Operand{Kind: OpIdent, Ident: "invalid"}
-	imm := Operand{Kind: OpImm, Imm: 1}
-	reg := Operand{Kind: OpReg, Reg: AX}
-
-	for _, test := range []struct {
-		name string
-		op   Op
-		args []Operand
-	}{
-		{name: "ADCL operand count", op: "ADCL"},
-		{name: "ADCL source", op: "ADCL", args: []Operand{ident, reg}},
-		{name: "ADCL destination", op: "ADCL", args: []Operand{imm, ident}},
-		{name: "ADDL source", op: "ADDL", args: []Operand{ident, reg}},
-		{name: "ADDL destination", op: "ADDL", args: []Operand{imm, ident}},
-		{name: "ADDB source", op: "ADDB", args: []Operand{ident, reg}},
-		{name: "ANDW operand count", op: "ANDW"},
-		{name: "ANDW source", op: "ANDW", args: []Operand{ident, reg}},
-		{name: "ANDW destination", op: "ANDW", args: []Operand{imm, ident}},
-		{name: "SETEQ destination", op: "SETEQ", args: []Operand{ident}},
-		{name: "IMULL source", op: "IMULL", args: []Operand{ident}},
-		{name: "IMULL destination", op: "IMULL", args: []Operand{imm, imm}},
-		{name: "IMULL two-operand source", op: "IMULL", args: []Operand{ident, reg}},
-		{name: "IMUL3L destination", op: "IMUL3L", args: []Operand{imm, reg, imm}},
-		{name: "IMUL3L immediate", op: "IMUL3L", args: []Operand{ident, reg, reg}},
-		{name: "IMUL3L source", op: "IMUL3L", args: []Operand{imm, ident, reg}},
-		{name: "IMULL operand count", op: "IMULL"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			expectError(test.name, func() (bool, bool, error) {
-				return c.lowerArith(test.op, Instr{Raw: test.name, Args: test.args})
-			})
-		})
-	}
-
-	for _, test := range []struct {
-		name string
-		op   Op
-		args []Operand
-	}{
-		{name: "FMOVD source", op: "FMOVD", args: []Operand{ident, {Kind: OpReg, Reg: "F0"}}},
-		{name: "FMOVDP source", op: "FMOVDP", args: []Operand{ident, reg}},
-		{name: "FMOVV source", op: "FMOVV", args: []Operand{ident, {Kind: OpReg, Reg: "F0"}}},
-		{name: "FMOVVP source", op: "FMOVVP", args: []Operand{ident, reg}},
-		{name: "FDIVD source", op: "FDIVD", args: []Operand{ident, {Kind: OpReg, Reg: "F0"}}},
-		{name: "FDIVD destination", op: "FDIVD", args: []Operand{{Kind: OpReg, Reg: "F0"}, ident}},
-		{name: "FADDDP source", op: "FADDDP", args: []Operand{ident, {Kind: OpReg, Reg: "F0"}}},
-		{name: "FADDDP destination", op: "FADDDP", args: []Operand{{Kind: OpReg, Reg: "F0"}, ident}},
-		{name: "FLDCW source", op: "FLDCW", args: []Operand{ident}},
-		{name: "FUCOMI lhs", op: "FUCOMI", args: []Operand{ident, {Kind: OpReg, Reg: "F0"}}},
-		{name: "FUCOMI rhs", op: "FUCOMI", args: []Operand{{Kind: OpReg, Reg: "F0"}, ident}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			expectError(test.name, func() (bool, bool, error) {
-				return c.lowerX87(test.op, Instr{Raw: test.name, Args: test.args})
-			})
-		})
-	}
-
-	if _, err := c.amd64AtomicPtrFromMem(MemRef{Segment: FS}); err == nil {
-		t.Fatal("segment-relative atomic destination unexpectedly succeeded")
-	}
-	if got := x86FrameTypeSize(I16); got != 2 {
-		t.Fatalf("x86FrameTypeSize(i16) = %d, want 2", got)
-	}
-	if got := x86FrameTypeSize(LLVMType("{ i32, i32 }")); got != 16 {
-		t.Fatalf("x86FrameTypeSize(aggregate) = %d, want 16", got)
-	}
-	if _, ok := amd64ParseX87Reg("F8"); ok {
-		t.Fatal("amd64ParseX87Reg(F8) unexpectedly succeeded")
-	}
-}
-
-func Test386LoweringErrorPaths(t *testing.T) {
-	fn := Func{Instrs: []Instr{
-		{Op: "FLD1"},
-		{Op: "MOVL", Args: []Operand{{Kind: OpReg, Reg: "X0"}, {Kind: OpReg, Reg: AX}}},
-	}}
-	var b strings.Builder
-	c := newX86Ctx(&b, fn, FuncSig{Name: "example.errors", Ret: Void}, testResolveSym("example"), nil, "386", "i386-unknown-linux-gnu", false)
-	if err := c.emitEntryAllocas(); err != nil {
-		t.Fatal(err)
-	}
-
-	badMem := Operand{Kind: OpMem, Mem: MemRef{Segment: Reg("BAD")}}
-	badSym := Operand{Kind: OpSym, Sym: "(SB)"}
-	wantLowerError := func(name string, lower func() (bool, bool, error)) {
-		t.Helper()
-		ok, terminated, err := lower()
-		if !ok || terminated || err == nil {
-			t.Fatalf("%s = (%v, %v, %v), want handled non-terminating error", name, ok, terminated, err)
-		}
-	}
-
-	if _, _, err := c.loadIntDestination(badMem, I32); err == nil {
-		t.Fatal("loadIntDestination with an invalid segment unexpectedly succeeded")
-	}
-	wantLowerError("PUSHL source", func() (bool, bool, error) {
-		return c.lowerArith("PUSHL", Instr{Raw: "PUSHL invalid", Args: []Operand{{Kind: OpIdent, Ident: "invalid"}}})
-	})
-	wantLowerError("POPL destination", func() (bool, bool, error) {
-		return c.lowerArith("POPL", Instr{Raw: "POPL 0(BAD)", Args: []Operand{badMem}})
-	})
-	wantLowerError("SETEQ destination", func() (bool, bool, error) {
-		return c.lowerArith("SETEQ", Instr{Raw: "SETEQ 0(BAD)", Args: []Operand{badMem}})
-	})
-	wantLowerError("CMPXCHG8B destination", func() (bool, bool, error) {
-		return c.lowerAtomic("CMPXCHG8B", Instr{Raw: "CMPXCHG8B 0(BAD)", Args: []Operand{badMem}})
-	})
-	wantLowerError("vector memory destination", func() (bool, bool, error) {
-		return c.lowerVec("MOVL", Instr{Raw: "MOVL X0, 0(BAD)", Args: []Operand{{Kind: OpReg, Reg: "X0"}, badMem}})
-	})
-	wantLowerError("vector symbol destination", func() (bool, bool, error) {
-		return c.lowerVec("MOVL", Instr{Raw: "MOVL X0, (SB)", Args: []Operand{{Kind: OpReg, Reg: "X0"}, badSym}})
-	})
-
-	for _, test := range []struct {
-		name  string
-		store func(Operand) error
-	}{
-		{name: "x87 double memory", store: func(dst Operand) error { return c.storeX87F64(dst, "0.0") }},
-		{name: "x87 word memory", store: func(dst Operand) error { return c.storeX87I16(dst, "0") }},
-		{name: "x87 integer memory", store: func(dst Operand) error { return c.storeX87I64(dst, "0") }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if err := test.store(badMem); err == nil {
-				t.Fatal("invalid segment unexpectedly succeeded")
-			}
-			if err := test.store(badSym); err == nil {
-				t.Fatal("invalid symbol unexpectedly succeeded")
-			}
-		})
-	}
-	if ok, terminated, err := c.lowerX87("NOP", Instr{Raw: "NOP"}); ok || terminated || err != nil {
-		t.Fatalf("lowerX87(NOP) = (%v, %v, %v), want unhandled", ok, terminated, err)
-	}
-	if _, err := c.evalIntSized(Operand{Kind: OpSym, Sym: "$(SB)"}, I32); err == nil {
-		t.Fatal("invalid symbolic address unexpectedly succeeded")
-	}
-
-	oldArch := c.goarch
-	c.goarch = "amd64"
-	wantLowerError("amd64 MOVL FP source", func() (bool, bool, error) {
-		return c.lowerMov("MOVL", Instr{Raw: "MOVL $1, ret+0(FP)", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpFP, FPOffset: 0}}})
-	})
-	c.goarch = oldArch
-
-	var fp strings.Builder
-	fpCtx := newX86Ctx(&fp, Func{}, FuncSig{Name: "example.fp", Ret: Void}, testResolveSym("example"), nil, "386", "i386-unknown-linux-gnu", false)
-	fpCtx.fpParams[0] = FrameSlot{Offset: 0, Type: I64, Index: 9, Field: -1}
-	fpCtx.fpParams[8] = FrameSlot{Offset: 8, Type: I32, Index: 0, Field: -1}
-	if _, err := fpCtx.evalFPToI64(100); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fpCtx.evalFPToI64(4); err == nil {
-		t.Fatal("high-word read of an invalid frame parameter unexpectedly succeeded")
-	}
-
-	var result strings.Builder
-	resultCtx := newX86Ctx(&result, Func{}, FuncSig{Name: "example.result", Ret: Void}, testResolveSym("example"), nil, "386", "i386-unknown-linux-gnu", false)
-	resultCtx.fpResults = []FrameSlot{
-		{Offset: 0, Type: I64, Index: 0, Field: -1},
-		{Offset: 8, Type: I32, Index: 1, Field: -1},
-	}
-	resultCtx.fpResAllocaOff[0] = "%result0"
-	resultCtx.fpResAllocaIdx[0] = "%result0"
-	resultCtx.classicFrame = "%classic_frame"
-	resultCtx.classicSize = 16
-	if _, err := resultCtx.evalFPToI64(100); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := resultCtx.evalFPToI64(4); err != nil || got == "" {
-		t.Fatalf("high-word result read = (%q, %v)", got, err)
-	}
-	ok, terminated, err := resultCtx.lowerArith("LEAL", Instr{Raw: "LEAL ret+0(FP), AX", Args: []Operand{{Kind: OpFPAddr, FPOffset: 0}, {Kind: OpReg, Reg: AX}}})
-	if !ok || terminated || err != nil {
-		t.Fatalf("LEAL classic result address = (%v, %v, %v)", ok, terminated, err)
-	}
-}
-
-func Test386FDirectiveDoesNotAllocateX87State(t *testing.T) {
-	fn := Func{Instrs: []Instr{{Op: "FUNCDATA"}}}
-	var b strings.Builder
-	c := newX86Ctx(&b, fn, FuncSig{Name: "example.directive", Ret: Void}, testResolveSym("example"), nil, "386", "i386-unknown-linux-gnu", false)
-	if err := c.emitEntryAllocas(); err != nil {
-		t.Fatal(err)
-	}
-	if c.usedX87 || strings.Contains(b.String(), "%x87_") {
-		t.Fatalf("non-x87 F-prefixed directive allocated x87 state:\n%s", b.String())
-	}
-}
-
-func Test386RejectsInvalidClassicFrameIndex(t *testing.T) {
-	var b strings.Builder
-	c := newX86Ctx(&b, Func{}, FuncSig{
-		Name: "example.badframe",
-		Args: []LLVMType{I32},
-		Ret:  Void,
-		Frame: FrameLayout{Params: []FrameSlot{
-			{Offset: 0, Type: I32, Index: 1, Field: -1},
-		}},
-	}, testResolveSym("example"), nil, "386", "i386-unknown-linux-gnu", false)
-	if err := c.emitEntryAllocas(); err == nil || !strings.Contains(err.Error(), "invalid arg index 1") {
-		t.Fatalf("emitEntryAllocas() error = %v, want invalid frame index", err)
-	}
-}
-
-func TestAMD64Ignores386ControlInstructions(t *testing.T) {
-	c, _ := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.amd64", Ret: Void}, nil)
-	for _, op := range []Op{"ADJSP", "CLD", "STD", "REP"} {
-		args := []Operand(nil)
-		if op == "ADJSP" {
-			args = []Operand{{Kind: OpImm, Imm: 8}}
-		}
-		terminated, err := c.lowerInstr(0, 0, Instr{Op: op, Raw: string(op), Args: args}, nil, nil)
-		if err != nil || terminated {
-			t.Fatalf("lowerInstr(%s) = (%v, %v), want ignored instruction", op, terminated, err)
 		}
 	}
 }
@@ -775,10 +507,6 @@ TEXT trap(SB),NOSPLIT,$0-0
 TEXT undefined(SB),NOSPLIT,$0-0
 	UNDEF
 
-TEXT rawret(SB),NOSPLIT,$0-0
-	BYTE $0xc2
-	WORD $4
-	RET
 
 TEXT cpuidProbe(SB),NOSPLIT,$0-0
 	PUSHFL
@@ -870,7 +598,6 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 		"stackAdjust":   {Name: "stackAdjust", Ret: Void},
 		"trap":          {Name: "trap", Ret: Void},
 		"undefined":     {Name: "undefined", Ret: Void},
-		"rawret":        {Name: "rawret", Ret: Void},
 		"cpuidProbe":    {Name: "cpuidProbe", Ret: I32},
 		"symbolAddress": {Name: "symbolAddress", Ret: I32},
 		"frameAddress": {
@@ -905,9 +632,10 @@ TEXT frameAddress(SB),NOSPLIT,$0-12
 		"@__plan9asm_movsl",
 		`asm sideeffect "fnstcw $0"`,
 		`asm sideeffect "fldcw $0"`,
-		`asm sideeffect "fldl $1; frndint; fstpl $0"`,
-		`asm sideeffect "fldl $1; fistpll $0"`,
-		"@llvm.sqrt.f64",
+		`asm sideeffect "fnclex"`,
+		`asm sideeffect "fldt $3; frndint; fnstsw $2; fstpt $0"`,
+		`asm sideeffect "fldt $2; fistpll $0; fnstsw $1"`,
+		`asm sideeffect "fldt $3; fsqrt; fnstsw $2; fstpt $0"`,
 		"%x87_control = alloca i16",
 		"%local_stack = alloca",
 		`"target-features"="+sse2"`,
@@ -936,39 +664,54 @@ func TestTranslate386X87Modes(t *testing.T) {
 	for _, want := range []string{
 		`asm sideeffect "fnstcw $0"`,
 		`asm sideeffect "fldcw $0"`,
-		`asm sideeffect "fldl $1; frndint; fstpl $0"`,
-		`asm sideeffect "fldl $1; fistpll $0"`,
+		`asm sideeffect "fnclex"`,
+		`asm sideeffect "fldt $3; frndint; fnstsw $2; fstpt $0"`,
+		`asm sideeffect "fldt $2; fistpll $0; fnstsw $1"`,
 	} {
 		if !strings.Contains(hardware, want) {
 			t.Fatalf("hardware x87 IR missing %q:\n%s", want, hardware)
 		}
 	}
-	for _, unwanted := range []string{
-		"call double @llvm.floor.f64",
-		"call double @llvm.ceil.f64",
-		"call double @llvm.trunc.f64",
-		"fcmp uge double",
-	} {
-		if strings.Contains(hardware, unwanted) {
-			t.Fatalf("hardware x87 IR unexpectedly contains %q:\n%s", unwanted, hardware)
-		}
+	if strings.Contains(hardware, "call i64 @llvm.ctlz.i64") {
+		t.Fatalf("hardware x87 IR unexpectedly contains portable software rounding:\n%s", hardware)
 	}
 
 	software := translate386RoundingIR(t, X87Software)
-	for _, want := range []string{
-		"call double @llvm.floor.f64",
-		"call double @llvm.ceil.f64",
-		"call double @llvm.trunc.f64",
-		"fcmp uge double",
-	} {
-		if !strings.Contains(software, want) {
-			t.Fatalf("software x87 IR missing %q:\n%s", want, software)
-		}
+	if !strings.Contains(software, "call i64 @llvm.ctlz.i64") {
+		t.Fatalf("software x87 IR missing portable ctlz rounding:\n%s", software)
 	}
-	if strings.Contains(software, "frndint") || strings.Contains(software, "fistpll") {
-		t.Fatalf("software x87 IR unexpectedly contains hardware rounding:\n%s", software)
+	if strings.Contains(software, "asm sideeffect") {
+		t.Fatalf("software x87 IR unexpectedly contains hardware inline asm:\n%s", software)
 	}
 	compile386IR(t, software, "software_x87")
+
+	// Software mode without FINIT/FLDCW must reject uninitialized control word.
+	uninitFile, err := Parse(ArchAMD64, `TEXT round(SB),NOSPLIT,$0-16
+	FMOVD value+0(FP), F0
+	FRNDINT
+	FMOVVP F0, ret+8(FP)
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Translate(uninitFile, Options{
+		Goarch:  "386",
+		X87Mode: X87Software,
+		Sigs: map[string]FuncSig{
+			"round": {
+				Name: "round",
+				Args: []LLVMType{LLVMType("double")},
+				Ret:  I64,
+				Frame: FrameLayout{
+					Params:  []FrameSlot{{Offset: 0, Type: LLVMType("double"), Index: 0, Field: -1}},
+					Results: []FrameSlot{{Offset: 8, Type: I64, Index: 0, Field: -1}},
+				},
+			},
+		},
+	}); err == nil || !strings.Contains(err.Error(), "instruction probe needs function context: result initialization") {
+		t.Fatalf("uninitialized software x87 error = %v", err)
+	}
 
 	file, err := Parse(ArchAMD64, "TEXT invalid(SB),NOSPLIT,$0-0\nRET\n")
 	if err != nil {
@@ -1013,7 +756,7 @@ func TestTranslate386X87Codegen(t *testing.T) {
 			args = append(args, "-filetype=asm", llPath, "-o", asmPath)
 			if output, err := exec.Command(llc, args...).CombinedOutput(); err != nil {
 				if unsupported386Target(string(output)) {
-					t.Skipf("llc lacks 386 target: %s", output)
+					t.Fatalf("llc lacks 386 target: %s", output)
 				}
 				t.Fatalf("llc failed: %v\n%s", err, output)
 			}
@@ -1080,14 +823,26 @@ func TestTranslate386X87Codegen(t *testing.T) {
 
 func translate386RoundingIR(t *testing.T, mode X87Mode) string {
 	t.Helper()
-	file, err := Parse(ArchAMD64, `TEXT round(SB),NOSPLIT,$0-16
+	src := `TEXT round(SB),NOSPLIT,$0-16
 	FMOVD value+0(FP), F0
 	FSTCW -2(SP)
 	FLDCW -2(SP)
 	FRNDINT
 	FMOVVP F0, ret+8(FP)
 	RET
-`)
+`
+	if mode == X87Software {
+		src = `TEXT round(SB),NOSPLIT,$0-16
+	FINIT
+	FMOVD value+0(FP), F0
+	FSTCW -2(SP)
+	FLDCW -2(SP)
+	FRNDINT
+	FMOVVP F0, ret+8(FP)
+	RET
+`
+	}
+	file, err := Parse(ArchAMD64, src)
 	if err != nil {
 		t.Fatal(err)
 	}

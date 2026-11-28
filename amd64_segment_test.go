@@ -43,19 +43,3 @@ TEXT loadGS(SB),NOSPLIT,$0-0
 		t.Fatalf("segment-relative memory was emitted as a symbol:\n%s", ir)
 	}
 }
-
-func TestAMD64SegmentMemoryRejectsInvalidUses(t *testing.T) {
-	c, _ := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "segmentErrors", Ret: Void}, nil)
-	if _, err := c.addrFromMem(MemRef{Segment: GS}); err == nil {
-		t.Fatal("addrFromMem accepted a segment-relative address")
-	}
-	if _, _, err := c.ptrFromMem(MemRef{Segment: Reg("CS")}); err == nil {
-		t.Fatal("ptrFromMem accepted an unsupported segment")
-	}
-	if ok, _, err := c.lowerMov(OpMOVQ, Instr{Args: []Operand{
-		{Kind: OpMem, Mem: MemRef{Segment: Reg("CS")}},
-		{Kind: OpReg, Reg: AX},
-	}}); !ok || err == nil {
-		t.Fatalf("lowerMov(invalid segment) = (%v, %v), want handled error", ok, err)
-	}
-}

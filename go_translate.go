@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/token"
 	"go/types"
 	"reflect"
 	"regexp"
@@ -12,25 +13,32 @@ import (
 	"strings"
 
 	"github.com/xgo-dev/llvm"
+	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/preprocess"
+	"github.com/xgo-dev/plan9asm/internal/wasm"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 )
 
-// GoPackage provides the Go declarations and syntax needed to bind a Plan 9
-// asm file to real Go symbols.
 type GoPackage struct {
-	Path    string
-	Types   *types.Package
-	Imports map[string]*types.Package
-	Syntax  []*ast.File
+	Path            string
+	Types           *types.Package
+	Imports         map[string]*types.Package
+	Syntax          []*ast.File
+	ImportSyntax    map[string][]*ast.File
+	SourceSelection *GoSourceSelection
 }
 
 // GoModuleOptions configures TranslateGoModule.
 //
-// GOARCH is required and currently accepts only "amd64", "386", and "arm64".
+// GOARCH is required and accepts "amd64", "386", "arm", "arm64", and "wasm".
 // If ResolveSym is nil, the default resolver only strips ABI suffixes.
 type GoModuleOptions struct {
-	FileName string
-	GOOS     string
-	GOARCH   string
+	// SourceGoVersion is the Go assembler version for the input (for example, go1.20.14).
+	SourceGoVersion    string
+	SourcePreprocessed bool
+	FileName           string
+	GOOS               string
+	GOARCH             string
 	// Sizes is the type layout used to type-check the package. When nil,
 	// TranslateGoModule uses the standard gc layout for GOARCH. Callers with a
 	// custom data model, such as Emscripten wasm32 versus Memory64, must pass
@@ -99,19 +107,22 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		resolve = func(sym string) string { return goStripABISuffix(sym) }
 	}
 
-	if bytes.Contains(src, []byte("const_")) {
-		src = goExpandConsts(src, pkg.Types, pkg.Imports)
+	var file *File
+	if opt.SourcePreprocessed {
+		file, err = asm.ParsePreprocessed(arch, string(src))
+		if err != nil {
+			return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
+		}
+		if err := validatePreprocessedResolvedImmediates(file); err != nil {
+			return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
+		}
+	} else {
+		file, err = pkg.parseAssemblyForTarget(src, opt.GOOS, opt.GOARCH)
+		if err != nil {
+			return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
+		}
 	}
-	// Struct layout macros only exist when the assembly includes go_asm.h.
-	// Keep the common path cheap: building them walks every package-scope type.
-	if bytes.Contains(src, []byte("go_asm.h")) {
-		src = goExpandAsmHeaderTypes(src, pkg.Types, opt.GOARCH)
-	}
-
-	file, err := Parse(arch, string(src))
-	if err != nil {
-		return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
-	}
+	file.SourceGoVersion = opt.SourceGoVersion
 	if opt.KeepFunc != nil {
 		keep := make([]Func, 0, len(file.Funcs))
 		for _, fn := range file.Funcs {
@@ -127,14 +138,61 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 	if err != nil {
 		return nil, fmt.Errorf("%s: sigs %s: %w", pkgPath, asmName, err)
 	}
+	if opt.GOARCH == "arm64" && GoARM64ABI0TailDeclarationBindingNeeded(file) {
+		sigs, err = BindGoARM64ABI0TailDeclarations(pkg, file, resolve, sigs)
+		if err != nil {
+			return nil, fmt.Errorf("%s: arm64 tail %s: %w", pkgPath, asmName, err)
+		}
+		for _, fn := range file.Funcs {
+			if !strings.HasSuffix(goStripABISuffix(fn.Sym), "<>") {
+				continue
+			}
+			resolved := resolve(goTextSymbolForResolution(fn.Sym))
+			if _, ok := sigs[resolved]; !ok {
+				return nil, fmt.Errorf("%s: sigs %s: missing signature for file-local assembly %q; supply ManualSig or use the native backend", pkgPath, asmName, resolved)
+			}
+		}
+	}
+	if err := validateGoClosureContextLoads(file, opt.GOARCH, resolve, sigs); err != nil {
+		return nil, fmt.Errorf("%s: closure %s: %w", pkgPath, asmName, err)
+	}
+	volatileGlobals, err := collectValidatedImportedGlobals(pkg, file, resolve)
+	if err != nil {
+		return nil, fmt.Errorf("%s: globals %s: %w", pkgPath, asmName, err)
+	}
+	if opt.GOARCH == "386" {
+		prepared, err := x86.PrepareFile(file, opt.GOARCH, opt.TargetTriple)
+		if err != nil {
+			return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
+		}
+		callee := func(s string) string { return resolve(goTextSymbolForResolution(s)) }
+		for _, fn := range prepared.Funcs {
+			sig, ok := sigs[resolve(goTextSymbolForResolution(fn.Sym))]
+			if !ok || len(sig.ArgRegs) != 0 {
+				continue
+			}
+			if len(sig.Frame.Results) == 0 && !x86.FuncUsesX87OrMMX(fn) && !funcUsesPhysical386SP(fn) {
+				continue
+			}
+			if _, err := x86.CheckPreparedABI0ResultInit(fn, sig, "386", callee, sigs, opt.X87Mode, opt.TargetTriple); err != nil {
+				return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
+			}
+		}
+	}
+	if opt.GOARCH == "amd64" {
+		if err := validateAMD64PhysicalFrameLeasesForTarget(file, resolve, sigs, opt.X87Mode, opt.TargetTriple); err != nil {
+			return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
+		}
+	}
 	mod, err := TranslateModule(file, Options{
-		TargetTriple:   opt.TargetTriple,
-		ResolveSym:     resolve,
-		Sigs:           sigs,
-		Goarch:         opt.GOARCH,
-		WASMABI:        opt.WASMABI,
-		X87Mode:        opt.X87Mode,
-		AnnotateSource: opt.AnnotateSource,
+		TargetTriple:    opt.TargetTriple,
+		ResolveSym:      resolve,
+		Sigs:            sigs,
+		Goarch:          opt.GOARCH,
+		WASMABI:         opt.WASMABI,
+		X87Mode:         opt.X87Mode,
+		AnnotateSource:  opt.AnnotateSource,
+		VolatileGlobals: volatileGlobals,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: translate %s: %w", pkgPath, asmName, err)
@@ -208,6 +266,9 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 	if err := b.addReferencedFuncSigs(file); err != nil {
 		return nil, err
 	}
+	if goarch == "386" {
+		markNonReturningGoCallees(pkg, resolve, b.sigs)
+	}
 	if goarch == "wasm" {
 		for _, fn := range file.Funcs {
 			resolved := resolve(goTextSymbolForResolution(fn.Sym))
@@ -226,7 +287,7 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 					fs = FuncSig{Name: resolved, Ret: Void}
 				}
 			}
-			if wasmNeedsIncomingContext(fn) {
+			if wasm.NeedsIncomingContext(fn) {
 				fs.WASMContext = Ptr
 			}
 			b.sigs[resolved] = fs
@@ -235,17 +296,80 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 	// A file-local symbol does not imply a zero-argument C or Go signature.
 	// Keep signatures obtained from declarations, supported tail-call inference,
 	// or ManualSig; raw register entry points require the native backend.
+	// For ARM64 ABI0 private tail helpers, only defer the specific helper<>
+	// targets branched to by an ABI0 root; any other unbound <> symbol fails now.
+	var deferredTailTargets map[string]bool
+	if b.goarch == "arm64" && GoARM64ABI0TailDeclarationBindingNeeded(file) {
+		deferredTailTargets = arm64PrivateTailTargetSet(file, resolve)
+	}
 	for resolved := range b.localSigs {
-		if _, ok := b.sigs[resolved]; !ok {
+		if _, ok := b.sigs[resolved]; !ok && !deferredTailTargets[resolved] {
 			return nil, fmt.Errorf("missing signature for file-local assembly %q; supply ManualSig or use the native backend", resolved)
 		}
 	}
 	return b.sigs, nil
 }
 
+// A call to a Go function consisting solely of builtin panic cannot reach
+// the next assembly instruction. Require an unshadowed builtin and the same
+// declaration position as the type-checked function.
+func markNonReturningGoCallees(pkg GoPackage, resolve func(string) string, sigs map[string]FuncSig) {
+	if pkg.Types.Scope().Lookup("panic") != nil {
+		return
+	}
+	for _, src := range pkg.Syntax {
+		if src == nil || len(src.Imports) != 0 {
+			continue
+		}
+		for _, decl := range src.Decls {
+			f, ok := decl.(*ast.FuncDecl)
+			if !ok || f.Recv != nil || f.Body == nil || len(f.Body.List) != 1 || f.Type.Params.NumFields() != 0 || f.Type.Results.NumFields() != 0 || f.Type.TypeParams.NumFields() != 0 {
+				continue
+			}
+			name := resolve("·" + f.Name.Name)
+			sig, ok := sigs[name]
+			if !ok || !f.Name.Pos().IsValid() {
+				continue
+			}
+			obj, ok := pkg.Types.Scope().Lookup(f.Name.Name).(*types.Func)
+			if !ok || obj.Pos() != f.Name.Pos() {
+				continue
+			}
+			expr, ok := f.Body.List[0].(*ast.ExprStmt)
+			if !ok {
+				continue
+			}
+			call, ok := expr.X.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			id, ok := call.Fun.(*ast.Ident)
+			if ok && id.Name == "panic" {
+				sig.Attrs = strings.TrimSpace(sig.Attrs + " noreturn")
+				sigs[name] = sig
+			}
+		}
+	}
+}
+
+func arm64PrivateTailTargetSet(file *File, resolve func(string) string) map[string]bool {
+	targets := make(map[string]bool)
+	for _, root := range file.Funcs {
+		if strings.Contains(root.Sym, "<") {
+			continue
+		}
+		for _, ins := range root.Instrs {
+			if name, ok := arm64PrivateTailTarget(ins); ok {
+				targets[resolve(goTextSymbolForResolution(name))] = true
+			}
+		}
+	}
+	return targets
+}
+
 func wasmUsesNativeReturn(fn Func) bool {
 	for _, ins := range fn.Instrs {
-		if normalizeInstructionOpcode(ins.Op) == "WASMRETURN" {
+		if asm.NormalizeInstructionOpcode(ins.Op) == "WASMRETURN" {
 			return true
 		}
 	}
@@ -363,6 +487,13 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 		callerResolved := b.resolve(goTextSymbolForResolution(fn.Sym))
 		callerSig, hasCallerSig := b.sigs[callerResolved]
 		for _, ins := range fn.Instrs {
+			if b.goarch == "386" {
+				if sym := x86.AddressedFunctionCandidate(ins); sym != "" {
+					if err := b.addGoDeclSig(sym); err != nil {
+						return err
+					}
+				}
+			}
 			base, tailJump, ok := goReferencedFunc(ins)
 			if !ok {
 				continue
@@ -380,7 +511,7 @@ func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 					continue
 				}
 			}
-			if tailJump && hasCallerSig {
+			if tailJump && hasCallerSig && !(b.goarch == "arm64" && strings.HasSuffix(base, "<>")) {
 				// Best-effort fallback for helper<> tail-jumps where the callee is an
 				// internal asm label with no Go declaration. Callers can override this
 				// via ManualSig when the inferred signature is not identical.
@@ -438,7 +569,7 @@ func (b *goSigBuilder) addGoDeclSig(sym string) error {
 	if !ok {
 		return nil
 	}
-	fs, err := goFuncSigForDeclaredFunc(resolved, fn, b.goarch, b.sz, b.frameSz, false)
+	fs, err := goFuncSigForDeclaredFunc(resolved, fn, b.goarch, b.sz, b.frameSz, true)
 	if err != nil {
 		return err
 	}
@@ -510,6 +641,435 @@ func goDeclNameForSymbol(sym string, linknames map[string]string) (string, error
 		return "", fmt.Errorf("unsupported asm symbol name %q (no go:linkname mapping found)", sym)
 	}
 	return declName, nil
+}
+
+// DeriveGoFuncABI0Signature derives the complete ordinary signature and classic
+// FP layout from an actual typed Go declaration.
+func DeriveGoFuncABI0Signature(name string, fn *types.Func, goarch string, sz types.Sizes) (FuncSig, error) {
+	if name == "" || fn == nil {
+		return FuncSig{}, fmt.Errorf("missing actual Go declaration for ABI0 layout")
+	}
+	if signature, ok := fn.Type().(*types.Signature); !ok || signature == nil {
+		return FuncSig{}, fmt.Errorf("missing actual typed Go signature for ABI0 layout")
+	}
+	return goFuncSigForDeclaredFunc(name, fn, goarch, sz, sz, true)
+}
+
+func validateAMD64PhysicalFrameLeases(file *File, resolve func(string) string, sigs map[string]FuncSig) error {
+	return validateAMD64PhysicalFrameLeasesForTarget(file, resolve, sigs, X87Auto, "")
+}
+
+func validateAMD64PhysicalFrameLeasesForTarget(file *File, resolve func(string) string, sigs map[string]FuncSig, x87Mode X87Mode, targetTriple string) error {
+	checkedLeases := make(map[uintptr]bool)
+	resolveCallee := func(s string) string { return resolve(goStripABISuffix(s)) }
+	for _, fn := range file.Funcs {
+		name := resolve(goTextSymbolForResolution(fn.Sym))
+		sig, ok := sigs[name]
+		if !funcUsesPhysicalAMD64SP(fn) {
+			// Ordinary ABI0 functions (non-physical SP) with declared Go result
+			// slots — or any function touching x87/MMX (including void pointer-out
+			// kernels) — require CFG + byte-exact result/register/FP/SP/x87
+			// initialization verification before translation.
+			if ok && len(sig.ArgRegs) == 0 && (len(sig.Frame.Results) > 0 || x86.FuncUsesX87OrMMX(fn)) &&
+				!strings.Contains(strings.TrimSuffix(fn.Sym, "<>"), "<") {
+				if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode, targetTriple); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if !ok {
+			return fmt.Errorf("%w: missing signature for physical AMD64 frame %q", ErrProbeNeedsContext, name)
+		}
+		// If a live lease was attached by GoAMD64FrameSource.BindFixedLocal, verify it is still live
+		// (deduplicated per shared lease closure so multi-function files hash snapshots once).
+		if sig.FrameLease != nil {
+			leasePtr := reflect.ValueOf(sig.FrameLease).Pointer()
+			if !checkedLeases[leasePtr] {
+				if err := sig.FrameLease(); err != nil {
+					return err
+				}
+				checkedLeases[leasePtr] = true
+			}
+			if x87Mode == X87Software && x86.FuncUsesX87OrMMX(fn) {
+				if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode, targetTriple); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		// Without a captured physical-frame owner, check whether any outgoing
+		// CALL lacks a declared signature in sigs (e.g. runtime.memmove) or
+		// whether the function violates ABI0 register init / SP confinement.
+		for _, ins := range fn.Instrs {
+			if strings.ToUpper(string(ins.Op)) == "CALL" && len(ins.Args) == 1 && ins.Args[0].Kind == OpSym {
+				raw := strings.TrimSuffix(strings.TrimSpace(ins.Args[0].Sym), "(SB)")
+				callee := resolve(goStripABISuffix(raw))
+				if callee == "runtime.entersyscall" || callee == "runtime.exitsyscall" {
+					continue
+				}
+				if _, hasCallee := sigs[callee]; !hasCallee {
+					return fmt.Errorf("%w: AMD64 physical frame call %q requires captured source owner", ErrProbeNeedsContext, callee)
+				}
+			}
+		}
+		if _, err := x86.CheckABI0ResultInitWithOptions(fn, sig, "amd64", resolveCallee, sigs, x87Mode, targetTriple); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectValidatedImportedGlobals identifies cross-package mutable Go variables
+// referenced by assembly (SB) operands and validates that their owning package
+// syntax matches the type-checked dependency graph when ImportSyntax is present.
+func collectValidatedImportedGlobals(pkg GoPackage, file *File, resolve func(string) string) (map[string]bool, error) {
+	if pkg.Types == nil {
+		return nil, nil
+	}
+	importedByPath := map[string]*types.Package{}
+	for _, imp := range pkg.Types.Imports() {
+		if imp != nil {
+			importedByPath[imp.Path()] = imp
+		}
+	}
+	definedData := map[string]bool{}
+	for _, g := range file.Globl {
+		definedData[resolve(goStripABISuffix(g.Sym))] = true
+	}
+	for _, d := range file.Data {
+		definedData[resolve(goStripABISuffix(d.Sym))] = true
+	}
+	definedFuncs := map[string]bool{}
+	for _, fn := range file.Funcs {
+		definedFuncs[resolve(goTextSymbolForResolution(fn.Sym))] = true
+	}
+
+	volatile := map[string]bool{}
+	for _, fn := range file.Funcs {
+		for _, ins := range fn.Instrs {
+			op := strings.ToUpper(string(ins.Op))
+			if op == "CALL" || op == "JMP" || op == "B" || op == "BL" {
+				continue
+			}
+			for _, arg := range ins.Args {
+				if arg.Kind != OpSym {
+					continue
+				}
+				s := strings.TrimSpace(arg.Sym)
+				if strings.HasPrefix(s, "$") || !strings.HasSuffix(s, "(SB)") {
+					continue
+				}
+				base, _, ok := asm.ParseSBRef(s)
+				if !ok || strings.HasPrefix(base, "·") || (!strings.Contains(base, "·") && !strings.Contains(base, "/")) {
+					continue
+				}
+				res := resolve(base)
+				if definedData[res] || definedFuncs[res] {
+					continue
+				}
+				dot := strings.LastIndexByte(res, '.')
+				if dot <= 0 || dot == len(res)-1 {
+					continue
+				}
+				impPath, varName := res[:dot], res[dot+1:]
+				if impPath == pkg.Path || impPath == pkg.Types.Path() {
+					continue
+				}
+				// Check if pkg actually imports impPath.
+				typeCheckedImp := importedByPath[impPath]
+				if typeCheckedImp == nil {
+					continue
+				}
+				// Validate pkg.Imports[impPath] matches typeCheckedImp.
+				suppliedImp, inImports := pkg.Imports[impPath]
+				if !inImports || suppliedImp == nil || suppliedImp != typeCheckedImp {
+					return nil, fmt.Errorf("%w: imported global %s lacks matching dependency package %q", ErrProbeNeedsContext, res, impPath)
+				}
+				v, ok := suppliedImp.Scope().Lookup(varName).(*types.Var)
+				if !ok || v == nil {
+					continue
+				}
+				// When ImportSyntax map is provided by the caller (e.g. llgo), require
+				// matching variable syntax with compatible declared type.
+				if pkg.ImportSyntax != nil {
+					files := pkg.ImportSyntax[impPath]
+					if len(files) == 0 {
+						return nil, fmt.Errorf("%w: imported global %s lacks dependency syntax for %q", ErrProbeNeedsContext, res, impPath)
+					}
+					if err := verifyImportedVarSyntax(files, varName, v.Type(), suppliedImp); err != nil {
+						return nil, fmt.Errorf("%w: imported global %s: %v", ErrProbeNeedsContext, res, err)
+					}
+				}
+				volatile[res] = true
+			}
+		}
+	}
+	if len(volatile) == 0 {
+		return nil, nil
+	}
+	return volatile, nil
+}
+
+func verifyImportedVarSyntax(files []*ast.File, varName string, wantType types.Type, pkg *types.Package) error {
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, id := range vs.Names {
+					if id.Name != varName {
+						continue
+					}
+					if vs.Type != nil && !astTypeMatchesGoType(vs.Type, wantType, pkg) {
+						return fmt.Errorf("syntax type for %q differs from checked type %s", varName, wantType.String())
+					}
+					return nil
+				}
+			}
+		}
+	}
+	return fmt.Errorf("variable %q not declared in dependency syntax", varName)
+}
+
+func astTypeMatchesGoType(expr ast.Expr, t types.Type, pkg *types.Package) bool {
+	if expr == nil || t == nil {
+		return false
+	}
+	for {
+		if p, ok := expr.(*ast.ParenExpr); ok {
+			expr = p.X
+			continue
+		}
+		break
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		switch tt := t.(type) {
+		case *types.Basic:
+			if e.Name == tt.Name() {
+				return true
+			}
+			return (e.Name == "byte" && tt.Kind() == types.Uint8) ||
+				(e.Name == "rune" && tt.Kind() == types.Int32)
+		case *types.Named:
+			if tt.Obj() == nil || e.Name != tt.Obj().Name() {
+				return false
+			}
+			return tt.Obj().Pkg() == nil || pkg == nil || tt.Obj().Pkg() == pkg
+		case *types.Interface:
+			return e.Name == "any" && tt.Empty()
+		default:
+			if reflect.TypeOf(t).String() == "*types.Alias" {
+				return astTypeMatchesGoType(expr, t.Underlying(), pkg)
+			}
+			return false
+		}
+	case *ast.SelectorExpr:
+		switch tt := t.(type) {
+		case *types.Basic:
+			return e.Sel.Name == "Pointer" && tt.Kind() == types.UnsafePointer
+		case *types.Named:
+			return tt.Obj() != nil && e.Sel.Name == tt.Obj().Name() && tt.Obj().Pkg() != nil
+		default:
+			if reflect.TypeOf(t).String() == "*types.Alias" {
+				return astTypeMatchesGoType(expr, t.Underlying(), pkg)
+			}
+			return false
+		}
+	case *ast.StarExpr:
+		pt, ok := t.Underlying().(*types.Pointer)
+		return ok && astTypeMatchesGoType(e.X, pt.Elem(), pkg)
+	case *ast.ArrayType:
+		if e.Len == nil {
+			sl, ok := t.Underlying().(*types.Slice)
+			return ok && astTypeMatchesGoType(e.Elt, sl.Elem(), pkg)
+		}
+		ar, ok := t.Underlying().(*types.Array)
+		if !ok || !astTypeMatchesGoType(e.Elt, ar.Elem(), pkg) {
+			return false
+		}
+		if lit, ok := e.Len.(*ast.BasicLit); ok && lit.Kind == token.INT {
+			if n, err := strconv.ParseInt(lit.Value, 0, 64); err == nil && n != ar.Len() {
+				return false
+			}
+		}
+		return true
+	case *ast.StructType:
+		st, ok := t.Underlying().(*types.Struct)
+		if !ok {
+			return false
+		}
+		idx := 0
+		if e.Fields != nil {
+			for _, f := range e.Fields.List {
+				count := len(f.Names)
+				if count == 0 {
+					count = 1
+				}
+				for i := 0; i < count; i++ {
+					if idx >= st.NumFields() {
+						return false
+					}
+					sf := st.Field(idx)
+					if len(f.Names) > 0 && f.Names[i].Name != sf.Name() {
+						return false
+					}
+					if !astTypeMatchesGoType(f.Type, sf.Type(), pkg) {
+						return false
+					}
+					idx++
+				}
+			}
+		}
+		return idx == st.NumFields()
+	case *ast.MapType:
+		mp, ok := t.Underlying().(*types.Map)
+		return ok && astTypeMatchesGoType(e.Key, mp.Key(), pkg) && astTypeMatchesGoType(e.Value, mp.Elem(), pkg)
+	case *ast.ChanType:
+		ch, ok := t.Underlying().(*types.Chan)
+		return ok && astTypeMatchesGoType(e.Value, ch.Elem(), pkg)
+	case *ast.InterfaceType:
+		_, ok := t.Underlying().(*types.Interface)
+		return ok
+	case *ast.FuncType:
+		_, ok := t.Underlying().(*types.Signature)
+		return ok
+	default:
+		return false
+	}
+}
+
+func validatePreprocessedResolvedImmediates(file *File) error {
+	if file == nil {
+		return nil
+	}
+	for _, fn := range file.Funcs {
+		for _, ins := range fn.Instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind == OpImm && arg.ImmRaw != "" {
+					return fmt.Errorf("%s: unresolved symbolic immediate %q", fn.Sym, arg.ImmRaw)
+				}
+				if arg.Kind == OpSym {
+					s := strings.TrimSpace(arg.Sym)
+					if strings.HasPrefix(s, "$") && !strings.Contains(s, "(") {
+						return fmt.Errorf("%s: unresolved symbolic immediate %q", fn.Sym, s)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// validateGoClosureContextLoads rejects unmodified gc NEEDCTXT assembly entries
+// that dereference the hidden closure context register (DX on 386/amd64, R26 on
+// arm64) without any Go/helper parameter or prior write initializing it.
+func validateGoClosureContextLoads(file *File, goarch string, resolve func(string) string, sigs map[string]FuncSig) error {
+	var ctxtReg Reg
+	switch goarch {
+	case "amd64", "386":
+		ctxtReg = DX
+	case "arm64":
+		ctxtReg = Reg("R26")
+	default:
+		return nil
+	}
+	for _, fn := range file.Funcs {
+		if strings.HasSuffix(fn.Sym, "<>") {
+			continue
+		}
+		resolved := resolve(goTextSymbolForResolution(fn.Sym))
+		sig, ok := sigs[resolved]
+		if !ok {
+			continue
+		}
+		passedInArgReg := false
+		for _, r := range sig.ArgRegs {
+			if r == ctxtReg {
+				passedInArgReg = true
+				break
+			}
+		}
+		if passedInArgReg {
+			continue
+		}
+		if funcWritesReg(fn, goarch, ctxtReg) {
+			continue
+		}
+		for _, ins := range fn.Instrs {
+			for _, arg := range ins.Args {
+				if arg.Kind == OpMem && arg.Mem.Base == ctxtReg {
+					return fmt.Errorf("%w: uninitialized closure context load %s", ErrProbeNeedsContext, strings.TrimSpace(ins.Raw))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func funcWritesReg(fn Func, goarch string, target Reg) bool {
+	isTarget := func(r Reg) bool {
+		if r == target {
+			return true
+		}
+		if target == DX && (r == DL || r == DH) {
+			return true
+		}
+		return false
+	}
+	for _, ins := range fn.Instrs {
+		op := strings.ToUpper(string(ins.Op))
+		if target == DX {
+			switch op {
+			case "CPUID", "XGETBV", "RDTSC", "RDTSCP", "SYSCALL", "CALL",
+				"MULQ", "MULL", "MULW", "IMULQ", "IMULL", "DIVQ", "DIVL", "IDIVQ", "IDIVL",
+				"CQO", "CDQ", "CWD", "POPQ", "POPL", "POPAL":
+				return true
+			}
+		}
+		if target == Reg("R26") && (op == "BL" || op == "CALL") {
+			return true
+		}
+		if len(ins.Args) == 0 {
+			continue
+		}
+		// Check destination operand (last arg on Plan 9 asm, or both args for XCHG/XADD/LDP/etc.).
+		dst := ins.Args[len(ins.Args)-1]
+		if dst.Kind == OpReg && isTarget(dst.Reg) {
+			switch op {
+			case "CMPQ", "CMPL", "CMPW", "CMPB", "TESTQ", "TESTL", "TESTW", "TESTB",
+				"CMP", "CMN", "TST", "TSTW", "CBZ", "CBNZ", "TBZ", "TBNZ":
+				// Comparisons only read operands.
+			default:
+				return true
+			}
+		}
+		if dst.Kind == OpRegList {
+			for _, r := range dst.RegList {
+				if isTarget(r) {
+					return true
+				}
+			}
+		}
+		if len(ins.Args) >= 2 && (strings.HasPrefix(op, "XCHG") || strings.HasPrefix(op, "XADD") || strings.HasPrefix(op, "LDP") || strings.HasPrefix(op, "LDAXP")) {
+			for _, arg := range ins.Args {
+				if arg.Kind == OpReg && isTarget(arg.Reg) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func goFuncSigForDeclaredFunc(name string, fn *types.Func, goarch string, sz, frameSz types.Sizes, withFrame bool) (FuncSig, error) {
@@ -597,6 +1157,30 @@ func goLinknameRemoteToLocal(files []*ast.File) map[string]string {
 		}
 	}
 	return m
+}
+
+// ParseAssembly parses assembly with the constants and field offsets of the
+// selected Go package and architecture.
+func (pkg GoPackage) ParseAssembly(src []byte, goarch string) (*File, error) {
+	return pkg.parseAssemblyForTarget(src, "", goarch)
+}
+
+func (pkg GoPackage) parseAssemblyForTarget(src []byte, goos, goarch string) (*File, error) {
+	arch, err := goArchFor(goarch)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.Contains(src, []byte("const_")) {
+		src = goExpandConsts(src, pkg.Types, pkg.Imports)
+	}
+	if bytes.Contains(src, []byte("go_asm.h")) {
+		src = goExpandAsmHeaderTypes(src, pkg.Types, goarch)
+	}
+	expanded, err := preprocess.PreprocessWithDefines(string(src), GoAssemblerDefines(goos, goarch))
+	if err != nil {
+		return nil, err
+	}
+	return asm.ParsePreprocessed(arch, expanded)
 }
 
 func goExpandConsts(src []byte, pkgTypes *types.Package, imports map[string]*types.Package) []byte {
@@ -692,7 +1276,7 @@ func goExpandAsmHeaderTypes(src []byte, pkgTypes *types.Package, goarch string) 
 			continue
 		}
 		st, ok := obj.Type().Underlying().(*types.Struct)
-		if !ok {
+		if !ok || goTypeHasUnboundTypeParams(obj.Type()) {
 			continue
 		}
 		size := sizes.Sizeof(obj.Type())
@@ -775,11 +1359,25 @@ func goLLVMTypeForTypeWithSizes(t types.Type, goarch string, sz types.Sizes) (LL
 		return LLVMType("{ ptr, i32, i32 }"), nil
 	case *types.Interface:
 		return LLVMType("{ ptr, ptr }"), nil
+	case *types.Array:
+		elem, err := goLLVMTypeForTypeWithSizes(tt.Elem(), goarch, sz)
+		if err != nil {
+			return "", err
+		}
+		return LLVMType(fmt.Sprintf("[%d x %s]", tt.Len(), elem)), nil
 	case *types.Struct:
 		if tt.NumFields() == 0 {
 			return LLVMType("[0 x i8]"), nil
 		}
-		return "", fmt.Errorf("unsupported struct type %s", tt.String())
+		fields := make([]string, tt.NumFields())
+		for i := range fields {
+			field, err := goLLVMTypeForTypeWithSizes(tt.Field(i).Type(), goarch, sz)
+			if err != nil {
+				return "", err
+			}
+			fields[i] = string(field)
+		}
+		return LLVMType("{ " + strings.Join(fields, ", ") + " }"), nil
 	case *types.Named:
 		return goLLVMTypeForTypeWithSizes(tt.Underlying(), goarch, sz)
 	default:
@@ -803,6 +1401,10 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 	off := startOff
 	argIdx := 0
 	for i := 0; i < tup.Len(); i++ {
+		name := ""
+		if flattenAgg {
+			name = tup.At(i).Name()
+		}
 		t := tup.At(i).Type()
 		a := int64(frameSz.Alignof(t))
 		off = goAlignOff(off, a)
@@ -812,7 +1414,7 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 			if flattenAgg {
 				for _, part := range parts {
 					args = append(args, part.Type)
-					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: -1})
+					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: -1, Name: name})
 					argIdx++
 				}
 			} else {
@@ -822,7 +1424,7 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 				}
 				args = append(args, ty)
 				for _, part := range parts {
-					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: part.Field})
+					slots = append(slots, FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: part.Field, Fields: part.Fields})
 				}
 				argIdx++
 			}
@@ -835,7 +1437,7 @@ func goLLVMArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz, frameS
 			return nil, nil, 0, e
 		}
 		args = append(args, ty)
-		slots = append(slots, FrameSlot{Offset: off, Type: ty, Index: argIdx, Field: -1})
+		slots = append(slots, FrameSlot{Offset: off, Type: ty, Index: argIdx, Field: -1, Name: name})
 		argIdx++
 		off += int64(frameSz.Sizeof(t))
 	}
@@ -846,6 +1448,7 @@ type goFramePart struct {
 	Offset int64
 	Type   LLVMType
 	Field  int
+	Fields []int
 }
 
 func goFramePartsForType(t types.Type, goarch string) ([]goFramePart, bool) {
@@ -861,15 +1464,71 @@ func goFramePartsForTypeWithSizes(t types.Type, goarch string, sz, frameSz types
 	}
 	switch u := t.Underlying().(type) {
 	case *types.Basic:
-		if u.Kind() == types.String {
+		switch u.Kind() {
+		case types.String:
 			return []goFramePart{{Offset: 0, Type: Ptr, Field: 0}, {Offset: word, Type: wordTy, Field: 1}}, true
+		case types.Complex64:
+			return []goFramePart{{Offset: 0, Type: "float", Field: 0}, {Offset: 4, Type: "float", Field: 1}}, true
+		case types.Complex128:
+			return []goFramePart{{Offset: 0, Type: "double", Field: 0}, {Offset: 8, Type: "double", Field: 1}}, true
 		}
 	case *types.Slice:
 		return []goFramePart{{Offset: 0, Type: Ptr, Field: 0}, {Offset: word, Type: wordTy, Field: 1}, {Offset: 2 * word, Type: wordTy, Field: 2}}, true
 	case *types.Interface:
 		return []goFramePart{{Offset: 0, Type: Ptr, Field: 0}, {Offset: word, Type: Ptr, Field: 1}}, true
+	case *types.Struct:
+		fields := make([]*types.Var, u.NumFields())
+		for i := range fields {
+			fields[i] = u.Field(i)
+		}
+		offsets := frameSz.Offsetsof(fields)
+		var parts []goFramePart
+		for i, field := range fields {
+			children, ok := goNestedFrameParts(field.Type(), goarch, sz, frameSz, i, offsets[i])
+			if !ok {
+				return nil, false
+			}
+			parts = append(parts, children...)
+		}
+		return parts, true
+	case *types.Array:
+		var parts []goFramePart
+		for i := int64(0); i < u.Len(); i++ {
+			children, ok := goNestedFrameParts(u.Elem(), goarch, sz, frameSz, int(i), i*frameSz.Sizeof(u.Elem()))
+			if !ok {
+				return nil, false
+			}
+			parts = append(parts, children...)
+		}
+		return parts, true
 	}
 	return nil, false
+}
+
+func goNestedFrameParts(t types.Type, goarch string, sz, frameSz types.Sizes, field int, offset int64) ([]goFramePart, bool) {
+	parts, aggregate := goFramePartsForTypeWithSizes(t, goarch, sz, frameSz)
+	if !aggregate {
+		typ, err := goLLVMTypeForTypeWithSizes(t, goarch, sz)
+		if err != nil {
+			return nil, false
+		}
+		parts = []goFramePart{{Type: typ, Field: -1}}
+	}
+	for i := range parts {
+		part := &parts[i]
+		path := []int{field}
+		if len(part.Fields) != 0 {
+			path = append(path, part.Fields...)
+		} else if part.Field >= 0 {
+			path = append(path, part.Field)
+		}
+		part.Offset += offset
+		part.Field = field
+		if len(path) > 1 {
+			part.Fields = path
+		}
+	}
+	return parts, true
 }
 
 func goWordSize(goarch string) int {

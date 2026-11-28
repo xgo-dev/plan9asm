@@ -92,7 +92,7 @@ func TestOfficialWasmAtomicStoreTranslationAndExecution(t *testing.T) {
 		},
 	}
 	ir := translateOfficialWasm(t, file, resolve, sigs)
-	if !strings.Contains(ir, "store i64") {
+	if !strings.Contains(ir, "store volatile i64") {
 		t.Fatalf("translated atomic store IR is missing the 64-bit Go pointer store")
 	}
 	assertWasmLocalsPromoted(t, ir)

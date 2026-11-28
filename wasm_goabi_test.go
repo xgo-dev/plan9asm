@@ -3,6 +3,8 @@ package plan9asm
 import (
 	"strings"
 	"testing"
+
+	"github.com/xgo-dev/plan9asm/internal/wasm"
 )
 
 func TestWasmGoABICallerStackAndUnwindLowering(t *testing.T) {
@@ -329,8 +331,8 @@ func TestWasmGoABIFrameAndSymbolMemory(t *testing.T) {
 	}
 	for _, want := range []string{
 		"getelementptr i8, ptr",
-		"load i64",
-		"store i64",
+		"load volatile i64",
+		"store volatile i64",
 		`@"\C2\B7data"`,
 		"ret i32 0",
 	} {
@@ -396,14 +398,14 @@ func TestWasmNeedsIncomingContextOrder(t *testing.T) {
 		}
 		return file.Funcs[0]
 	}
-	if !wasmNeedsIncomingContext(parseFunc(t, "Get CTXT\nDrop")) {
+	if !wasm.NeedsIncomingContext(parseFunc(t, "Get CTXT\nDrop")) {
 		t.Fatal("read-before-write CTXT was not detected")
 	}
-	if wasmNeedsIncomingContext(parseFunc(t, "I64Const $1\nSet CTXT\nGet CTXT\nDrop")) {
+	if wasm.NeedsIncomingContext(parseFunc(t, "I64Const $1\nSet CTXT\nGet CTXT\nDrop")) {
 		t.Fatal("write-before-read CTXT was incorrectly treated as an incoming context")
 	}
-	if got := wasmGoGlobalName(Reg("ret0")); got != "RET0" {
-		t.Fatalf("wasmGoGlobalName(ret0) = %q, want RET0", got)
+	if got := wasm.GoGlobalName(Reg("ret0")); got != "RET0" {
+		t.Fatalf("wasm.GoGlobalName(ret0) = %q, want RET0", got)
 	}
 }
 
@@ -412,4 +414,33 @@ func resolveWasmTestLocal(sym string) string {
 		return strings.TrimSuffix(sym, "<>") + "$local"
 	}
 	return sym
+}
+
+func TestParseWasmMemoryOperands(t *testing.T) {
+	file, err := Parse(ArchWASM, `TEXT op(SB), NOSPLIT, $0
+	MOVD R1, 8(R0)
+	RET
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := file.Funcs[0].Instrs[1].Args[1]
+	if got.Kind != OpMem || got.Mem.Base != "R0" || got.Mem.Off != 8 {
+		t.Fatalf("8(R0) = %#v, want wasm R0 memory operand", got)
+	}
+	file, err = Parse(ArchWASM, `TEXT op(SB), NOSPLIT, $0
+	MOVD R1, unresolved(R0)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = file.Funcs[0].Instrs[1].Args[1]
+	if got.Kind != OpMem || got.Mem.Base != "R0" || got.Mem.OffRaw != "unresolved" {
+		t.Fatalf("unresolved(R0) = %#v, want a deferred wasm memory offset", got)
+	}
+	if _, err := Translate(file, Options{Sigs: map[string]FuncSig{
+		"op": {Name: "op", Ret: Void},
+	}, Goarch: "wasm"}); err == nil || !strings.Contains(err.Error(), "unresolved wasm memory offset") {
+		t.Fatalf("Translate unresolved wasm memory offset error = %v", err)
+	}
 }

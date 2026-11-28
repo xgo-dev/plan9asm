@@ -1,0 +1,890 @@
+package arm64
+
+import (
+	"fmt"
+	"github.com/xgo-dev/plan9asm/internal/asm"
+	"strconv"
+	"strings"
+)
+
+func arm64ParseVRegLane(r asm.Reg) (kind byte, lane int, ok bool) {
+	s := strings.ToUpper(strings.TrimSpace(string(r)))
+	dot := strings.IndexByte(s, '.')
+	if dot < 0 || dot+1 >= len(s) {
+		return 0, 0, false
+	}
+	rest := s[dot+1:] // e.g. S[0], D[01]
+	if len(rest) < 4 || rest[1] != '[' || rest[len(rest)-1] != ']' {
+		return 0, 0, false
+	}
+	k := rest[0]
+	n, err := strconv.Atoi(rest[2 : len(rest)-1])
+	if err != nil {
+		return 0, 0, false
+	}
+	max := -1
+	switch k {
+	case 'B':
+		max = 16
+	case 'H':
+		max = 8
+	case 'S':
+		max = 4
+	case 'D':
+		max = 2
+	default:
+		return 0, 0, false
+	}
+	if n < 0 || n >= max {
+		return 0, 0, false
+	}
+	return k, n, true
+}
+
+// Vector/NEON lowering for a small subset used by stdlib asm.
+// We model V0..V31 as <16 x i8>.
+func (c *arm64Ctx) lowerVec(op asm.Op, postInc bool, ins asm.Instr) (ok bool, terminated bool, err error) {
+	switch op {
+	case "FMOVQ":
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("arm64 FMOVQ expects 2 operands: %q", ins.Raw)
+		}
+		src, dst := ins.Args[0], ins.Args[1]
+		preInc := strings.Contains(strings.ToUpper(string(ins.Op)), ".W")
+		switch {
+		case (src.Kind == asm.OpMem || src.Kind == asm.OpSym) && dst.Kind == asm.OpReg:
+			if _, ok := arm64ParseFReg(dst.Reg); !ok {
+				return true, false, fmt.Errorf("arm64 FMOVQ expects an F register destination: %q", ins.Raw)
+			}
+			ptr, base, inc, update, err := c.arm64VectorMemoryPointer(src, preInc, postInc)
+			if err != nil {
+				return true, false, err
+			}
+			value := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", value, ptr)
+			if err := c.storeVReg(dst.Reg, "%"+value); err != nil {
+				return true, false, err
+			}
+			if update {
+				if err := c.updatePostInc(base, inc); err != nil {
+					return true, false, err
+				}
+			}
+			return true, false, nil
+		case src.Kind == asm.OpReg && (dst.Kind == asm.OpMem || dst.Kind == asm.OpSym):
+			if _, ok := arm64ParseFReg(src.Reg); !ok {
+				return true, false, fmt.Errorf("arm64 FMOVQ expects an F register source: %q", ins.Raw)
+			}
+			value, err := c.loadVReg(src.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			ptr, base, inc, update, err := c.arm64VectorMemoryPointer(dst, preInc, postInc)
+			if err != nil {
+				return true, false, err
+			}
+			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", value, ptr)
+			if update {
+				if err := c.updatePostInc(base, inc); err != nil {
+					return true, false, err
+				}
+			}
+			return true, false, nil
+		case src.Kind == asm.OpFP && dst.Kind == asm.OpReg:
+			if _, ok := arm64ParseFReg(dst.Reg); !ok {
+				return true, false, fmt.Errorf("arm64 FMOVQ expects an F register destination: %q", ins.Raw)
+			}
+			lo, err := c.eval64(src, false)
+			if err != nil {
+				return true, false, err
+			}
+			hi := "0"
+			if _, ok := c.fpParams[src.FPOffset+8]; ok {
+				hi, err = c.eval64(asm.Operand{Kind: asm.OpFP, FPOffset: src.FPOffset + 8}, false)
+				if err != nil {
+					return true, false, err
+				}
+			}
+			v0, v1, bc := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %s, i32 0\n", v0, lo)
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %s, i32 1\n", v1, v0, hi)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, v1)
+			return true, false, c.storeVReg(dst.Reg, "%"+bc)
+		case src.Kind == asm.OpReg && dst.Kind == asm.OpFP:
+			if _, ok := arm64ParseFReg(src.Reg); !ok {
+				return true, false, fmt.Errorf("arm64 FMOVQ expects an F register source: %q", ins.Raw)
+			}
+			value, err := c.loadVReg(src.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			bc, lo, hi := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, value)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", lo, bc)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", hi, bc)
+			if err := c.storeFPResult64(dst.FPOffset, "%"+lo); err != nil {
+				return true, false, err
+			}
+			if _, ok := c.fpResAllocaOff[dst.FPOffset+8]; ok {
+				return true, false, c.storeFPResult64(dst.FPOffset+8, "%"+hi)
+			}
+			return true, false, nil
+		default:
+			return true, false, fmt.Errorf("arm64 FMOVQ expects memory and F register operands: %q", ins.Raw)
+		}
+
+	case "FSTPQ":
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || len(ins.Args[0].RegList) != 2 || (ins.Args[1].Kind != asm.OpMem && ins.Args[1].Kind != asm.OpSym) {
+			return true, false, fmt.Errorf("arm64 FSTPQ expects (Freg,Freg), mem: %q", ins.Raw)
+		}
+		for _, f := range ins.Args[0].RegList {
+			if _, ok := arm64ParseFReg(f); !ok {
+				return true, false, fmt.Errorf("arm64 FSTPQ expects FP register pair: %q", ins.Raw)
+			}
+		}
+		preInc := strings.Contains(strings.ToUpper(string(ins.Op)), ".W")
+		ptr, base, inc, update, err := c.arm64VectorMemoryPointer(ins.Args[1], preInc, postInc)
+		if err != nil {
+			return true, false, err
+		}
+		for i, f := range ins.Args[0].RegList {
+			value, err := c.loadVReg(f)
+			if err != nil {
+				return true, false, err
+			}
+			storePtr := ptr
+			if i != 0 {
+				next := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 16\n", next, ptr)
+				storePtr = "%" + next
+			}
+			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", value, storePtr)
+		}
+		if update {
+			if err := c.updatePostInc(base, inc); err != nil {
+				return true, false, err
+			}
+		}
+		return true, false, nil
+
+	case "FLDPQ":
+		if len(ins.Args) != 2 || (ins.Args[0].Kind != asm.OpMem && ins.Args[0].Kind != asm.OpSym) || ins.Args[1].Kind != asm.OpRegList || len(ins.Args[1].RegList) != 2 {
+			return true, false, fmt.Errorf("arm64 FLDPQ expects mem/sym, (Freg,Freg): %q", ins.Raw)
+		}
+		preInc := strings.Contains(strings.ToUpper(string(ins.Op)), ".W")
+		ptr, base, inc, update, err := c.arm64PairPtr(ins.Args[0], preInc, postInc)
+		if err != nil {
+			return true, false, err
+		}
+		for i, f := range ins.Args[1].RegList {
+			idx, ok := arm64ParseFReg(f)
+			if !ok {
+				return true, false, fmt.Errorf("arm64 FLDPQ expects FP register pair: %q", ins.Raw)
+			}
+			loadPtr := ptr
+			if i != 0 {
+				next := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 16\n", next, ptr)
+				loadPtr = "%" + next
+			}
+			value := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", value, loadPtr)
+			if err := c.storeVReg(asm.Reg(fmt.Sprintf("V%d", idx)), "%"+value); err != nil {
+				return true, false, err
+			}
+		}
+		if update {
+			if err := c.updatePostInc(base, inc); err != nil {
+				return true, false, err
+			}
+		}
+		return true, false, nil
+
+	case "VMOVI":
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpImm || ins.Args[1].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VMOVI expects $imm, Vreg.B8/B16/H4/H8/S2/S4/D1/D2: %q", ins.Raw)
+		}
+		imm := ins.Args[0].Imm
+		dst := strings.ToUpper(string(ins.Args[1].Reg))
+		switch {
+		case strings.Contains(dst, ".B8"), strings.Contains(dst, ".B16"):
+			if imm < 0 || imm > 255 {
+				return true, false, fmt.Errorf("arm64 VMOVI byte immediate out of range: %q", ins.Raw)
+			}
+			activeLanes := 16
+			if strings.Contains(dst, ".B8") {
+				activeLanes = 8
+			}
+			elems := make([]string, 16)
+			for i := range elems {
+				value := int64(0)
+				if i < activeLanes {
+					value = imm
+				}
+				elems[i] = fmt.Sprintf("i8 %d", value)
+			}
+			return true, false, c.storeVReg(ins.Args[1].Reg, "<"+strings.Join(elems, ", ")+">")
+		case strings.Contains(dst, ".H4"), strings.Contains(dst, ".H8"),
+			strings.Contains(dst, ".S2"), strings.Contains(dst, ".S4"),
+			strings.Contains(dst, ".D1"), strings.Contains(dst, ".D2"):
+			sh := parseNEONShape(ins.Args[1].Reg, false)
+			return true, false, c.storeVShape(ins.Args[1].Reg, arm64IntSplat(sh.lanes, sh.elemBits, imm), sh)
+		case !strings.Contains(dst, "."):
+			if _, ok := arm64ParseVReg(ins.Args[1].Reg); ok {
+				sh := neonShape{lanes: 1, elemBits: 64, half64: true}
+				return true, false, c.storeVShape(ins.Args[1].Reg, arm64IntSplat(1, 64, imm), sh)
+			}
+			return true, false, fmt.Errorf("arm64 VMOVI unsupported vector arrangement: %q", ins.Raw)
+		default:
+			return true, false, fmt.Errorf("arm64 VMOVI unsupported vector arrangement: %q", ins.Raw)
+		}
+
+	case "AESE", "AESD", "AESMC", "AESIMC",
+		"SHA1C", "SHA1H", "SHA1M", "SHA1P", "SHA1SU0", "SHA1SU1",
+		"SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1", "SHA512H", "SHA512H2", "SHA512SU0", "SHA512SU1",
+		"VEOR3", "VBCAX", "VRAX1", "VXAR", "VPMULL", "VPMULL2":
+		return true, false, c.lowerCrypto(op, ins)
+	case "VSHL", "VSRI", "VUSHR", "VEXT", "VDUP":
+		return true, false, c.lowerVecImmediate(op, ins)
+
+	case "VMOV":
+		// Patterns used by stdlib:
+		// - VMOV Rn, Vm.B16      (broadcast low byte)
+		// - VMOV Vm.D[0], Rn     (extract low 64-bit)
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VMOV expects reg, reg: %q", ins.Raw)
+		}
+		src, dst := ins.Args[0].Reg, ins.Args[1].Reg
+
+		if idx, ok := arm64ParseVReg(dst); ok {
+			_ = idx
+			// GPR -> V (broadcast).
+			if _, ok2 := arm64ParseVReg(src); ok2 {
+				// V -> V copy.
+				v, err := c.loadVReg(src)
+				if err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeVReg(dst, v)
+			}
+			if k, lane, laneOK := arm64ParseVRegLane(dst); laneOK {
+				// GPR -> V lane insert.
+				rv, err := c.loadReg(src)
+				if err != nil {
+					return true, false, err
+				}
+				v, err := c.loadVReg(dst)
+				if err != nil {
+					return true, false, err
+				}
+				switch k {
+				case 'D':
+					bc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, v)
+					insv := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %s, i32 %d\n", insv, bc, rv, lane)
+					out := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", out, insv)
+					return true, false, c.storeVReg(dst, "%"+out)
+				case 'S':
+					w := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", w, rv)
+					bc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", bc, v)
+					insv := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = insertelement <4 x i32> %%%s, i32 %%%s, i32 %d\n", insv, bc, w, lane)
+					out := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, insv)
+					return true, false, c.storeVReg(dst, "%"+out)
+				case 'H':
+					h := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", h, rv)
+					bc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <8 x i16>\n", bc, v)
+					insv := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = insertelement <8 x i16> %%%s, i16 %%%s, i32 %d\n", insv, bc, h, lane)
+					out := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i16> %%%s to <16 x i8>\n", out, insv)
+					return true, false, c.storeVReg(dst, "%"+out)
+				case 'B':
+					b := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", b, rv)
+					insv := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = insertelement <16 x i8> %s, i8 %%%s, i32 %d\n", insv, v, b, lane)
+					return true, false, c.storeVReg(dst, "%"+insv)
+				}
+			}
+			rv, err := c.loadReg(src)
+			if err != nil {
+				return true, false, err
+			}
+			ds := strings.ToUpper(string(dst))
+			switch {
+			case strings.Contains(ds, ".S4"):
+				b := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", b, rv)
+				v, err := c.broadcastI32ToV16("%" + b)
+				if err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeVReg(dst, v)
+			default:
+				b := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", b, rv)
+				v, err := c.broadcastI8ToV16("%" + b)
+				if err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeVReg(dst, v)
+			}
+		}
+
+		// V -> GPR (lane extract).
+		if _, ok := arm64ParseVReg(src); ok {
+			if k, lane, laneOK := arm64ParseVRegLane(src); laneOK {
+				v, err := c.loadVReg(src)
+				if err != nil {
+					return true, false, err
+				}
+				switch k {
+				case 'D':
+					bc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, v)
+					e := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 %d\n", e, bc, lane)
+					return true, false, c.storeReg(dst, "%"+e)
+				case 'S':
+					bc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", bc, v)
+					e := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = extractelement <4 x i32> %%%s, i32 %d\n", e, bc, lane)
+					z := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, e)
+					return true, false, c.storeReg(dst, "%"+z)
+				case 'H':
+					bc := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <8 x i16>\n", bc, v)
+					e := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = extractelement <8 x i16> %%%s, i32 %d\n", e, bc, lane)
+					z := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = zext i16 %%%s to i64\n", z, e)
+					return true, false, c.storeReg(dst, "%"+z)
+				case 'B':
+					e := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", e, v, lane)
+					z := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", z, e)
+					return true, false, c.storeReg(dst, "%"+z)
+				}
+			}
+			// VMOV Vn, Rm: use low 64-bit lane by default.
+			if !strings.Contains(strings.ToUpper(string(src)), ".") {
+				v, err := c.loadVReg(src)
+				if err != nil {
+					return true, false, err
+				}
+				bc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, v)
+				e := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", e, bc)
+				return true, false, c.storeReg(dst, "%"+e)
+			}
+			return true, false, fmt.Errorf("arm64 VMOV unsupported vreg lane: %q", ins.Raw)
+		}
+		return true, false, fmt.Errorf("arm64 VMOV unsupported: %q", ins.Raw)
+
+	case "VEOR":
+		// VEOR Va, Vb, Vd
+		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VEOR expects reg, reg, reg: %q", ins.Raw)
+		}
+		a, err := c.loadVReg(ins.Args[0].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadVReg(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor <16 x i8> %s, %s\n", t, a, b)
+		return true, false, c.storeVReg(ins.Args[2].Reg, "%"+t)
+
+	case "VORR":
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg {
+			return true, false, c.lowerARM64NEONImmBitwise("or", ins.Args[0].Imm, ins.Args[1].Reg)
+		}
+		// VORR Va, Vb, Vd
+		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VORR expects reg, reg, reg: %q", ins.Raw)
+		}
+		a, err := c.loadVReg(ins.Args[0].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadVReg(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or <16 x i8> %s, %s\n", t, a, b)
+		return true, false, c.storeVReg(ins.Args[2].Reg, "%"+t)
+
+	case "VLD1":
+		// VLD1 lane form: VLD1(.P) mem, Vn.{B,H,S,D}[lane]
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpMem && ins.Args[1].Kind == asm.OpReg {
+			k, lane, ok := arm64ParseVRegLane(ins.Args[1].Reg)
+			if !ok {
+				return true, false, fmt.Errorf("arm64 VLD1 expects mem, lane or [v,...]: %q", ins.Raw)
+			}
+			mem := ins.Args[0].Mem
+			addr, err := c.neonStructureAddress(mem, postInc)
+			if err != nil {
+				return true, false, err
+			}
+			v, err := c.loadVReg(ins.Args[1].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			width := int64(1)
+			switch k {
+			case 'D':
+				width = 8
+			case 'S':
+				width = 4
+			case 'H':
+				width = 2
+			}
+			pt := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, addr)
+			switch k {
+			case 'D':
+				e := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i64, ptr %%%s, align 1\n", e, pt)
+				bc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, v)
+				insv := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %%%s, i32 %d\n", insv, bc, e, lane)
+				out := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", out, insv)
+				if err := c.storeVReg(ins.Args[1].Reg, "%"+out); err != nil {
+					return true, false, err
+				}
+			case 'S':
+				e := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i32, ptr %%%s, align 1\n", e, pt)
+				bc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", bc, v)
+				insv := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = insertelement <4 x i32> %%%s, i32 %%%s, i32 %d\n", insv, bc, e, lane)
+				out := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, insv)
+				if err := c.storeVReg(ins.Args[1].Reg, "%"+out); err != nil {
+					return true, false, err
+				}
+			case 'H':
+				e := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i16, ptr %%%s, align 1\n", e, pt)
+				bc := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <8 x i16>\n", bc, v)
+				insv := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = insertelement <8 x i16> %%%s, i16 %%%s, i32 %d\n", insv, bc, e, lane)
+				out := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i16> %%%s to <16 x i8>\n", out, insv)
+				if err := c.storeVReg(ins.Args[1].Reg, "%"+out); err != nil {
+					return true, false, err
+				}
+			case 'B':
+				e := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i8, ptr %%%s, align 1\n", e, pt)
+				insv := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = insertelement <16 x i8> %s, i8 %%%s, i32 %d\n", insv, v, e, lane)
+				if err := c.storeVReg(ins.Args[1].Reg, "%"+insv); err != nil {
+					return true, false, err
+				}
+			}
+			return true, false, c.neonStructureWriteback(mem, postInc, width)
+		}
+
+		// VLD1.P (R0), [V1.B16, V2.B16] (or 4-reg form for D2 lists)
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpMem || ins.Args[1].Kind != asm.OpRegList {
+			return true, false, fmt.Errorf("arm64 VLD1 expects mem, lane or [v,...]: %q", ins.Raw)
+		}
+		if n := len(ins.Args[1].RegList); n != 1 && n != 2 && n != 3 && n != 4 {
+			return true, false, fmt.Errorf("arm64 VLD1 unsupported reglist len=%d: %q", n, ins.Raw)
+		}
+		return true, false, c.vectorListMemory(ins.Args[0].Mem, ins.Args[1].RegList, postInc, true)
+
+	case "VST1":
+		// VST1 Vn.lane[i], mem (single-lane store) or VST1.P [Vn...], mem
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpMem {
+			if kind, lane, ok := arm64ParseVRegLane(ins.Args[0].Reg); ok {
+				v, err := c.loadVReg(ins.Args[0].Reg)
+				if err != nil {
+					return true, false, err
+				}
+				addr, err := c.neonStructureAddress(ins.Args[1].Mem, postInc)
+				if err != nil {
+					return true, false, err
+				}
+				pt := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, addr)
+				var elemBytes int64
+				switch kind {
+				case 'B':
+					elemBytes = 1
+					ex := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = extractelement <16 x i8> %s, i32 %d\n", ex, v, lane)
+					fmt.Fprintf(c.b, "  store i8 %%%s, ptr %%%s, align 1\n", ex, pt)
+				case 'H':
+					elemBytes = 2
+					bc, ex := c.newTmp(), c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <8 x i16>\n", bc, v)
+					fmt.Fprintf(c.b, "  %%%s = extractelement <8 x i16> %%%s, i32 %d\n", ex, bc, lane)
+					fmt.Fprintf(c.b, "  store i16 %%%s, ptr %%%s, align 1\n", ex, pt)
+				case 'S':
+					elemBytes = 4
+					bc, ex := c.newTmp(), c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", bc, v)
+					fmt.Fprintf(c.b, "  %%%s = extractelement <4 x i32> %%%s, i32 %d\n", ex, bc, lane)
+					fmt.Fprintf(c.b, "  store i32 %%%s, ptr %%%s, align 1\n", ex, pt)
+				case 'D':
+					elemBytes = 8
+					bc, ex := c.newTmp(), c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bc, v)
+					fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 %d\n", ex, bc, lane)
+					fmt.Fprintf(c.b, "  store i64 %%%s, ptr %%%s, align 1\n", ex, pt)
+				}
+				return true, false, c.neonStructureWriteback(ins.Args[1].Mem, postInc, elemBytes)
+			}
+		}
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpRegList || ins.Args[1].Kind != asm.OpMem {
+			return true, false, fmt.Errorf("arm64 VST1 expects [v,...], mem: %q", ins.Raw)
+		}
+		if n := len(ins.Args[0].RegList); n != 1 && n != 2 && n != 3 && n != 4 {
+			return true, false, fmt.Errorf("arm64 VST1 unsupported reglist len=%d: %q", n, ins.Raw)
+		}
+		return true, false, c.vectorListMemory(ins.Args[1].Mem, ins.Args[0].RegList, postInc, false)
+
+	case "VCMEQ":
+		// VCMEQ Va, Vb, Vd or VCMEQ $0, Vb, Vd (any arrangement .B8/.B16/.H4/.H8/.S2/.S4/.D2)
+		if len(ins.Args) != 3 || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VCMEQ expects reg/$0, reg, reg: %q", ins.Raw)
+		}
+		if ins.Args[0].Kind == asm.OpImm {
+			return true, false, c.lowerNEONCompare(asm.OpSpec{Op: "VCMEQ", LLVMOp: "eq"}, ins)
+		}
+		if ins.Args[0].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VCMEQ expects reg/$0, reg, reg: %q", ins.Raw)
+		}
+		sh := parseNEONShape(ins.Args[2].Reg, false)
+		a, err := c.loadVShape(ins.Args[0].Reg, sh)
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadVShape(ins.Args[1].Reg, sh)
+		if err != nil {
+			return true, false, err
+		}
+		cmp, sext := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq %s %s, %s\n", cmp, sh.vecTy(), a, b)
+		fmt.Fprintf(c.b, "  %%%s = sext <%d x i1> %%%s to %s\n", sext, sh.lanes, cmp, sh.vecTy())
+		return true, false, c.storeVShape(ins.Args[2].Reg, "%"+sext, sh)
+
+	case "VAND":
+		// VAND Va, Vb, Vd
+		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VAND expects reg, reg, reg: %q", ins.Raw)
+		}
+		a, err := c.loadVReg(ins.Args[0].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadVReg(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and <16 x i8> %s, %s\n", t, a, b)
+		return true, false, c.storeVReg(ins.Args[2].Reg, "%"+t)
+
+	case "VADDP":
+		// Pairwise add across all NEON arrangements (.B8/.B16/.H4/.H8/.S2/.S4/.D2).
+		if len(ins.Args) != 3 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg || ins.Args[2].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VADDP expects reg, reg, reg: %q", ins.Raw)
+		}
+		sh := parseNEONShape(ins.Args[2].Reg, false)
+		if !strings.Contains(string(ins.Args[2].Reg), ".") {
+			if strings.Contains(string(ins.Args[0].Reg), ".") {
+				sh = parseNEONShape(ins.Args[0].Reg, false)
+			} else if strings.Contains(string(ins.Args[1].Reg), ".") {
+				sh = parseNEONShape(ins.Args[1].Reg, false)
+			}
+		}
+		if sh.elemBits == 64 {
+			a, err := c.loadVReg(ins.Args[0].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			b, err := c.loadVReg(ins.Args[1].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			ab, bb := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", ab, a)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", bb, b)
+			a0, a1, b0, b1 := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", a0, ab)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", a1, ab)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", b0, bb)
+			fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 1\n", b1, bb)
+			as, bs := c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", as, a0, a1)
+			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", bs, b0, b1)
+			v0, v1, out := c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %%%s, i32 0\n", v0, as)
+			fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 %%%s, i32 1\n", v1, v0, bs)
+			fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", out, v1)
+			return true, false, c.storeVReg(ins.Args[2].Reg, "%"+out)
+		}
+		a, err := c.loadVShape(ins.Args[0].Reg, sh)
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadVShape(ins.Args[1].Reg, sh)
+		if err != nil {
+			return true, false, err
+		}
+		vecTy := sh.vecTy()
+		elemTy := sh.elemTy()
+		half := sh.lanes / 2
+		cur := "undef"
+		for i := 0; i < sh.lanes; i++ {
+			src, off := a, (i-half)*2
+			if i < half {
+				// Go/Plan9 operand order: second operand feeds the low half.
+				src, off = b, i*2
+			}
+			e0, e1, sum, insv := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", e0, vecTy, src, off)
+			fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", e1, vecTy, src, off+1)
+			fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", sum, elemTy, e0, e1)
+			fmt.Fprintf(c.b, "  %%%s = insertelement %s %s, %s %%%s, i32 %d\n", insv, vecTy, cur, elemTy, sum, i)
+			cur = "%" + insv
+		}
+		return true, false, c.storeVShape(ins.Args[2].Reg, cur, sh)
+
+	case "VUADDLV":
+		// VUADDLV Vn.{B8,B16,H4,H8,S4}, Vd
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VUADDLV expects reg, reg: %q", ins.Raw)
+		}
+		sh := parseNEONShape(ins.Args[0].Reg, false)
+		v, err := c.loadVShape(ins.Args[0].Reg, sh)
+		if err != nil {
+			return true, false, err
+		}
+		zTy := fmt.Sprintf("<%d x i64>", sh.lanes)
+		z := v
+		if sh.elemBits < 64 {
+			zt := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", zt, sh.vecTy(), v, zTy)
+			z = "%" + zt
+		}
+		sum := "0"
+		for i := 0; i < sh.lanes; i++ {
+			e := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = extractelement %s %s, i32 %d\n", e, zTy, z, i)
+			a := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %%%s\n", a, sum, e)
+			sum = "%" + a
+		}
+		vec := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %s, i32 0\n", vec, sum)
+		vec2 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 0, i32 1\n", vec2, vec)
+		bc := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, vec2)
+		return true, false, c.storeVReg(ins.Args[1].Reg, "%"+bc)
+
+	case "VADD":
+		// VADD Va.arr, Vb.arr, Vd.arr (all NEON arrangements) or 2-op VADD Vs[.arr], Vd[.arr].
+		if len(ins.Args) == 3 && ins.Args[0].Kind == asm.OpReg && ins.Args[1].Kind == asm.OpReg && ins.Args[2].Kind == asm.OpReg {
+			sh := parseNEONShape(ins.Args[2].Reg, false)
+			if !strings.Contains(string(ins.Args[2].Reg), ".") && !strings.Contains(string(ins.Args[0].Reg), ".") {
+				// Preserve legacy bare-register default (S4).
+				sh = neonShape{lanes: 4, elemBits: 32}
+			}
+			a, err := c.loadVShape(ins.Args[0].Reg, sh)
+			if err != nil {
+				return true, false, err
+			}
+			b, err := c.loadVShape(ins.Args[1].Reg, sh)
+			if err != nil {
+				return true, false, err
+			}
+			sum := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add %s %s, %s\n", sum, sh.vecTy(), a, b)
+			return true, false, c.storeVShape(ins.Args[2].Reg, "%"+sum, sh)
+		}
+
+		if len(ins.Args) != 2 || ins.Args[0].Kind != asm.OpReg || ins.Args[1].Kind != asm.OpReg {
+			return true, false, fmt.Errorf("arm64 VADD expects reg, reg or reg, reg, reg: %q", ins.Raw)
+		}
+		if strings.Contains(string(ins.Args[0].Reg), ".") || strings.Contains(string(ins.Args[1].Reg), ".") {
+			sh := parseNEONShape(ins.Args[1].Reg, false)
+			if !strings.Contains(string(ins.Args[1].Reg), ".") {
+				sh = parseNEONShape(ins.Args[0].Reg, false)
+			}
+			a, err := c.loadVShape(ins.Args[0].Reg, sh)
+			if err != nil {
+				return true, false, err
+			}
+			b, err := c.loadVShape(ins.Args[1].Reg, sh)
+			if err != nil {
+				return true, false, err
+			}
+			sum := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add %s %s, %s\n", sum, sh.vecTy(), b, a)
+			return true, false, c.storeVShape(ins.Args[1].Reg, "%"+sum, sh)
+		}
+		sv, err := c.loadVReg(ins.Args[0].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		dv, err := c.loadVReg(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		sbc := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", sbc, sv)
+		dbc := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <2 x i64>\n", dbc, dv)
+		se := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", se, sbc)
+		de := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractelement <2 x i64> %%%s, i32 0\n", de, dbc)
+		add := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", add, de, se)
+		vec := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> undef, i64 %%%s, i32 0\n", vec, add)
+		vec2 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = insertelement <2 x i64> %%%s, i64 0, i32 1\n", vec2, vec)
+		bc := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <2 x i64> %%%s to <16 x i8>\n", bc, vec2)
+		return true, false, c.storeVReg(ins.Args[1].Reg, "%"+bc)
+	}
+	return false, false, nil
+}
+
+func (c *arm64Ctx) arm64VectorMemoryPointer(op asm.Operand, preInc, postInc bool) (ptr string, base asm.Reg, inc int64, update bool, err error) {
+	if preInc && postInc {
+		return "", "", 0, false, fmt.Errorf("arm64: memory operand cannot be both pre- and post-indexed")
+	}
+	if op.Kind == asm.OpSym {
+		if preInc || postInc {
+			return "", "", 0, false, fmt.Errorf("arm64: symbol operand cannot be pre- or post-indexed")
+		}
+		ptr, err := c.ptrFromSB(op.Sym)
+		return ptr, "", 0, false, err
+	}
+	if op.Kind != asm.OpMem {
+		return "", "", 0, false, fmt.Errorf("arm64: expected memory operand")
+	}
+	if err := validateARM64MemoryIndex(op.Mem, 128); err != nil {
+		return "", "", 0, false, err
+	}
+	addr, base, inc, err := c.addrI64(op.Mem, postInc)
+	if err != nil {
+		return "", "", 0, false, err
+	}
+	if preInc {
+		if err := c.storeReg(base, addr); err != nil {
+			return "", "", 0, false, err
+		}
+	}
+	pt := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", pt, addr)
+	return "%" + pt, base, inc, postInc, nil
+}
+
+func (c *arm64Ctx) broadcastI8ToV16(v8 string) (string, error) {
+	ins := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = insertelement <16 x i8> undef, i8 %s, i32 0\n", ins, v8)
+	shuf := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = shufflevector <16 x i8> %%%s, <16 x i8> poison, <16 x i32> zeroinitializer\n", shuf, ins)
+	return "%" + shuf, nil
+}
+
+func (c *arm64Ctx) broadcastI32ToV16(v32 string) (string, error) {
+	ins := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = insertelement <4 x i32> undef, i32 %s, i32 0\n", ins, v32)
+	shuf := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = shufflevector <4 x i32> %%%s, <4 x i32> poison, <4 x i32> zeroinitializer\n", shuf, ins)
+	bc := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", bc, shuf)
+	return "%" + bc, nil
+}
+
+// A post-indexed structure transfer always accesses the original base. The
+// following writeback uses either the encoded immediate or the index register.
+func (c *arm64Ctx) neonStructureAddress(mem asm.MemRef, post bool) (string, error) {
+	if post {
+		return c.loadReg(mem.Base)
+	}
+	addr, _, _, err := c.addrI64(mem, false)
+	return addr, err
+}
+
+func (c *arm64Ctx) neonStructureWriteback(mem asm.MemRef, post bool, transferBytes int64) error {
+	if !post {
+		return nil
+	}
+	if mem.Index != "" {
+		addr, _, _, err := c.addrI64(mem, false)
+		if err != nil {
+			return err
+		}
+		return c.storeReg(mem.Base, addr)
+	}
+	if mem.Off != 0 {
+		transferBytes = mem.Off
+	}
+	return c.updatePostInc(mem.Base, transferBytes)
+}
+
+// LD1/ST1 transfer one whole arrangement per register, 8 or 16 bytes each.
+func (c *arm64Ctx) vectorListMemory(mem asm.MemRef, regs []asm.Reg, post, load bool) error {
+	sh := parseNEONShape(regs[0], false)
+	size := sh.elemBits * sh.lanes / 8
+	addr, err := c.neonStructureAddress(mem, post)
+	if err != nil {
+		return err
+	}
+	for i, r := range regs {
+		if parseNEONShape(r, false) != sh {
+			return fmt.Errorf("arm64 LD1/ST1 inconsistent arrangements")
+		}
+		ptr := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", ptr, addr)
+		if i != 0 {
+			p := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %%%s, i64 %d\n", p, ptr, i*size)
+			ptr = p
+		}
+		if load {
+			v := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %%%s, align 1\n", v, sh.vecTy(), ptr)
+			if err := c.storeVShape(r, "%"+v, sh); err != nil {
+				return err
+			}
+		} else {
+			v, err := c.loadVShape(r, sh)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(c.b, "  store %s %s, ptr %%%s, align 1\n", sh.vecTy(), v, ptr)
+		}
+	}
+	return c.neonStructureWriteback(mem, post, int64(size*len(regs)))
+}

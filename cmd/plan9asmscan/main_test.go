@@ -362,13 +362,95 @@ GLOBL foo(SB), RODATA, $8
 	if len(rep.ClusterStats) == 0 || len(rep.FamilyStats) == 0 {
 		t.Fatalf("buildReport() expected cluster/family stats")
 	}
-	if rep.RuntimeVerifiedForms != 1 {
-		t.Fatalf("RuntimeVerifiedForms = %d, want 1", rep.RuntimeVerifiedForms)
+	if rep.RuntimeVerifiedForms != 1 || rep.ManifestExecuteForms != 1 || rep.DiffVerifiedForms != 0 || rep.DiffReportLoaded || rep.IRGeneratedForms != rep.SupportedForms {
+		t.Fatalf("metrics mismatch without diff report: runtime=%d manifest=%d diff=%d loaded=%v ir=%d supported=%d",
+			rep.RuntimeVerifiedForms, rep.ManifestExecuteForms, rep.DiffVerifiedForms, rep.DiffReportLoaded, rep.IRGeneratedForms, rep.SupportedForms)
+	}
+	attachManifestHWFeatures(&rep, map[string][]string{"amd64\x00MOVQ immediate,gpr64": {"sse4.2"}})
+	if rep.ManifestHWGatedForms != 1 || rep.HWPendingForms != 0 {
+		t.Fatalf("static manifest hw_gated=%d hw_pending=%d, want 1 and 0 before diff report", rep.ManifestHWGatedForms, rep.HWPendingForms)
+	}
+	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
+		SchemaVersion: 1,
+		Goarch:        "amd64",
+		Goos:          "linux", GoVersion: "go1.test", LLVMVersion: "LLVM version 22.1.8",
+		NativeOracleRan: true,
+
+		Cases: []diffCaseExecResult{
+			{
+				ID: "case-pending", VerificationMode: "native_diff",
+				Status:            "hw_pending",
+				MissingHWFeatures: []string{"sse4.2"},
+				Forms:             []string{"MOVQ immediate,gpr64"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("attachDiffExecutionReport(hw_pending): %v", err)
+	}
+	if !rep.DiffReportLoaded || rep.DiffVerifiedForms != 0 || rep.HWPendingForms != 1 || len(rep.HWPendingByForm) != 1 {
+		t.Fatalf("after hw_pending diff report: loaded=%v diff=%d pending=%d (%#v)", rep.DiffReportLoaded, rep.DiffVerifiedForms, rep.HWPendingForms, rep.HWPendingByForm)
+	}
+	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
+		SchemaVersion: 1,
+		Goarch:        "amd64",
+		Goos:          "linux", GoVersion: "go1.test", LLVMVersion: "LLVM version 22.1.8",
+		NativeOracleRan: true,
+		TotalInputs:     7,
+		Cases: []diffCaseExecResult{
+			{
+				ID:               "case-expected-only",
+				Status:           "expected_value_only",
+				VerificationMode: "expected_value_only",
+				ExecutedInputs:   7,
+				ComparedInputs:   0,
+				Forms:            []string{"MOVQ immediate,gpr64"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("attachDiffExecutionReport(expected_value_only): %v", err)
+	}
+	if !rep.DiffReportLoaded || rep.DiffVerifiedForms != 0 || rep.DiffExpectedOnlyForms != 1 || rep.DiffReportComparedInputs != 0 {
+		t.Fatalf("expected_value_only must not count as native diff: loaded=%v diff=%d expected_only=%d compared=%d",
+			rep.DiffReportLoaded, rep.DiffVerifiedForms, rep.DiffExpectedOnlyForms, rep.DiffReportComparedInputs)
+	}
+	if err := attachDiffExecutionReport(&rep, &diffExecutionReport{
+		SchemaVersion: 1,
+		Goarch:        "amd64",
+		Goos:          "linux", GoVersion: "go1.test", LLVMVersion: "LLVM version 22.1.8",
+		NativeOracleRan: true,
+		TotalInputs:     7, ComparedInputs: 7,
+		Cases: []diffCaseExecResult{
+			{
+				ID:               "case-pass",
+				Status:           "passed",
+				VerificationMode: "native_diff",
+				ExecutedInputs:   7,
+				ComparedInputs:   7,
+				Forms:            []string{"MOVQ immediate,gpr64"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("attachDiffExecutionReport(passed): %v", err)
+	}
+	if rep.DiffVerifiedForms != 1 || rep.DiffExpectedOnlyForms != 0 || rep.HWPendingForms != 0 || rep.DiffReportComparedInputs != 7 {
+		t.Fatalf("after passed diff report: diff=%d expected_only=%d pending=%d compared=%d", rep.DiffVerifiedForms, rep.DiffExpectedOnlyForms, rep.HWPendingForms, rep.DiffReportComparedInputs)
+	}
+	attachObjectCompilation(&rep, map[string]bool{"MOVQ immediate,gpr64": true}, nil, "22.1.8")
+	if !rep.ObjectCompiledVerified || rep.ObjectCompiledForms != 1 || rep.ObjectCompileLLVMVersion != "22.1.8" {
+		t.Fatalf("object compilation metrics = (%v, %d, %q), want (true, 1, 22.1.8)", rep.ObjectCompiledVerified, rep.ObjectCompiledForms, rep.ObjectCompileLLVMVersion)
+	}
+	if got := normalizeUnsupportedReason(`plan9asm.probe: "FXSAVE (BX)": amd64: unsupported instruction FXSAVE (x87/SSE/XSAVE state save/restore is not modeled): "FXSAVE (BX)"`); got != "x87/SSE/XSAVE state save/restore is not modeled" {
+		t.Fatalf("normalizeUnsupportedReason = %q", got)
 	}
 
 	md := string(renderMarkdown(rep))
 	for _, want := range []string{
 		"# Plan9 Asm Scan Report (linux/amd64)",
+		"metric 1 — IR generated",
+		"metric 2 — object compiled (LLVM 22.1.8 `llc -filetype=obj` verified)",
+		"metric 3 — semantically differentially verified (execution report): `1` passed, `0` hw-pending",
+		"## Explicit Unsupported Catalog (grouped by reason)",
+		"## Hardware-Pending Forms (from execution report)",
 		"## Cluster Summary",
 		"## Unsupported Ops (vs current lowerers)",
 		"good.s",
@@ -379,15 +461,71 @@ GLOBL foo(SB), RODATA, $8
 	}
 }
 
+func TestVerifyObjRequiresLLVM22AndRealObjectEmission(t *testing.T) {
+	// 1. Verify findLLCTool rejects non-LLVM-22 binaries instead of accepting any llc.
+	fakeDir := t.TempDir()
+	fakeName := "llc"
+	fakeScript := "#!/bin/sh\necho 'LLVM (http://llvm.org/):'\necho '  LLVM version 220.1.0'\n"
+	if runtime.GOOS == "windows" {
+		fakeName = "llc.cmd"
+		fakeScript = "@echo off\r\necho LLVM version 220.1.0\r\n"
+	}
+	fakePath := filepath.Join(fakeDir, fakeName)
+	if err := os.WriteFile(fakePath, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(fakePath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("rejects-non-22", func(t *testing.T) {
+		t.Setenv("LLVM_CONFIG", "")
+		t.Setenv("PATH", fakeDir)
+		if p, ver, err := findLLCTool(); err == nil {
+			t.Fatalf("findLLCTool unexpectedly accepted non-22 llc: %q (%q)", p, ver)
+		} else if !strings.Contains(err.Error(), "LLVM 22") {
+			t.Fatalf("unexpected error for non-22 llc: %v", err)
+		}
+	})
+
+	// 2. Verify runLLCOnIR runs real -filetype=obj emission (failing on a cross-section
+	// symbol-difference relocation that -filetype=null silently accepts).
+	llcPath, ver, err := findLLCTool()
+	if err != nil {
+		t.Fatalf("LLVM 22 llc unavailable: %v", err)
+	}
+	if !strings.HasPrefix(ver, "22.") && ver != "22" {
+		t.Fatalf("findLLCTool returned unexpected version %q", ver)
+	}
+	badRelocIR := `target triple = "x86_64-unknown-linux-gnu"
+@g1 = global i32 1, section ".sec_a"
+@g2 = global i32 2, section ".sec_b"
+@diff = constant i64 sub (i64 ptrtoint (ptr @g1 to i64), i64 ptrtoint (ptr @g2 to i64))
+`
+	if err := runLLCOnIR(llcPath, "amd64", t.TempDir(), badRelocIR); err == nil {
+		t.Fatalf("runLLCOnIR accepted cross-section symbol-difference relocation; expected -filetype=obj emission failure")
+	}
+	goodIR := `target triple = "x86_64-unknown-linux-gnu"
+define i64 @ok(i64 %x) {
+  %y = add i64 %x, 1
+  ret i64 %y
+}
+`
+	if err := runLLCOnIR(llcPath, "amd64", t.TempDir(), goodIR); err != nil {
+		t.Fatalf("runLLCOnIR rejected valid IR: %v", err)
+	}
+}
+
 func TestAddFormStatCachesConcreteInstructionsWithoutCollapsingValues(t *testing.T) {
 	forms := map[string]*formStat{}
-	for _, imm := range []int64{1, 7, 7} {
+	for _, imm := range []int64{1, 256, 256} {
 		addFormStat(forms, plan9asm.ArchAMD64, "amd64", plan9asm.Instr{
-			Op:  "RCRQ",
-			Raw: "RCRQ immediate, AX",
+			Op:  "PSRLDQ",
+			Raw: "PSRLDQ immediate, X0",
 			Args: []plan9asm.Operand{
 				{Kind: plan9asm.OpImm, Imm: imm},
-				{Kind: plan9asm.OpReg, Reg: plan9asm.AX},
+				{Kind: plan9asm.OpReg, Reg: plan9asm.Reg("X0")},
 			},
 		}, "fixture.s")
 	}
@@ -644,5 +782,60 @@ func TestMainAndFatalfSubprocess(t *testing.T) {
 	}
 	if !strings.Contains(string(fout), "boom 7") {
 		t.Fatalf("fatalf output = %q, want boom 7", string(fout))
+	}
+}
+
+func TestDiffReportRejectsInconsistentEvidence(t *testing.T) {
+	scan := report{Goos: "linux", Goarch: "amd64", GoVersion: "go1.27.3", ObjectCompileLLVMVersion: "22.1.8"}
+	base := diffExecutionReport{SchemaVersion: 1, Goos: scan.Goos, Goarch: scan.Goarch, GoVersion: scan.GoVersion, LLVMVersion: "Debian LLVM version 22.1.8", NativeOracleRan: true, TotalInputs: 2, ComparedInputs: 2}
+	testCase := diffCaseExecResult{ID: "bits", Asm: "amd64/bits.s", Status: "passed", VerificationMode: "native_diff", ExecutedInputs: 2, ComparedInputs: 2, Forms: []string{"BTQ gpr64,gpr64"}}
+	for name, mutate := range map[string]func(*diffExecutionReport){
+		"os":             func(d *diffExecutionReport) { d.Goos = "windows" },
+		"go":             func(d *diffExecutionReport) { d.GoVersion = "go1.26.0" },
+		"llvm_major":     func(d *diffExecutionReport) { d.LLVMVersion = "LLVM version 220.1" },
+		"llvm_minor":     func(d *diffExecutionReport) { d.LLVMVersion = "LLVM version 22.1.7" },
+		"overcount":      func(d *diffExecutionReport) { d.Cases[0].ComparedInputs++ },
+		"partial":        func(d *diffExecutionReport) { d.Cases[0].ComparedInputs--; d.ComparedInputs-- },
+		"failed_pass":    func(d *diffExecutionReport) { d.Cases[0].FailedInputs = 1; d.FailedInputs = 1 },
+		"negative":       func(d *diffExecutionReport) { d.Cases[0].ExecutedInputs = -1 },
+		"bad_total":      func(d *diffExecutionReport) { d.TotalInputs++ },
+		"bad_status":     func(d *diffExecutionReport) { d.Cases[0].Status = "ok" },
+		"missing_oracle": func(d *diffExecutionReport) { d.NativeOracleRan = false },
+		"duplicate": func(d *diffExecutionReport) {
+			d.Cases = append(d.Cases, d.Cases[0])
+			d.ComparedInputs *= 2
+			d.TotalInputs *= 2
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := scan
+			d := base
+			d.Cases = []diffCaseExecResult{testCase}
+			mutate(&d)
+			if err := attachDiffExecutionReport(&r, &d); err == nil || r.DiffReportLoaded {
+				t.Fatal("invalid evidence accepted")
+			}
+		})
+	}
+}
+
+func TestDiffCaseManifestIdentity(t *testing.T) {
+	manifest := conformanceManifest{Cases: []conformanceCase{{ID: "abi", Asm: "amd64/cmp.s", Goarch: "amd64", Validation: "execute", Forms: []string{"CMPQ reg,reg", "RET "}}}}
+	c := diffCaseExecResult{ID: "abi", Asm: "amd64/cmp.s", Forms: []string{"RET ", "CMPQ reg,reg"}}
+	r := diffExecutionReport{Goarch: "amd64", Cases: []diffCaseExecResult{c}}
+	if err := manifest.checkDiffCases(&r); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*diffCaseExecResult){
+		func(c *diffCaseExecResult) { c.ID = "unknown" },
+		func(c *diffCaseExecResult) { c.Asm = "amd64/other.s" },
+		func(c *diffCaseExecResult) { c.Forms = []string{"RET ", "RET "} },
+		func(c *diffCaseExecResult) { c.Forms = []string{"RET ", "ADDQ reg,reg"} },
+	} {
+		r.Cases[0] = c
+		change(&r.Cases[0])
+		if err := manifest.checkDiffCases(&r); err == nil {
+			t.Errorf("accepted stale evidence %+v", r.Cases[0])
+		}
 	}
 }

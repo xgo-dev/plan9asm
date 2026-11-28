@@ -135,7 +135,7 @@ func TestTranslateWasmDiagnostics(t *testing.T) {
 		{name: "fill destination cast", body: "F64Load x+0(FP)\nI32Const $1\nI32Const $2\nMemoryFill", sig: frameF64, want: "unsupported wasm cast double to ptr"},
 		{name: "jump arguments", body: "JMP", want: "expects one target"},
 		{name: "call arguments", body: "Call", want: "expects one target"},
-		{name: "unsupported opcode", body: "I32Clz", want: "unsupported wasm instruction"},
+		{name: "unsupported opcode", body: "ReservedFD9A01", want: "unsupported wasm instruction"},
 		{name: "unterminated block", body: "Block", want: "unterminated wasm control blocks"},
 	}
 	for _, tc := range tests {
@@ -243,7 +243,7 @@ func TestTranslateWasmCallingAndRegisterSuccessPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(ir, "getelementptr i8") || !strings.Contains(ir, "store i64") || !strings.Contains(ir, "load i64") {
+		if !strings.Contains(ir, "getelementptr i8") || !strings.Contains(ir, "store volatile i64") || !strings.Contains(ir, "load volatile i64") {
 			t.Fatalf("memory move IR is incomplete:\n%s", ir)
 		}
 	})
@@ -258,7 +258,7 @@ func TestTranslateWasmCallingAndRegisterSuccessPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(ir, "load i8") || !strings.Contains(ir, "sext i8") {
+		if !strings.Contains(ir, "load volatile i8") || !strings.Contains(ir, "sext i8") {
 			t.Fatalf("narrow memory load IR is incomplete:\n%s", ir)
 		}
 	})

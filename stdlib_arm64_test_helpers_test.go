@@ -46,7 +46,7 @@ func compileLLVMToObject(t *testing.T, llc, triple, llName, objName, ll string) 
 	if err != nil {
 		s := string(out)
 		if llcUnsupportedTarget(s) {
-			t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+			t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 		}
 		t.Fatalf("llc failed: %v\n%s", err, s)
 	}

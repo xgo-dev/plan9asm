@@ -4,131 +4,15 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/xgo-dev/plan9asm/internal/arm"
+	"github.com/xgo-dev/plan9asm/internal/arm64"
+	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/wasm"
+	"github.com/xgo-dev/plan9asm/internal/x86"
 )
-
-type LLVMType string
-
-const (
-	Void LLVMType = "void"
-	I1   LLVMType = "i1"
-	I8   LLVMType = "i8"
-	I16  LLVMType = "i16"
-	I32  LLVMType = "i32"
-	I64  LLVMType = "i64"
-	Ptr  LLVMType = "ptr"
-)
-
-type FuncSig struct {
-	Name  string
-	Args  []LLVMType
-	Ret   LLVMType // use Void for void-return
-	Attrs string   // optional function attributes group (e.g. "#0")
-
-	// WASMContext is the physical closure-environment parameter carried in
-	// WebAssembly's CTXT pseudo-register. It precedes Args in the LLVM entry but
-	// is not part of the Go function signature, so FrameSlot.Index continues to
-	// address Args without an offset. The zero value means that the entry does
-	// not consume an incoming CTXT value.
-	WASMContext LLVMType
-
-	// WASMNative keeps the function's declared WebAssembly signature when
-	// Options.WASMABI selects the official Go stack ABI. It is used for the
-	// small set of runtime exports and assembly helpers that intentionally do
-	// not use the resumable (PC_B) -> unwind convention.
-	WASMNative bool
-
-	// ArgRegs optionally specifies which architectural registers correspond to
-	// Args for arm64 asm that passes values in non-sequential registers.
-	//
-	// When empty, args are assumed to map to R0..R7 in order (ABIInternal-ish).
-	//
-	// This is used for intra-asm tailcalls like:
-	//   B helper<>(SB)
-	// where helper expects inputs in a custom register assignment.
-	ArgRegs []Reg
-
-	// Frame provides a minimal stack-frame model for resolving name+off(FP)
-	// references in Go/Plan9 assembly into LLVM function args/returns.
-	//
-	// This is intentionally limited to the classic Go assembler convention used
-	// by stdlib .s files (e.g. internal/cpu/cpu_x86.s).
-	Frame FrameLayout
-}
-
-// WASMABI selects the physical ABI used for WebAssembly Plan 9 assembly.
-// Direct is LLGo's existing native LLVM calling convention. Go uses the
-// official linear-memory stack, mutable register globals, PC_B resume input,
-// and an i32 unwind result.
-type WASMABI uint8
-
-const (
-	WASMABIDirect WASMABI = iota
-	WASMABIGo
-)
-
-func (a WASMABI) valid() bool { return a == WASMABIDirect || a == WASMABIGo }
-
-type FrameLayout struct {
-	Params  []FrameSlot
-	Results []FrameSlot
-}
-
-type FrameSlot struct {
-	Offset int64
-	Type   LLVMType
-	Index  int // index into LLVM function arguments (for Params) or results tuple (for Results)
-	// Field is the index of the extracted field within the argument aggregate.
-	// It is used for classic Go asm slots like b_base+0(FP) when the Go-level
-	// parameter is passed as a struct (string/slice header).
-	//
-	// When Field < 0, the slot refers directly to %arg(Index).
-	Field int
-}
-
-// X87Mode selects how explicit x87 instructions in 386 Plan 9 assembly are
-// lowered. Hand-written assembly may use x87 mnemonics regardless of GO386;
-// the Go-supported Pentium MMX-or-newer baseline has an x87 unit, so the
-// default emits hardware instructions. Software mode is reserved for custom
-// targets that explicitly cannot execute x87 instructions.
-type X87Mode uint8
-
-const (
-	X87Auto X87Mode = iota
-	X87Hardware
-	X87Software
-)
-
-func (m X87Mode) valid() bool {
-	return m >= X87Auto && m <= X87Software
-}
-
-type Options struct {
-	TargetTriple string
-
-	// ResolveSym maps the TEXT symbol (with (SB) trimmed) into the final linker
-	// symbol name to emit in LLVM IR. If nil, the symbol is used as-is.
-	ResolveSym func(sym string) string
-
-	// Sigs maps resolved symbol name -> signature.
-	Sigs map[string]FuncSig
-
-	// Goarch is used for a few arch-specific translations (e.g. x86 CPUID).
-	Goarch string
-
-	// WASMABI selects the WebAssembly physical ABI. Its zero value preserves
-	// the direct ABI used by existing plan9asm callers.
-	WASMABI WASMABI
-
-	// X87Mode controls explicit x87 instruction lowering for GOARCH=386. Auto
-	// uses hardware, matching the Go 386 target contract. Software retains the
-	// portable LLVM fallback for custom targets without x87 hardware.
-	X87Mode X87Mode
-
-	// AnnotateSource emits source asm lines as IR comments before lowering each
-	// instruction, for translation debugging.
-	AnnotateSource bool
-}
 
 // Translate converts a parsed Plan 9 asm File into LLVM IR text (`.ll`).
 //
@@ -148,7 +32,7 @@ func translateIRText(file *File, opt Options) (string, error) {
 	if file == nil {
 		return "", fmt.Errorf("nil file")
 	}
-	if !opt.X87Mode.valid() {
+	if !opt.X87Mode.Valid() {
 		return "", fmt.Errorf("invalid x87 mode %d", opt.X87Mode)
 	}
 	if len(file.Funcs) == 0 && len(file.Data) == 0 && len(file.Globl) == 0 {
@@ -159,12 +43,12 @@ func translateIRText(file *File, opt Options) (string, error) {
 	if resolve == nil {
 		resolve = func(s string) string { return s }
 	}
-	if !opt.WASMABI.valid() {
+	if !opt.WASMABI.Valid() {
 		return "", fmt.Errorf("invalid wasm ABI %d", opt.WASMABI)
 	}
 	if file.Arch == ArchWASM && opt.WASMABI == WASMABIDirect {
 		for _, fn := range file.Funcs {
-			if !wasmNeedsIncomingContext(fn) {
+			if !wasm.NeedsIncomingContext(fn) {
 				continue
 			}
 			name := resolve(fn.Sym)
@@ -177,6 +61,15 @@ func translateIRText(file *File, opt Options) (string, error) {
 		}
 	}
 
+	layouts, err := dataGlobalLayouts(file, resolve, opt.Goarch)
+	if err != nil {
+		return "", err
+	}
+	file, err = bindTLSOffsets(file, layouts, resolve, opt.TargetTriple)
+	if err != nil {
+		return "", err
+	}
+
 	var b strings.Builder
 	b.WriteString("; Generated by llgo internal/plan9asm (prototype)\n")
 	if opt.TargetTriple != "" {
@@ -184,12 +77,12 @@ func translateIRText(file *File, opt Options) (string, error) {
 	}
 	// Keep translate.go as the cross-platform pipeline entry.
 	// Architecture-specific declarations live in arch-specific files.
-	emitArchPrelude(&b, file, resolve, opt.Goarch, opt.WASMABI)
+	emitArchPrelude(&b, file, resolve, opt.Goarch, opt.WASMABI, opt.X87Mode)
 
 	emitExternSBGlobals(&b, file, resolve, opt.Sigs)
 
 	if len(file.Data) != 0 || len(file.Globl) != 0 {
-		if err := emitDataGlobals(&b, file, resolve); err != nil {
+		if err := emitDataLayouts(&b, file, layouts, resolve, opt); err != nil {
 			return "", err
 		}
 		b.WriteString("\n")
@@ -197,6 +90,12 @@ func translateIRText(file *File, opt Options) (string, error) {
 
 	emitExternFuncDecls(&b, file, resolve, opt.Sigs, opt.WASMABI)
 
+	var kuserCAS map[string]bool
+	if file.Arch == ArchARM {
+		kuserCAS = arm.CollectKuserCASFuncs(file.Funcs, resolve)
+	}
+
+	var body strings.Builder
 	attrRegistry := newFeatureAttrRegistry()
 	for i := range file.Funcs {
 		fn := &file.Funcs[i]
@@ -217,42 +116,52 @@ func translateIRText(file *File, opt Options) (string, error) {
 		if err := validateResolvedImmediates(file.Arch, *fn); err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
-		if sig.Attrs == "" {
-			sig.Attrs = attrRegistry.ref(inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, *fn))
+		features := inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, *fn)
+		sig.Attrs, err = attrRegistry.merge(sig.Attrs, features)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", name, err)
 		}
-		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
-			if err := translateFuncARM(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+
+		if file.Arch == ArchARM && arm.FuncNeedsCFG(*fn) {
+			if err := arm.TranslateFuncWithKuserCAS(&body, *fn, sig, resolve, opt.Sigs, kuserCAS, opt.TargetTriple, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 			continue
 		}
-		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
-			if err := translateFuncARM64(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+		if file.Arch == ArchARM64 && arm64.FuncNeedsCFG(*fn) {
+			if err := arm64.TranslateFunc(&body, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource, opt.TargetTriple); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 			continue
 		}
-		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && funcNeedsAMD64CFG(*fn))) {
-			if err := translateFuncX86(&b, *fn, sig, resolve, opt.Sigs, opt.Goarch, opt.TargetTriple, opt.X87Mode, opt.AnnotateSource); err != nil {
+		if file.Arch == ArchAMD64 && (opt.Goarch == "386" || (opt.Goarch == "amd64" && x86.FuncNeedsCFG(*fn))) {
+			callOpt := opt
+			callOpt.ResolveSym = resolve
+			if err := x86.TranslateFuncWithOptions(&body, *fn, sig, callOpt); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 			continue
 		}
 		if file.Arch == ArchWASM {
-			if err := translateFuncWASM(&b, *fn, sig, resolve, opt.Sigs, opt.WASMABI, opt.AnnotateSource); err != nil {
+			if err := wasm.TranslateFunc(&body, *fn, sig, resolve, opt.Sigs, opt.WASMABI, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 			continue
 		}
-		if err := translateFuncLinear(&b, file.Arch, *fn, sig, opt.AnnotateSource); err != nil {
+		if err := translateFuncLinear(&body, file.Arch, *fn, sig, opt.AnnotateSource); err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
-		b.WriteString("\n")
+		body.WriteString("\n")
 	}
+	bodyText := body.String()
+	if extraDecls := asm.CollectMissingLLVMIntrinsicDecls(b.String(), bodyText); extraDecls != "" {
+		b.WriteString(extraDecls)
+	}
+	b.WriteString(bodyText)
 	attrRegistry.emit(&b)
 	return b.String(), nil
 }
@@ -263,7 +172,7 @@ func validateResolvedImmediates(arch Arch, fn Func) error {
 	}
 	for _, ins := range fn.Instrs {
 		for _, arg := range ins.Args {
-			if arch == ArchARM && arg.Kind == OpImm && arg.ImmRaw != "" {
+			if arg.Kind == OpImm && arg.ImmRaw != "" {
 				return fmt.Errorf("unresolved symbolic immediate %q", arg.ImmRaw)
 			}
 			if arch == ArchWASM && arg.Kind == OpMem && arg.Mem.OffRaw != "" {
@@ -296,10 +205,10 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 			continue
 		}
 		if file.Arch == ArchWASM && wasmABI == WASMABIGo && !sig.WASMNative {
-			fmt.Fprintf(b, "declare i32 %s(i32)\n", llvmGlobal(funcSigSymbol(name, sig)))
+			fmt.Fprintf(b, "declare i32 %s(i32)\n", asm.LLVMGlobal(asm.FuncSigSymbol(name, sig)))
 			continue
 		}
-		fmt.Fprintf(b, "declare %s %s(", sig.Ret, llvmGlobal(funcSigSymbol(name, sig)))
+		fmt.Fprintf(b, "declare %s %s(", sig.Ret, asm.LLVMGlobal(asm.FuncSigSymbol(name, sig)))
 		argIndex := 0
 		if sig.WASMContext != "" {
 			b.WriteString(string(sig.WASMContext))
@@ -323,24 +232,8 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 	}
 }
 
-func funcSigSymbol(resolved string, sig FuncSig) string {
-	if sig.Name != "" {
-		return sig.Name
-	}
-	return resolved
-}
-
 func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig) {
-	resolveSBBase := func(base string) string {
-		base = strings.TrimSpace(base)
-		if base == "" {
-			return ""
-		}
-		if strings.Contains(base, "·") || strings.Contains(base, "/") || strings.Contains(base, ".") {
-			return resolve(base)
-		}
-		return resolve("·" + base)
-	}
+	resolveSBBase := func(base string) string { return resolveDataSymbol(base, resolve) }
 
 	// Collect base symbols of SB refs with numeric offsets. These are almost always
 	// global variables whose address is computed via GEP in the lowering.
@@ -358,6 +251,17 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 		defined[resolve(fn.Sym)] = true
 	}
 
+	for _, d := range file.Data {
+		if d.Addr == "" {
+			continue
+		}
+		base, _, err := parseDataAddress(d.Addr)
+		name := resolveSBBase(base)
+		if _, function := sigs[name]; err == nil && name != "" && !defined[name] && !function {
+			need[name] = true
+		}
+	}
+
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
 			opName := strings.ToUpper(string(ins.Op))
@@ -366,7 +270,7 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 					continue
 				}
 				s := strings.TrimSpace(arg.Sym)
-				base, off, ok := parseSBRef(s)
+				base, off, ok := asm.ParseSBRef(s)
 				if !ok || base == "" {
 					continue
 				}
@@ -397,91 +301,344 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 	if len(need) == 0 {
 		return
 	}
+	names := make([]string, 0, len(need))
 	for name := range need {
-		fmt.Fprintf(b, "%s = external global i8\n", llvmGlobal(name))
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(b, "%s = external global i8\n", asm.LLVMGlobal(name))
 	}
 	b.WriteString("\n")
 }
 
-func emitDataGlobals(b *strings.Builder, file *File, resolve func(string) string) error {
-	// Merge DATA and GLOBL into resolved symbol -> bytes.
-	type symData struct {
-		size  int64
-		bytes map[int64][]byte // off -> payload
+func resolveDataSymbol(sym string, resolve func(string) string) string {
+	sym = strings.TrimSpace(sym)
+	if sym == "" {
+		return ""
 	}
-
-	syms := map[string]*symData{}
-
-	resolveData := func(sym string) string {
-		// Heuristic: unqualified plain names in a stdlib .s are package-local.
-		// Reuse ResolveSym's local-name behavior by prefixing a Plan9 middle dot.
-		if strings.Contains(sym, "·") || strings.Contains(sym, "/") || strings.Contains(sym, ".") {
-			return resolve(sym)
-		}
-		return resolve("·" + sym)
+	if !strings.ContainsAny(sym, "·/.") {
+		sym = "·" + sym
 	}
+	return resolve(sym)
+}
 
-	for _, g := range file.Globl {
-		name := resolveData(g.Sym)
-		sd := syms[name]
-		if sd == nil {
-			sd = &symData{bytes: map[int64][]byte{}}
-			syms[name] = sd
-		}
-		if g.Size > sd.size {
-			sd.size = g.Size
-		}
+// parseDataAddress keeps the assembler's constant addend separate from the
+// referenced symbol, including expressions produced by macro expansion.
+func parseDataAddress(addr string) (string, int64, error) {
+	s, ok := strings.CutSuffix(strings.TrimSpace(addr), "(SB)")
+	if !ok || s == "" {
+		return "", 0, fmt.Errorf("invalid DATA address %q", addr)
 	}
+	return asm.ParseDataSymbol(s)
+}
 
+type dataGlobalLayout struct {
+	name        string
+	size        int64
+	declared    bool
+	readOnly    bool
+	duplicateOK bool
+	local       bool
+	tlsOffset   bool
+	stmts       []DataStmt
+}
+
+var dataFlagToken = regexp.MustCompile(`\b[A-Z][A-Z_0-9]*\b`)
+
+func dataFlagValue(name string) string {
+	switch name {
+	case "DUPOK":
+		return "2"
+	case "RODATA":
+		return "8"
+	case "NOPTR":
+		return "16"
+	case "LOCAL":
+		return "128"
+	case "TLSBSS":
+		return "256"
+	}
+	return name
+}
+
+func sourcePointerWidth(arch Arch, goarch string) int64 {
+	if arch == ArchARM || goarch == "386" {
+		return 4
+	}
+	return 8
+}
+
+func dataGlobalLayouts(file *File, resolve func(string) string, goarch string) ([]*dataGlobalLayout, error) {
+	var layouts []*dataGlobalLayout
+	byName := make(map[string]*dataGlobalLayout)
+	get := func(sym string) *dataGlobalLayout {
+		name := resolveDataSymbol(sym, resolve)
+		if g := byName[name]; g != nil {
+			return g
+		}
+		g := &dataGlobalLayout{name: name}
+		byName[name] = g
+		layouts = append(layouts, g)
+		return g
+	}
+	for _, decl := range file.Globl {
+		g := get(decl.Sym)
+		if decl.Size < 0 {
+			return nil, fmt.Errorf("GLOBL %s: unresolved size: %w", g.name, ErrProbeNeedsContext)
+		}
+		if decl.Size > maxDataGlobalSize {
+			return nil, fmt.Errorf("GLOBL %s: size %d exceeds %d-byte limit", g.name, decl.Size, maxDataGlobalSize)
+		}
+		var flags uint64
+		if decl.Flags != "" {
+			var ok bool
+			flags, ok = asm.ParseImmExpr(dataFlagToken.ReplaceAllStringFunc(strings.TrimPrefix(decl.Flags, "$"), dataFlagValue))
+			if !ok {
+				return nil, fmt.Errorf("GLOBL %s: unresolved flags %q: %w", g.name, decl.Flags, ErrProbeNeedsContext)
+			}
+		}
+		if g.declared {
+			return nil, fmt.Errorf("GLOBL %s: duplicate declaration", g.name)
+		}
+		g.duplicateOK, g.local = flags&2 != 0, flags&128 != 0
+		g.size, g.declared, g.readOnly = decl.Size, true, flags&8 != 0
+		// cmd/internal/obj.GloblPos gives RODATA and NOPTR precedence over TLSBSS.
+		g.tlsOffset = flags&(8|16|256) == 256
+	}
 	for _, d := range file.Data {
-		name := resolveData(d.Sym)
-		sd := syms[name]
-		if sd == nil {
-			sd = &symData{bytes: map[int64][]byte{}}
-			syms[name] = sd
-		}
+		d = d.WithPointerWidth(sourcePointerWidth(file.Arch, goarch))
+		g := get(d.Sym)
 		end, err := dataStmtEnd(d)
 		if err != nil {
-			return err
+			return nil, err
+		}
+		if end > g.size {
+			if g.declared {
+				return nil, fmt.Errorf("DATA %s: range [%d,%d) exceeds size %d", g.name, d.Off, end, g.size)
+			}
+			g.size = end
+		}
+		g.stmts = append(g.stmts, d)
+	}
+	sort.Slice(layouts, func(i, j int) bool { return layouts[i].name < layouts[j].name })
+	for _, g := range layouts {
+		sort.Slice(g.stmts, func(i, j int) bool { return g.stmts[i].Off < g.stmts[j].Off })
+		var end int64
+		for _, d := range g.stmts {
+			if d.Off < end {
+				return nil, fmt.Errorf("DATA %s: overlapping initializer at byte %d", g.name, d.Off)
+			}
+			end = d.Off + d.Width
+		}
+	}
+	return layouts, nil
+}
+
+// bindTLSOffsets identifies offset relocations before lowering. Preserve the
+// caller's parsed assembly: it may be reused for multiple targets.
+func bindTLSOffsets(file *File, layouts []*dataGlobalLayout, resolve func(string) string, triple string) (*File, error) {
+	var offsets map[string]bool
+	for _, g := range layouts {
+		if !g.tlsOffset {
+			continue
+		}
+		if file.Arch != ArchARM && file.Arch != ArchARM64 {
+			return nil, fmt.Errorf("GLOBL %s: TLSBSS binding for %s: %w", g.name, file.Arch, ErrProbeNeedsContext)
+		}
+		if len(g.stmts) != 0 {
+			return nil, fmt.Errorf("DATA %s: TLSBSS has no static initializer: %w", g.name, ErrProbeNeedsContext)
+		}
+		if offsets == nil {
+			offsets = make(map[string]bool)
+		}
+		offsets[g.name] = true
+	}
+	if len(offsets) == 0 {
+		return file, nil
+	}
+	if targetInstructionSet(triple) != file.Arch || !hasELFTLS(triple) {
+		return nil, fmt.Errorf("TLSBSS needs a native ELF TLS target, got %q: %w", triple, ErrProbeNeedsContext)
+	}
+	for _, g := range layouts {
+		for _, d := range g.stmts {
+			if d.Addr == "" {
+				continue
+			}
+			base, _, err := parseDataAddress(d.Addr)
+			if err != nil {
+				return nil, err
+			}
+			if offsets[resolveDataSymbol(base, resolve)] {
+				return nil, fmt.Errorf("DATA %s: address of TLSBSS symbol %s: %w", g.name, base, ErrProbeNeedsContext)
+			}
+		}
+	}
+	load := Op("MOVD")
+	if file.Arch == ArchARM {
+		load = "MOVW"
+	}
+	out := *file
+	out.Funcs = append([]Func(nil), file.Funcs...)
+	for fi, fn := range file.Funcs {
+		var bound []Instr
+		for ii, ins := range fn.Instrs {
+			for i, a := range ins.Args {
+				symbol := a.Sym
+				if a.Kind == OpMem {
+					symbol = a.Mem.Sym
+				} else if a.Kind != OpSym {
+					continue
+				}
+				raw := strings.TrimPrefix(symbol, "$")
+				if !strings.HasSuffix(raw, "(SB)") {
+					continue
+				}
+				base, delta, err := parseDataAddress(raw)
+				plain := a.Kind == OpSym && raw == symbol && err == nil && delta == 0
+				if !offsets[resolveDataSymbol(base, resolve)] {
+					continue
+				}
+				if plain && i == 0 && ins.Op == load && len(ins.Args) == 2 {
+					dst := ins.Args[1]
+					if dst.Kind == OpReg && strings.HasPrefix(string(dst.Reg), "R") {
+						if bound == nil {
+							bound = append([]Instr(nil), fn.Instrs...)
+							out.Funcs[fi].Instrs = bound
+						}
+						bound[ii].Args = append([]Operand(nil), ins.Args...)
+						bound[ii].Args[i] = Operand{Kind: asm.OpTLSOffset, Sym: resolveDataSymbol(base, resolve)}
+						continue
+					}
+				}
+				return nil, fmt.Errorf("%s: TLSBSS %s requires a whole-word offset load: %w", ins.Op, base, ErrProbeNeedsContext)
+			}
+		}
+	}
+	return &out, nil
+}
+
+func hasELFTLS(triple string) bool {
+	parts := strings.Split(strings.ToLower(triple), "-")
+	native := false
+	for _, part := range parts[1:] {
+		os := strings.TrimRight(part, "0123456789.")
+		switch os {
+		case "linux", "freebsd", "netbsd", "dragonfly":
+			native = true
+		case "openbsd", "ohos", "liteos":
+			return false
+		case "android", "androideabi":
+			// LLVM 22 defaults to emutls below Android API level 29,
+			// including when the triple omits the API level.
+			level, _, _ := strings.Cut(part[len(os):], ".")
+			v, err := strconv.Atoi(level)
+			if err != nil || v < 29 {
+				return false
+			}
+		}
+	}
+	return native
+}
+
+// initialBytes leaves relocation fields zero for the separate relocation emitter.
+func (g *dataGlobalLayout) initialBytes() ([]byte, error) {
+	if len(g.stmts) == 0 {
+		return nil, nil
+	}
+	buf, err := makeDataGlobal(g.name, g.size)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range g.stmts {
+		if d.Addr != "" {
+			continue
 		}
 		payload, err := dataStmtPayload(d)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		sd.bytes[d.Off] = payload
-		if end > sd.size {
-			sd.size = end
-		}
+		copy(buf[d.Off:], payload)
 	}
+	return buf, nil
+}
 
-	if len(syms) == 0 {
-		return nil
+func emitDataGlobals(b *strings.Builder, file *File, resolve func(string) string) error {
+	layouts, err := dataGlobalLayouts(file, resolve, "")
+	if err != nil {
+		return err
 	}
+	return emitDataLayouts(b, file, layouts, resolve, Options{})
+}
 
-	// Deterministic output order.
-	names := make([]string, 0, len(syms))
-	for n := range syms {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		sd := syms[name]
-		if sd.size <= 0 {
-			continue
-		}
-		buf, err := makeDataGlobal(name, sd.size)
+func emitDataLayouts(b *strings.Builder, file *File, layouts []*dataGlobalLayout, resolve func(string) string, opt Options) error {
+	ptrBytes := sourcePointerWidth(file.Arch, opt.Goarch)
+	cpu, _, _ := strings.Cut(strings.ToLower(opt.TargetTriple), "-")
+	wasm32 := cpu == "wasm32" || cpu == "" && file.Arch == ArchWASM
+	for _, g := range layouts {
+		buf, err := g.initialBytes()
 		if err != nil {
 			return err
 		}
-		for off, p := range sd.bytes {
-			if off < 0 || off+int64(len(p)) > int64(len(buf)) {
-				return fmt.Errorf("DATA %s: out of bounds off=%d len=%d size=%d", name, off, len(p), len(buf))
-			}
-			copy(buf[off:], p)
+		kind := "global"
+		if g.readOnly {
+			kind = "constant"
 		}
-		align := bestAlign(int64(len(buf)))
-		fmt.Fprintf(b, "%s = constant [%d x i8] %s, align %d\n", llvmGlobal(name), len(buf), llvmI8ArrayInit(buf), align)
+		var types, fields []string
+		addBytes := func(bytes []byte) {
+			if len(bytes) != 0 {
+				typ := fmt.Sprintf("[%d x i8]", len(bytes))
+				types = append(types, typ)
+				fields = append(fields, typ+" "+llvmI8ArrayInit(bytes))
+			}
+		}
+		var pos int64
+		for _, d := range g.stmts {
+			if d.Addr == "" {
+				continue
+			}
+			base, addend, err := parseDataAddress(d.Addr)
+			if err != nil {
+				return err
+			}
+			if d.Width != ptrBytes {
+				return fmt.Errorf("DATA %s+%d/%d: invalid %d-byte address %q", g.name, d.Off, d.Width, ptrBytes, d.Addr)
+			}
+			addBytes(buf[pos:d.Off])
+			name := resolveDataSymbol(base, resolve)
+			target := asm.LLVMGlobal(asm.FuncSigSymbol(name, opt.Sigs[name]))
+			relocWidth := d.Width
+			if d.Width == 8 && wasm32 {
+				// Go wasm stores addresses in 8-byte words, while wasm32
+				// object relocations hold a 4-byte linear/table address.
+				relocWidth = 4
+			}
+			typ := fmt.Sprintf("i%d", 8*relocWidth)
+			if addend != 0 {
+				target = fmt.Sprintf("getelementptr (i8, ptr %s, i64 %d)", target, addend)
+			}
+			types = append(types, typ)
+			fields = append(fields, fmt.Sprintf("%s ptrtoint (ptr %s to %s)", typ, target, typ))
+			pos = d.Off + relocWidth
+		}
+		fmt.Fprintf(b, "%s = ", asm.LLVMGlobal(g.name))
+		if g.duplicateOK {
+			b.WriteString("weak ")
+		}
+		if g.local {
+			b.WriteString("hidden ")
+		}
+		if g.tlsOffset {
+			b.WriteString("thread_local(localexec) ")
+		}
+		fmt.Fprintf(b, "%s ", kind)
+		if len(fields) == 0 {
+			fmt.Fprintf(b, "[%d x i8] %s", g.size, llvmI8ArrayInit(buf))
+		} else {
+			addBytes(buf[pos:])
+			fmt.Fprintf(b, "<{ %s }> <{ %s }>", strings.Join(types, ", "), strings.Join(fields, ", "))
+		}
+		fmt.Fprintf(b, ", align %d\n", bestAlign(g.size))
 	}
 	return nil
 }
@@ -510,6 +667,9 @@ func makeDataGlobal(name string, size int64) ([]byte, error) {
 }
 
 func dataStmtPayload(d DataStmt) ([]byte, error) {
+	if d.Addr != "" {
+		return nil, fmt.Errorf("DATA %s: address %q requires a relocation", d.Sym, d.Addr)
+	}
 	if d.Width <= 0 {
 		return nil, fmt.Errorf("DATA %s: invalid width %d", d.Sym, d.Width)
 	}
@@ -568,7 +728,7 @@ func llvmI8ArrayInit(b []byte) string {
 
 func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, annotateSource bool) error {
 	// Function header.
-	fmt.Fprintf(b, "define %s %s(", sig.Ret, llvmGlobal(sig.Name))
+	fmt.Fprintf(b, "define %s %s(", sig.Ret, asm.LLVMGlobal(sig.Name))
 	for i, t := range sig.Args {
 		if i > 0 {
 			b.WriteString(", ")
@@ -581,13 +741,6 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 	}
 	b.WriteString(" {\n")
 	b.WriteString("entry:\n")
-
-	// Fast path: permissive void lowering for marker/stub functions.
-	if sig.Ret == Void {
-		b.WriteString("  ret void\n")
-		b.WriteString("}\n")
-		return nil
-	}
 
 	type ssaVal struct {
 		typ LLVMType
@@ -755,7 +908,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 		case Ptr:
 			return ssaVal{typ: Ptr, val: "null"}, nil
 		default:
-			return ssaVal{typ: t, val: llvmZeroValue(t)}, nil
+			return ssaVal{typ: t, val: asm.LLVMZeroValue(t)}, nil
 		}
 	}
 
@@ -876,7 +1029,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 			if ok {
 				idx := slot.Index
 				if idx < 0 || idx >= len(sig.Args) {
-					return ssaVal{typ: I64, val: "0"}, nil
+					return ssaVal{}, fmt.Errorf("%w: invalid FP argument index %d at offset %d", ErrProbeNeedsContext, idx, op.FPOffset)
 				}
 				arg := fmt.Sprintf("%%arg%d", idx)
 				if slot.Field >= 0 {
@@ -887,7 +1040,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 				}
 				return ssaVal{typ: slot.Type, val: arg}, nil
 			}
-			return ssaVal{typ: I64, val: "0"}, nil
+			return ssaVal{}, fmt.Errorf("%w: unbound FP read at offset %d", ErrProbeNeedsContext, op.FPOffset)
 		case OpMem:
 			addr, err := addrOfMem(op.Mem)
 			if err != nil {
@@ -954,7 +1107,13 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 	terminated := false
 	for _, ins := range fn.Instrs {
 		if annotateSource {
-			emitIRSourceComment(b, ins.Raw)
+			asm.EmitIRSourceComment(b, ins.Raw)
+		}
+		switch ins.Op {
+		case OpMRS, OpMOVD, OpMOVQ, OpMOVL, "MOVW", "MOVB", "MOVBU", OpADDQ, OpSUBQ, OpXORQ:
+			if len(ins.Args) != 2 {
+				return fmt.Errorf("%s expects 2 operands: %q", ins.Op, ins.Raw)
+			}
 		}
 		switch ins.Op {
 		case OpTEXT:
@@ -962,18 +1121,14 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 		case OpMRS:
 			// ARM64: MRS <sysreg>, Rn
 			src, dst := ins.Args[0], ins.Args[1]
-			if src.Kind != OpIdent || dst.Kind != OpReg {
+			sysreg, valid := arm64.SystemRegOperand(src)
+			if !valid || dst.Kind != OpReg {
 				return fmt.Errorf("MRS expects ident, reg: %q", ins.Raw)
-			}
-			sysreg := arm64CanonicalSysReg(src.Ident)
-			if v, ok := arm64CompileSafeMRSValue(sysreg); ok {
-				reg[dst.Reg] = ssaVal{typ: I64, val: v}
-				continue
 			}
 			name := newTmp()
 			// Read system register via inline asm.
 			// Example: call i64 asm "mrs $0, MIDR_EL1", "=r"()
-			fmt.Fprintf(b, "  %%%s = call i64 asm %q, %q()\n", name, "mrs $0, "+sysreg, "=r")
+			fmt.Fprintf(b, "  %%%s = call i64 asm sideeffect %q, %q()\n", name, "mrs $0, "+sysreg, "=r")
 			reg[dst.Reg] = ssaVal{typ: I64, val: "%" + name}
 			continue
 		case OpMOVD:
@@ -1360,7 +1515,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 		if sig.Ret == Void {
 			b.WriteString("  ret void\n")
 		} else {
-			fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, llvmZeroValue(sig.Ret))
+			fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, asm.LLVMZeroValue(sig.Ret))
 		}
 	}
 
@@ -1375,12 +1530,4 @@ func archReturnReg(arch Arch) Reg {
 	return AX
 }
 
-var llvmIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-func llvmGlobal(name string) string {
-	// LLVM requires quoting if name contains special characters (like / or .).
-	if llvmIdentRe.MatchString(name) {
-		return "@" + name
-	}
-	return "@\"" + strings.ReplaceAll(name, "\"", "\\\"") + "\""
-}
+// LLVM requires quoting if name contains special characters (like / or .).

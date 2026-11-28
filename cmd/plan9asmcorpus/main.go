@@ -289,7 +289,8 @@ func runLibrary(manifest corpusManifest, library libraryManifest, corpusDir, rep
 	}
 	defer os.RemoveAll(tmpDir)
 	reportPath := filepath.Join(tmpDir, "report.json")
-	invocation := makeTranslatorInvocation(corpusDir, library.Module, filepath.Join(tmpDir, "out"), repoRoot, llc, reportPath)
+	outDir := filepath.Join(tmpDir, "out")
+	invocation := makeTranslatorInvocation(corpusDir, library.Module, outDir, repoRoot, llc, reportPath)
 	if err := runCommand(invocation.Dir, translator, invocation.Args...); err != nil {
 		return fmt.Errorf("%s: translate and compile corpus: %w", library.ID, err)
 	}
@@ -300,7 +301,10 @@ func runLibrary(manifest corpusManifest, library libraryManifest, corpusDir, rep
 	if err := validateReport(manifest.Targets, library, report); err != nil {
 		return err
 	}
-	fmt.Printf("%s: all %d assembly translations passed across %d targets\n", library.ID, report.TotalAsm, report.TotalTargets)
+	if err := checkObjectArtifacts(outDir, report.Targets); err != nil {
+		return fmt.Errorf("%s: %w", library.ID, err)
+	}
+	fmt.Printf("%s: all %d assembly translations passed across %d targets (LLVM objects verified)\n", library.ID, report.TotalAsm, report.TotalTargets)
 	return nil
 }
 
@@ -311,11 +315,46 @@ func makeTranslatorInvocation(corpusDir, modulePath, outDir, repoRoot, llc, repo
 		"-module-path=" + modulePath,
 		"-out=" + outDir,
 		"-compile",
+		"-keep-obj",
 		"-llc=" + llc,
 		"-report=" + reportPath,
 		"-repo-root=" + repoRoot,
 		"-strict-load",
 	}}
+}
+
+// Check each module's corresponding artifact while the isolated suite output
+// exists. A successful report alone cannot prove all source files emitted IR.
+func checkObjectArtifacts(outDir string, targets []targetReport) error {
+	for _, target := range targets {
+		dir := filepath.Join(outDir, target.Goos+"-"+target.Goarch)
+		count := 0
+		err := filepath.WalkDir(dir, func(path string, ent os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if ent.IsDir() || filepath.Ext(path) != ".ll" {
+				return nil
+			}
+			obj := strings.TrimSuffix(path, ".ll") + ".o"
+			info, err := os.Stat(obj)
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() || info.Size() == 0 {
+				return fmt.Errorf("empty or invalid object %s", obj)
+			}
+			count++
+			return nil
+		})
+		if err != nil && !(errors.Is(err, os.ErrNotExist) && count == 0 && target.TotalAsm == 0) {
+			return err
+		}
+		if count != target.TotalAsm {
+			return fmt.Errorf("%s/%s emitted %d object files, expected %d", target.Goos, target.Goarch, count, target.TotalAsm)
+		}
+	}
+	return nil
 }
 
 func queryModule(dir, query string) (moduleInfo, error) {

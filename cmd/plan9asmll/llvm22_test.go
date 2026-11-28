@@ -3,6 +3,9 @@
 package main
 
 import (
+	"go/types"
+
+	"golang.org/x/tools/go/packages"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,5 +49,22 @@ func writeFakeLLC(t *testing.T, path, version string) {
 	script := "#!/bin/sh\nprintf '%s\\n' '" + version + "'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCompileOneRejectsNoObjectOutput(t *testing.T) {
+	dir := t.TempDir()
+	src, out := filepath.Join(dir, "empty.s"), filepath.Join(dir, "empty.ll")
+	if err := os.WriteFile(src, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "empty.o"), []byte("old build"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := types.NewPackage("example", "example")
+	pkg := &packages.Package{PkgPath: p.Path(), Types: p, TypesSizes: types.SizesFor("gc", "amd64")}
+	cfg := compileConfig{Enabled: true, KeepObj: true, LLC: fakeLLC(t, "LLVM version 22.1.8")}
+	if err := compileOne(pkg, "linux", "amd64", "x86_64-unknown-linux-gnu", asmTask{AsmFile: src, OutLL: out}, false, cfg); err == nil || !strings.Contains(err.Error(), "produced no object") {
+		t.Fatalf("zero-exit compiler without current output: %v", err)
 	}
 }

@@ -193,10 +193,19 @@ PY
     echo "$goos/$goarch: no .ll files generated" >&2
     exit 1
   fi
-  echo "compiled corpus $target_label: ll_files=$ll_count"
+  expected=$("$python_cmd" -c 'import json, sys; sys.stdout.write(str(json.load(open(sys.argv[1], encoding="utf-8"))["asm_files"]))' "$json")
+  if [[ "$ll_count" != "$expected" ]]; then
+    echo "$target_label: scanned $expected assembly files, generated $ll_count IR files" >&2
+    exit 1
+  fi
 
   while IFS= read -r ll; do
     obj="${ll%.ll}.o"
     "$llc_cmd" -mtriple="$triple" -filetype=obj "$ll" -o "$obj"
+    if [[ ! -s "$obj" ]]; then
+      echo "$target_label: missing or empty object for $ll" >&2
+      exit 1
+    fi
   done < <(find "$out_dir" -name '*.ll' | sort)
+  echo "compiled corpus $target_label: source_files=$expected object_files=$ll_count"
 done

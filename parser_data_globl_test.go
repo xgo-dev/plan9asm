@@ -3,6 +3,8 @@ package plan9asm
 import (
 	"strings"
 	"testing"
+
+	"github.com/xgo-dev/plan9asm/internal/asm"
 )
 
 func TestParseDataOnlyFile(t *testing.T) {
@@ -68,15 +70,15 @@ GLOBL ·symptr<>(SB), NOPTR, $(machTimebaseInfo__size)
 	if gs := file.Globl[0]; gs.Sym != "·tab<>" || gs.Flags != "RODATA" || gs.Size != 16 {
 		t.Fatalf("unexpected first GLOBL: %#v", gs)
 	}
-	if gs := file.Globl[1]; gs.Sym != "·symptr<>" || gs.Flags != "NOPTR" || gs.Size != 64 {
+	if gs := file.Globl[1]; gs.Sym != "·symptr<>" || gs.Flags != "NOPTR" || gs.Size != -1 {
 		t.Fatalf("unexpected macro-sized GLOBL: %#v", gs)
 	}
 
-	comma, err := parseDATAStmt(ArchARM64, `·comma(SB)/12, $"hello, world"`)
+	comma, err := asm.ParseDATAStmt(ArchARM64, `·comma(SB)/12, $"hello, world"`)
 	if err != nil || string(comma.Payload) != "hello, world" {
 		t.Fatalf("parse comma string DATA = (%#v, %v)", comma, err)
 	}
-	if _, err := parseDATAStmt(ArchARM64, `·short(SB)/4, $"hello"`); err == nil {
+	if _, err := asm.ParseDATAStmt(ArchARM64, `·short(SB)/4, $"hello"`); err == nil {
 		t.Fatal("oversized string DATA unexpectedly parsed")
 	}
 }
@@ -88,8 +90,8 @@ func TestParseDataRejectsMalformedPayloads(t *testing.T) {
 		`·empty(SB)/8,`,
 		`·quote(SB)/8, $"unterminated`,
 	} {
-		if _, err := parseDATAStmt(ArchARM64, stmt); err == nil {
-			t.Errorf("parseDATAStmt(%q) unexpectedly succeeded", stmt)
+		if _, err := asm.ParseDATAStmt(ArchARM64, stmt); err == nil {
+			t.Errorf("ParseDATAStmt(%q) unexpectedly succeeded", stmt)
 		}
 	}
 	if _, err := Parse(ArchARM64, "// no directives\n"); err == nil {
@@ -115,5 +117,29 @@ func TestDataGlobalBounds(t *testing.T) {
 	}
 	if _, err := makeDataGlobal("huge", maxDataGlobalSize+1); err == nil {
 		t.Fatal("oversized global unexpectedly accepted")
+	}
+}
+
+func TestGoPackageDataArchitectureSelection(t *testing.T) {
+	const src = `
+#ifdef GOARCH_386
+#define SIZE 4
+#else
+#define SIZE 8
+#endif
+GLOBL ·ptr+0(SB),RODATA,$SIZE
+DATA ·ptr(SB)/SIZE,$·target(SB)
+`
+	for arch, width := range map[string]int64{"386": 4, "amd64": 8} {
+		f, err := (GoPackage{}).ParseAssembly([]byte(src), arch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g, d := f.Globl[0], f.Data[0]; g.Sym != d.Sym || g.Size != width || d.Width != width {
+			t.Errorf("%s: GLOBL=%+v DATA=%+v", arch, g, d)
+		}
+	}
+	if _, err := Parse(ArchARM, "GLOBL ·word+4(SB),$8"); err == nil {
+		t.Error("nonzero GLOBL offset accepted")
 	}
 }

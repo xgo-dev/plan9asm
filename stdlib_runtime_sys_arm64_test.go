@@ -11,10 +11,7 @@ import (
 )
 
 func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
-	llc, _, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc not found")
-	}
+	llc := requireLLVM22Tool(t, "llc")
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "runtime", "sys", "dit_arm64.s"))
@@ -69,10 +66,7 @@ func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
 }
 
 func TestTranslateGoModule_StdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
-	llc, _, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc not found")
-	}
+	llc := requireLLVM22Tool(t, "llc")
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "runtime", "sys", "dit_arm64.s"))

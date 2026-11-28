@@ -151,6 +151,13 @@ native-Go-accepted family subset:
 
     scripts/check-arm64-plan9-corpus.sh
 
+The decoder includes two store-exclusive encodings that Go rejects as
+architecturally constrained unpredictable. In `STLXR R9, (R7), R9` the status
+register overlaps the stored value. In `STXRW R29, (R27), R27` it overlaps
+the address. The scanner groups instances by operand kinds, so a rejected
+instance marks its whole form unsupported in the decoder report. The
+native-Go-accepted subset is checked separately.
+
 Discover public modules containing Go assembly from the official index:
 
     go run ./cmd/plan9asmdiscover \
@@ -297,8 +304,10 @@ successful `.o` generation alone is not an executable conformance claim.
 ## Go 1.20 through Go 1.27 differences
 
 The checked baseline stores a fingerprint for every Go minor version and
-architecture. It detects any form changing among supported, context-required,
-unsupported, or parser-failed states.
+architecture. `scripts/check-go-asm-coverage.sh` requires an exact coverage
+fingerprint match on Go 1.27, and enforces monotonic non-regression on older
+Go releases (`supported_forms` must not decrease and `unsupported_forms` must
+not increase, with zero parse failures).
 
 This version range describes the union of official namespaces, encoder tables,
 and assembler source corpora. The executable conformance cases are shared when
@@ -324,31 +333,42 @@ union is intentional: operand-class names and generated SVE encoders evolve
 between releases, so using only the newest tree would lose forms that existed
 in earlier supported releases.
 
-The Go 1.27 snapshot currently reports:
+The Go 1.27 `go-asm` snapshot reports three separated verification metrics per architecture:
 
-| GOARCH | official names | encoder forms | observed ops | observed forms | supported | context | unsupported | runtime verified | parse failures |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 386 | 1600 shared x86 names | 4997 shared x86 forms | 21 | 60 | 41 | 6 | 13 | 0 | 0 |
-| amd64 | 1600 shared x86 names | 4997 shared x86 forms | 1456 | 6742 | 755 | 6 | 5981 | 35 | 0 |
-| arm | 181 | 528 | 135 | 500 | 312 | 34 | 154 | 0 | 0 |
-| arm64 | 1417 including SVE | 2964 | 1281 | 1980 | 457 | 47 | 1476 | 62 | 0 |
-| wasm | 463 | 463 opcode-only rows | 71 | 120 | 0 | 120 | 0 | 0 | 0 |
+1. **`ir_generated_forms`**: concrete forms that lower to LLVM IR without error.
+2. **`object_compiled_forms`** (`-verify-obj`): forms whose emitted IR is compiled by **LLVM 22 `llc -filetype=obj -o <tmp.o>`** into a real non-empty object file (`0` object-emission failures).
+3. **`diff_verified_forms`, `diff_expected_only_forms`, & `hw_pending_forms`** (`-diff-report <file>`): populated **strictly from an actual per-input differential execution report** (never copied from the static manifest). Each executed case records its `verification_mode` (`"native_diff"` when every input was compared bit-for-bit against Go's native assembler oracle vs `"expected_value_only"` when only expected-value checks ran); only `"native_diff"` cases with `compared_inputs > 0` and `failed_inputs == 0` contribute to `diff_verified_forms` and `diff_report_compared_inputs`. Without `-diff-report`, `diff_report_loaded` is `false` and `diff_verified_forms` is `0`, while the static manifest counts remain visible separately under `manifest_execute_forms` and `manifest_hw_gated_forms`.
 
-These numbers describe current implementation progress, not completion.
-Encoder forms use Go's internal operand classes and are a complete machine-
-readable inventory of the encoder rows; the wasm count is deliberately an
-opcode-only inventory because its Go backend has no such table. Observed forms
-use plan9asm's concrete shape classification and can outnumber encoder rows
-because generated testdata varies registers, address shapes, and concrete
-encodings. The large amd64 gap is mostly the exhaustive legacy/SIMD/AVX test
-matrix. Go 1.27 adds the ARM64 SVE corpus and encoder tables; SVE register
-lists are parsed and every currently unsupported lowering form is reported
-explicitly instead of being hidden as a parse failure.
+See `testdata/coverage/go-asm-baseline.json` for the observed form counts by
+Go version and architecture. The Go encoder inventory counts operand classes.
+The official test corpus exercises concrete operands. A single encoder row
+can contribute several observed forms, and some rows have no corpus example.
+
+The differential report associates a completed fixture with the instruction
+forms listed for that fixture. Its counts describe coverage at fixture
+granularity. Individual branch paths, lane values, operand combinations and
+hardware features may require additional cases. Use the case IDs and input
+counts when comparing semantic coverage. The scanner checks the report's
+target and toolchain provenance, and validates its case totals before using it.
+
+Run the mandatory amd64 machine-code differential gate and produce an
+execution-traceable coverage report (fails loudly on amd64 if LLVM 22 is
+missing or zero cases execute):
+
+    rm -f /tmp/amd64-diff.json
+    PLAN9ASM_REQUIRE_AMD64_DIFF=1 PLAN9ASM_DIFF_REPORT_OUT=/tmp/amd64-diff.json \
+      go test -v -count=1 -run '^(TestAMD64ConformanceNativeGo|TestAMD64ConformanceLLVMRuntime|TestAMD64MachineCodeDifferentialGate|TestTranslateGoModuleAMD64X87StackAndConstants)$' .
+
+    go run ./cmd/plan9asmscan \
+      -corpus go-asm -goroot "$(go env GOROOT)" -goos linux -goarch amd64 \
+      -repo-root . -verify-obj -diff-report /tmp/amd64-diff.json -format json \
+      | jq '{llvm: .object_compile_llvm_version, ir: .ir_generated_forms, obj: .object_compiled_forms, diff_loaded: .diff_report_loaded, diff: .diff_verified_forms, hw_pending: .hw_pending_forms, manifest_execute: .manifest_execute_forms, unsupported: .unsupported_catalog}'
 
 The machine-readable cross-version snapshots are in
-`testdata/coverage/go-asm-baseline.json`. A CI mismatch is blocking and
-must be investigated at form level before the snapshot is intentionally
-updated.
+`testdata/coverage/go-asm-baseline.json`. On Go 1.27, a CI fingerprint mismatch
+is blocking and must be investigated at form level before the snapshot is
+intentionally updated; on Go 1.20–1.26, any regression in `supported_forms`,
+increase in `unsupported_forms`, or parse failure is blocking.
 
 ## Adding or changing an instruction
 

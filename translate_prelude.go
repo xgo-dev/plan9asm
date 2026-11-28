@@ -1,18 +1,27 @@
 package plan9asm
 
-import "strings"
+import (
+	"github.com/xgo-dev/plan9asm/internal/arm"
+	"github.com/xgo-dev/plan9asm/internal/arm64"
+	"github.com/xgo-dev/plan9asm/internal/asm"
+	"github.com/xgo-dev/plan9asm/internal/x86"
+	"strings"
+)
 
-func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string, goarch string, wasmABI WASMABI) {
+func emitArchPrelude(b *strings.Builder, file *File, resolve func(string) string, goarch string, wasmABI WASMABI, x87Mode X87Mode) {
+	if len(file.Funcs) == 0 {
+		return
+	}
 	switch file.Arch {
 	case ArchARM:
-		emitARMPrelude(b)
+		arm.EmitPrelude(b)
 	case ArchARM64:
-		emitARM64Prelude(b)
+		arm64.EmitPrelude(b)
 	case ArchAMD64:
 		// Keep historical gating to avoid injecting x86-only prelude when
 		// parsing x86 syntax for unrelated targets in tests.
 		if goarch == "amd64" || goarch == "386" {
-			emitAMD64Prelude(b, goarch, file)
+			x86.EmitPreludeWithX87Mode(b, goarch, x87Mode, file)
 		}
 	case ArchWASM:
 		emitWASMPrelude(b, file, resolve, wasmABI)
@@ -30,12 +39,12 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 		b.WriteString("@PAUSE = external addrspace(1) global i32\n\n")
 		for _, fn := range file.Funcs {
 			for _, ins := range fn.Instrs {
-				if normalizeInstructionOpcode(ins.Op) == "CALLIMPORT" {
+				if asm.NormalizeInstructionOpcode(ins.Op) == "CALLIMPORT" {
 					// Go 1.20 and older use CallImport wrappers that pass the
 					// linear-memory SP to a host function associated with the
 					// current Go symbol. LLGo's wasm linker resolves this suffix
 					// to the corresponding host import.
-					b.WriteString("declare void " + llvmGlobal(resolve(fn.Sym)+"$wasmimport") + "(i32)\n")
+					b.WriteString("declare void " + asm.LLVMGlobal(resolve(fn.Sym)+"$wasmimport") + "(i32)\n")
 					break
 				}
 			}
@@ -45,7 +54,7 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 	want := make(map[string]bool)
 	for _, fn := range file.Funcs {
 		for _, ins := range fn.Instrs {
-			switch normalizeInstructionOpcode(ins.Op) {
+			switch asm.NormalizeInstructionOpcode(ins.Op) {
 			case "F64FLOOR":
 				want["floor"] = true
 			case "F64CEIL":
@@ -53,10 +62,12 @@ func emitWASMPrelude(b *strings.Builder, file *File, resolve func(string) string
 			case "F64TRUNC":
 				want["trunc"] = true
 			case "MEMORYCOPY":
+				want["memory.size"] = true
 				want["memmove"] = true
 			case "MEMORYFILL":
+				want["memory.size"] = true
 				want["memset"] = true
-			case "CURRENTMEMORY":
+			case "CURRENTMEMORY", "MEMORYSIZE", "V128STORE":
 				want["memory.size"] = true
 			case "GROWMEMORY":
 				want["memory.grow"] = true

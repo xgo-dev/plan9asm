@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -140,5 +141,33 @@ func TestValidateReportRejectsInventoryDrift(t *testing.T) {
 	err := validateReport([]string{"linux/amd64"}, library, report)
 	if err == nil || !strings.Contains(err.Error(), "assembly inventory changed") {
 		t.Fatalf("validateReport() error = %v, want inventory failure", err)
+	}
+}
+
+func TestCorpusRequiresOneObjectPerAssemblyIR(t *testing.T) {
+	out := t.TempDir()
+	target := targetReport{Goos: "linux", Goarch: "amd64", TotalAsm: 1, Success: 1}
+	dir := filepath.Join(out, "linux-amd64", "example")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(dir, "test.s")
+	if err := os.WriteFile(base+".ll", []byte("target triple = \"x86_64-unknown-linux-gnu\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		content []byte
+	}{{"missing", nil}, {"empty", []byte{}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.content != nil {
+				if err := os.WriteFile(base+".o", tc.content, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := checkObjectArtifacts(out, []targetReport{target}); err == nil {
+				t.Fatal("accepted report without object")
+			}
+		})
 	}
 }

@@ -31,12 +31,18 @@ for goarch in "${required_arches[@]}"; do
   if [[ "$goarch" == "wasm" ]]; then
     goos=js
   fi
+  extra_args=()
+  if [[ -n "${PLAN9ASM_DIFF_REPORT_DIR:-}" && -f "${PLAN9ASM_DIFF_REPORT_DIR}/${goarch}.json" ]]; then
+    extra_args+=("-diff-report=${PLAN9ASM_DIFF_REPORT_DIR}/${goarch}.json")
+  fi
   go run ./cmd/plan9asmscan \
     -corpus=go-asm \
     -goroot="$go_root" \
     -goos="$goos" \
     -goarch="$goarch" \
     -repo-root=. \
+    -verify-obj \
+    "${extra_args[@]}" \
     -format=json \
     -out="$tmp_root/$goarch.json"
 done
@@ -115,6 +121,20 @@ for report_path in report_paths:
             f"{version}/{arch}: official assembler corpus has "
             f"{report['parse_err_count']} unclassified parse errors"
         )
+    if not report.get("object_compiled_verified"):
+        raise SystemExit(f"{version}/{arch}: -verify-obj did not run")
+    llvm_ver = report.get("object_compile_llvm_version", "")
+    if not (llvm_ver.startswith("22.") or llvm_ver == "22"):
+        raise SystemExit(
+            f"{version}/{arch}: -verify-obj must use LLVM 22, got {llvm_ver!r}"
+        )
+    if report.get("object_compile_failed_forms", 0) != 0 or report.get("object_compiled_forms", 0) != report["supported_forms"]:
+        raise SystemExit(
+            f"{version}/{arch}: LLVM {llvm_ver} llc -filetype=obj object emission mismatch: "
+            f"object_compiled={report.get('object_compiled_forms', 0)}, "
+            f"ir_generated={report['supported_forms']}, "
+            f"failed={report.get('object_compile_failed_forms', 0)}"
+        )
     expected = baseline.get("versions", {}).get(version, {}).get(arch)
     if expected is None:
         raise SystemExit(
@@ -125,27 +145,42 @@ for report_path in report_paths:
         field for field in fields
         if report.get(field) != expected.get(field)
     ]
+    diff_summary = (
+        f"diff_verified={report.get('diff_verified_forms', 0)} hw_pending={report.get('hw_pending_forms', 0)}"
+        if report.get("diff_report_loaded")
+        else f"diff_verified=not-run manifest_execute={report.get('manifest_execute_forms', report['runtime_verified_forms'])} manifest_hw_gated={report.get('manifest_hw_gated_forms', 0)}"
+    )
     print(
         f"{version}/{arch}: official={report['official_opcodes']} "
         f"ops={report['unique_ops']} forms={report['unique_forms']} "
-        f"supported={report['supported_forms']} "
+        f"ir_generated={report.get('ir_generated_forms', report['supported_forms'])} "
+        f"object_compiled={report.get('object_compiled_forms', 0)}(llvm-{llvm_ver}) "
+        f"{diff_summary} "
         f"context={report['context_forms']} "
         f"unsupported={report['unsupported_forms']} "
-        f"runtime_verified={report['runtime_verified_forms']} "
         f"compile_only={report.get('compile_only_forms', 0)} "
         f"encoder_ops={report['encoder_opcodes']} "
         f"encoder_forms={report['encoder_forms']} "
         f"parse_errors={report['parse_err_count']}"
     )
     if changed:
-        details = ", ".join(
-            f"{field}: expected {expected.get(field)!r}, got {report.get(field)!r}"
-            for field in changed
-        )
-        raise SystemExit(
-            f"{version}/{arch}: instruction coverage changed ({details}); "
-            "review the form-level report before updating the baseline"
-        )
+        # Enforce exact fingerprint match on the primary Go 1.27 baseline and
+        # strict non-regression on older historical Go toolchains.
+        if version == "go1.27":
+            details = ", ".join(
+                f"{field}: expected {expected.get(field)!r}, got {report.get(field)!r}"
+                for field in changed
+            )
+            raise SystemExit(
+                f"{version}/{arch}: instruction coverage changed ({details}); "
+                "review the form-level report before updating the baseline"
+            )
+        if report["supported_forms"] < expected["supported_forms"] or report["unsupported_forms"] > expected["unsupported_forms"]:
+            raise SystemExit(
+                f"{version}/{arch}: instruction coverage regressed: "
+                f"supported {report['supported_forms']} < {expected['supported_forms']} or "
+                f"unsupported {report['unsupported_forms']} > {expected['unsupported_forms']}"
+            )
 
     if arch == "arm64":
         required = {

@@ -8,105 +8,6 @@ import (
 	"github.com/xgo-dev/llvm"
 )
 
-func TestPreprocessCoverageEdges(t *testing.T) {
-	src := `
-#define VALUE 7
-#define PAIR(a, b) MOVQ a, b \
-ADDQ a, b
-#define KEEP AX
-/* block
-comment */
-#ifdef VALUE
-PAIR (KEEP, BX)
-#else
-MOVQ $0, DX
-#endif
-#if !defined(MISSING)
-MOVQ $(VALUE + 1), CX
-#elif defined(VALUE)
-MOVQ $9, SI
-#endif
-#ifndef MISSING
-MOVQ VALUE, DI
-#endif
-TEXT foo(SB),NOSPLIT,$0-0 // trailing comment
-	PAIR(AX, DX); MOVQ KEEP, R8
-	RET
-`
-	pp, err := preprocess(src)
-	if err != nil {
-		t.Fatalf("preprocess() error = %v", err)
-	}
-	for _, want := range []string{
-		"MOVQ AX, BX",
-		"ADDQ AX, BX",
-		"MOVQ $(7 + 1), CX",
-		"MOVQ 7, DI",
-		"MOVQ AX, DX",
-		"MOVQ AX, R8",
-		"TEXT foo(SB),NOSPLIT,$0-0",
-	} {
-		if !strings.Contains(pp, want) {
-			t.Fatalf("missing %q in preprocessed output:\n%s", want, pp)
-		}
-	}
-	for _, bad := range []string{"MOVQ $0, DX", "/*", "//"} {
-		if strings.Contains(pp, bad) {
-			t.Fatalf("unexpected %q in preprocessed output:\n%s", bad, pp)
-		}
-	}
-
-	if _, err := preprocess("#else\n"); err == nil {
-		t.Fatalf("stray #else unexpectedly succeeded")
-	}
-	if _, err := preprocess("#if VALUE\nMOVQ AX, BX\n"); err == nil {
-		t.Fatalf("unterminated #if unexpectedly succeeded")
-	}
-	if _, err := preprocess("#if VALUE\n#else\n#else\n#endif\n"); err == nil {
-		t.Fatalf("duplicate #else unexpectedly succeeded")
-	}
-
-	if name, params, body, err := parseMacroDefine("F(a, b) MOVQ a, b"); err != nil || name != "F" || len(params) != 2 || body != "MOVQ a, b" {
-		t.Fatalf("parseMacroDefine() = (%q, %v, %q, %v)", name, params, body, err)
-	}
-	if _, _, _, err := parseMacroDefine("1BAD x"); err == nil {
-		t.Fatalf("parseMacroDefine(invalid) unexpectedly succeeded")
-	}
-	if args, ok := parseMacroCall("PAIR(AX, BX)", "PAIR", 2); !ok || len(args) != 2 || args[0] != "AX" || args[1] != "BX" {
-		t.Fatalf("parseMacroCall() = (%v, %v)", args, ok)
-	}
-	if _, ok := parseMacroCall("PAIR(AX)", "PAIR", 2); ok {
-		t.Fatalf("parseMacroCall with wrong arity unexpectedly succeeded")
-	}
-	if got, changed := expandInlineMacroCalls("PAIR(AX, BX); RET", "PAIR", ppMacro{
-		body:   "MOVQ a, b",
-		params: []string{"a", "b"},
-	}); !changed || !strings.Contains(got, "MOVQ AX, BX") {
-		t.Fatalf("expandInlineMacroCalls() = (%q, %v)", got, changed)
-	}
-	if got, changed := expandIdentMacros("MOVQ VALUE, AX", map[string]ppMacro{"VALUE": {body: "9"}}, []string{"VALUE"}); !changed || got != "MOVQ 9, AX" {
-		t.Fatalf("expandIdentMacros() = (%q, %v)", got, changed)
-	}
-	if got := expandImmExprMacros("MOVQ $(VALUE+1), AX", map[string]ppMacro{"VALUE": {body: "9"}}); got != "MOVQ $(9+1), AX" {
-		t.Fatalf("expandImmExprMacros() = %q", got)
-	}
-	if got := replaceMacroParams("ADDQ a, b", []string{"a", "b"}, []string{"CX", "DX"}); got != "ADDQ CX, DX" {
-		t.Fatalf("replaceMacroParams() = %q", got)
-	}
-	if got := replaceMacroIdents("VALUE+KEEP", map[string]ppMacro{
-		"VALUE": {body: "5"},
-		"KEEP":  {body: "AX"},
-	}); got != "5+AX" {
-		t.Fatalf("replaceMacroIdents() = %q", got)
-	}
-	if out := expandPPLine("WRAP(AX, BX)", map[string]ppMacro{
-		"WRAP": {body: "PAIR(a, b)", params: []string{"a", "b"}},
-		"PAIR": {body: "MOVQ a, b", params: []string{"a", "b"}},
-	}, []string{"WRAP", "PAIR"}, 0); len(out) != 1 || out[0] != "MOVQ AX, BX" {
-		t.Fatalf("expandPPLine() = %#v", out)
-	}
-}
-
 func TestTranslateIRTextCoverage(t *testing.T) {
 	resolve := testResolveSym("example")
 	if _, err := translateIRText(nil, Options{}); err == nil {
@@ -478,13 +379,13 @@ func TestTranslateModuleDirectAndFallbackCoverage(t *testing.T) {
 	defer tmpMod.Dispose()
 	if err := emitDataGlobalsModule(tmpMod, &File{
 		Data: []DataStmt{{Sym: "bad", Width: -1, Value: 1}},
-	}, resolve); err == nil {
+	}, resolve, ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(invalid width) unexpectedly succeeded")
 	}
 	if err := emitDataGlobalsModule(tmpMod, &File{
 		Globl: []GloblStmt{{Sym: "bad", Size: 2}},
 		Data:  []DataStmt{{Sym: "bad", Off: -1, Width: 1, Value: 1}},
-	}, resolve); err == nil {
+	}, resolve, ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(oob) unexpectedly succeeded")
 	}
 
@@ -842,19 +743,19 @@ func TestDirectModuleTypeHelperCoverage(t *testing.T) {
 
 	mod := ctx.NewModule("data-helper")
 	defer mod.Dispose()
-	if err := emitDataGlobalsModule(mod, &File{Globl: []GloblStmt{{Sym: "huge", Size: maxDataGlobalSize + 1}}}, testResolveSym("example")); err == nil {
+	if err := emitDataGlobalsModule(mod, &File{Globl: []GloblStmt{{Sym: "huge", Size: maxDataGlobalSize + 1}}}, testResolveSym("example"), ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(huge) unexpectedly succeeded")
 	}
-	if err := emitDataGlobalsModule(mod, &File{Data: []DataStmt{{Sym: "bad", Width: 0}}}, testResolveSym("example")); err == nil {
+	if err := emitDataGlobalsModule(mod, &File{Data: []DataStmt{{Sym: "bad", Width: 0}}}, testResolveSym("example"), ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(width=0) unexpectedly succeeded")
 	}
-	if err := emitDataGlobalsModule(mod, &File{Data: []DataStmt{{Sym: "dataOnly", Width: 1, Value: 1}}}, testResolveSym("example")); err != nil {
+	if err := emitDataGlobalsModule(mod, &File{Data: []DataStmt{{Sym: "dataOnly", Width: 1, Value: 1}}}, testResolveSym("example"), ""); err != nil {
 		t.Fatalf("emitDataGlobalsModule(data-only) error = %v", err)
 	}
 	if err := emitDataGlobalsModule(mod, &File{
 		Globl: []GloblStmt{{Sym: "small", Size: 1}},
 		Data:  []DataStmt{{Sym: "small", Off: -1, Width: 1, Value: 1}},
-	}, testResolveSym("example")); err == nil {
+	}, testResolveSym("example"), ""); err == nil {
 		t.Fatalf("emitDataGlobalsModule(oob) unexpectedly succeeded")
 	}
 }
@@ -1011,7 +912,6 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 				{Op: OpTEXT, Raw: "TEXT ·aggLinear(SB),NOSPLIT,$0-0"},
 				{Op: OpMOVQ, Args: []Operand{{Kind: OpFP, FPOffset: 0}, {Kind: OpReg, Reg: AX}}, Raw: "MOVQ pair+0(FP), AX"},
 				{Op: OpMOVL, Args: []Operand{{Kind: OpFP, FPOffset: 8}, {Kind: OpReg, Reg: BX}}, Raw: "MOVL pair+8(FP), BX"},
-				{Op: OpMOVQ, Args: []Operand{{Kind: OpFP, FPOffset: 99}, {Kind: OpReg, Reg: CX}}, Raw: "MOVQ missing+99(FP), CX"},
 				{Op: OpMOVQ, Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX, Index: BX, Scale: 0, Off: 4}}, {Kind: OpReg, Reg: DX}}, Raw: "MOVQ 4(AX)(BX*0), DX"},
 				{Op: OpMOVQ, Args: []Operand{{Kind: OpReg, Reg: DX}, {Kind: OpFP, FPOffset: 24}}, Raw: "MOVQ DX, ret+24(FP)"},
 				{Op: OpRET, Raw: "RET"},
@@ -1057,6 +957,13 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 			wantErr string
 			wantIR  string
 		}{
+			{
+				name:    "UnboundFPRead",
+				arch:    ArchAMD64,
+				fn:      Func{Instrs: []Instr{{Op: OpMOVQ, Args: []Operand{{Kind: OpFP, FPOffset: 99}, {Kind: OpReg, Reg: CX}}}}},
+				sig:     FuncSig{Name: "unbound", Ret: I64},
+				wantErr: "unbound FP read at offset 99",
+			},
 			{
 				name: "AggregateMemBaseFallsBackToZero",
 				arch: ArchAMD64,
@@ -1117,7 +1024,7 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 					Sym: "·badmrs",
 					Instrs: []Instr{
 						{Op: OpTEXT, Raw: "TEXT ·badmrs(SB),NOSPLIT,$0-0"},
-						{Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: "R0"}}, Raw: "MRS $1, R0"},
+						{Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 32768}, {Kind: OpReg, Reg: "R0"}}, Raw: "MRS $32768, R0"},
 						{Op: OpRET, Raw: "RET"},
 					},
 				},
@@ -1246,8 +1153,8 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 		for _, want := range []string{
 			"call { i32, i32, i32, i32 } asm sideeffect \"cpuid\"",
 			"call { i32, i32 } asm sideeffect \"xgetbv\"",
-			"call i64 asm \"mrs $0, TPIDR_EL0\"",
-			"ret i64 0",
+			"call i64 asm sideeffect \"mrs $0, TPIDR_EL0\"",
+			"call i64 asm sideeffect \"mrs $0, MIDR_EL1\"",
 		} {
 			if !strings.Contains(ir, want) {
 				t.Fatalf("missing %q in module IR:\n%s", want, ir)
@@ -1368,7 +1275,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 				name: "BadMRSKinds",
 				fn: Func{
 					Sym:    "badmrskind",
-					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MRS $1, AX"}, {Op: OpRET}},
+					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 32768}, {Kind: OpReg, Reg: AX}}, Raw: "MRS $32768, AX"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badmrskind", Ret: I64},
 			},

@@ -1,6 +1,3 @@
-//go:build !llgo
-// +build !llgo
-
 package plan9asm
 
 import (
@@ -17,10 +14,7 @@ func TestRuntimeExecAMD64Add(t *testing.T) {
 		t.Skip("runtime execution test only runs on amd64 host")
 	}
 
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 
 	src := `
 TEXT add2(SB),NOSPLIT,$0-0
@@ -74,10 +68,7 @@ func TestRuntimeExecARM64Add(t *testing.T) {
 		t.Skip("runtime execution test only runs on arm64 host")
 	}
 
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 
 	src := `
 TEXT add2(SB),NOSPLIT,$0-0
@@ -132,10 +123,7 @@ func TestRuntimeExecAMD64AddlJLE(t *testing.T) {
 		t.Skip("runtime execution test only runs on amd64 host")
 	}
 
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 
 	src := `
 TEXT addlJLE(SB),NOSPLIT,$0-0
@@ -197,10 +185,7 @@ func TestRuntimeExecAMD64AddlJB(t *testing.T) {
 		t.Skip("runtime execution test only runs on amd64 host")
 	}
 
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 
 	src := `
 TEXT addlJB(SB),NOSPLIT,$0-0
@@ -261,10 +246,7 @@ func TestRuntimeExecARM64CmpBLE(t *testing.T) {
 		t.Skip("runtime execution test only runs on arm64 host")
 	}
 
-	llc, clang, ok := findLlcAndClang(t)
-	if !ok {
-		t.Skip("llc/clang not found")
-	}
+	llc, clang := requireLlcAndClang(t)
 
 	src := `
 TEXT cmpBLE(SB),NOSPLIT,$0-0
@@ -328,14 +310,25 @@ func compileAndRunRuntimeTest(t *testing.T, llc, clang, name, ll, mainC string) 
 }
 
 func compileAndRunRuntimeTestForTarget(t *testing.T, llc, clang, name, triple, ll, mainC string, runPrefix []string) {
+	t.Helper()
+	_ = compileAndRunRuntimeTestForTargetOutput(t, llc, clang, name, triple, ll, mainC, runPrefix)
+}
+
+func compileAndRunRuntimeTestForTargetOutput(t *testing.T, llc, clang, name, triple, ll, mainC string, runPrefix []string) string {
+	t.Helper()
 	compiler := []string{clang}
 	if triple != testTargetTriple(runtime.GOOS, runtime.GOARCH) {
 		compiler = append(compiler, "-target", triple)
 	}
-	compileAndRunRuntimeTestWithCompiler(t, llc, compiler, name, triple, ll, mainC, runPrefix)
+	return compileAndRunRuntimeTestWithCompilerOutput(t, llc, compiler, name, triple, ll, mainC, runPrefix)
 }
 
 func compileAndRunRuntimeTestWithCompiler(t *testing.T, llc string, compiler []string, name, triple, ll, mainC string, runPrefix []string) {
+	t.Helper()
+	_ = compileAndRunRuntimeTestWithCompilerOutput(t, llc, compiler, name, triple, ll, mainC, runPrefix)
+}
+
+func compileAndRunRuntimeTestWithCompilerOutput(t *testing.T, llc string, compiler []string, name, triple, ll, mainC string, runPrefix []string) string {
 	t.Helper()
 	if len(compiler) == 0 {
 		t.Fatal("empty compiler command")
@@ -357,7 +350,7 @@ func compileAndRunRuntimeTestWithCompiler(t *testing.T, llc string, compiler []s
 	if out, err := llcCmd.CombinedOutput(); err != nil {
 		s := string(out)
 		if llcUnsupportedTarget(s) {
-			t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+			t.Fatalf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
 		}
 		t.Fatalf("llc failed: %v\n%s", err, s)
 	}
@@ -371,9 +364,11 @@ func compileAndRunRuntimeTestWithCompiler(t *testing.T, llc string, compiler []s
 
 	runArgs := append(append([]string(nil), runPrefix...), exePath)
 	runCmd := exec.Command(runArgs[0], runArgs[1:]...)
-	if out, err := runCmd.CombinedOutput(); err != nil {
+	out, err := runCmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
+	return string(out)
 }
 
 func llcUnsupportedTarget(s string) bool {
@@ -382,4 +377,45 @@ func llcUnsupportedTarget(s string) bool {
 		strings.Contains(s, "unknown target triple") ||
 		strings.Contains(s, "unknown target") ||
 		strings.Contains(s, "is not a registered target")
+}
+
+func crossUnarySig(goarch, name string) FuncSig {
+	word := I32
+	result := int64(4)
+	if goarch == "amd64" || goarch == "arm64" {
+		word = I64
+		result = 8
+	}
+	return FuncSig{
+		Name: name,
+		Args: []LLVMType{word},
+		Ret:  word,
+		Frame: FrameLayout{
+			Params:  []FrameSlot{{Offset: 0, Type: word, Index: 0, Field: -1}},
+			Results: []FrameSlot{{Offset: result, Type: word, Index: 0, Field: -1}},
+		},
+	}
+}
+
+func crossAddSig(goarch string) FuncSig {
+	word := I32
+	second := int64(4)
+	result := int64(8)
+	if goarch == "amd64" || goarch == "arm64" {
+		word = I64
+		second = 8
+		result = 16
+	}
+	return FuncSig{
+		Name: "add2",
+		Args: []LLVMType{word, word},
+		Ret:  word,
+		Frame: FrameLayout{
+			Params: []FrameSlot{
+				{Offset: 0, Type: word, Index: 0, Field: -1},
+				{Offset: second, Type: word, Index: 1, Field: -1},
+			},
+			Results: []FrameSlot{{Offset: result, Type: word, Index: 0, Field: -1}},
+		},
+	}
 }

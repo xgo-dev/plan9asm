@@ -1,0 +1,1182 @@
+package plan9asm
+
+import (
+	"strings"
+	"testing"
+)
+
+func verifyDeclarativeIR(t *testing.T, arch Arch, goarch string, src string) string {
+	t.Helper()
+	file, err := Parse(arch, src)
+	if err != nil {
+		t.Fatalf("Parse(%s) failed: %v\n%s", goarch, err, src)
+	}
+	sigs := map[string]FuncSig{}
+	for _, fn := range file.Funcs {
+		sigs[fn.Sym] = FuncSig{Name: fn.Sym, Ret: Void}
+	}
+	opts := Options{
+		Goarch: goarch,
+		Sigs:   sigs,
+	}
+	if arch == ArchARM64 {
+		opts.TargetTriple = "aarch64-unknown-linux-gnu"
+	}
+	ir, err := Translate(file, opts)
+	if err != nil {
+		t.Fatalf("Translate(%s) failed: %v\n%s", goarch, err, src)
+	}
+	mod, err := TranslateModule(file, opts)
+	if err != nil {
+		t.Fatalf("TranslateModule(%s) failed LLVM verification: %v\nIR:\n%s", goarch, err, ir)
+	}
+	mod.Dispose()
+	return ir
+}
+
+func assertDeclarativeErrors(t *testing.T, arch Arch, goarch string, lines []string) {
+	t.Helper()
+	for _, line := range lines {
+		src := "TEXT ·bad(SB),0,$0-0\n\t" + line + "\n\tRET\n"
+		file, err := Parse(arch, src)
+		if err != nil {
+			continue
+		}
+		_, err = Translate(file, Options{
+			Goarch: goarch,
+			Sigs:   map[string]FuncSig{"·bad": {Name: "·bad", Ret: Void}},
+		})
+		if err == nil {
+			t.Errorf("%s expected error for %q, got nil", goarch, line)
+		}
+	}
+}
+
+func TestDeclarativeARMLLVMVerify(t *testing.T) {
+	src := `
+DATA glob<>+0(SB)/8, $0
+GLOBL glob<>(SB), 0, $8
+
+TEXT ·armAll(SB),0,$0-0
+	SLL $3, R1, R2
+	SLL R1, R2
+	SRL R1, R2, R3
+	SRL $2, R2
+	SRA $2, R2, R3
+	SRA R1, R2
+	XTAB R1, R2, R3
+	XTAB R1, R2
+	XTABU R1, R2, R3
+	XTABU R1, R2
+	XTAH R1, R2, R3
+	XTAH R1, R2
+	XTAHU R1, R2, R3
+	XTAHU R1, R2
+	BFC $4, $8, R3
+	BFI $4, $8, R1, R3
+	BFX $4, $8, R1, R3
+	BFXU $4, $8, R1, R3
+	RBIT R1, R2
+	REV R1, R2
+	REV16 R1, R2
+	REVSH R1, R2
+	DIVHW R1, R2, R3
+	DIVHW R1, R2
+	DIVUHW R1, R2, R3
+	DIVUHW R1, R2
+	MULL R1, R2, (R3, R4)
+	MULS R1, R2, R3, R4
+	MMUL R1, R2, R3
+	MMULA R1, R2, R3, R4
+	MMULS R1, R2, R3, R4
+	MULBB R1, R2, R3
+	MULBT R1, R2, R3
+	MULTB R1, R2, R3
+	MULTT R1, R2, R3
+	MULWB R1, R2, R3
+	MULWT R1, R2, R3
+	MULABB R1, R2, R3, R4
+	MULABT R1, R2, R3, R4
+	MULATB R1, R2, R3, R4
+	MULATT R1, R2, R3, R4
+	MULAWB R1, R2, R3, R4
+	MULAWT R1, R2, R3, R4
+	SWPW R1, (R2), R3
+	SWPBU R1, (R2), R3
+	PLD (R1)
+	MCR $15, $0, R1, C7, C10, $5
+	MOVBS (R1), R2
+	MOVHS (R1), R2
+	MOVB glob<>(SB), R2
+	MOVBU glob<>(SB), R2
+	MOVH glob<>(SB), R2
+	MOVHU glob<>(SB), R2
+	ADDF F1, F2, F3
+	ADDF F1, F2
+	ADDD F1, F2, F3
+	ADDD F1, F2
+	SUBF F1, F2, F3
+	SUBF F1, F2
+	SUBD F1, F2, F3
+	SUBD F1, F2
+	MULF F1, F2, F3
+	MULF F1, F2
+	MULD F1, F2, F3
+	MULD F1, F2
+	DIVF F1, F2, F3
+	DIVF F1, F2
+	DIVD F1, F2, F3
+	DIVD F1, F2
+	NMULF F1, F2, F3
+	NMULD F1, F2, F3
+	ABSF F1, F2
+	ABSD F1, F2
+	NEGF F1, F2
+	NEGD F1, F2
+	SQRTF F1, F2
+	SQRTD F1, F2
+	CMPF F1, F2
+	CMPD F1, F2
+	MOVDF F1, F2
+	MOVFD F1, F2
+	MOVDW F1, F2
+	MOVWD F1, F2
+	MOVFW F1, F2
+	MOVWF F1, F2
+	MULAF F1, F2, F3
+	MULAD F1, F2, F3
+	MULSF F1, F2, F3
+	MULSD F1, F2, F3
+	NMULAF F1, F2, F3
+	NMULAD F1, F2, F3
+	NMULSF F1, F2, F3
+	NMULSD F1, F2, F3
+	FMULAF F1, F2, F3
+	FMULAD F1, F2, F3
+	FMULSF F1, F2, F3
+	FMULSD F1, F2, F3
+	FNMULAF F1, F2, F3
+	FNMULAD F1, F2, F3
+	FNMULSF F1, F2, F3
+	FNMULSD F1, F2, F3
+	MOVF $(1.5), F1
+	MOVF F1, (R2)
+	MOVF (R2), F1
+	MOVF glob<>(SB), F1
+	MOVF F1, glob<>(SB)
+	MOVF F1, F2
+	MOVD $(2.25), F2
+	MOVD F2, (R2)
+	MOVD (R2), F2
+	MOVD glob<>(SB), F2
+	MOVD F2, glob<>(SB)
+	MOVD F1, F2
+	CMP R1, R2
+	RSC R1, R2, R3
+	RSC $5, R2
+	RSC.S R1, R2, R3
+	SLL.S $3, R1, R2
+	ADDF.EQ F1, F2, F3
+	ABSF.NE F1, F2
+	MOVDF.EQ F1, F2
+	MULAF.EQ F1, F2, F3
+	MOVF.EQ F1, F2
+	RET
+
+TEXT ·armEnd(SB),0,$0-0
+	BX R1
+
+TEXT ·armRFE(SB),0,$0-0
+	RFE
+
+TEXT ·armEndOnly(SB),0,$0-0
+	END
+`
+	ir := verifyDeclarativeIR(t, ArchARM, "arm", src)
+	for _, want := range []string{"@llvm.bitreverse.i32", "@llvm.bswap.i32", "@llvm.sqrt.f32", "@llvm.fma.f64"} {
+		if !strings.Contains(ir, want) {
+			t.Errorf("ARM IR missing expected intrinsic %s", want)
+		}
+	}
+	assertDeclarativeErrors(t, ArchARM, "arm", []string{
+		"RSC R1",
+		"SLL R1",
+		"XTAB R1",
+		"BFC $4",
+		"BFI $4",
+		"BFX $4",
+		"RBIT R1",
+		"DIVHW R1",
+		"MULL R1, R2, R3",
+		"MULS R1, R2, R3",
+		"MMUL R1",
+		"MMULA R1, R2, R3",
+		"MULBB R1",
+		"MULABB R1, R2, R3",
+		"SWPW R1, R2, R3",
+		"ADDF F1",
+		"ABSF F1",
+		"CMPF",
+		"MOVDF F1",
+		"MULAF F1",
+		"MOVF F1",
+	})
+}
+
+func TestDeclarativeARM64LLVMVerify(t *testing.T) {
+	src := `
+DATA glob<>+0(SB)/8, $0
+GLOBL glob<>(SB), 0, $16
+
+TEXT ·arm64All(SB),0,$0-0
+	// Scalar ALU/Bit/MulDiv/PAC
+	ADDSW R1, R2, R3
+	ADDSW $7, R2, R3
+	ADCW R1, R2, R3
+	ADCSW R1, R2, R3
+	SBCW R1, R2, R3
+	SBCSW R1, R2, R3
+	BICS R1, R2, R3
+	BICSW R1, R2, R3
+	EON R1, R2, R3
+	EONW R1, R2, R3
+	ORN R1, R2, R3
+	ORNW R1, R2, R3
+	CMNW R1, R2
+	NEGS R1, R2
+	NEGSW R1, R2
+	NGC R1, R2
+	NGCW R1, R2
+	NGCS R1, R2
+	NGCSW R1, R2
+	SXTB R1, R2
+	SXTBW R1, R2
+	SXTH R1, R2
+	SXTHW R1, R2
+	SXTW R1, R2
+	UXTBW R1, R2
+	UXTHW R1, R2
+	MOVK $(0x1234<<16), R2
+	MOVK $0x5678, R2
+	LDPSW (R2), (R3, R4)
+	LDPSW.P 8(R2), (R3, R4)
+	LDPW glob<>(SB), (R3, R4)
+	STP (R3, R4), glob<>(SB)
+	STPW (R3, R4), glob<>(SB)
+	FLDPQ glob<>(SB), (F1, F2)
+	FMOVD F1, glob<>(SB)
+	CLZW R1, R2
+	CLS R1, R2
+	CLSW R1, R2
+	RBITW R1, R2
+	EXTRW $5, R1, R2, R3
+	SDIV R1, R2, R3
+	SDIVW R1, R2, R3
+	UDIVW R1, R2, R3
+	MNEG R1, R2, R3
+	MNEGW R1, R2, R3
+	SMULL R1, R2, R3
+	UMULL R1, R2, R3
+	SMADDL R1, R2, R3, R4
+	UMADDL R1, R2, R3, R4
+	SMSUBL R1, R2, R3, R4
+	UMSUBL R1, R2, R3, R4
+	SMNEGL R1, R2, R3
+	UMNEGL R1, R2, R3
+	SMULH R1, R2, R3
+	PACIASP
+	PACIBSP
+	AUTIASP
+	AUTIBSP
+	AUTIA1716
+	AUTIB1716
+	BTI
+	HINT $7
+	WFE
+	WFI
+	SEV
+	SEVL
+	CLREX
+	RPRFM $0, (R2)
+	SETFFR
+	NOOP
+
+	// LSE Atomics & Exclusives (all widths & orders)
+	LDADDALW R1, (R2), R3
+	LDADDB R1, (R2), R3
+	LDADDAW R1, (R2), R3
+	LDADDLD R1, (R2), R3
+	LDCLRALD R1, (R2), R3
+	LDCLRB R1, (R2), R3
+	LDCLRH R1, (R2), R3
+	LDCLRW R1, (R2), R3
+	LDEORALH R1, (R2), R3
+	LDORALB R1, (R2), R3
+	LDSMAXALD R1, (R2), R3
+	LDSMINALW R1, (R2), R3
+	LDUMAXALB R1, (R2), R3
+	LDUMINALH R1, (R2), R3
+	SWPALD R1, (R2), R3
+	SWPW R1, (R2), R3
+	SWPB R1, (R2), R3
+	SWPH R1, (R2), R3
+	CASALD R1, (R2), R3
+	CASALW R1, (R2), R3
+	CASALB R1, (R2), R3
+	CASALH R1, (R2), R3
+	CASPALD (R0, R1), (R2), (R4, R5)
+	CASPALW (R0, R1), (R2), (R4, R5)
+	LDARH (R2), R3
+	STLRH R3, (R2)
+	LDXR (R2), R3
+	LDXRW (R2), R3
+	LDXRB (R2), R3
+	LDXRH (R2), R3
+	LDAXRH (R2), R3
+	STXR R3, (R2), R4
+	STXRW R3, (R2), R4
+	STXRB R3, (R2), R4
+	STXRH R3, (R2), R4
+	STLXRH R3, (R2), R4
+	LDXP (R2), (R3, R4)
+	LDXPW (R2), (R3, R4)
+	LDAXP (R2), (R3, R4)
+	LDAXPW (R2), (R3, R4)
+	STXP (R3, R4), (R2), R5
+	STXPW (R3, R4), (R2), R5
+	STLXP (R3, R4), (R2), R5
+	STLXPW (R3, R4), (R2), R5
+
+	// Scalar FP + FCCMP + FCSELS + FLDPS/FSTPS
+	FADDS F1, F2, F3
+	FADDS F1, F2
+	FSUBS F1, F2, F3
+	FMULS F1, F2, F3
+	FDIVS F1, F2, F3
+	FNMULS F1, F2, F3
+	FMAXS F1, F2, F3
+	FMINS F1, F2, F3
+	FMAXNMS F1, F2, F3
+	FMAXNMD F1, F2, F3
+	FMINNMS F1, F2, F3
+	FMINNMD F1, F2, F3
+	FABSS F1, F2
+	FNEGS F1, F2
+	FNEGD F1, F2
+	FSQRTS F1, F2
+	FSQRTD F1, F2
+	FRINTAS F1, F2
+	FRINTAD F1, F2
+	FRINTIS F1, F2
+	FRINTID F1, F2
+	FRINTMS F1, F2
+	FRINTNS F1, F2
+	FRINTND F1, F2
+	FRINTPS F1, F2
+	FRINTXS F1, F2
+	FRINTXD F1, F2
+	FRINTZS F1, F2
+	FMADDS F1, F2, F3, F4
+	FMSUBS F1, F2, F3, F4
+	FNMADDS F1, F2, F3, F4
+	FNMADDD F1, F2, F3, F4
+	FNMSUBS F1, F2, F3, F4
+	FCMPS F1, F2
+	FCMPES F1, F2
+	FCMPED F1, F2
+	FCCMPS LT, F1, F2, $1
+	FCCMPD EQ, F1, F2, $4
+	FCCMPES AL, F1, F2, $0
+	FCCMPED NE, F1, F2, $2
+	FCSELS EQ, F1, F2, F3
+	FCSELS AL, F1, F2, F3
+	FCVTZSS F1, R1
+	FCVTZSSW F1, R1
+	FCVTZSDW F2, R2
+	FCVTZUS F1, R1
+	FCVTZUSW F1, R1
+	FCVTZUD F2, R2
+	FCVTZUDW F2, R2
+	SCVTFS R1, F1
+	SCVTFWS R1, F1
+	SCVTFWD R2, F2
+	UCVTFS R1, F1
+	UCVTFD R2, F2
+	UCVTFWS R1, F1
+	UCVTFWD R2, F2
+	FMOVS $(0.0), F1
+	FMOVS $(1.5), F1
+	FMOVS F1, F2
+	FMOVS (R2), F1
+	FMOVS F1, (R2)
+	FMOVS glob<>(SB), F1
+	FMOVS F1, glob<>(SB)
+	FLDPS (R2), (F1, F2)
+	FLDPS.P 8(R2), (F1, F2)
+	FLDPS glob<>(SB), (F1, F2)
+	FSTPS (F1, F2), (R2)
+	FSTPS.W (F1, F2), -8(R2)
+	FSTPS (F1, F2), glob<>(SB)
+
+	// NEON / ASIMD Declarative Matrix (full coverage)
+	VABS V0.S4, V1.S4
+	VSQABS V0.H8, V1.H8
+	VNEG V0.H8, V1.H8
+	VSQNEG V0.S4, V1.S4
+	VNOT V0.B16, V1.B16
+	VCLZ V0.S4, V1.S4
+	VCLS V0.S4, V1.S4
+	VCNT V0.B16, V1.B16
+	VRBIT V0.B16, V1.B16
+	VREV16 V0.B16, V1.B16
+	VSUB V0.S4, V1.S4, V2.S4
+	VMUL V0.H8, V1.H8, V2.H8
+	VBIC V0.B16, V1.B16, V2.B16
+	VORN V0.B16, V1.B16, V2.B16
+	VSMAX V0.S4, V1.S4, V2.S4
+	VSMIN V0.S4, V1.S4, V2.S4
+	VUMAX V0.B16, V1.B16, V2.B16
+	VUMIN V0.B16, V1.B16, V2.B16
+	VSQADD V0.H8, V1.H8, V2.H8
+	VUQADD V0.H8, V1.H8, V2.H8
+	VSQSUB V0.H8, V1.H8, V2.H8
+	VUQSUB V0.B16, V1.B16, V2.B16
+	VSHADD V0.S4, V1.S4, V2.S4
+	VUHADD V0.S4, V1.S4, V2.S4
+	VSRHADD V0.S4, V1.S4, V2.S4
+	VURHADD V0.S4, V1.S4, V2.S4
+	VCMTST V0.S4, V1.S4, V2.S4
+	VBSL V0.B16, V1.B16, V2.B16
+	VBIT V0.B16, V1.B16, V2.B16
+	VBIF V0.B16, V1.B16, V2.B16
+	VMLA V0.S4, V1.S4, V2.S4
+	VMLS V0.S4, V1.S4, V2.S4
+	VCMGE V0.S4, V1.S4, V2.S4
+	VCMGT V0.S4, V1.S4, V2.S4
+	VCMLE $0, V0.S4, V2.S4
+	VCMLT $0, V0.S4, V2.S4
+	VCMHI V0.S4, V1.S4, V2.S4
+	VCMHS V0.S4, V1.S4, V2.S4
+	VSSHL V0.D2, V1.D2, V2.D2
+	VUSHL V0.D2, V1.D2, V2.D2
+	VSQSHL V0.S4, V1.S4, V2.S4
+	VUQSHL V0.S4, V1.S4, V2.S4
+	VSSHR $3, V0.S4, V1.S4
+	VSRSHR $3, V0.S4, V1.S4
+	VSLI $2, V0.S4, V1.S4
+	VUSRA $2, V0.S4, V1.S4
+	VFADD V0.S4, V1.S4, V2.S4
+	VFSUB V0.D2, V1.D2, V2.D2
+	VFMUL V0.D2, V1.D2, V2.D2
+	VFDIV V0.S4, V1.S4, V2.S4
+	VFMAX V0.S4, V1.S4, V2.S4
+	VFMIN V0.S4, V1.S4, V2.S4
+	VFMAXNM V0.D2, V1.D2, V2.D2
+	VFMINNM V0.D2, V1.D2, V2.D2
+	VFABS V0.S4, V1.S4
+	VFNEG V0.D2, V1.D2
+	VFSQRT V0.S4, V1.S4
+	VFRINTM V0.S4, V1.S4
+	VFRINTN V0.D2, V1.D2
+	VFRINTP V0.S4, V1.S4
+	VFRINTZ V0.S4, V1.S4
+	VFCVTZS V0.S4, V1.S4
+	VFCVTZU V0.D2, V1.D2
+	VSCVTF V0.S4, V1.S4
+	VUCVTF V0.D2, V1.D2
+	VFMLA V0.S4, V1.S4, V2.S4
+	VFMLS V0.D2, V1.D2, V2.D2
+	VFCMEQ V0.S4, V1.S4, V2.S4
+	VFCMGE V0.S4, V1.S4, V2.S4
+	VFCMGT V0.S4, V1.S4, V2.S4
+	VFCMLE $0, V0.S4, V2.S4
+	VFCMLT $0, V0.S4, V2.S4
+	VADDV V0.S4, V1
+	VSMAXV V0.S4, V1
+	VSMINV V0.S4, V1
+	VUMAXV V0.H8, V1
+	VUMINV V0.B16, V1
+	VFMAXV V0.S4, V1
+	VFMINV V0.S4, V1
+	VFMAXNMV V0.S4, V1
+	VFMINNMV V0.S4, V1
+	VADDP V0.D2, V1.D2, V2.D2
+	VSMAXP V0.S4, V1.S4, V2.S4
+	VSMINP V0.S4, V1.S4, V2.S4
+	VUMAXP V0.S4, V1.S4, V2.S4
+	VUMINP V0.S4, V1.S4, V2.S4
+	VFADDP V0.S4, V1.S4, V2.S4
+	VFMAXP V0.S4, V1.S4, V2.S4
+	VFMINP V0.S4, V1.S4, V2.S4
+	VFMAXNMP V0.S4, V1.S4, V2.S4
+	VFMINNMP V0.S4, V1.S4, V2.S4
+	VTRN1 V0.S4, V1.S4, V2.S4
+	VTRN2 V0.S4, V1.S4, V2.S4
+	VUZP1 V0.H8, V1.H8, V2.H8
+	VUZP2 V0.H8, V1.H8, V2.H8
+	VTBX V0.B16, [V1.B16, V2.B16], V3.B16
+	VSXTL V0.H4, V1.S4
+	VSXTL2 V0.H8, V1.S4
+	VUXTL V0.B8, V1.H8
+	VUXTL2 V0.B16, V1.H8
+	VSSHLL $2, V0.H4, V1.S4
+	VUSHLL2 $2, V0.B16, V1.H8
+	VSMULL V0.S2, V1.S2, V2.D2
+	VUMULL V0.S2, V1.S2, V2.D2
+	VSMLAL V0.H4, V1.H4, V2.S4
+	VUMLAL V0.H4, V1.H4, V2.S4
+	VSMLSL V0.H4, V1.H4, V2.S4
+	VUMLSL V0.H4, V1.H4, V2.S4
+	VUADDW V0.H4, V1.S4, V2.S4
+	VUADDW2 V0.H8, V1.S4, V2.S4
+	VXTN V0.S4, V1.H4
+	VXTN2 V0.S4, V1.H8
+	VSQXTN V0.S4, V1.H4
+	VSQXTN2 V0.S4, V1.H8
+	VUQXTN V0.S4, V1.H4
+	VSQXTUN V0.S4, V1.H4
+	VSHRN $4, V0.S4, V1.H4
+	VSHRN2 $4, V0.S4, V1.H8
+	VFCVTL V0.S2, V1.D2
+	VFCVTN V0.D2, V1.S2
+	VFCVTN2 V0.D2, V1.S4
+	VMOVS $1, V1
+	VMOVD $2, V1
+	VMOVQ $3, $4, V1
+	VLD2 (R2), [V0.B16, V1.B16]
+	VLD2R (R2), [V0.S4, V1.S4]
+	VLD3 (R2), [V0.B16, V1.B16, V2.B16]
+	VLD3R (R2), [V0.H8, V1.H8, V2.H8]
+	VLD4 (R2), [V0.S4, V1.S4, V2.S4, V3.S4]
+	VST2 [V0.B16, V1.B16], (R2)
+	VST3 [V0.B16, V1.B16, V2.B16], (R2)
+	VST4 [V0.S4, V1.S4, V2.S4, V3.S4], (R2)
+	VST1 V0.B[1], (R2)
+	VST1 V0.H[1], (R2)
+	VST1 V0.S[1], (R2)
+	VST1 V0.D[1], (R2)
+	RET
+`
+	ir := verifyDeclarativeIR(t, ArchARM64, "arm64", src)
+	for _, want := range []string{"atomicrmw add", "@llvm.abs.v4i32", "@llvm.sadd.sat.v8i16", "@llvm.roundeven.f32", "@llvm.ctpop.v16i8"} {
+		if !strings.Contains(ir, want) {
+			t.Errorf("ARM64 IR missing expected construct %s", want)
+		}
+	}
+	assertDeclarativeErrors(t, ArchARM64, "arm64", []string{
+		"LDADDALW R1, R2",
+		"CASPALD R1, (R2), R3",
+		"LDARH R1, R2",
+		"STLRH R1, R2",
+		"LDXRW R1, R2",
+		"STXRW R1, R2",
+		"LDXP R1, R2",
+		"STXP R1, R2",
+		"FADDS F1",
+		"FABSS F1",
+		"FMADDS F1, F2, F3",
+		"FCMPS F1",
+		"FCCMPS LT, F1, F2",
+		"FCSELS EQ, F1, F2",
+		"FCVTZSS F1",
+		"SCVTFS R1",
+		"FMOVS F1",
+		"FLDPS (R2), F1",
+		"FSTPS F1, (R2)",
+		"ADDSW R1",
+		"CMNW R1",
+		"NEGS",
+		"SXTB R1",
+		"MOVK R1, R2",
+		"LDPSW (R2), R3",
+		"CLZW R1",
+		"EXTRW $1, R1, R2",
+		"SDIV R1",
+		"MNEG R1",
+		"SMADDL R1, R2, R3",
+		"VABS V0.S4",
+		"VSUB V0.S4",
+		"VADDV V0.S4",
+		"VTRN1 V0.S4",
+		"VTBX V0.B16, V1.B16",
+		"VSXTL V0.H4",
+		"VSMULL V0.S2, V1.S2",
+		"VLD2 (R2), V0.B16",
+		"VST2 V0.B16, (R2)",
+	})
+}
+
+func TestDeclarativeAMD64LLVMVerify(t *testing.T) {
+	src := `
+DATA glob<>+0(SB)/8, $0
+GLOBL glob<>(SB), 0, $16
+
+TEXT ·amd64All(SB),0,$0-0
+	// Scalar CMOV/SET/Bit/BMI/Shifts/Narrow/MulDiv/Atomics/System
+	CMPQ AX, BX
+	CMOVQGE AX, BX
+	CMOVQGT AX, BX
+	CMOVQHI AX, BX
+	CMOVQLE AX, BX
+	CMOVQLS AX, BX
+	CMOVQMI AX, BX
+	CMOVQPL AX, BX
+	CMOVQOS AX, BX
+	CMOVQOC AX, BX
+	CMOVQPS AX, BX
+	CMOVQPC AX, BX
+	CMOVLNE CX, DX
+	CMOVWLT SI, DI
+	SETEQ AL
+	SETNE (BX)
+	SETGT CL
+	SETLS DL
+	ADCW AX, BX
+	SBBB AL, BL
+	SBBW AX, BX
+	INCB AL
+	INCW AX
+	DECB BL
+	DECW AX
+	NEGB CL
+	NEGW BX
+	NOTB CL
+	NOTW DX
+	LEAW 8(BX), AX
+	LEAW glob<>(SB), CX
+	MOVBLSX AL, DX
+	MOVBQSX BL, CX
+	MOVWLSX SI, DI
+	MOVBWSX AL, DX
+	MOVBWZX AL, DX
+	MOVSWW AX, BX
+	MOVZWW AX, BX
+	ROLB $3, AL
+	ROLB AL
+	ROLW $5, AX
+	RORB $2, BL
+	RORW $5, AX
+	RCLB $1, AL
+	RCLW $2, AX
+	RCLL $3, AX
+	RCLQ $2, AX
+	RCRB $1, BL
+	RCRW $2, BX
+	RCRL $3, BX
+	RCRQ CL, BX
+	SHRB $2, AL
+	SARB $2, BL
+	SARW $3, BX
+	SHLW $3, AX, BX
+	SHRW $4, CX, DX
+	IMULW AX
+	IMULW AX, BX
+	IMUL3W $7, AX, BX
+	MULB BL
+	IMULB CL
+	MULW BX
+	DIVB CL
+	IDIVB CL
+	DIVW BX
+	IDIVW BX
+	MULXL CX, R8, R9
+	ADCXL AX, BX
+	ADOXL CX, DX
+	ADCQ R8, 8(DI)
+	SBBQ R8, 8(DI)
+	BTQ AX, BX
+	BTL $3, CX
+	BTW $2, DX
+	BTSL $5, CX
+	BTSW AX, DX
+	BTRL $1, CX
+	BTRW AX, DX
+	BTCW $2, DX
+	BTCL $3, CX
+	BTCQ $7, SI
+	TZCNTW AX, BX
+	TZCNTL AX, BX
+	LZCNTW AX, BX
+	LZCNTL CX, DX
+	LZCNTQ CX, DX
+	POPCNTW SI, DI
+	ANDNL AX, BX, CX
+	ANDNQ AX, BX, CX
+	BLSIL AX, BX
+	BLSIQ AX, BX
+	BLSMSKL CX, DX
+	BLSMSKQ CX, DX
+	BLSRL SI, DI
+	BLSRQ SI, DI
+	BEXTRL AX, BX, CX
+	BEXTRQ AX, BX, CX
+	BZHIL AX, BX, CX
+	BZHIQ AX, BX, CX
+	SHLXL AX, BX, CX
+	SHLXQ AX, BX, CX
+	SHRXL AX, BX, CX
+	SHRXQ AX, BX, CX
+	SARXL AX, BX, CX
+	SARXQ AX, BX, CX
+	RORXL $5, BX, CX
+	RORXQ $7, BX, CX
+	CMPXCHG16B (BX)
+	CMPXCHGB AL, BL
+	CMPXCHGB AL, (BX)
+	CMPXCHGW AX, BX
+	CMPXCHGW AX, (BX)
+	CMPXCHGL AX, BX
+	CMPXCHGQ AX, BX
+	XADDB AL, BL
+	XADDB AL, (BX)
+	XADDW AX, BX
+	XADDW AX, (BX)
+	XADDL AX, BX
+	XADDQ AX, BX
+	XCHGW AX, BX
+	XCHGW AX, (BX)
+	CLC
+	STC
+	CMC
+	CBW
+	CWDE
+	CDQE
+	CDQ
+	CQO
+	LEAVEQ
+	NOPL AX
+	NOPW BX
+	ENDBR64
+	ENDBR32
+	CLDEMOTE (BX)
+	CLFLUSH (BX)
+	RDPID AX
+	RDRANDW AX
+	RDRANDL BX
+	RDRANDQ CX
+	RDSEEDW AX
+	RDSEEDL BX
+	RDSEEDQ CX
+	RDFSBASEL AX
+	RDFSBASEQ BX
+	RDGSBASEL CX
+	RDGSBASEQ DX
+	WRFSBASEL AX
+	WRFSBASEQ BX
+	WRGSBASEL CX
+	WRGSBASEQ DX
+	CLI
+	STI
+	HLT
+	LDMXCSR (BX)
+	STMXCSR (BX)
+	VSTMXCSR (BX)
+	RDPMC
+
+	// K-Mask + Scalar FP + Packed SIMD + AVX-512 EVEX masking & broadcast
+	KADDB K1, K2, K3
+	KADDD K1, K2, K3
+	KANDQ K1, K2, K3
+	KANDNW K1, K2, K3
+	KORB K1, K2, K3
+	KXORW K1, K2, K3
+	KXNORQ K1, K2, K3
+	KNOTD K1, K2
+	KNOTQ K1, K2
+	KSHIFTLW $3, K1, K2
+	KSHIFTLB $9, K1, K2
+	KSHIFTRQ $3, K1, K2
+	KMOVD AX, K1
+	KMOVD K1, AX
+	KMOVD K1, (BX)
+	KMOVD (BX), K1
+	MOVSS (BX), X1
+	MOVSS glob<>(SB), X1
+	MOVSS X1, (BX)
+	MOVSS X1, glob<>(SB)
+	MOVSS X1, X2
+	VMOVSS X1, X2, X3
+	VMOVSS (BX), K1, X3
+	VMOVSD X1, X2, K1, X3
+	VMOVSD X1, (BX)
+	ADDSS X1, X2
+	SUBSS X1, X2
+	MULSS (BX), X2
+	DIVSS X1, X2
+	MINSS X1, X2
+	MAXSS X1, X2
+	SQRTSS X1, X2
+	RCPSS X1, X2
+	RSQRTSS X1, X2
+	COMISS X1, X2
+	UCOMISS X1, X2
+	UCOMISD X1, X2
+	VADDSS X1, X2, X3
+	VSUBSS X1, X2, X3
+	VMULSS X1, X2, X3
+	VDIVSS X1, X2, X3
+	VMINSS X1, X2, X3
+	VMAXSS X1, X2, X3
+	VSQRTSS X1, X2, X3
+	VRCPSS X1, X2, X3
+	VRSQRTSS X1, X2, X3
+	VADDSD X1, X2, K1, X3
+	VSUBSD.Z X1, X2, K1, X3
+	VMULSD X1, X2, X3
+	VDIVSD X1, X2, X3
+	VMINSD X1, X2, X3
+	VMAXSD X1, X2, X3
+	VSQRTSD X1, X2, X3
+	VCOMISS X1, X2
+	VUCOMISS X1, X2
+	VCOMISD X1, X2
+	VUCOMISD X1, X2
+	CVTSL2SS AX, X1
+	CVTSQ2SS AX, X1
+	VCVTSI2SSL AX, X1, X2
+	VCVTSI2SDQ AX, X1, X2
+	CVTSS2SD X1, X2
+	CVTSD2SS X1, X2
+	VCVTSS2SD X1, X2, X3
+	VCVTSD2SS X1, X2, X3
+	CVTSS2SL X1, AX
+	CVTSS2SQ X1, AX
+	CVTTSS2SL X1, AX
+	CVTTSS2SQ X1, AX
+	CVTSD2SQ X1, AX
+	CVTTSD2SL X1, AX
+	PABSB X1, X2
+	PABSW X1, X2
+	PABSD X1, X2
+	VPABSB X1, X2
+	VPABSD Y1, K1, Y2
+	VPABSQ.Z Z1, K1, Z2
+	SQRTPS X1, X2
+	SQRTPD X1, X2
+	VSQRTPS Y1, Y2
+	VSQRTPD Z1, K1, Z2
+	RCPPS X1, X2
+	VRCPPS Y1, Y2
+	RSQRTPS X1, X2
+	VRSQRTPS Y1, Y2
+	PMOVSXBW X1, X2
+	PMOVSXBD X1, X2
+	PMOVSXBQ X1, X2
+	PMOVSXWD X1, X2
+	PMOVSXWQ X1, X2
+	PMOVSXDQ X1, X2
+	PMOVZXBW X1, X2
+	VPMOVZXWD X1, Y2
+	VPMOVZXBD (BX), K1, Z2
+	VPMOVSXDQ Y1, Z2
+	VPADDSW Y1, Y2, K1, Y3
+	VPSUBUSB.Z Z1, Z2, K1, Z3
+	VPANDND Z1, Z2, K1, Z3
+	VPMULLQ Z1, Z2, K1, Z3
+	VADDPS.BCST (BX), Y1, K1, Y2
+	PAVGB X1, X2
+	VPAVGW Y1, Y2, Y3
+	PSIGNB X1, X2
+	VPSIGND Y1, Y2, Y3
+	MINPS X1, X2
+	MAXPD X1, X2
+	VMINPD Y1, Y2, Y3
+	VMAXPS Y1, Y2, Y3
+	PCMPEQQ X1, X2
+	PCMPGTQ X1, X2
+	ANDNPS X1, X2
+	VANDNPD Y1, Y2, Y3
+	MOVAPD X1, (BX)
+	MOVAPD X1, glob<>(SB)
+	MOVUPD (BX), X1
+	MOVUPD X1, (BX)
+	VMOVUPD (BX), K1, Z1
+	VMOVUPD Z1, K1, (BX)
+	VMOVUPD Z1, (BX)
+	VMOVUPD Z1, glob<>(SB)
+	VMOVDQU32.Z (BX), K1, Z2
+	MOVHLPS X1, X2
+	MOVLHPS X1, X2
+	VMOVHLPS X1, X2, X3
+	VMOVLHPS X1, X2, X3
+	MOVMSKPS X1, AX
+	MOVMSKPD X1, BX
+	VMOVMSKPS Y1, CX
+	VMOVMSKPD Y1, DX
+	PSHUFLW $0x1b, X1, X2
+	VPSHUFLW $0x1b, Y1, K1, Y2
+	PSHUFHW $0x1b, (BX), X2
+	VPSHUFHW $0x1b, Y1, Y2
+	PSHUFD $0x1b, (BX), X2
+	VPSHUFD $0x1b, (BX), K1, Z2
+	VPSHUFB Y1, Y2, K1, Y3
+	VPSHUFB Z1, Z2, K1, Z3
+	VPALIGNR $3, X1, X2, K1, X3
+	VPALIGNR $3, Y1, Y2, K1, Y3
+	VPALIGNR $3, Z1, Z2, K1, Z3
+	VPALIGNR $33, X1, X2, X3
+	SHUFPD $1, X1, X2
+	VSHUFPS $0x1b, Y1, Y2, K1, Y3
+	VSHUFPD $3, Y1, Y2, K1, Y3
+	UNPCKLPS X1, X2
+	UNPCKHPS X1, X2
+	UNPCKLPD X1, X2
+	UNPCKHPD X1, X2
+	VUNPCKLPS Y1, Y2, K1, Y3
+	VUNPCKHPD Z1, Z2, K1, Z3
+	BLENDPS $5, X1, X2
+	BLENDPD $1, X1, X2
+	VBLENDPS $5, Y1, Y2, Y3
+	VBLENDPD $3, Y1, Y2, Y3
+	VPBLENDW $0x55, Y1, Y2, Y3
+	VPBLENDD $5, X1, X2, X3
+	BLENDVPS X0, X1, X2
+	BLENDVPD X0, X1, X2
+	PBLENDVB X0, X1, X2
+	VBLENDVPS Y0, Y1, Y2, Y3
+	VBLENDVPD Y0, Y1, Y2, Y3
+	VPBLENDVB Y0, Y1, Y2, Y3
+	VPMOVMSKB X1, AX
+	VPMOVMSKB Y1, BX
+	PUNPCKLWL X1, X2
+	PUNPCKHWL X1, X2
+	PUNPCKHQDQ X1, X2
+	PACKSSWB X1, X2
+	PACKUSWB X1, X2
+	PACKSSLW X1, X2
+	PACKUSDW X1, X2
+	VPACKSSDW Y1, Y2, Y3
+	VPACKUSWB Y1, Y2, Y3
+	VALIGND $2, Z1, Z2, K1, Z3
+	VALIGNQ $1, Y1, Y2, Y3
+	VPERMILPS $0x1b, Y1, K1, Y2
+	VPERMILPD $3, Y1, K1, Y2
+	VPERMILPS Y1, Y2, Y3
+	VPERMILPD Y1, Y2, Y3
+	VPERMQ $0x1b, Y1, K1, Y2
+	VPERMPD $0x1b, Z1, Z2
+	VEXTRACTF128 $1, Y1, (BX)
+	VEXTRACTI32X4 $1, Z1, K1, X2
+	VEXTRACTI64X4 $1, Z1, K1, Y2
+	VINSERTF128 $1, X1, Y2, Y3
+	VINSERTI32X4 $1, X1, Z2, K1, Z3
+	VINSERTI64X4 $1, Y1, Z2, K1, Z3
+	EXTRACTPS $1, X1, AX
+	VEXTRACTPS $1, X1, (BX)
+	PEXTRW $2, X1, AX
+	VPEXTRB $1, X1, AX
+	VPEXTRW $2, X1, AX
+	VPEXTRD $1, X1, (BX)
+	VPEXTRQ $1, X1, AX
+	VPINSRB $1, AX, X1, X2
+	VPINSRW $1, AX, X1, X2
+	VPINSRD $1, AX, X1, X2
+	VPINSRQ $1, AX, X1, X2
+	INSERTPS $0x15, X1, X2
+	INSERTPS $0x15, (BX), X2
+	VINSERTPS $0x15, X1, X2, X3
+	PSLLW X1, X2
+	PSRLQ X1, X2
+	PSLLO $4, X1
+	PSRLO $4, X1
+	PSRAW $3, X1
+	VPSLLW $2, Y1, Y2
+	VPSRLW $2, Y1, K1, Y2
+	VPSRAW $2, Y1, Y2
+	VPSLLD X1, X2, X3
+	VPSLLDQ $4, Z1, Z2
+	VPSRLDQ $4, Z1, Z2
+	VPSLLVQ Y1, Y2, Y3
+	VPSRLVD Y1, Y2, Y3
+	VPSRAVD Y1, Y2, Y3
+	VPSRAVQ Z1, Z2, K1, Z3
+	PCLMULQDQ $0x11, (BX), X1
+	VPCLMULQDQ $0x11, X1, X2, X3
+	VPCLMULQDQ $0x11, Y1, Y2, Y3
+	VPCLMULQDQ $0x11, (BX), Z2, Z3
+	VAESENC Y1, Y2, Y3
+	VAESENCLAST Z1, Z2, Z3
+	VAESDEC X1, X2, X3
+	VAESDECLAST Y1, Y2, Y3
+	VAESIMC X1, X2
+	VAESKEYGENASSIST $1, X1, X2
+	DPPS $0xf1, X1, X2
+	DPPD $0x33, X1, X2
+	VDPPS $0xf1, Y1, Y2, Y3
+	VDPPD $0x33, X1, X2, X3
+	PSADBW X1, X2
+	VPSADBW Y1, Y2, Y3
+	PHMINPOSUW X1, X2
+	VPHMINPOSUW X1, X2
+	PCMPESTRI $0x0c, X1, X2
+	VGATHERPF0DPD (BX)
+	MOVD X1, DX
+	MOVD X1, (BX)
+	MOVD (BX), X2
+	VPADDD Z1, Z0, Z0
+	PMULUDQ X1, X2
+	PMULDQ X1, X2
+	PMULHW X1, X2
+	PMULHUW X1, X2
+	VPMULUDQ Y1, Y2, Y3
+	VPMULDQ Y1, Y2, Y3
+	VPMULHW Y1, Y2, Y3
+	VPMULHUW Y1, Y2, Y3
+	VPRORD $16, Z1, Z2
+	VPRORQ $7, Z1, K1, Z2
+	VPROLD $5, Y1, Y2
+	VPROLQ $7, Y1, K1, Y2
+	VPBROADCASTB (BX), K1, Z1
+	VPBROADCASTD 4(DX), Y2
+	VPBROADCASTW X1, Y3
+	VPBROADCASTD AX, K1, Z2
+	VSHUFI32X4 $0x88, Z2, Z3, Z4
+	VSHUFI64X2 $0x1b, Z2, Z3, K1, Z4
+	VSHUFI32X4 $1, Y2, Y3, Y4
+	MOVSLDUP X1, X2
+	MOVSHDUP X1, X2
+	MOVDDUP X1, X2
+	VMOVSLDUP Y1, Y2
+	VMOVSHDUP Z1, K1, Z2
+	VMOVDDUP Y1, K1, Y2
+	VPBLENDMB Z1, Z2, K1, Z3
+	VPBLENDMD Z1, Z2, K1, Z3
+	RET
+`
+	ir := verifyDeclarativeIR(t, ArchAMD64, "amd64", src)
+	for _, want := range []string{"@llvm.cttz.i32", "@llvm.ctlz.i64", "@llvm.abs.v8i32", "@llvm.sadd.sat.v16i16", "@llvm.x86.aesni.aesenc.256", "@llvm.x86.pclmulqdq"} {
+		if !strings.Contains(ir, want) {
+			t.Errorf("AMD64 IR missing expected intrinsic %s", want)
+		}
+	}
+	assertDeclarativeErrors(t, ArchAMD64, "amd64", []string{
+		"CMOVQGE AX, (BX)",
+		"SETEQ $1",
+		"LEAW $1, AX",
+		"MOVBWSX AX, (BX)",
+		"INCB AX, BX",
+		"ADCW AX",
+		"ROLB $1, AX, BX",
+		"IMULW AX, BX, CX",
+		"IMUL3W $1, AX",
+		"MULB AX, BX",
+		"DIVB AX, BX",
+		"MULXL AX, BX",
+		"BTQ AX",
+		"TZCNTL AX",
+		"BLSIQ AX",
+		"ANDNQ AX, BX",
+		"RDPID (BX)",
+		"RDRANDQ (BX)",
+		"RDFSBASEQ (BX)",
+		"WRFSBASEQ (BX)",
+		"STMXCSR AX",
+		"XTEST",
+		"XABORT $1",
+		"LFSW (BX), AX",
+		"LFSL (BX), BX",
+		"LFSQ (BX), CX",
+		"LFSQ (BX), (DX)",
+		"SLDTQ AX",
+		"SLDTQ AX, BX",
+		"SLDTL (BX)",
+		"SMSWL BX",
+		"STRW CX",
+		"RETFL $0",
+		"UMONITOR AX",
+		"PCMPESTRI $0x08, X1, X2",
+		"PCMPESTRM $0x08, X1, X2",
+		"PCMPISTRI $0x08, X1, X2",
+		"PCMPISTRM $0x08, X1, X2",
+		"VPCMPESTRI $0x08, X1, X2",
+		"VPCMPESTRM $0x08, X1, X2",
+		"VPCMPISTRI $0x08, X1, X2",
+		"VPCMPISTRM $0x00, X1, X2",
+		"KMOVD AX",
+		"KNOTD K1",
+		"KSHIFTLW K1, K2, K3",
+		"KADDB K1, K2",
+		"ADDSS X1",
+		"SQRTSS X1",
+		"COMISS X1",
+		"CVTSL2SS AX",
+		"CVTSS2SD X1",
+		"CVTSS2SL X1",
+		"PABSB X1",
+		"PABSB X1, AX",
+		"PMOVSXBW $1, X2",
+		"MOVUPD X1",
+		"MOVUPD (BX), (DX)",
+		"MOVHLPS X1",
+		"MOVMSKPS AX, BX",
+		"PSHUFLW X1, X2, X3",
+		"VPSHUFD X1, X2, X3",
+		"VPSHUFB X1, X2",
+		"VPALIGNR X1, X2, X3, X4",
+		"VSHUFPS X1, X2, X3, X4",
+		"UNPCKLPS X1",
+		"BLENDPS X1, X2, X3",
+		"PACKSSWB X1",
+		"VALIGND X1, X2, X3, X4",
+		"VPERMQ X1, X2",
+		"VEXTRACTI32X4 X1, X2, X3",
+		"VINSERTI32X4 X1, X2, X3, X4",
+		"VPEXTRW X1, X2, AX",
+		"VPINSRD X1, AX, X2, X3",
+		"INSERTPS X1, X2, X3",
+		"DPPS X1, X2, X3",
+		"PSADBW X1",
+		"PHMINPOSUW X1",
+		"PCMPISTRI X1, X2, X3",
+		"VAESIMC X1",
+		"VAESKEYGENASSIST X1, X2, X3",
+		"VAESENC X1, X2",
+		"VPBLENDMD X1, X2",
+		"VPBROADCASTD X1",
+		"VSHUFI32X4 X1, X2, X3, X4",
+		"VMOVSLDUP X1",
+		"VPRORD X1, Y1, Y2",
+		"PSLLO X1, X2",
+		"PCLMULQDQ X1, X2, X3",
+		"CMPXCHG16B AX",
+		"CMPXCHGB AX",
+		"XADDB AX",
+		"XCHGW AX",
+	})
+}
+
+func TestDeclarativeFPSlotScalarF32(t *testing.T) {
+	for _, tc := range []struct {
+		arch    Arch
+		goarch  string
+		retType LLVMType
+		src     string
+	}{
+		{ArchAMD64, "amd64", LLVMType("float"), "TEXT ·f(SB),0,$0-16\n\tADDSS x+0(FP), X1\n\tMOVSS X1, ret+8(FP)\n\tRET\n"},
+		{ArchARM64, "arm64", I64, "TEXT ·f(SB),0,$0-16\n\tFADDS x+0(FP), F1, F2\n\tFMOVS F2, ret+8(FP)\n\tRET\n"},
+	} {
+		file, err := Parse(tc.arch, tc.src)
+		if err != nil {
+			t.Fatalf("Parse(%s): %v", tc.goarch, err)
+		}
+		opts := Options{
+			Goarch: tc.goarch,
+			Sigs: map[string]FuncSig{
+				"·f": {
+					Name: "·f",
+					Args: []LLVMType{LLVMType("double")},
+					Ret:  tc.retType,
+					Frame: FrameLayout{
+						Params:  []FrameSlot{{Offset: 0, Type: LLVMType("double"), Index: 0, Field: -1}},
+						Results: []FrameSlot{{Offset: 8, Type: tc.retType, Index: 0, Field: -1}},
+					},
+				},
+			},
+		}
+		mod, err := TranslateModule(file, opts)
+		if err != nil {
+			t.Fatalf("TranslateModule(%s FP slot): %v", tc.goarch, err)
+		}
+		mod.Dispose()
+	}
+}

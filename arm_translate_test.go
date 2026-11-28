@@ -101,13 +101,15 @@ TEXT ·spin(SB),NOSPLIT,$0-0
 		`store i32 %`,
 		`ptr @example.global`,
 		`call void @example.callee()`,
-		`mrs $0, apsr`,
 		`call void asm sideeffect "bx $0"`,
 		`define void @example.spin()`,
 	} {
 		if !strings.Contains(ll, want) {
 			t.Fatalf("missing %q in output:\n%s", want, ll)
 		}
+	}
+	if strings.Contains(ll, "mrs $0, apsr") {
+		t.Fatalf("general CALL must not synthesize mrs $0, apsr:\n%s", ll)
 	}
 }
 
@@ -120,7 +122,7 @@ func TestTranslateARMSystemRegisterMoves(t *testing.T) {
 	RET
 `, map[string]FuncSig{"example.systemregs": {Name: "example.systemregs", Ret: Void}})
 	for _, want := range []string{
-		"mrs $0, cpsr",
+		"mrs r0, cpsr",
 		"msr cpsr_fsxc, $0",
 		"vmrs $0, fpscr",
 		"vmsr fpscr, $0",
@@ -128,5 +130,36 @@ func TestTranslateARMSystemRegisterMoves(t *testing.T) {
 		if !strings.Contains(ll, want) {
 			t.Fatalf("missing %q in output:\n%s", want, ll)
 		}
+	}
+}
+
+func TestARMExecutableWord(t *testing.T) {
+	const triple = "armv7-unknown-linux-gnueabihf"
+	for _, tc := range []struct{ src, want string }{
+		{"WORD $0xe7f001f0", ".inst 0xe7f001f0"},
+		{"WORD $0xe320f001", ".inst 0xe320f001"},
+		{"WORD $0xeef1ba10", "={r0}"},
+		{"WORD $0xeee1ba10", "{r0}"},
+		{"WORD $0xee1d0f70", "={r0}"},
+		{"WORD $0xec510f1e", "={r0},={r1}"},
+		{"WORD $0xf57ff01f", ".inst 0xf57ff01f"},
+		{"WORD $0xffffffff", ""}, {"BYTE $0xff", ""}, {"DWORD $17", ""},
+	} {
+		t.Run(tc.src, func(t *testing.T) {
+			f, err := Parse(ArchARM, "TEXT raw(SB),4,$0\n"+tc.src+"\nRET\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ir, err := Translate(f, Options{TargetTriple: triple, Goarch: "arm", Sigs: map[string]FuncSig{"raw": {Ret: Void}}})
+			if tc.want == "" {
+				if err == nil {
+					t.Fatal("unmodeled executable raw directive silently translated")
+				}
+				return
+			}
+			if err != nil || !strings.Contains(ir, tc.want) {
+				t.Fatalf("expected %q in translation: %v\n%s", tc.want, err, ir)
+			}
+		})
 	}
 }
