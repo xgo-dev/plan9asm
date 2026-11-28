@@ -160,6 +160,22 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 	if err != nil {
 		return nil, fmt.Errorf("%s: globals %s: %w", pkgPath, asmName, err)
 	}
+	if opt.GOARCH == "386" {
+		prepared, err := x86.PrepareFile(file, opt.GOARCH, opt.TargetTriple)
+		if err != nil {
+			return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
+		}
+		callee := func(s string) string { return resolve(goTextSymbolForResolution(s)) }
+		for _, fn := range prepared.Funcs {
+			sig, ok := sigs[resolve(goTextSymbolForResolution(fn.Sym))]
+			if !ok || len(sig.ArgRegs) != 0 || strings.Contains(fn.Sym, "<ABIInternal>") || len(sig.Frame.Results) == 0 && !x86.FuncUsesX87OrMMX(fn) {
+				continue
+			}
+			if _, err := x86.CheckPreparedABI0ResultInit(fn, sig, "386", callee, sigs, opt.X87Mode, opt.TargetTriple); err != nil {
+				return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
+			}
+		}
+	}
 	if opt.GOARCH == "amd64" {
 		if err := validateAMD64PhysicalFrameLeasesForTarget(file, resolve, sigs, opt.X87Mode, opt.TargetTriple); err != nil {
 			return nil, fmt.Errorf("%s: frame %s: %w", pkgPath, asmName, err)
@@ -247,6 +263,9 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 	if err := b.addReferencedFuncSigs(file); err != nil {
 		return nil, err
 	}
+	if goarch == "386" {
+		markNonReturningGoCallees(pkg, resolve, b.sigs)
+	}
 	if goarch == "wasm" {
 		for _, fn := range file.Funcs {
 			resolved := resolve(goTextSymbolForResolution(fn.Sym))
@@ -286,6 +305,48 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 		}
 	}
 	return b.sigs, nil
+}
+
+// A call to a Go function consisting solely of builtin panic cannot reach
+// the next assembly instruction. Require an unshadowed builtin and the same
+// declaration position as the type-checked function.
+func markNonReturningGoCallees(pkg GoPackage, resolve func(string) string, sigs map[string]FuncSig) {
+	if pkg.Types.Scope().Lookup("panic") != nil {
+		return
+	}
+	for _, src := range pkg.Syntax {
+		if src == nil || len(src.Imports) != 0 {
+			continue
+		}
+		for _, decl := range src.Decls {
+			f, ok := decl.(*ast.FuncDecl)
+			if !ok || f.Recv != nil || f.Body == nil || len(f.Body.List) != 1 || f.Type.Params.NumFields() != 0 || f.Type.Results.NumFields() != 0 || f.Type.TypeParams.NumFields() != 0 {
+				continue
+			}
+			name := resolve("·" + f.Name.Name)
+			sig, ok := sigs[name]
+			if !ok || !f.Name.Pos().IsValid() {
+				continue
+			}
+			obj, ok := pkg.Types.Scope().Lookup(f.Name.Name).(*types.Func)
+			if !ok || obj.Pos() != f.Name.Pos() {
+				continue
+			}
+			expr, ok := f.Body.List[0].(*ast.ExprStmt)
+			if !ok {
+				continue
+			}
+			call, ok := expr.X.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			id, ok := call.Fun.(*ast.Ident)
+			if ok && id.Name == "panic" {
+				sig.Attrs = strings.TrimSpace(sig.Attrs + " noreturn")
+				sigs[name] = sig
+			}
+		}
+	}
 }
 
 func arm64PrivateTailTargetSet(file *File, resolve func(string) string) map[string]bool {

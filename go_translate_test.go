@@ -244,3 +244,86 @@ func testResolveSym(pkgPath string) func(string) string {
 		return strings.ReplaceAll(sym, "·", ".")
 	}
 }
+
+func TestGoModule386StackResult(t *testing.T) {
+	pkg := mustGoPackage(t, "example", "package example\nfunc F() uint32")
+	for _, tc := range []struct {
+		name, body string
+		accepted   bool
+	}{
+		{"uninitialized", "MOVL 0(SP), AX", false},
+		{"TLS-relocation", "MOVL 0(SP)(TLS*1), AX", true},
+		{"partial", "MOVB $1, 0(SP)\nMOVL 0(SP), AX", false},
+		{"adjust", "ADJSP $4\nMOVL $11, 0(SP)\nMOVL 0(SP), AX\nADJSP $-4", true},
+		{"different-slot", "SUBL $4, SP\nMOVL $1, 0(SP)\nADDL $4, SP\nMOVL 0(SP), AX", false},
+		{"lea", "MOVL $11, 0(SP)\nLEAL -4(SP), SP\nMOVL 4(SP), AX\nLEAL 4(SP), SP", true},
+		{"save", "MOVL $11, AX\nPUSHAL\nXORL AX, AX\nPOPAL", true},
+		{"save-undefined", "PUSHAL\nMOVL $11, AX\nPOPAL", false},
+		{"int80", "MOVL $20, AX\nINT $0x80", true},
+		{"int80-undefined", "INT $0x80", false},
+		{"branch", "MOVL $0, AX\nTESTL AX, AX\nJE done\nMOVL $11, 0(SP)\ndone:\nMOVL 0(SP), AX", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := TranslateGoModule(pkg, []byte("TEXT ·F(SB),4,$8-4\n"+tc.body+"\nMOVL AX, ret+0(FP)\nRET"), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")})
+			if tr != nil {
+				defer tr.Module.Dispose()
+				if tc.name == "TLS-relocation" && !strings.Contains(tr.Module.String(), "call ptr @llvm.threadlocal.address.p0(ptr @runtime.tlsg)") {
+					t.Fatal("indexed TLS load lost the runtime TLS relocation")
+				}
+			}
+			if (err == nil) != tc.accepted {
+				t.Fatalf("accepted=%t err=%v", tc.accepted, err)
+			}
+		})
+	}
+}
+
+func TestGoModule386FramePointerStore(t *testing.T) {
+	pkg := mustGoPackage(t, "example", "package example\nfunc F() uint32")
+	for _, tc := range []struct {
+		name, body string
+		accepted   bool
+	}{
+		{"full", "MOVL $11, (DX)", true},
+		{"partial", "MOVB $11, (DX)", false},
+		{"replaced", "MOVL $1024, DX\nMOVL $11, (DX)", false},
+		{"join", "MOVL $0, AX\nTESTL AX, AX\nJE store\nMOVL $1024, DX\nstore:\nMOVL $11, (DX)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := TranslateGoModule(pkg, []byte("TEXT ·F(SB),4,$0-4\nLEAL ret+0(FP), DX\n"+tc.body+"\nRET"), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")})
+			if tr != nil {
+				defer tr.Module.Dispose()
+			}
+			if (err == nil) != tc.accepted {
+				t.Fatalf("accepted=%t, err=%v", tc.accepted, err)
+			}
+		})
+	}
+}
+
+func TestGoModule386SyscallResultOnSuccess(t *testing.T) {
+	pkg := mustGoPackage(t, "example", "package example\nfunc F() int64")
+	const setup = "MOVL $140, AX\nLEAL ret+0(FP), SI\n"
+	const trap = "INT $0x80\n"
+	const failure = "MOVL $-1, ret+0(FP)\nMOVL $-1, ret+4(FP)\n"
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"zero-taken", setup + trap + "CMPL AX, $0\nJE done\n" + failure + "done:\nRET", true},
+		{"zero-fallthrough", setup + trap + "TESTL AX, AX\nJNE fail\nRET\nfail:\n" + failure + "RET", true},
+		{"error-can-return", setup + trap + "RET", false},
+		{"other-syscall", setup + "MOVL $20, AX\n" + trap + "CMPL AX, $0\nJE done\n" + failure + "done:\nRET", false},
+		{"other-buffer", setup + "MOVL BX, SI\n" + trap + "CMPL AX, $0\nJE done\n" + failure + "done:\nRET", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := TranslateGoModule(pkg, []byte("TEXT ·F(SB),4,$0-8\n"+tc.body), GoModuleOptions{GOOS: "linux", GOARCH: "386", TargetTriple: "i686-unknown-linux-gnu", ResolveSym: testResolveSym("example")})
+			if tr != nil {
+				defer tr.Module.Dispose()
+			}
+			if (err == nil) != tc.want {
+				t.Fatalf("accepted=%t, err=%v", tc.want, err)
+			}
+		})
+	}
+}

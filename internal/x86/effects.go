@@ -97,6 +97,7 @@ type abi0State struct {
 	spByteBitDef     map[int64]uint8
 	spBytesTaintedSP map[int64]bool
 	spOffset         int64
+	fpAddresses      map[asm.Reg]int64
 	// Architectural status/control flag definedness tracked independently
 	// (covering every live bit packed/unpacked by x86FlagSlots()):
 	//   - cfInit: Carry Flag (CF, RFLAGS bit 0)
@@ -525,6 +526,12 @@ func (s *abi0State) clone() *abi0State {
 		ofInit:            s.ofInit,
 		idInit:            s.idInit,
 	}
+	if len(s.fpAddresses) > 0 {
+		out.fpAddresses = make(map[asm.Reg]int64, len(s.fpAddresses))
+		for r, off := range s.fpAddresses {
+			out.fpAddresses[r] = off
+		}
+	}
 	if s.x87ByTop != nil {
 		cp := *s.x87ByTop
 		out.x87ByTop = &cp
@@ -606,6 +613,12 @@ func (s *abi0State) clone() *abi0State {
 // Returns true if `s` changed.
 func (s *abi0State) merge(other *abi0State) bool {
 	changed := false
+	for r, off := range s.fpAddresses {
+		if v, ok := other.fpAddresses[r]; !ok || v != off {
+			delete(s.fpAddresses, r)
+			changed = true
+		}
+	}
 	for k, cur := range s.gpBytesInit {
 		inter := cur & other.gpBytesInit[k]
 		if inter != cur {
@@ -981,28 +994,70 @@ func CheckABI0ResultInitWithSigs(fn asm.Func, sig asm.FuncSig, goarch string, re
 	return CheckABI0ResultInitWithOptions(fn, sig, goarch, resolve, sigs, asm.X87Auto, "")
 }
 
+// Expand the two multi-register saves into the same byte-level transfers as
+// individual pushes and pops. Source PC-relative branches are already bound.
+// PUSHAL saves original SP; every byte of that value is defined and frame-tainted.
+func expand386RegisterSaves(instrs []asm.Instr) []asm.Instr {
+	var out []asm.Instr
+	for i, ins := range instrs {
+		if (ins.Op != "PUSHAL" && ins.Op != "POPAL") || len(ins.Args) != 0 {
+			if out != nil {
+				out = append(out, ins)
+			}
+			continue
+		}
+		if out == nil {
+			out = append(make([]asm.Instr, 0, len(instrs)+7), instrs[:i]...)
+		}
+		regs := [...]asm.Reg{asm.AX, asm.CX, asm.DX, asm.BX, asm.SP, asm.BP, asm.SI, asm.DI}
+		for j, r := range regs {
+			op := asm.Op("PUSHL")
+			if ins.Op == "POPAL" {
+				r = regs[len(regs)-1-j]
+				op = "POPL"
+			}
+			arg := asm.Operand{Kind: asm.OpReg, Reg: r}
+			if op == "POPL" && r == asm.SP {
+				op = "ADJSP"
+				arg = asm.Operand{Kind: asm.OpImm, Imm: -4}
+			}
+			out = append(out, asm.Instr{Op: op, Args: []asm.Operand{arg}, Raw: ins.Raw})
+		}
+	}
+	if out != nil {
+		return out
+	}
+	return instrs
+}
+
 // CheckABI0ResultInitWithOptions extends CheckABI0ResultInitWithSigs with the
 // target kernel syscall ABI and x87 lowering mode. X87Software requires explicit FINIT/FLDCW on all
 // reaching paths before any control-word-dependent x87 operation (unlike
 // X87Hardware, which natively reads the caller's live hardware FCW).
 func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string, resolve func(string) string, sigs map[string]asm.FuncSig, x87Mode asm.X87Mode, targetTriple string) (*ABI0EffectReport, error) {
-	_, bsdSyscall := syscallTarget(goarch, targetTriple)
+	prepared, err := PrepareFile(&asm.File{Funcs: []asm.Func{fn}}, goarch, targetTriple)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", asm.ErrProbeNeedsContext, err)
+	}
+
+	return CheckPreparedABI0ResultInit(prepared.Funcs[0], sig, goarch, resolve, sigs, x87Mode, targetTriple)
+}
+
+// CheckPreparedABI0ResultInit checks a function after PrepareFile has resolved its file's SDK and target.
+func CheckPreparedABI0ResultInit(fn asm.Func, sig asm.FuncSig, goarch string, resolve func(string) string, sigs map[string]asm.FuncSig, x87Mode asm.X87Mode, targetTriple string) (*ABI0EffectReport, error) {
+	linuxSyscall, bsdSyscall := syscallTarget(goarch, targetTriple)
 	if payload, thunk := rawFunctionPayload(fn); payload != nil {
 		if sig.Ret != asm.Void || len(sig.Frame.Results) != 0 || thunk && (goarch != "amd64" || targetTriple != "" && !matchesX86Target(goarch, targetTriple)) {
 			return nil, fmt.Errorf("%w: native payload has no proven ABI0 result", asm.ErrProbeNeedsContext)
 		}
 		return &ABI0EffectReport{}, nil
 	}
-	prepared, err := PrepareFile(&asm.File{Funcs: []asm.Func{fn}}, goarch, targetTriple)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", asm.ErrProbeNeedsContext, err)
-	}
-
-	instrs := prepared.Funcs[0].Instrs
+	instrs := fn.Instrs
 	wordMask := uint8(0xff)
 	wordBitMask := ^uint64(0)
 	ptrBytes := int64(8)
 	if goarch == "386" {
+		instrs = expand386RegisterSaves(instrs)
 		wordMask = 0x0f
 		wordBitMask = 0xffffffff
 		ptrBytes = 4
@@ -1126,6 +1181,7 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 	inQueue := make([]bool, len(instrs))
 	inQueue[0] = true
 
+	var inconsistentSP bool
 	enqueue := func(next int, st *abi0State, nextRep bool) {
 		if next < 0 || next >= len(instrs) {
 			return
@@ -1137,6 +1193,10 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 				queue = append(queue, next)
 				inQueue[next] = true
 			}
+			return
+		}
+		if goarch == "386" && inStates[next].spOffset != st.spOffset {
+			inconsistentSP = true
 			return
 		}
 		changed := inStates[next].merge(st)
@@ -1342,7 +1402,7 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 			}, nil
 
 		case asm.OpMem:
-			if op.Mem.Base == asm.SP {
+			if op.Mem.Base == asm.SP && !op.Mem.GoTLSOffset && op.Mem.Segment == "" {
 				if isLEA {
 					if op.Mem.Index != "" {
 						r := canonicalGP(op.Mem.Index)
@@ -1513,7 +1573,7 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 			return uint64(raw), raw != 0
 
 		case asm.OpMem:
-			if op.Mem.Base == asm.SP {
+			if op.Mem.Base == asm.SP && !op.Mem.GoTLSOffset && op.Mem.Segment == "" {
 				if isLEA {
 					return uint64(wordMask), true
 				}
@@ -1878,7 +1938,7 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 			}
 
 		case asm.OpMem:
-			if op.Mem.Base == asm.SP && op.Mem.Index == "" {
+			if op.Mem.Base == asm.SP && op.Mem.Index == "" && !op.Mem.GoTLSOffset && op.Mem.Segment == "" {
 				if anyTaint {
 					return fmt.Errorf("%w: private frame address escapes to stack slot %d(SP)", asm.ErrProbeNeedsContext, op.Mem.Off)
 				}
@@ -1935,6 +1995,10 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 		curRep := repPending[pc]
 		ins := instrs[pc]
 		op := asm.Op(strings.ToUpper(string(ins.Op)))
+
+		if goarch == "386" {
+			ins = st.resolve386FrameOperands(ins)
+		}
 
 		if op == "REP" || op == "REPN" {
 			enqueue(pc+1, st, true)
@@ -2560,6 +2624,9 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 			}
 			continue
 		case "POPQ", "POPL", "POPW":
+			if goarch == "386" && is386SPDestination(ins) {
+				return nil, fmt.Errorf("%w: unproven stack-pointer assignment: %s", asm.ErrProbeNeedsContext, ins.Raw)
+			}
 			w := int64(8)
 			if op == "POPL" {
 				w = 4
@@ -2649,9 +2716,42 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 				}
 				continue
 			}
-		case "ADDQ", "SUBQ":
-			if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg && ins.Args[1].Reg == asm.SP {
-				if op == "ADDQ" {
+		case "ADJSP", "LEAL", "INT":
+			handled := false
+			if goarch == "386" {
+				switch {
+				case op == "ADJSP" && len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].ImmRaw == "":
+					st.spOffset -= ins.Args[0].Imm
+					handled = true
+				case op == "LEAL" && is386SPDestination(ins) && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpMem:
+					m := ins.Args[0].Mem
+					if m.Base == asm.SP && m.Index == "" && m.Sym == "" && m.Segment == "" && !m.GoTLSOffset {
+						st.spOffset += m.Off
+						handled = true
+					}
+				case op == "INT" && len(ins.Args) == 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].Imm == 0x80 && ins.Args[0].ImmRaw == "":
+					if linuxSyscall {
+						if err := checkGPRead(st, asm.AX, wordMask, ins.Raw); err != nil {
+							return nil, err
+						}
+						st.gpBytesInit[asm.AX] = wordMask
+						st.gpBitDef[asm.AX] = wordBitMask
+						delete(st.gpBytesTaintedSP, asm.AX)
+						handled = true
+					}
+				}
+			}
+			if handled {
+				if pc+1 < len(instrs) {
+					enqueue(pc+1, st, false)
+				} else {
+					finalState = st
+				}
+				continue
+			}
+		case "ADDQ", "SUBQ", "ADDL", "SUBL":
+			if (op == "ADDQ" || op == "SUBQ" || goarch == "386") && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpImm && ins.Args[1].Kind == asm.OpReg && ins.Args[1].Reg == asm.SP {
+				if op == "ADDQ" || op == "ADDL" {
 					st.spOffset += ins.Args[0].Imm
 				} else {
 					st.spOffset -= ins.Args[0].Imm
@@ -2671,6 +2771,9 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 			}
 		}
 
+		if goarch == "386" && models386SPWrite(ins) {
+			return nil, fmt.Errorf("%w: unproven stack-pointer assignment: %s", asm.ErrProbeNeedsContext, ins.Raw)
+		}
 		if op == "JMP" {
 			if len(ins.Args) != 1 {
 				return nil, fmt.Errorf("%w: JMP expects one target: %q", asm.ErrProbeNeedsContext, ins.Raw)
@@ -2704,11 +2807,27 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 			if err != nil {
 				return nil, err
 			}
+			taken, fall := st, st
+			if goarch == "386" && linuxSyscall {
+				if off, zeroTaken, proven := linux386SeekOutput(instrs, pc, resultByteOwned); proven {
+					success := st.clone()
+					for b := int64(0); b < 8; b++ {
+						success.fpBytesInit[off+b] = true
+						success.fpByteBitDef[off+b] = 0xff
+						delete(success.fpBytesTaintedSP, off+b)
+					}
+					if zeroTaken {
+						taken = success
+					} else {
+						fall = success
+					}
+				}
+			}
 			if isLocal {
-				enqueue(target, st, false)
+				enqueue(target, taken, false)
 			}
 			if pc+1 < len(instrs) {
-				enqueue(pc+1, st, false)
+				enqueue(pc+1, fall, false)
 			}
 			continue
 		}
@@ -2752,6 +2871,9 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 							}
 						}
 					}
+				}
+				if hasSig && goarch == "386" && hasFuncAttr(csig.Attrs, "noreturn") {
+					continue
 				}
 				st.clearCallerSaved()
 				if hasSig {
@@ -3140,6 +3262,10 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 		}
 	}
 
+	if inconsistentSP {
+		return nil, fmt.Errorf("%w: inconsistent 386 stack depth at branch join", asm.ErrProbeNeedsContext)
+	}
+
 	// Verify that on EVERY reachable RET (and any fallthrough end), every byte of
 	// every declared ABI0 result slot was initialized with all 8 bits defined on
 	// ALL paths reaching it.
@@ -3154,7 +3280,7 @@ func CheckABI0ResultInitWithOptions(fn asm.Func, sig asm.FuncSig, goarch string,
 						asm.ErrProbeNeedsContext, off, span.offset, span.size)
 				}
 				if st.fpByteBitDef[off] != 0xff {
-					return nil, fmt.Errorf("%w: RET with undefined bits (0x%02x) in result byte +%d(FP) (result slot +%d(FP) width %d)",
+					return nil, fmt.Errorf("%w: result initialization: RET with undefined bits (0x%02x) in result byte +%d(FP) (result slot +%d(FP) width %d)",
 						asm.ErrProbeNeedsContext, st.fpByteBitDef[off], off, span.offset, span.size)
 				}
 			}
@@ -4258,4 +4384,54 @@ func needsNonCondCF(op asm.Op, args []asm.Operand) bool {
 		return true
 	}
 	return false
+}
+
+func hasFuncAttr(attrs, name string) bool {
+	for _, attr := range strings.Fields(attrs) {
+		if attr == name {
+			return true
+		}
+	}
+	return false
+}
+
+// resolve386FrameOperands follows simple LEAL frame addresses through the CFG.
+// Only instructions with known, explicit GP destinations preserve a binding.
+func (s *abi0State) resolve386FrameOperands(ins asm.Instr) asm.Instr {
+	a := ins.Args
+	if len(s.fpAddresses) > 0 {
+		for i, arg := range a {
+			if !strings.HasPrefix(string(ins.Op), "MOV") && ins.Op != "LEAL" {
+				break
+			}
+			m := arg.Mem
+			off, ok := s.fpAddresses[m.Base]
+			if !ok || arg.Kind != asm.OpMem || m.Index != "" || m.Sym != "" || m.Segment != "" || m.GoTLSOffset {
+				continue
+			}
+			if &a[0] == &ins.Args[0] {
+				a = append([]asm.Operand(nil), a...)
+			}
+			a[i] = asm.Operand{Kind: asm.OpFP, FPOffset: off + m.Off}
+		}
+		switch ins.Op {
+		case asm.OpLABEL, "RET", "JMP", "NOP", "PCDATA", "FUNCDATA", "CMPL", "TESTL", "TESTW":
+		case "MOVL", "MOVO", "MOVOU", "LEAL", "ADDL", "ORL", "DECL", "SHRL", "AESENC", "PAND", "PXOR", "PINSRW", "PSHUFB", "PSHUFHW", "SETEQ":
+			if len(a) > 0 && a[len(a)-1].Kind == asm.OpReg {
+				delete(s.fpAddresses, canonicalGP(a[len(a)-1].Reg))
+			}
+		default:
+			if !isX86FlagCondJumpOp(ins.Op) {
+				s.fpAddresses = nil
+			}
+		}
+	}
+	if ins.Op == "LEAL" && len(a) == 2 && a[0].Kind == asm.OpFP && a[1].Kind == asm.OpReg && a[1].Reg != asm.SP {
+		if s.fpAddresses == nil {
+			s.fpAddresses = map[asm.Reg]int64{}
+		}
+		s.fpAddresses[a[1].Reg] = a[0].FPOffset
+	}
+	ins.Args = a
+	return ins
 }
