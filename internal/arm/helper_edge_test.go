@@ -915,20 +915,23 @@ func TestARMArithCoverageDeep(t *testing.T) {
 	if err := c.lowerARMADCSBC("SBC", "", true, asm.Instr{Raw: "SBC.S R1, R9, R10", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R9"}, {Kind: asm.OpReg, Reg: "R10"}}}); err != nil {
 		t.Fatalf("lowerARMADCSBC(SBC) error = %v", err)
 	}
-	if err := c.lowerARMMUL("", asm.Instr{Raw: "MUL R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); err != nil {
+	if err := c.lowerARMMUL("", false, asm.Instr{Raw: "MUL R0, R1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}}}); err != nil {
 		t.Fatalf("lowerARMMUL(2-arg) error = %v", err)
 	}
-	if err := c.lowerARMMUL("EQ", asm.Instr{Raw: "MUL.EQ R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err != nil {
+	if err := c.lowerARMMUL("EQ", true, asm.Instr{Raw: "MUL.EQ.S R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err != nil {
 		t.Fatalf("lowerARMMUL(3-arg) error = %v", err)
 	}
-	if err := c.lowerARMMULLU("EQ", asm.Instr{Raw: "MULLU.EQ R0, R1, (R3, R4)", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpRegList, RegList: []asm.Reg{"R3", "R4"}}}}); err != nil {
+	if err := c.lowerARMMULLU("EQ", true, asm.Instr{Raw: "MULLU.EQ.S R0, R1, (R3, R4)", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpRegList, RegList: []asm.Reg{"R3", "R4"}}}}); err != nil {
 		t.Fatalf("lowerARMMULLU() error = %v", err)
 	}
-	if err := c.lowerARMMULA("", asm.Instr{Raw: "MULA R0, R1, R2, R5", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}, {Kind: asm.OpReg, Reg: "R5"}}}); err != nil {
+	if err := c.lowerARMMULA("", true, asm.Instr{Raw: "MULA.S R0, R1, R2, R5", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}, {Kind: asm.OpReg, Reg: "R5"}}}); err != nil {
 		t.Fatalf("lowerARMMULA() error = %v", err)
 	}
-	if err := c.lowerARMMULAL("EQ", asm.Instr{Raw: "MULAL.EQ R0, R1, (R6, R7)", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpRegList, RegList: []asm.Reg{"R6", "R7"}}}}); err != nil {
-		t.Fatalf("lowerARMMULAL() error = %v", err)
+	if err := c.lowerARMMULAL("MULAL", "EQ", true, asm.Instr{Raw: "MULAL.EQ.S R0, R1, (R6, R7)", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpRegList, RegList: []asm.Reg{"R6", "R7"}}}}); err != nil {
+		t.Fatalf("lowerARMMULAL(MULAL) error = %v", err)
+	}
+	if err := c.lowerARMMULAL("MULALU", "", true, asm.Instr{Raw: "MULALU.S R0, R1, (R6, R7)", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpRegList, RegList: []asm.Reg{"R6", "R7"}}}}); err != nil {
+		t.Fatalf("lowerARMMULAL(MULALU) error = %v", err)
 	}
 	if err := c.lowerARMMULAWT("", asm.Instr{Raw: "MULAWT R0, R1, R2, R8", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}, {Kind: asm.OpReg, Reg: "R8"}}}); err != nil {
 		t.Fatalf("lowerARMMULAWT() error = %v", err)
@@ -963,13 +966,13 @@ func TestARMArithCoverageDeep(t *testing.T) {
 	if err := c.lowerARMADCSBC("ADC", "", false, asm.Instr{Raw: "ADC R0, $1", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpImm, Imm: 1}}}); err == nil {
 		t.Fatalf("lowerARMADCSBC(invalid dst) unexpectedly succeeded")
 	}
-	if err := c.lowerARMMULLU("", asm.Instr{Raw: "MULLU R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err == nil {
+	if err := c.lowerARMMULLU("", false, asm.Instr{Raw: "MULLU R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err == nil {
 		t.Fatalf("lowerARMMULLU(invalid) unexpectedly succeeded")
 	}
-	if err := c.lowerARMMULA("", asm.Instr{Raw: "MULA R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err == nil {
+	if err := c.lowerARMMULA("", false, asm.Instr{Raw: "MULA R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err == nil {
 		t.Fatalf("lowerARMMULA(invalid) unexpectedly succeeded")
 	}
-	if err := c.lowerARMMULAL("", asm.Instr{Raw: "MULAL R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err == nil {
+	if err := c.lowerARMMULAL("MULAL", "", false, asm.Instr{Raw: "MULAL R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err == nil {
 		t.Fatalf("lowerARMMULAL(invalid) unexpectedly succeeded")
 	}
 	if err := c.lowerARMMULAWT("", asm.Instr{Raw: "MULAWT R0, R1, R2", Args: []asm.Operand{{Kind: asm.OpReg, Reg: "R0"}, {Kind: asm.OpReg, Reg: "R1"}, {Kind: asm.OpReg, Reg: "R2"}}}); err == nil {
@@ -1122,5 +1125,124 @@ func TestARMBranchMovmAndSyscallCoverage(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
 		}
+	}
+}
+
+func TestARMKuserCASAndCPSRHelpers(t *testing.T) {
+	resolve := func(s string) string { return "pkg." + strings.TrimPrefix(s, "·") }
+	funcs := []asm.Func{
+		{
+			Sym: "cas<>",
+			Instrs: []asm.Instr{
+				{Op: asm.OpTEXT},
+				{Op: "PCDATA"},
+				{Op: "MOVW", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0xffff0fc0}, {Kind: asm.OpReg, Reg: "R15"}}},
+			},
+		},
+		{
+			Sym: "caspc<>",
+			Instrs: []asm.Instr{
+				{Op: "MOVW", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0xffff0fc0}, {Kind: asm.OpReg, Reg: "PC"}}},
+			},
+		},
+		{
+			Sym: "notcas_multi<>",
+			Instrs: []asm.Instr{
+				{Op: "MOVW", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0xffff0fc0}, {Kind: asm.OpReg, Reg: "R15"}}},
+				{Op: asm.OpRET},
+			},
+		},
+		{
+			Sym: "notcas_op<>",
+			Instrs: []asm.Instr{
+				{Op: "ADD", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0xffff0fc0}, {Kind: asm.OpReg, Reg: "R15"}}},
+			},
+		},
+		{
+			Sym: "notcas_imm<>",
+			Instrs: []asm.Instr{
+				{Op: "MOVW", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0xffff0fc4}, {Kind: asm.OpReg, Reg: "R15"}}},
+			},
+		},
+		{
+			Sym: "notcas_dst<>",
+			Instrs: []asm.Instr{
+				{Op: "MOVW", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0xffff0fc0}, {Kind: asm.OpImm, Imm: 1}}},
+			},
+		},
+		{
+			Sym: "notcas_reg<>",
+			Instrs: []asm.Instr{
+				{Op: "MOVW", Args: []asm.Operand{{Kind: asm.OpImm, Imm: 0xffff0fc0}, {Kind: asm.OpReg, Reg: "R0"}}},
+			},
+		},
+	}
+	got := CollectKuserCASFuncs(funcs, resolve)
+	if !got["pkg.cas<>"] || !got["pkg.caspc<>"] || len(got) != 2 {
+		t.Fatalf("CollectKuserCASFuncs() = %#v, want only pkg.cas<> and pkg.caspc<>", got)
+	}
+
+	c, b := newARMCtxForTest(t, asm.FuncSig{Name: "pkg.caller", Ret: asm.Void}, nil)
+	c.resolve = resolve
+	c.kuserCAS = got
+	// Entry-block raw CPSR read when flags are untouched.
+	c.flagsDef = 0
+	c.flagsTouched = 0
+	c.curBlockIdx = 0
+	if _, err := c.readCPSR(); err != nil {
+		t.Fatalf("readCPSR(entry raw) error = %v", err)
+	}
+	// All flags defined -> overlays NZCV.
+	c.flagsDef = armFlagAll
+	c.flagsTouched = armFlagAll
+	if _, err := c.readCPSR(); err != nil {
+		t.Fatalf("readCPSR(all defined) error = %v", err)
+	}
+	// Partial flags -> rejected with ErrProbeNeedsContext.
+	c.flagsDef = armFlagN | armFlagZ
+	if _, err := c.readCPSR(); err == nil {
+		t.Fatalf("readCPSR(partial) unexpectedly succeeded")
+	}
+	// Conditional kuser CAS preserves intersection with C only.
+	def, touched := c.armInstrUpdateFlags(armFlagAll, 0, "BL", "EQ", false, asm.Instr{
+		Op: "BL.EQ", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "cas<>(SB)"}},
+	})
+	if def != armFlagC || touched != armFlagAll {
+		t.Fatalf("armInstrUpdateFlags(BL.EQ cas) = (%04b, %04b), want (%04b, %04b)", def, touched, armFlagC, armFlagAll)
+	}
+	if def, _ := c.armInstrUpdateFlags(armFlagAll, 0, "BL", "", false, asm.Instr{
+		Op: "BL", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "runtime.entersyscall(SB)"}},
+	}); def != 0 {
+		// resolve prefixes "pkg.", so non-entersyscall clears flags.
+		t.Fatalf("armInstrUpdateFlags(BL pkg.runtime.entersyscall) = %04b, want 0", def)
+	}
+	c.resolve = func(s string) string { return s }
+	if def, _ := c.armInstrUpdateFlags(armFlagAll, 0, "BL", "", false, asm.Instr{
+		Op: "BL", Args: []asm.Operand{{Kind: asm.OpSym, Sym: "runtime.entersyscall(SB)"}},
+	}); def != armFlagAll {
+		t.Fatalf("armInstrUpdateFlags(BL runtime.entersyscall) = %04b, want %04b", def, armFlagAll)
+	}
+	// Conditional kuser CAS lowering.
+	c.resolve = resolve
+	c.flagsDef = armFlagAll
+	if ok, _, err := c.lowerBranch(0, "BL", "EQ", asm.Instr{
+		Raw:  "BL.EQ cas<>(SB)",
+		Args: []asm.Operand{{Kind: asm.OpSym, Sym: "cas<>(SB)"}},
+	}, func(string) {}, func(string, string, string) error { return nil }); !ok || err != nil {
+		t.Fatalf("lowerBranch(BL.EQ cas) = (%v, %v)", ok, err)
+	}
+	out := b.String()
+	for _, want := range []string{"mrs $0, cpsr", "and i32", "cmpxchg ptr"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in output:\n%s", want, out)
+		}
+	}
+
+	var fb strings.Builder
+	if err := TranslateFunc(&fb, asm.Func{Sym: "·noop", Instrs: []asm.Instr{{Op: asm.OpRET}}}, asm.FuncSig{Name: "pkg.noop", Ret: asm.Void}, resolve, nil, false); err != nil {
+		t.Fatalf("TranslateFunc() error = %v", err)
+	}
+	if !strings.Contains(fb.String(), "ret void") {
+		t.Fatalf("TranslateFunc() output = %s", fb.String())
 	}
 }

@@ -183,12 +183,11 @@ func (c *armCtx) eval32(op asm.Operand, postInc bool) (string, error) {
 		fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", t, p)
 		return "%" + t, nil
 	case asm.OpIdent:
-		t := c.newTmp()
 		switch strings.ToUpper(op.Ident) {
 		case "CPSR":
-			fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q()\n", t, "mrs $0, cpsr", "=r,~{memory}")
-			return "%" + t, nil
+			return c.readCPSR()
 		case "FPCR", "FPSR":
+			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q()\n", t, "vmrs $0, fpscr", "=r,~{memory}")
 			return "%" + t, nil
 		}

@@ -28,7 +28,8 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 					return err
 				}
 				fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i32 %s)\n", "blx $0", "r,~{cc},~{memory}", addr)
-				c.captureHardwareFlags()
+				c.flagsDef = 0
+				c.flagsTouched |= armFlagAll
 				return nil
 			case asm.OpMem:
 				addr, _, _, err := c.addrI32(tgtArg.Mem, false)
@@ -36,7 +37,8 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 					return err
 				}
 				fmt.Fprintf(c.b, "  call void asm sideeffect %q, %q(i32 %s)\n", "blx $0", "r,~{cc},~{memory}", addr)
-				c.captureHardwareFlags()
+				c.flagsDef = 0
+				c.flagsTouched |= armFlagAll
 				return nil
 			case asm.OpSym:
 				return c.callSym(tgtArg)
@@ -214,6 +216,39 @@ func (c *armCtx) callSym(symOp asm.Operand) error {
 	if callee == "runtime.entersyscall" || callee == "runtime.exitsyscall" {
 		return nil
 	}
+	if c.kuserCAS[callee] {
+		// Linux/ARM __kuser_cmpxchg (0xffff0fc0): R0=old, R1=new, R2=ptr =>
+		// swaps *ptr atomically, sets C=1 and R0=0 on success (C=0, R0=1 on fail).
+		oldV, err := c.loadReg(asm.Reg("R0"))
+		if err != nil {
+			return err
+		}
+		newV, err := c.loadReg(asm.Reg("R1"))
+		if err != nil {
+			return err
+		}
+		addr, err := c.loadReg(asm.Reg("R2"))
+		if err != nil {
+			return err
+		}
+		pt := c.newTmp()
+		cx := c.newTmp()
+		swapped := c.newTmp()
+		failed := c.newTmp()
+		status := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %s to ptr\n", pt, addr)
+		fmt.Fprintf(c.b, "  %%%s = cmpxchg ptr %%%s, i32 %s, i32 %s seq_cst seq_cst, align 4\n", cx, pt, oldV, newV)
+		fmt.Fprintf(c.b, "  %%%s = extractvalue {i32, i1} %%%s, 1\n", swapped, cx)
+		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", failed, swapped)
+		fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i32\n", status, failed)
+		if err := c.storeReg(asm.Reg("R0"), "%"+status); err != nil {
+			return err
+		}
+		c.storeFlag(c.flagsCSlot, "%"+swapped)
+		c.flagsDef = armFlagC
+		c.flagsTouched |= armFlagAll
+		return nil
+	}
 	csig, ok := c.sigs[callee]
 	if !ok {
 		csig = asm.FuncSig{Name: callee, Ret: asm.Void}
@@ -237,12 +272,14 @@ func (c *armCtx) callSym(symOp asm.Operand) error {
 	}
 	if csig.Ret == asm.Void {
 		fmt.Fprintf(c.b, "  call void %s(%s)\n", asm.LLVMGlobal(callee), strings.Join(args, ", "))
-		c.captureHardwareFlags()
+		c.flagsDef = 0
+		c.flagsTouched |= armFlagAll
 		return nil
 	}
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = call %s %s(%s)\n", t, csig.Ret, asm.LLVMGlobal(callee), strings.Join(args, ", "))
-	c.captureHardwareFlags()
+	c.flagsDef = 0
+	c.flagsTouched |= armFlagAll
 	switch csig.Ret {
 	case asm.I32:
 		return c.storeReg(asm.Reg("R0"), "%"+t)

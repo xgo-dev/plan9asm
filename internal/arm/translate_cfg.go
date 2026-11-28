@@ -6,7 +6,54 @@ import (
 	"strings"
 )
 
+// CollectKuserCASFuncs identifies local Linux/ARM __kuser_cmpxchg trampolines
+// (functions whose sole executable instruction is `MOVW $0xffff0fc0, R15`).
+func CollectKuserCASFuncs(funcs []asm.Func, resolve func(string) string) map[string]bool {
+	var out map[string]bool
+	for _, fn := range funcs {
+		if !isARMKuserCASFunc(fn) {
+			continue
+		}
+		if out == nil {
+			out = map[string]bool{}
+		}
+		out[resolve(fn.Sym)] = true
+	}
+	return out
+}
+
+func isARMKuserCASFunc(fn asm.Func) bool {
+	var real []asm.Instr
+	for _, ins := range fn.Instrs {
+		switch strings.ToUpper(string(ins.Op)) {
+		case string(asm.OpTEXT), "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", "NOP", "#IFDEF", "#ELSE", "#ENDIF":
+			continue
+		default:
+			real = append(real, ins)
+		}
+	}
+	if len(real) != 1 {
+		return false
+	}
+	ins := real[0]
+	if strings.ToUpper(string(ins.Op)) != "MOVW" || len(ins.Args) != 2 {
+		return false
+	}
+	if ins.Args[0].Kind != asm.OpImm || ins.Args[0].ImmRaw != "" || uint32(ins.Args[0].Imm) != 0xffff0fc0 {
+		return false
+	}
+	if ins.Args[1].Kind != asm.OpReg {
+		return false
+	}
+	r := strings.ToUpper(string(ins.Args[1].Reg))
+	return r == "R15" || r == "PC"
+}
+
 func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, annotateSource bool) error {
+	return TranslateFuncWithKuserCAS(b, fn, sig, resolve, sigs, nil, annotateSource)
+}
+
+func TranslateFuncWithKuserCAS(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, kuserCAS map[string]bool, annotateSource bool) error {
 	fmt.Fprintf(b, "define %s %s(", sig.Ret, asm.LLVMGlobal(sig.Name))
 	for i, t := range sig.Args {
 		if i > 0 {
@@ -21,6 +68,7 @@ func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve fun
 	b.WriteString(" {\n")
 
 	c := newARMCtx(b, fn, sig, resolve, sigs, annotateSource)
+	c.kuserCAS = kuserCAS
 	if err := c.emitEntryAllocasAndArgInit(); err != nil {
 		return err
 	}
@@ -45,10 +93,19 @@ func (c *armCtx) lowerBlocks() error {
 		return nil
 	}
 
-	blockFlagsDefIn := c.computeBlockFlagsDefIn()
+	blockFlagsDefIn, blockFlagsTouchedIn, blockReachable := c.computeBlockFlagsDefIn()
 	for bi := 0; bi < len(c.blocks); bi++ {
 		blk := c.blocks[bi]
+		if !blockReachable[bi] {
+			if bi != 0 {
+				fmt.Fprintf(c.b, "\n%s:\n", armLLVMBlockName(blk.name))
+				c.b.WriteString("  unreachable\n")
+			}
+			continue
+		}
+		c.curBlockIdx = bi
 		c.flagsDef = blockFlagsDefIn[bi]
+		c.flagsTouched = blockFlagsTouchedIn[bi]
 		if bi != 0 {
 			fmt.Fprintf(c.b, "\n%s:\n", armLLVMBlockName(blk.name))
 		}

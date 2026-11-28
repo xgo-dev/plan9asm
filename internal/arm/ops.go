@@ -189,7 +189,7 @@ func (c *armCtx) lowerDeclarative(op, cond string, postInc, setFlags bool, ins a
 	case asm.FamilyBit:
 		return true, false, c.lowerARMDeclarativeBit(spec, cond, ins)
 	case asm.FamilyMulDiv:
-		return true, false, c.lowerARMDeclarativeMulDiv(spec, cond, ins)
+		return true, false, c.lowerARMDeclarativeMulDiv(spec, cond, setFlags, ins)
 	case asm.FamilyFP:
 		return true, false, c.lowerARMDeclarativeFP(spec, cond, ins)
 	}
@@ -590,7 +590,7 @@ func (c *armCtx) lowerARMDeclarativeBit(spec asm.OpSpec, cond string, ins asm.In
 	return fmt.Errorf("arm: unhandled declarative bit op %s", spec.Op)
 }
 
-func (c *armCtx) lowerARMDeclarativeMulDiv(spec asm.OpSpec, cond string, ins asm.Instr) error {
+func (c *armCtx) lowerARMDeclarativeMulDiv(spec asm.OpSpec, cond string, setFlags bool, ins asm.Instr) error {
 	switch spec.LLVMOp {
 	case "sdiv", "udiv", "srem", "urem":
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {
@@ -618,6 +618,8 @@ func (c *armCtx) lowerARMDeclarativeMulDiv(spec asm.OpSpec, cond string, ins asm
 		if err != nil {
 			return err
 		}
+		// Software division/zero-guard codegen on ARMv7 may clobber hardware CPSR.
+		c.flagsTouched |= armFlagAll
 		zero := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", zero, divisor)
 		safeDiv := c.newTmp()
@@ -665,7 +667,13 @@ func (c *armCtx) lowerARMDeclarativeMulDiv(spec asm.OpSpec, cond string, ins asm
 		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", lo, prod)
 		fmt.Fprintf(c.b, "  %%%s = lshr i64 %%%s, 32\n", hiSh, prod)
 		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", hi, hiSh)
-		return c.selectRegPairWrite(ins.Args[2].RegList[0], ins.Args[2].RegList[1], cond, "%"+hi, "%"+lo)
+		if err := c.selectRegPairWrite(ins.Args[2].RegList[0], ins.Args[2].RegList[1], cond, "%"+hi, "%"+lo); err != nil {
+			return err
+		}
+		if setFlags {
+			return c.setFlagsLogic64(cond, "%"+prod)
+		}
+		return nil
 
 	case "muls":
 		if len(ins.Args) != 4 || ins.Args[3].Kind != asm.OpReg {

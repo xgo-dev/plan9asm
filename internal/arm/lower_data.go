@@ -150,9 +150,10 @@ func (c *armCtx) emitConditionalEffect(cond string, emit func() error) error {
 	if err := emit(); err != nil {
 		return err
 	}
-	// The skip edge enters done with savedFlagsDef, so conditional effects
-	// cannot establish newly defined flags after the merge.
-	c.flagsDef = savedFlagsDef
+	// Meet the skip edge (savedFlagsDef) and taken edge (c.flagsDef):
+	// conditional writes cannot newly define flags, while conditional calls
+	// still invalidate flags after the merge.
+	c.flagsDef = savedFlagsDef & c.flagsDef
 	fmt.Fprintf(c.b, "  br label %%%s\n", done)
 	fmt.Fprintf(c.b, "\n%s:\n", done)
 	return nil

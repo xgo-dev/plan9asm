@@ -1136,6 +1136,283 @@ TEXT ·partialTstPreservesExplicitC0(SB),NOSPLIT,$0-4
 	MOVW R0, ret+0(FP)
 	RET
 
+// MOVW CPSR, Rd observes tracked NZCV flags in bits [31:28].
+TEXT ·cpsrReadCarry1(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $1, R1
+	MOVW CPSR, R2
+	SRL $29, R2
+	AND $1, R2
+	MOVW R2, ret+0(FP)
+	RET
+
+TEXT ·cpsrReadCarry0(SB),NOSPLIT,$0-4
+	MOVW $0, R1
+	CMP $1, R1
+	MOVW CPSR, R2
+	SRL $29, R2
+	AND $1, R2
+	MOVW R2, ret+0(FP)
+	RET
+
+TEXT ·cpsrReadNZCVSubGt(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW CPSR, R2
+	SRL $28, R2
+	MOVW R2, ret+0(FP)
+	RET
+
+TEXT ·cpsrReadNZCVSubLt(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $5, R1
+	MOVW CPSR, R2
+	SRL $28, R2
+	MOVW R2, ret+0(FP)
+	RET
+
+TEXT ·cpsrReadNZCVAddOv(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMN $0x7fffffff, R1
+	MOVW CPSR, R2
+	SRL $28, R2
+	MOVW R2, ret+0(FP)
+	RET
+
+TEXT ·cpsrRoundtripCarry(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $1, R1
+	MOVW CPSR, R2
+	MOVW $0, R3
+	CMP $1, R3
+	MOVW R2, CPSR
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+// Multiply .S updates N/Z and preserves C/V (and MULAL is signed SMLAL while MULALU is unsigned UMLAL).
+TEXT ·mulSZeroSetsZPreservesC(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $0, R2
+	MUL.S R1, R2, R3
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulSNegSetsNPreservesC(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $-3, R2
+	MOVW $5, R3
+	MUL.S R2, R3, R4
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·muluSZeroSetsZ(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $0, R2
+	MULU.S R1, R2, R3
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulaSZeroSetsZ(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $3, R2
+	MOVW $2, R3
+	MOVW $-6, R4
+	MULA.S R2, R3, R4, R5
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulaSNegSetsN(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $3, R2
+	MOVW $-4, R3
+	MOVW $2, R4
+	MULA.S R2, R3, R4, R5
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mullSZeroSetsZ(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $0, R2
+	MULL.S R1, R2, (R3, R4)
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mullSNegSetsN(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $-2, R2
+	MOVW $3, R3
+	MULL.S R2, R3, (R4, R5)
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulluSZeroSetsZ(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $0, R2
+	MULLU.S R1, R2, (R3, R4)
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulluSHiBitSetsN(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $0xffffffff, R2
+	MOVW $0xffffffff, R3
+	MULLU.S R2, R3, (R4, R5)
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulalSSignedNeg(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $-2, R2
+	MOVW $3, R3
+	MOVW $0, R4
+	MOVW $0, R5
+	MULAL.S R2, R3, (R4, R5)
+	// Signed -2 * 3 + 0 = -6 => hi(R4) = -1, lo(R5) = -6, N=1, Z=0, C=1(preserved).
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	ADD R4, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulalSZeroSetsZ(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $-2, R2
+	MOVW $3, R3
+	MOVW $0, R4
+	MOVW $6, R5
+	MULAL.S R2, R3, (R4, R5)
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulaluSUnsignedPos(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $-2, R2
+	MOVW $3, R3
+	MOVW $0, R4
+	MOVW $0, R5
+	MULALU.S R2, R3, (R4, R5)
+	// Unsigned 0xfffffffe * 3 + 0 = 0x2fffffffa => hi(R4) = 2, N=0, Z=0, C=1(preserved).
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	ADD R4, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulEqSFalsePreservesFlags(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $0, R2
+	MUL.EQ.S R1, R2, R3
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·mulNeSTrueUpdatesNZ(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $0, R2
+	MUL.NE.S R1, R2, R3
+	MOVW $0, R0
+	ORR.MI $8, R0
+	ORR.EQ $4, R0
+	ORR.CS $2, R0
+	ORR.VS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+
+// Unreachable dead blocks after unconditional branches/RET must not cause false
+// flag-definedness rejections.
+TEXT ·deadBlockAfterUncondBranch(SB),NOSPLIT,$0-4
+	MOVW $1, R0
+	B done
+	MOVW.CS $2, R0
+done:
+	MOVW R0, ret+0(FP)
+	RET
+
+TEXT ·deadLabeledBlockAfterRet(SB),NOSPLIT,$0-4
+	MOVW $7, R0
+	MOVW R0, ret+0(FP)
+	RET
+dead:
+	MOVW.CS $9, R0
+	MOVW R0, ret+0(FP)
+	RET
+
 // Runtime-input shift function to verify non-constant armv7 backend codegen
 // (explicitly establishes C=0 so shift-by-0 does not depend on caller entry C).
 TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
@@ -1223,6 +1500,28 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 		"cmpdZeroEq":                            6,
 		"partialTstPreservesExplicitC1":         1,
 		"partialTstPreservesExplicitC0":         0,
+		"cpsrReadCarry1":                        1,
+		"cpsrReadCarry0":                        0,
+		"cpsrReadNZCVSubGt":                     2,
+		"cpsrReadNZCVSubLt":                     8,
+		"cpsrReadNZCVAddOv":                     9,
+		"cpsrRoundtripCarry":                    1,
+		"mulSZeroSetsZPreservesC":               6,
+		"mulSNegSetsNPreservesC":                10,
+		"muluSZeroSetsZ":                        6,
+		"mulaSZeroSetsZ":                        6,
+		"mulaSNegSetsN":                         10,
+		"mullSZeroSetsZ":                        6,
+		"mullSNegSetsN":                         10,
+		"mulluSZeroSetsZ":                       6,
+		"mulluSHiBitSetsN":                      10,
+		"mulalSSignedNeg":                       9, // N(8)+C(2)+hi(-1) = 9
+		"mulalSZeroSetsZ":                       6,
+		"mulaluSUnsignedPos":                    4, // C(2)+hi(2) = 4
+		"mulEqSFalsePreservesFlags":             2,
+		"mulNeSTrueUpdatesNZ":                   6,
+		"deadBlockAfterUncondBranch":            1,
+		"deadLabeledBlockAfterRet":              7,
 	}
 	sigs := map[string]FuncSig{
 		"runtimeShiftCarry": {
@@ -1325,6 +1624,30 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 				name: "CFG_join_missing_C_on_one_path",
 				body: "MOVW $1, R1\nTST $1, R1\nBEQ join\nCMP $0, R1\njoin:\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
 			},
+			{
+				name: "TST_partial_then_MOVW_CPSR",
+				body: "MOVW $1, R1\nTST $1, R1\nMOVW CPSR, R2\nMOVW R2, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "MUL_S_does_not_define_C",
+				body: "MOVW $2, R1\nMOVW $3, R2\nMUL.S R1, R2, R3\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "MULA_S_does_not_define_C",
+				body: "MOVW $2, R1\nMOVW $3, R2\nMOVW $1, R3\nMULA.S R1, R2, R3, R4\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "MULL_S_does_not_define_C",
+				body: "MOVW $2, R1\nMOVW $3, R2\nMULL.S R1, R2, (R3, R4)\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "MULAL_S_does_not_define_C",
+				body: "MOVW $2, R1\nMOVW $3, R2\nMOVW $0, R3\nMOVW $0, R4\nMULAL.S R1, R2, (R3, R4)\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
+			{
+				name: "branch_then_MOVW_CPSR_without_all_flags",
+				body: "B next\nnext:\nMOVW CPSR, R0\nMOVW R0, ret+0(FP)\nRET\n",
+			},
 		}
 		for _, tc := range rejectCases {
 			t.Run("Reject_"+tc.name, func(t *testing.T) {
@@ -1392,6 +1715,231 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 				}
 			})
 		}
+	})
+
+	// Cross-CALL flag handling: general calls clobber hardware flags and do not
+	// propagate LLVM flag slots back to the caller, so consuming flags across a
+	// general CALL must be rejected with ErrProbeNeedsContext. Verified Linux/ARM
+	// __kuser_cmpxchg trampolines (MOVW $0xffff0fc0, R15) lower to atomic cmpxchg
+	// defining C only.
+	t.Run("CrossCallFlags", func(t *testing.T) {
+		rejectCallCases := []struct {
+			name string
+			src  string
+			sigs map[string]FuncSig
+		}{
+			{
+				name: "callee_sets_C_caller_reads_CS",
+				src: `
+TEXT ·setC(SB),NOSPLIT,$0-0
+	MOVW $1, R1
+	CMP $0, R1
+	RET
+
+TEXT ·caller(SB),NOSPLIT,$0-4
+	BL ·setC(SB)
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+`,
+				sigs: map[string]FuncSig{
+					"setC":   {Name: "setC", Ret: Void},
+					"caller": sig0("caller"),
+				},
+			},
+			{
+				name: "caller_sets_C_call_clobbers_C",
+				src: `
+TEXT ·noop(SB),NOSPLIT,$0-0
+	RET
+
+TEXT ·caller(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	BL ·noop(SB)
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+`,
+				sigs: map[string]FuncSig{
+					"noop":   {Name: "noop", Ret: Void},
+					"caller": sig0("caller"),
+				},
+			},
+			{
+				name: "conditional_call_clobbers_C",
+				src: `
+TEXT ·noop(SB),NOSPLIT,$0-0
+	RET
+
+TEXT ·caller(SB),NOSPLIT,$0-4
+	MOVW $1, R1
+	CMP $0, R1
+	BL.NE ·noop(SB)
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+`,
+				sigs: map[string]FuncSig{
+					"noop":   {Name: "noop", Ret: Void},
+					"caller": sig0("caller"),
+				},
+			},
+			{
+				name: "call_then_MOVW_CPSR",
+				src: `
+TEXT ·setC(SB),NOSPLIT,$0-0
+	MOVW $1, R1
+	CMP $0, R1
+	RET
+
+TEXT ·caller(SB),NOSPLIT,$0-4
+	BL ·setC(SB)
+	MOVW CPSR, R0
+	MOVW R0, ret+0(FP)
+	RET
+`,
+				sigs: map[string]FuncSig{
+					"setC":   {Name: "setC", Ret: Void},
+					"caller": sig0("caller"),
+				},
+			},
+			{
+				name: "kuser_cas_defines_only_C_not_Z",
+				src: `
+TEXT cas<>(SB),NOSPLIT,$0
+	MOVW $0xffff0fc0, R15
+
+TEXT ·caller(SB),NOSPLIT,$0-4
+	BL cas<>(SB)
+	MOVW $0, R0
+	MOVW.EQ $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+`,
+				sigs: map[string]FuncSig{
+					"cas<>":  {Name: "cas<>", Ret: Void},
+					"caller": sig0("caller"),
+				},
+			},
+		}
+		for _, tc := range rejectCallCases {
+			t.Run("Reject_"+tc.name, func(t *testing.T) {
+				f, err := Parse(ArchARM, tc.src)
+				if err != nil {
+					t.Fatalf("Parse failed: %v", err)
+				}
+				_, err = Translate(f, Options{
+					TargetTriple: "armv7-unknown-linux-gnueabihf",
+					Goarch:       "arm",
+					ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+					Sigs:         tc.sigs,
+				})
+				if !errors.Is(err, ErrProbeNeedsContext) {
+					t.Fatalf("expected ErrProbeNeedsContext for %s, got: %v", tc.name, err)
+				}
+			})
+		}
+
+		// Positive control: re-establishing flags after BL is accepted.
+		t.Run("Accept_reestablish_flags_after_call", func(t *testing.T) {
+			f, err := Parse(ArchARM, `
+TEXT ·setC(SB),NOSPLIT,$0-0
+	RET
+
+TEXT ·caller(SB),NOSPLIT,$0-4
+	BL ·setC(SB)
+	MOVW $1, R1
+	CMP $0, R1
+	MOVW $0, R0
+	MOVW.CS $1, R0
+	MOVW R0, ret+0(FP)
+	RET
+`)
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			llCall, err := Translate(f, Options{
+				TargetTriple: "armv7-unknown-linux-gnueabihf",
+				Goarch:       "arm",
+				ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+				Sigs: map[string]FuncSig{
+					"setC":   {Name: "setC", Ret: Void},
+					"caller": sig0("caller"),
+				},
+			})
+			if err != nil {
+				t.Fatalf("Translate failed: %v", err)
+			}
+			if strings.Contains(llCall, "mrs $0, apsr") {
+				t.Fatalf("unexpected mrs $0, apsr in:\n%s", llCall)
+			}
+			verifyLLVMWithTargetLLC(t, llCall, "armv7-unknown-linux-gnueabihf")
+			optCall := runOptO2(t, llCall)
+			body := extractLLVMFuncBody(t, optCall, "caller")
+			if !strings.Contains(body, "ret i32 1") {
+				t.Fatalf("expected ret i32 1 after -O2, got:\n%s", body)
+			}
+		})
+
+		// Positive control: verified Linux/ARM kuser __kuser_cmpxchg lowers to cmpxchg and defines C.
+		t.Run("Accept_kuser_cas_cmpxchg_sets_C", func(t *testing.T) {
+			f, err := Parse(ArchARM, `
+TEXT cas<>(SB),NOSPLIT,$0
+	MOVW $0xffff0fc0, R15
+
+TEXT ·armcas(SB),NOSPLIT,$0-16
+	MOVW valptr+0(FP), R2
+	MOVW old+4(FP), R0
+	MOVW new+8(FP), R1
+	BL cas<>(SB)
+	BCC ret0
+	MOVW $1, R0
+	MOVW R0, ret+12(FP)
+	RET
+ret0:
+	MOVW $0, R0
+	MOVW R0, ret+12(FP)
+	RET
+`)
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			llCAS, err := Translate(f, Options{
+				TargetTriple: "armv7-unknown-linux-gnueabihf",
+				Goarch:       "arm",
+				ResolveSym:   func(s string) string { return strings.TrimPrefix(s, "·") },
+				Sigs: map[string]FuncSig{
+					"cas<>": {Name: "cas<>", Ret: Void},
+					"armcas": {
+						Name: "armcas",
+						Args: []LLVMType{Ptr, I32, I32},
+						Ret:  I32,
+						Frame: FrameLayout{
+							Params: []FrameSlot{
+								{Offset: 0, Type: Ptr, Index: 0, Field: -1},
+								{Offset: 4, Type: I32, Index: 1, Field: -1},
+								{Offset: 8, Type: I32, Index: 2, Field: -1},
+							},
+							Results: []FrameSlot{{Offset: 12, Type: I32, Index: 0, Field: -1}},
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Translate kuser CAS failed: %v", err)
+			}
+			if !strings.Contains(llCAS, "cmpxchg ptr") {
+				t.Fatalf("expected atomic cmpxchg lowering for kuser CAS, got:\n%s", llCAS)
+			}
+			if strings.Contains(llCAS, "mrs $0, apsr") {
+				t.Fatalf("unexpected mrs $0, apsr in kuser CAS IR:\n%s", llCAS)
+			}
+			verifyLLVMWithTargetLLC(t, llCAS, "armv7-unknown-linux-gnueabihf")
+		})
 	})
 }
 

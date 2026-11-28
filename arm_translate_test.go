@@ -101,13 +101,15 @@ TEXT ·spin(SB),NOSPLIT,$0-0
 		`store i32 %`,
 		`ptr @example.global`,
 		`call void @example.callee()`,
-		`mrs $0, apsr`,
 		`call void asm sideeffect "bx $0"`,
 		`define void @example.spin()`,
 	} {
 		if !strings.Contains(ll, want) {
 			t.Fatalf("missing %q in output:\n%s", want, ll)
 		}
+	}
+	if strings.Contains(ll, "mrs $0, apsr") {
+		t.Fatalf("general CALL must not synthesize mrs $0, apsr:\n%s", ll)
 	}
 }
 

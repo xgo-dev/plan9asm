@@ -15,13 +15,13 @@ func (c *armCtx) lowerArith(op, cond string, setFlags bool, ins asm.Instr) (ok b
 	case "ADC", "SBC":
 		return true, false, c.lowerARMADCSBC(op, cond, setFlags, ins)
 	case "MUL", "MULU":
-		return true, false, c.lowerARMMUL(cond, ins)
+		return true, false, c.lowerARMMUL(cond, setFlags, ins)
 	case "MULLU":
-		return true, false, c.lowerARMMULLU(cond, ins)
+		return true, false, c.lowerARMMULLU(cond, setFlags, ins)
 	case "MULA":
-		return true, false, c.lowerARMMULA(cond, ins)
+		return true, false, c.lowerARMMULA(cond, setFlags, ins)
 	case "MULAL", "MULALU":
-		return true, false, c.lowerARMMULAL(cond, ins)
+		return true, false, c.lowerARMMULAL(op, cond, setFlags, ins)
 	case "MULAWT":
 		return true, false, c.lowerARMMULAWT(cond, ins)
 	case "DIVUHW":
@@ -356,7 +356,7 @@ func (c *armCtx) selectRegPairWrite(hi, lo asm.Reg, cond, newHi, newLo string) e
 	return c.storeReg(lo, "%"+selLo)
 }
 
-func (c *armCtx) lowerARMMUL(cond string, ins asm.Instr) error {
+func (c *armCtx) lowerARMMUL(cond string, setFlags bool, ins asm.Instr) error {
 	if len(ins.Args) != 2 && len(ins.Args) != 3 {
 		return fmt.Errorf("arm MUL expects 2 or 3 operands: %q", ins.Raw)
 	}
@@ -392,10 +392,16 @@ func (c *armCtx) lowerARMMUL(cond string, ins asm.Instr) error {
 	}
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = mul i32 %s, %s\n", t, a, b)
-	return c.selectRegWrite(dst.Reg, cond, "%"+t)
+	if err := c.selectRegWrite(dst.Reg, cond, "%"+t); err != nil {
+		return err
+	}
+	if setFlags {
+		return c.setFlagsLogicCarry(cond, "%"+t, "", false)
+	}
+	return nil
 }
 
-func (c *armCtx) lowerARMMULLU(cond string, ins asm.Instr) error {
+func (c *armCtx) lowerARMMULLU(cond string, setFlags bool, ins asm.Instr) error {
 	if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpRegList || len(ins.Args[2].RegList) != 2 {
 		return fmt.Errorf("arm MULLU expects src, lhs, (hi,lo): %q", ins.Raw)
 	}
@@ -417,10 +423,16 @@ func (c *armCtx) lowerARMMULLU(cond string, ins asm.Instr) error {
 	fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", lo, prod)
 	fmt.Fprintf(c.b, "  %%%s = lshr i64 %%%s, 32\n", hiShift, prod)
 	fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", hi, hiShift)
-	return c.selectRegPairWrite(ins.Args[2].RegList[0], ins.Args[2].RegList[1], cond, "%"+hi, "%"+lo)
+	if err := c.selectRegPairWrite(ins.Args[2].RegList[0], ins.Args[2].RegList[1], cond, "%"+hi, "%"+lo); err != nil {
+		return err
+	}
+	if setFlags {
+		return c.setFlagsLogic64(cond, "%"+prod)
+	}
+	return nil
 }
 
-func (c *armCtx) lowerARMMULA(cond string, ins asm.Instr) error {
+func (c *armCtx) lowerARMMULA(cond string, setFlags bool, ins asm.Instr) error {
 	if len(ins.Args) != 4 || ins.Args[3].Kind != asm.OpReg {
 		return fmt.Errorf("arm MULA expects a, b, acc, dst: %q", ins.Raw)
 	}
@@ -440,12 +452,18 @@ func (c *armCtx) lowerARMMULA(cond string, ins asm.Instr) error {
 	res := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = mul i32 %s, %s\n", mul, a, b)
 	fmt.Fprintf(c.b, "  %%%s = add i32 %%%s, %s\n", res, mul, acc)
-	return c.selectRegWrite(ins.Args[3].Reg, cond, "%"+res)
+	if err := c.selectRegWrite(ins.Args[3].Reg, cond, "%"+res); err != nil {
+		return err
+	}
+	if setFlags {
+		return c.setFlagsLogicCarry(cond, "%"+res, "", false)
+	}
+	return nil
 }
 
-func (c *armCtx) lowerARMMULAL(cond string, ins asm.Instr) error {
+func (c *armCtx) lowerARMMULAL(op, cond string, setFlags bool, ins asm.Instr) error {
 	if len(ins.Args) != 3 || ins.Args[2].Kind != asm.OpRegList || len(ins.Args[2].RegList) != 2 {
-		return fmt.Errorf("arm MULAL expects a, b, (hi,lo): %q", ins.Raw)
+		return fmt.Errorf("arm %s expects a, b, (hi,lo): %q", op, ins.Raw)
 	}
 	hiReg := ins.Args[2].RegList[0]
 	loReg := ins.Args[2].RegList[1]
@@ -471,8 +489,20 @@ func (c *armCtx) lowerARMMULAL(cond string, ins asm.Instr) error {
 	old64 := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = shl i64 %s, 32\n", hiSh, oldHi64)
 	fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %s\n", old64, hiSh, oldLo64)
+	var a64, b64 string
+	if op == "MULAL" {
+		// MULAL encodes ARMv7 SMLAL (signed 32x32->64 accumulate).
+		sa, sb := c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", sa, a)
+		fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", sb, b)
+		a64, b64 = "%"+sa, "%"+sb
+	} else {
+		// MULALU encodes ARMv7 UMLAL (unsigned 32x32->64 accumulate).
+		a64 = c.zextI32ToI64(a)
+		b64 = c.zextI32ToI64(b)
+	}
 	prod := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = mul i64 %s, %s\n", prod, c.zextI32ToI64(a), c.zextI32ToI64(b))
+	fmt.Fprintf(c.b, "  %%%s = mul i64 %s, %s\n", prod, a64, b64)
 	sum := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", sum, old64, prod)
 	lo := c.newTmp()
@@ -481,7 +511,13 @@ func (c *armCtx) lowerARMMULAL(cond string, ins asm.Instr) error {
 	fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", lo, sum)
 	fmt.Fprintf(c.b, "  %%%s = lshr i64 %%%s, 32\n", hiShift, sum)
 	fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i32\n", hi, hiShift)
-	return c.selectRegPairWrite(hiReg, loReg, cond, "%"+hi, "%"+lo)
+	if err := c.selectRegPairWrite(hiReg, loReg, cond, "%"+hi, "%"+lo); err != nil {
+		return err
+	}
+	if setFlags {
+		return c.setFlagsLogic64(cond, "%"+sum)
+	}
+	return nil
 }
 
 func (c *armCtx) lowerARMMULAWT(cond string, ins asm.Instr) error {

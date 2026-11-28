@@ -50,16 +50,6 @@ func (c *armCtx) storeFlag(slot string, v string) {
 	fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", v, slot)
 }
 
-// captureHardwareFlags records the APSR condition flags immediately after an
-// out-of-line call. ARM assembly is allowed to branch on flags produced by the
-// callee (the Linux kuser CAS helper does this), while an LLVM call has no flag
-// result in its type. Reading APSR keeps that machine-level contract explicit.
-func (c *armCtx) captureHardwareFlags() {
-	status := c.newTmp()
-	fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q()\n", status, "mrs $0, apsr", "=r,~{memory}")
-	c.storeFlagsFromStatus("%" + status)
-}
-
 func (c *armCtx) storeFlagsFromStatus(status string) {
 	for _, item := range []struct {
 		shift int
@@ -77,6 +67,50 @@ func (c *armCtx) storeFlagsFromStatus(status string) {
 		c.storeFlag(item.slot, "%"+flag)
 	}
 	c.flagsDef = armFlagAll
+	c.flagsTouched |= armFlagAll
+}
+
+// readCPSR lowers MOVW CPSR, Rd. When all four NZCV flags are defined in the
+// translator's LLVM flag slots, it reads the hardware CPSR for bits [27:0] and
+// overlays bits [31:28] from the live tracked NZCV slots so preceding CMP/TST/
+// ALU.S updates are observed accurately. At function entry before any flag
+// mutation or branch (e.g. asyncPreempt), hardware CPSR is read directly.
+// Otherwise (partial or call-clobbered flags where LLVM codegen may have
+// clobbered hardware NZCV), it returns ErrProbeNeedsContext.
+func (c *armCtx) readCPSR() (string, error) {
+	if c.flagsDef == armFlagAll {
+		raw := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q()\n", raw, "mrs $0, cpsr", "=r,~{memory}")
+		masked := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, 268435455\n", masked, raw)
+		cur := "%" + masked
+		for _, item := range []struct {
+			shift int
+			slot  string
+		}{
+			{31, c.flagsNSlot},
+			{30, c.flagsZSlot},
+			{29, c.flagsCSlot},
+			{28, c.flagsVSlot},
+		} {
+			ld := c.newTmp()
+			ext := c.newTmp()
+			sh := c.newTmp()
+			or := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", ld, item.slot)
+			fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i32\n", ext, ld)
+			fmt.Fprintf(c.b, "  %%%s = shl i32 %%%s, %d\n", sh, ext, item.shift)
+			fmt.Fprintf(c.b, "  %%%s = or i32 %s, %%%s\n", or, cur, sh)
+			cur = "%" + or
+		}
+		return cur, nil
+	}
+	if c.flagsTouched == 0 && c.curBlockIdx == 0 {
+		raw := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q()\n", raw, "mrs $0, cpsr", "=r,~{memory}")
+		return "%" + raw, nil
+	}
+	return "", fmt.Errorf("%w: arm CPSR read requires all NZCV flags defined (defined=%04b)", asm.ErrProbeNeedsContext, c.flagsDef)
 }
 
 func (c *armCtx) storeFlagPred(pred, slot, v string) {
@@ -116,6 +150,7 @@ func (c *armCtx) setFlagsSubWithCarry(cond, dst, src, res, carryOverride string)
 	if err != nil {
 		return err
 	}
+	c.flagsTouched |= armFlagAll
 	if pred == "" {
 		c.flagsDef |= armFlagAll
 	}
@@ -153,6 +188,7 @@ func (c *armCtx) setFlagsAddWithCarry(cond, dst, src, res, carryOverride string)
 	if err != nil {
 		return err
 	}
+	c.flagsTouched |= armFlagAll
 	if pred == "" {
 		c.flagsDef |= armFlagAll
 	}
@@ -188,6 +224,7 @@ func (c *armCtx) setFlagsNZCV(cond, n, z, carry, v string) error {
 	if err != nil {
 		return err
 	}
+	c.flagsTouched |= armFlagAll
 	if pred == "" {
 		c.flagsDef |= armFlagAll
 	}
@@ -207,6 +244,10 @@ func (c *armCtx) setFlagsLogicCarry(cond, res, carryOut string, carryDefined boo
 	if err != nil {
 		return err
 	}
+	c.flagsTouched |= armFlagN | armFlagZ
+	if carryOut != "" {
+		c.flagsTouched |= armFlagC
+	}
 	if pred == "" {
 		c.flagsDef |= armFlagN | armFlagZ
 		if carryDefined {
@@ -222,6 +263,24 @@ func (c *armCtx) setFlagsLogicCarry(cond, res, carryOut string, carryDefined boo
 	if carryOut != "" {
 		c.storeFlagPred(pred, c.flagsCSlot, carryOut)
 	}
+	return nil
+}
+
+func (c *armCtx) setFlagsLogic64(cond, res64 string) error {
+	pred, err := c.evalFlagPred(cond)
+	if err != nil {
+		return err
+	}
+	c.flagsTouched |= armFlagN | armFlagZ
+	if pred == "" {
+		c.flagsDef |= armFlagN | armFlagZ
+	}
+	z := c.newTmp()
+	n := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", z, res64)
+	fmt.Fprintf(c.b, "  %%%s = icmp slt i64 %s, 0\n", n, res64)
+	c.storeFlagPred(pred, c.flagsZSlot, "%"+z)
+	c.storeFlagPred(pred, c.flagsNSlot, "%"+n)
 	return nil
 }
 
@@ -325,87 +384,9 @@ func armImmShiftEffAmount(op string, raw int64) int64 {
 	}
 }
 
-func (c *armCtx) armInstrMustDefineFlags(baseOp, cond string, setFlags bool, ins asm.Instr) armFlagMask {
-	if cond != "" && !strings.EqualFold(cond, "AL") {
-		return 0
-	}
+func (c *armCtx) armInstrUpdateFlags(cur, touched armFlagMask, baseOp, cond string, setFlags bool, ins asm.Instr) (armFlagMask, armFlagMask) {
+	uncond := cond == "" || strings.EqualFold(cond, "AL")
 	switch baseOp {
-	case "CMP", "CMN", "CMPF", "CMPD":
-		return armFlagAll
-	case "ADD", "SUB", "RSB", "ADC", "SBC", "RSC":
-		if setFlags {
-			return armFlagAll
-		}
-	case "TST", "TEQ":
-		m := armFlagN | armFlagZ
-		if len(ins.Args) >= 1 {
-			switch ins.Args[0].Kind {
-			case asm.OpRegShift:
-				if armRegShiftDefinesCarry(ins.Args[0]) {
-					m |= armFlagC
-				}
-			case asm.OpImm:
-				if ins.Args[0].ImmRaw == "" {
-					if _, ok := armImmLogicalCarry(baseOp, ins.Args[0].Imm); ok {
-						m |= armFlagC
-					}
-				}
-			}
-		}
-		return m
-	case "AND", "ORR", "EOR", "BIC":
-		if !setFlags {
-			return 0
-		}
-		m := armFlagN | armFlagZ
-		if len(ins.Args) >= 1 {
-			switch ins.Args[0].Kind {
-			case asm.OpRegShift:
-				if armRegShiftDefinesCarry(ins.Args[0]) {
-					m |= armFlagC
-				}
-			case asm.OpImm:
-				if ins.Args[0].ImmRaw == "" {
-					if _, ok := armImmLogicalCarry(baseOp, ins.Args[0].Imm); ok {
-						m |= armFlagC
-					}
-				}
-			}
-		}
-		return m
-	case "MVN":
-		if !setFlags {
-			return 0
-		}
-		m := armFlagN | armFlagZ
-		if len(ins.Args) == 2 && armRegShiftDefinesCarry(ins.Args[0]) {
-			m |= armFlagC
-		} else if len(ins.Args) == 3 && armRegShiftDefinesCarry(ins.Args[1]) {
-			m |= armFlagC
-		}
-		return m
-	case "MOVW":
-		if len(ins.Args) == 2 && ins.Args[1].Kind == asm.OpIdent && strings.EqualFold(ins.Args[1].Ident, "CPSR") {
-			return armFlagAll
-		}
-		if setFlags && len(ins.Args) == 2 && ins.Args[1].Kind == asm.OpReg {
-			m := armFlagN | armFlagZ
-			if armRegShiftDefinesCarry(ins.Args[0]) {
-				m |= armFlagC
-			}
-			return m
-		}
-	case "SLL", "SRL", "SRA":
-		if !setFlags {
-			return 0
-		}
-		m := armFlagN | armFlagZ
-		if len(ins.Args) >= 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].ImmRaw == "" {
-			if armImmShiftEffAmount(baseOp, ins.Args[0].Imm) != 0 {
-				m |= armFlagC
-			}
-		}
-		return m
 	case "BL", "CALL":
 		if len(ins.Args) >= 1 {
 			tgt := ins.Args[len(ins.Args)-1]
@@ -414,51 +395,193 @@ func (c *armCtx) armInstrMustDefineFlags(baseOp, cond string, setFlags bool, ins
 				if strings.HasSuffix(s, "(SB)") {
 					callee := c.resolve(strings.TrimSuffix(s, "(SB)"))
 					if callee == "runtime.entersyscall" || callee == "runtime.exitsyscall" {
-						return 0
+						return cur, touched
+					}
+					if c.kuserCAS[callee] {
+						touched |= armFlagAll
+						if uncond {
+							return armFlagC, touched
+						}
+						return cur & armFlagC, touched
 					}
 				}
 			}
-			return armFlagAll
+		}
+		// General calls (both direct LLVM calls and indirect blx) clobber
+		// hardware CPSR and do not return translated LLVM flag slots.
+		return 0, touched | armFlagAll
+	case "CMP", "CMN", "CMPF", "CMPD":
+		touched |= armFlagAll
+		if uncond {
+			cur |= armFlagAll
+		}
+	case "ADD", "SUB", "RSB", "ADC", "SBC", "RSC":
+		if setFlags {
+			touched |= armFlagAll
+			if uncond {
+				cur |= armFlagAll
+			}
+		}
+	case "MUL", "MULU", "MULA", "MULL", "MULLU", "MULAL", "MULALU":
+		if setFlags {
+			touched |= armFlagN | armFlagZ
+			if uncond {
+				cur |= armFlagN | armFlagZ
+			}
+		}
+	case "DIV", "DIVU", "MOD", "MODU":
+		// Software division/zero-guard codegen on ARMv7 may clobber hardware CPSR.
+		touched |= armFlagAll
+	case "TST", "TEQ":
+		m := armFlagN | armFlagZ
+		t := armFlagN | armFlagZ
+		if len(ins.Args) >= 1 {
+			switch ins.Args[0].Kind {
+			case asm.OpRegShift:
+				t |= armFlagC
+				if armRegShiftDefinesCarry(ins.Args[0]) {
+					m |= armFlagC
+				}
+			case asm.OpImm:
+				if ins.Args[0].ImmRaw == "" {
+					if _, ok := armImmLogicalCarry(baseOp, ins.Args[0].Imm); ok {
+						m |= armFlagC
+						t |= armFlagC
+					}
+				}
+			}
+		}
+		touched |= t
+		if uncond {
+			cur |= m
+		}
+	case "AND", "ORR", "EOR", "BIC":
+		if !setFlags {
+			return cur, touched
+		}
+		m := armFlagN | armFlagZ
+		t := armFlagN | armFlagZ
+		if len(ins.Args) >= 1 {
+			switch ins.Args[0].Kind {
+			case asm.OpRegShift:
+				t |= armFlagC
+				if armRegShiftDefinesCarry(ins.Args[0]) {
+					m |= armFlagC
+				}
+			case asm.OpImm:
+				if ins.Args[0].ImmRaw == "" {
+					if _, ok := armImmLogicalCarry(baseOp, ins.Args[0].Imm); ok {
+						m |= armFlagC
+						t |= armFlagC
+					}
+				}
+			}
+		}
+		touched |= t
+		if uncond {
+			cur |= m
+		}
+	case "MVN":
+		if !setFlags {
+			return cur, touched
+		}
+		m := armFlagN | armFlagZ
+		t := armFlagN | armFlagZ
+		if len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpRegShift {
+			t |= armFlagC
+			if armRegShiftDefinesCarry(ins.Args[0]) {
+				m |= armFlagC
+			}
+		} else if len(ins.Args) == 3 && ins.Args[1].Kind == asm.OpRegShift {
+			t |= armFlagC
+			if armRegShiftDefinesCarry(ins.Args[1]) {
+				m |= armFlagC
+			}
+		}
+		touched |= t
+		if uncond {
+			cur |= m
+		}
+	case "MOVW":
+		if len(ins.Args) == 2 && ins.Args[1].Kind == asm.OpIdent && strings.EqualFold(ins.Args[1].Ident, "CPSR") {
+			touched |= armFlagAll
+			if uncond {
+				cur |= armFlagAll
+			}
+			return cur, touched
+		}
+		if setFlags && len(ins.Args) == 2 && ins.Args[1].Kind == asm.OpReg {
+			m := armFlagN | armFlagZ
+			t := armFlagN | armFlagZ
+			if ins.Args[0].Kind == asm.OpRegShift {
+				t |= armFlagC
+				if armRegShiftDefinesCarry(ins.Args[0]) {
+					m |= armFlagC
+				}
+			}
+			touched |= t
+			if uncond {
+				cur |= m
+			}
+		}
+	case "SLL", "SRL", "SRA":
+		if !setFlags {
+			return cur, touched
+		}
+		m := armFlagN | armFlagZ
+		touched |= armFlagN | armFlagZ | armFlagC
+		if len(ins.Args) >= 1 && ins.Args[0].Kind == asm.OpImm && ins.Args[0].ImmRaw == "" {
+			if armImmShiftEffAmount(baseOp, ins.Args[0].Imm) != 0 {
+				m |= armFlagC
+			}
+		}
+		if uncond {
+			cur |= m
 		}
 	}
-	return 0
+	return cur, touched
 }
 
-// computeBlockFlagsDefIn computes the per-block must-defined NZCV flag mask at
-// entry to each basic block via a forward CFG worklist (intersection across all
-// reachable predecessors, starting from 0 at function entry).
-func (c *armCtx) computeBlockFlagsDefIn() []armFlagMask {
+// computeBlockFlagsDefIn computes, per basic block:
+//   - in: must-defined NZCV flag mask (intersection across reachable predecessors, 0 at entry),
+//   - touched: may-touched NZCV flag mask (union across reachable predecessors, 0 at entry),
+//   - reachable: whether the block is reachable from entry.
+func (c *armCtx) computeBlockFlagsDefIn() ([]armFlagMask, []armFlagMask, []bool) {
 	n := len(c.blocks)
 	in := make([]armFlagMask, n)
+	touched := make([]armFlagMask, n)
+	reachable := make([]bool, n)
 	if n == 0 {
-		return in
+		return in, touched, reachable
 	}
 	blockIdx := make(map[string]int, n)
 	for i, blk := range c.blocks {
 		blockIdx[blk.name] = i
 	}
-	reachable := make([]bool, n)
 	reachable[0] = true
 	queue := []int{0}
 	inQueue := make([]bool, n)
 	inQueue[0] = true
 
-	enqueue := func(s int, out armFlagMask) {
+	enqueue := func(s int, outDef, outTouched armFlagMask) {
 		if s < 0 || s >= n {
 			return
 		}
 		if !reachable[s] {
 			reachable[s] = true
-			in[s] = out
+			in[s] = outDef
+			touched[s] = outTouched
 			if !inQueue[s] {
 				queue = append(queue, s)
 				inQueue[s] = true
 			}
 			return
 		}
-		merged := in[s] & out
-		if merged != in[s] {
-			in[s] = merged
+		mergedDef := in[s] & outDef
+		mergedTouched := touched[s] | outTouched
+		if mergedDef != in[s] || mergedTouched != touched[s] {
+			in[s] = mergedDef
+			touched[s] = mergedTouched
 			if !inQueue[s] {
 				queue = append(queue, s)
 				inQueue[s] = true
@@ -471,11 +594,12 @@ func (c *armCtx) computeBlockFlagsDefIn() []armFlagMask {
 		queue = queue[1:]
 		inQueue[bi] = false
 		cur := in[bi]
+		curTouched := touched[bi]
 		terminated := false
 		for _, ins := range c.blocks[bi].instrs {
 			rawOp := strings.ToUpper(string(ins.Op))
 			baseOp, cond, _, setFlags := armDecodeOp(rawOp)
-			cur |= c.armInstrMustDefineFlags(baseOp, cond, setFlags, ins)
+			cur, curTouched = c.armInstrUpdateFlags(cur, curTouched, baseOp, cond, setFlags, ins)
 			op := baseOp
 			if op == "JMP" {
 				op = "B"
@@ -492,11 +616,11 @@ func (c *armCtx) computeBlockFlagsDefIn() []armFlagMask {
 					if cond != "" {
 						if tgt, ok := c.resolveBranchTarget(bi, ins.Args[0]); ok {
 							if ti, ok := blockIdx[tgt]; ok {
-								enqueue(ti, cur)
+								enqueue(ti, cur, curTouched)
 							}
 						}
 						if bi+1 < n {
-							enqueue(bi+1, cur)
+							enqueue(bi+1, cur, curTouched)
 						}
 						terminated = true
 					} else {
@@ -504,7 +628,7 @@ func (c *armCtx) computeBlockFlagsDefIn() []armFlagMask {
 							!(ins.Args[0].Kind == asm.OpMem && ins.Args[0].Mem.Base != asm.PC) {
 							if tgt, ok := c.resolveBranchTarget(bi, ins.Args[0]); ok {
 								if ti, ok := blockIdx[tgt]; ok {
-									enqueue(ti, cur)
+									enqueue(ti, cur, curTouched)
 								}
 							}
 						}
@@ -515,11 +639,11 @@ func (c *armCtx) computeBlockFlagsDefIn() []armFlagMask {
 				if len(ins.Args) == 1 {
 					if tgt, ok := c.resolveBranchTarget(bi, ins.Args[0]); ok {
 						if ti, ok := blockIdx[tgt]; ok {
-							enqueue(ti, cur)
+							enqueue(ti, cur, curTouched)
 						}
 					}
 					if bi+1 < n {
-						enqueue(bi+1, cur)
+						enqueue(bi+1, cur, curTouched)
 					}
 					terminated = true
 				}
@@ -529,8 +653,8 @@ func (c *armCtx) computeBlockFlagsDefIn() []armFlagMask {
 			}
 		}
 		if !terminated && bi+1 < n {
-			enqueue(bi+1, cur)
+			enqueue(bi+1, cur, curTouched)
 		}
 	}
-	return in
+	return in, touched, reachable
 }

@@ -103,7 +103,8 @@ func translateIRText(file *File, opt Options) (string, error) {
 			sig.Attrs = attrRegistry.ref(inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, *fn))
 		}
 		if file.Arch == ArchARM && arm.FuncNeedsCFG(*fn) {
-			if err := arm.TranslateFunc(&body, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+			kuserCAS := arm.CollectKuserCASFuncs(file.Funcs, resolve)
+			if err := arm.TranslateFuncWithKuserCAS(&body, *fn, sig, resolve, opt.Sigs, kuserCAS, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			body.WriteString("\n")
