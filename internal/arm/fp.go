@@ -166,9 +166,16 @@ func (c *armCtx) loadRetSlotFallback(slot asm.FrameSlot) (string, error) {
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %s to ptr\n", t, v32)
 		return "%" + t, nil
 	case asm.I64:
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", t, v32)
-		return "%" + t, nil
+		vHi, err := c.loadReg("R1")
+		if err != nil {
+			return "", err
+		}
+		lo, hi, shifted, joined := c.newTmp(), c.newTmp(), c.newTmp(), c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", lo, v32)
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", hi, vHi)
+		fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, 32\n", shifted, hi)
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", joined, lo, shifted)
+		return "%" + joined, nil
 	default:
 		return "", fmt.Errorf("arm: unsupported fallback return type %q", slot.Type)
 	}

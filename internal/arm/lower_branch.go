@@ -14,6 +14,18 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 	case "JMP":
 		op = "B"
 	}
+	if armIsConditionalBranch(op) && op != "B" {
+		cond, op = op[1:], "B"
+		switch cond {
+		case "CS":
+			cond = "HS"
+		case "CC":
+			cond = "LO"
+		}
+	}
+	if cond == "AL" {
+		cond = ""
+	}
 	switch op {
 	case "BL", "CALL":
 		if len(ins.Args) != 1 && len(ins.Args) != 2 {
@@ -54,6 +66,17 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 		if len(ins.Args) != 1 {
 			return true, false, fmt.Errorf("arm B expects 1 operand: %q", ins.Raw)
 		}
+		if cond != "" && ins.Args[0].Kind == asm.OpSym && strings.HasSuffix(ins.Args[0].Sym, "(SB)") {
+			if bi+1 >= len(c.blocks) {
+				return true, false, fmt.Errorf("arm B.%s needs a fallthrough block", cond)
+			}
+			label := "tail_" + c.newTmp()
+			if err := emitCondBr(cond, label, c.blocks[bi+1].name); err != nil {
+				return true, false, err
+			}
+			fmt.Fprintf(c.b, "%s:\n", armLLVMBlockName(label))
+			return true, true, c.tailCallAndRet(ins.Args[0])
+		}
 		if cond != "" {
 			tgt, ok := c.resolveBranchTarget(bi, ins.Args[0])
 			if !ok {
@@ -84,28 +107,6 @@ func (c *armCtx) lowerBranch(bi int, op, cond string, ins asm.Instr, emitBr armE
 			return true, false, fmt.Errorf("arm B invalid target: %q", ins.Raw)
 		}
 		emitBr(tgt)
-		return true, true, nil
-	case "BEQ", "BNE", "BLT", "BGE", "BGT", "BLE", "BHS", "BHI", "BLS", "BLO", "BCC", "BCS", "BMI", "BPL", "BVS", "BVC":
-		if len(ins.Args) != 1 {
-			return true, false, fmt.Errorf("arm %s expects label: %q", op, ins.Raw)
-		}
-		tgt, ok := c.resolveBranchTarget(bi, ins.Args[0])
-		if !ok {
-			return true, false, fmt.Errorf("arm %s invalid target: %q", op, ins.Raw)
-		}
-		if bi+1 >= len(c.blocks) {
-			return true, false, fmt.Errorf("arm %s needs fallthrough block: %q", op, ins.Raw)
-		}
-		branchCond := op[1:]
-		if branchCond == "CS" {
-			branchCond = "HS"
-		}
-		if branchCond == "CC" {
-			branchCond = "LO"
-		}
-		if err := emitCondBr(branchCond, tgt, c.blocks[bi+1].name); err != nil {
-			return true, false, err
-		}
 		return true, true, nil
 	}
 	return false, false, nil
@@ -141,6 +142,12 @@ func (c *armCtx) tailCallAndRet(symOp asm.Operand) error {
 		return fmt.Errorf("arm tailcall expects (SB) symbol, got %q", s)
 	}
 	callee := c.resolve(strings.TrimSuffix(s, "(SB)"))
+	if c.kuserCAS[callee] {
+		if err := c.emitKuserCAS(); err != nil {
+			return err
+		}
+		return c.returnRegisters()
+	}
 	csig, ok := c.sigs[callee]
 	if !ok {
 		// Cross-package trampoline (e.g. sync/atomic -> internal/runtime/atomic).
@@ -204,6 +211,40 @@ func (c *armCtx) tailCallAndRet(symOp asm.Operand) error {
 	return nil
 }
 
+func (c *armCtx) emitKuserCAS() error {
+	// Linux/ARM __kuser_cmpxchg (0xffff0fc0): R0=old, R1=new, R2=ptr =>
+	// swaps *ptr atomically, sets C=1 and R0=0 on success (C=0, R0=1 on fail).
+	oldV, err := c.loadReg(asm.Reg("R0"))
+	if err != nil {
+		return err
+	}
+	newV, err := c.loadReg(asm.Reg("R1"))
+	if err != nil {
+		return err
+	}
+	addr, err := c.loadReg(asm.Reg("R2"))
+	if err != nil {
+		return err
+	}
+	pt := c.newTmp()
+	cx := c.newTmp()
+	swapped := c.newTmp()
+	failed := c.newTmp()
+	status := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %s to ptr\n", pt, addr)
+	fmt.Fprintf(c.b, "  %%%s = cmpxchg ptr %%%s, i32 %s, i32 %s seq_cst seq_cst, align 4\n", cx, pt, oldV, newV)
+	fmt.Fprintf(c.b, "  %%%s = extractvalue {i32, i1} %%%s, 1\n", swapped, cx)
+	fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", failed, swapped)
+	fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i32\n", status, failed)
+	if err := c.storeReg(asm.Reg("R0"), "%"+status); err != nil {
+		return err
+	}
+	c.storeFlag(c.flagsCSlot, "%"+swapped)
+	c.flagsDef = armFlagC
+	c.flagsTouched |= armFlagAll
+	return nil
+}
+
 func (c *armCtx) callSym(symOp asm.Operand) error {
 	if symOp.Kind != asm.OpSym {
 		return fmt.Errorf("arm call expects sym operand, got %s", symOp.String())
@@ -217,37 +258,7 @@ func (c *armCtx) callSym(symOp asm.Operand) error {
 		return nil
 	}
 	if c.kuserCAS[callee] {
-		// Linux/ARM __kuser_cmpxchg (0xffff0fc0): R0=old, R1=new, R2=ptr =>
-		// swaps *ptr atomically, sets C=1 and R0=0 on success (C=0, R0=1 on fail).
-		oldV, err := c.loadReg(asm.Reg("R0"))
-		if err != nil {
-			return err
-		}
-		newV, err := c.loadReg(asm.Reg("R1"))
-		if err != nil {
-			return err
-		}
-		addr, err := c.loadReg(asm.Reg("R2"))
-		if err != nil {
-			return err
-		}
-		pt := c.newTmp()
-		cx := c.newTmp()
-		swapped := c.newTmp()
-		failed := c.newTmp()
-		status := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %s to ptr\n", pt, addr)
-		fmt.Fprintf(c.b, "  %%%s = cmpxchg ptr %%%s, i32 %s, i32 %s seq_cst seq_cst, align 4\n", cx, pt, oldV, newV)
-		fmt.Fprintf(c.b, "  %%%s = extractvalue {i32, i1} %%%s, 1\n", swapped, cx)
-		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", failed, swapped)
-		fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i32\n", status, failed)
-		if err := c.storeReg(asm.Reg("R0"), "%"+status); err != nil {
-			return err
-		}
-		c.storeFlag(c.flagsCSlot, "%"+swapped)
-		c.flagsDef = armFlagC
-		c.flagsTouched |= armFlagAll
-		return nil
+		return c.emitKuserCAS()
 	}
 	csig, ok := c.sigs[callee]
 	if !ok {
@@ -298,4 +309,12 @@ func (c *armCtx) callSym(symOp asm.Operand) error {
 	default:
 		return fmt.Errorf("arm call %q unsupported return type %s", callee, csig.Ret)
 	}
+}
+
+func armIsConditionalBranch(op string) bool {
+	switch op {
+	case "BEQ", "BNE", "BLT", "BGE", "BGT", "BLE", "BHS", "BHI", "BLS", "BLO", "BCC", "BCS", "BMI", "BPL", "BVS", "BVC":
+		return true
+	}
+	return false
 }

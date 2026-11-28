@@ -23,14 +23,16 @@ type armCtx struct {
 	usedFRegs map[asm.Reg]bool
 	fRegSlot  map[asm.Reg]string
 
-	flagsNSlot   string
-	flagsZSlot   string
-	flagsCSlot   string
-	flagsVSlot   string
-	flagsDef     armFlagMask
-	flagsTouched armFlagMask
-	curBlockIdx  int
-	kuserCAS     map[string]bool
+	flagsNSlot     string
+	flagsZSlot     string
+	flagsCSlot     string
+	flagsVSlot     string
+	flagsDef       armFlagMask
+	flagsTouched   armFlagMask
+	needsEntryCPSR bool
+	nativeA32      bool
+	linuxA32       bool
+	kuserCAS       map[string]bool
 
 	curPreInc bool
 	curSubOff bool

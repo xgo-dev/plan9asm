@@ -73,8 +73,8 @@ func (c *armCtx) storeFlagsFromStatus(status string) {
 // readCPSR lowers MOVW CPSR, Rd. When all four NZCV flags are defined in the
 // translator's LLVM flag slots, it reads the hardware CPSR for bits [27:0] and
 // overlays bits [31:28] from the live tracked NZCV slots so preceding CMP/TST/
-// ALU.S updates are observed accurately. At function entry before any flag
-// mutation or branch (e.g. asyncPreempt), hardware CPSR is read directly.
+// ALU.S updates are observed accurately. Before any source flag mutation, use the entry
+// snapshot even if lowering an earlier instruction changed the hardware flags.
 // Otherwise (partial or call-clobbered flags where LLVM codegen may have
 // clobbered hardware NZCV), it returns ErrProbeNeedsContext.
 func (c *armCtx) readCPSR() (string, error) {
@@ -105,10 +105,8 @@ func (c *armCtx) readCPSR() (string, error) {
 		}
 		return cur, nil
 	}
-	if c.flagsTouched == 0 && c.curBlockIdx == 0 {
-		raw := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q()\n", raw, "mrs $0, cpsr", "=r,~{memory}")
-		return "%" + raw, nil
+	if c.flagsTouched == 0 && c.needsEntryCPSR {
+		return "%entry_cpsr", nil
 	}
 	return "", fmt.Errorf("%w: arm CPSR read requires all NZCV flags defined (defined=%04b)", asm.ErrProbeNeedsContext, c.flagsDef)
 }
@@ -599,6 +597,9 @@ func (c *armCtx) computeBlockFlagsDefIn() ([]armFlagMask, []armFlagMask, []bool)
 		for _, ins := range c.blocks[bi].instrs {
 			rawOp := strings.ToUpper(string(ins.Op))
 			baseOp, cond, _, setFlags := armDecodeOp(rawOp)
+			if curTouched == 0 && baseOp == "MOVW" && len(ins.Args) == 2 && ins.Args[0].Kind == asm.OpIdent && strings.EqualFold(ins.Args[0].Ident, "CPSR") {
+				c.needsEntryCPSR = true
+			}
 			cur, curTouched = c.armInstrUpdateFlags(cur, curTouched, baseOp, cond, setFlags, ins)
 			op := baseOp
 			if op == "JMP" {
@@ -613,7 +614,7 @@ func (c *armCtx) computeBlockFlagsDefIn() ([]armFlagMask, []armFlagMask, []bool)
 				}
 			case "B":
 				if len(ins.Args) == 1 {
-					if cond != "" {
+					if cond != "" && cond != "AL" {
 						if tgt, ok := c.resolveBranchTarget(bi, ins.Args[0]); ok {
 							if ti, ok := blockIdx[tgt]; ok {
 								enqueue(ti, cur, curTouched)

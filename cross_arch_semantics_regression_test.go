@@ -1643,12 +1643,7 @@ TEXT ·runtimeShiftCarry(SB),NOSPLIT,$0-12
 			{
 				name: "MULAL_S_does_not_define_C",
 				body: "MOVW $2, R1\nMOVW $3, R2\nMOVW $0, R3\nMOVW $0, R4\nMULAL.S R1, R2, (R3, R4)\nMOVW $0, R0\nMOVW.CS $1, R0\nMOVW R0, ret+0(FP)\nRET\n",
-			},
-			{
-				name: "branch_then_MOVW_CPSR_without_all_flags",
-				body: "B next\nnext:\nMOVW CPSR, R0\nMOVW R0, ret+0(FP)\nRET\n",
-			},
-		}
+			}}
 		for _, tc := range rejectCases {
 			t.Run("Reject_"+tc.name, func(t *testing.T) {
 				f, err := Parse(ArchARM, "TEXT ·f(SB),NOSPLIT,$0-4\n"+tc.body)
@@ -2763,4 +2758,131 @@ func BenchmarkAMD64PureInt1024ADDQ(b *testing.B) {
 			}
 		}
 	})
+}
+
+func TestCrossArchARMv7EntryCPSR(t *testing.T) {
+	for _, prefix := range []string{"", "entryLabel:\n", "B next\nnext:\n"} {
+		for _, shift := range []string{"SLL", "SRL", "SRA"} {
+			t.Run(fmt.Sprintf("%s/prefix_%d", shift, len(prefix)), func(t *testing.T) {
+				src := "TEXT read(SB),NOSPLIT,$0-12\n" + prefix +
+					"MOVW a+0(FP), R1\nMOVW b+4(FP), R2\n" + shift + " R2,R1,R3\n" +
+					"MOVW CPSR,R4\nSRL $29,R4,R4\nAND $1,R4\nEOR R4,R3,R0\nMOVW R0,ret+8(FP)\nRET\n"
+				f, err := Parse(ArchARM, src)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sig := crossAddSig("arm")
+				sig.Name = "read"
+				ll, err := Translate(f, Options{TargetTriple: "armv7-unknown-linux-gnueabihf", Goarch: "arm", Sigs: map[string]FuncSig{"read": sig}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, level := range []string{"-O0", "-O2"} {
+					llc := findLLVM22Tool("llc")
+					if llc == "" {
+						t.Fatal("LLVM 22 llc required")
+					}
+					cmd := exec.Command(llc, level, "-o", "-", "-")
+					cmd.Stdin = strings.NewReader(ll)
+					out, err := cmd.CombinedOutput()
+					if err != nil {
+						t.Fatalf("%s: %v\n%s", level, err, out)
+					}
+					before, _, ok := strings.Cut(string(out), "\tmrs\t")
+					if !ok || strings.Contains(before, "\tcmp\t") || strings.Contains(before, "\ttst\t") {
+						t.Fatalf("%s: entry CPSR not preserved before shift expansion\n%s", level, out)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCrossArchARMv7KuserTransfers(t *testing.T) {
+	for _, op := range []string{"BL", "B", "RET"} {
+		t.Run(op, func(t *testing.T) {
+			src := "TEXT cas<>(SB),NOSPLIT,$0\nMOVW $0xffff0fc0,R15\nTEXT swap(SB),NOSPLIT,$0-12\nMOVW old+0(FP),R0\nMOVW new+4(FP),R1\nMOVW p+8(FP),R2\n" + op + " cas<>(SB)\n"
+			if op == "BL" {
+				src += "RET\n"
+			}
+			f, err := Parse(ArchARM, src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sig := FuncSig{Args: []LLVMType{I32, I32, Ptr}, Ret: Void, Frame: FrameLayout{Params: []FrameSlot{
+				{Type: I32, Index: 0, Field: -1}, {Type: I32, Index: 1, Offset: 4, Field: -1}, {Type: Ptr, Index: 2, Offset: 8, Field: -1},
+			}}}
+			ll, err := Translate(f, Options{TargetTriple: "armv7-unknown-linux-gnueabihf", Goarch: "arm", Sigs: map[string]FuncSig{"cas<>": {Ret: Void}, "swap": sig}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := extractLLVMFuncBody(t, runOptO2(t, ll), "swap")
+			if !strings.Contains(body, "cmpxchg ptr %arg2, i32 %arg0, i32 %arg1") {
+				t.Fatalf("missing atomic update in %s", body)
+			}
+		})
+	}
+}
+
+func TestARMv7EntryBoundaries(t *testing.T) {
+	const triple = "armv7-unknown-linux-gnueabihf"
+	for _, tc := range []struct {
+		op, triple string
+		wantErr    bool
+	}{
+		{"B cpsr\ncpsr:", "", false}, {"DMB", "armv7-unknown-windows-msvc", true},
+		{"DMB", "armv7-pc-win32", true}, {"DMB", "armv7-w64-mingw32", true}, {"DMB", "armv7-pc-cygwin", true}, {"DMB", "armv7eb-unknown-linux", true},
+		{"MOVW CPSR,R0", "armv7-unknown-windows-msvc", true},
+	} {
+		f, err := Parse(ArchARM, "TEXT f(SB),4,$0\n"+tc.op+"\nRET")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Translate(f, Options{Goarch: "arm", TargetTriple: tc.triple, Sigs: map[string]FuncSig{"f": {Ret: I64}}})
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("%q: %v", tc.op, err)
+		}
+	}
+	for _, op := range []string{"B.NE", "BNE", "B.AL"} {
+		f, err := Parse(ArchARM, "TEXT f(SB),4,$0\nMOVW $1,R0\nCMP $0,R0\n"+op+" out(SB)\nMOVW $2,R0\nRET\nout:\nMOVW $777,R0\nRET")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ir, err := Translate(f, Options{Goarch: "arm", TargetTriple: triple, Sigs: map[string]FuncSig{"f": {Ret: I32}, "out": {Ret: I32}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		opt := runOptO2(t, ir)
+		body := extractLLVMFuncBody(t, opt, "f")
+		if !strings.Contains(body, "@out(") || strings.Contains(body, "777") {
+			t.Errorf("%s: %s", op, body)
+		}
+		verifyLLVMWithTargetLLC(t, opt, triple)
+	}
+}
+
+func TestARMv7BarrierAndKuserTrampolineCodegen(t *testing.T) {
+	const linux = "armv7-unknown-linux-gnueabihf"
+	for _, tc := range []struct{ op, target, want string }{
+		{"DMB MB_ISH", linux, ".inst 0xf57ff05b"},
+		{"DMB", linux, ".inst 0xf57ff05f"},
+		{"MOVW $0xffff0fc0,R15", linux, ".word 0xffff0fc0"},
+		{"MOVW $0xffff0fc0,R15", "armv7-unknown-windows-msvc", ""},
+	} {
+		f, err := Parse(ArchARM, "TEXT f<>(SB),4,$0\n"+tc.op+"\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ir, err := Translate(f, Options{Goarch: "arm", TargetTriple: tc.target, Sigs: map[string]FuncSig{"f<>": {Ret: Void}}})
+		if tc.want == "" {
+			if err == nil {
+				t.Fatalf("%s: expected rejection", tc.target)
+			}
+			continue
+		}
+		if err != nil || !strings.Contains(ir, tc.want) {
+			t.Fatalf("%s: %v\n%s", tc.op, err, ir)
+		}
+		verifyLLVMWithTargetLLC(t, ir, tc.target)
+	}
 }

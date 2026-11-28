@@ -78,6 +78,10 @@ func translateIRText(file *File, opt Options) (string, error) {
 
 	emitExternFuncDecls(&b, file, resolve, opt.Sigs, opt.WASMABI)
 
+	var kuserCAS map[string]bool
+	if file.Arch == ArchARM {
+		kuserCAS = arm.CollectKuserCASFuncs(file.Funcs, resolve)
+	}
 	var body strings.Builder
 	attrRegistry := newFeatureAttrRegistry()
 	for i := range file.Funcs {
@@ -103,8 +107,7 @@ func translateIRText(file *File, opt Options) (string, error) {
 			sig.Attrs = attrRegistry.ref(inferFuncTargetFeaturesForGOARCH(file.Arch, opt.Goarch, *fn))
 		}
 		if file.Arch == ArchARM && arm.FuncNeedsCFG(*fn) {
-			kuserCAS := arm.CollectKuserCASFuncs(file.Funcs, resolve)
-			if err := arm.TranslateFuncWithKuserCAS(&body, *fn, sig, resolve, opt.Sigs, kuserCAS, opt.AnnotateSource); err != nil {
+			if err := arm.TranslateFuncWithKuserCAS(&body, *fn, sig, resolve, opt.Sigs, kuserCAS, opt.TargetTriple, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %w", name, err)
 			}
 			body.WriteString("\n")

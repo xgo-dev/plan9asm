@@ -1188,7 +1188,7 @@ func TestARMKuserCASAndCPSRHelpers(t *testing.T) {
 	// Entry-block raw CPSR read when flags are untouched.
 	c.flagsDef = 0
 	c.flagsTouched = 0
-	c.curBlockIdx = 0
+	c.needsEntryCPSR = true
 	if _, err := c.readCPSR(); err != nil {
 		t.Fatalf("readCPSR(entry raw) error = %v", err)
 	}

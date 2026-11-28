@@ -260,3 +260,29 @@ func (c *armCtx) lowerAtomicExclusiveStore(ty asm.LLVMType, align int, ptr strin
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.exclusiveValidSlot)
 	return "%" + status, nil
 }
+
+func (c *armCtx) emitDMB(ins asm.Instr) error {
+	if !c.nativeA32 {
+		return fmt.Errorf("%w: DMB needs an A32 target for its barrier domain", asm.ErrProbeNeedsContext)
+	}
+	options := [...]string{2: "MB_OSHST", 3: "MB_OSH", 6: "MB_NSHST", 7: "MB_NSH", 10: "MB_ISHST", 11: "MB_ISH", 14: "MB_ST", 15: "MB_SY"}
+	option := 15
+	if len(ins.Args) != 0 {
+		if len(ins.Args) != 1 {
+			return fmt.Errorf("arm DMB expects at most one option: %q", ins.Raw)
+		}
+		arg := ins.Args[0]
+		option = -1
+		for n, name := range options {
+			if name != "" && ((arg.Kind == asm.OpImm && arg.ImmRaw == "" && arg.Imm == int64(n)) || strings.EqualFold(arg.String(), name)) {
+				option = n
+				break
+			}
+		}
+		if option < 0 {
+			return fmt.Errorf("arm DMB unsupported option %q", arg.String())
+		}
+	}
+	fmt.Fprintf(c.b, "  call void asm sideeffect \".inst 0x%08x\", \"~{memory}\"()\n", 0xf57ff050|uint32(option))
+	return nil
+}

@@ -132,6 +132,9 @@ func armBranchTarget(op asm.Operand) (string, bool) {
 }
 
 func (c *armCtx) resolveBranchTarget(bi int, op asm.Operand) (string, bool) {
+	if op.Kind == asm.OpSym && strings.HasSuffix(op.Sym, "(SB)") {
+		return "", false
+	}
 	if target, ok := armBranchTarget(op); ok {
 		return target, true
 	}

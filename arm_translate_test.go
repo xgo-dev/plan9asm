@@ -122,7 +122,7 @@ func TestTranslateARMSystemRegisterMoves(t *testing.T) {
 	RET
 `, map[string]FuncSig{"example.systemregs": {Name: "example.systemregs", Ret: Void}})
 	for _, want := range []string{
-		"mrs $0, cpsr",
+		"mrs r0, cpsr",
 		"msr cpsr_fsxc, $0",
 		"vmrs $0, fpscr",
 		"vmsr fpscr, $0",

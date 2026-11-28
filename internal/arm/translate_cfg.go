@@ -23,19 +23,22 @@ func CollectKuserCASFuncs(funcs []asm.Func, resolve func(string) string) map[str
 }
 
 func isARMKuserCASFunc(fn asm.Func) bool {
-	var real []asm.Instr
-	for _, ins := range fn.Instrs {
-		switch strings.ToUpper(string(ins.Op)) {
+	var ins *asm.Instr
+	for i := range fn.Instrs {
+		candidate := &fn.Instrs[i]
+		switch strings.ToUpper(string(candidate.Op)) {
 		case string(asm.OpTEXT), "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", "NOP", "#IFDEF", "#ELSE", "#ENDIF":
 			continue
 		default:
-			real = append(real, ins)
+			if ins != nil {
+				return false
+			}
+			ins = candidate
 		}
 	}
-	if len(real) != 1 {
+	if ins == nil {
 		return false
 	}
-	ins := real[0]
 	if strings.ToUpper(string(ins.Op)) != "MOVW" || len(ins.Args) != 2 {
 		return false
 	}
@@ -50,29 +53,43 @@ func isARMKuserCASFunc(fn asm.Func) bool {
 }
 
 func TranslateFunc(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, annotateSource bool) error {
-	return TranslateFuncWithKuserCAS(b, fn, sig, resolve, sigs, nil, annotateSource)
+	return TranslateFuncWithKuserCAS(b, fn, sig, resolve, sigs, nil, "", annotateSource)
 }
 
-func TranslateFuncWithKuserCAS(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, kuserCAS map[string]bool, annotateSource bool) error {
-	fmt.Fprintf(b, "define %s %s(", sig.Ret, asm.LLVMGlobal(sig.Name))
-	for i, t := range sig.Args {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(b, "%s %%arg%d", t, i)
-	}
-	b.WriteString(")")
-	if sig.Attrs != "" {
-		b.WriteString(" " + sig.Attrs)
-	}
-	b.WriteString(" {\n")
-
+func TranslateFuncWithKuserCAS(b *strings.Builder, fn asm.Func, sig asm.FuncSig, resolve func(string) string, sigs map[string]asm.FuncSig, kuserCAS map[string]bool, targetTriple string, annotateSource bool) error {
 	c := newARMCtx(b, fn, sig, resolve, sigs, annotateSource)
 	c.kuserCAS = kuserCAS
+	targetTriple = strings.ToLower(targetTriple)
+	c.nativeA32 = supportsA32(targetTriple)
+	c.linuxA32 = c.nativeA32 && strings.Contains("-"+targetTriple+"-", "-linux-")
+	blockDef, blockTouched, reachable := c.computeBlockFlagsDefIn()
+	header := func(name string) string {
+		params := make([]string, len(sig.Args))
+		for i, typ := range sig.Args {
+			params[i] = fmt.Sprintf("%s %%arg%d", typ, i)
+		}
+		return fmt.Sprintf("%s %s(%s)", sig.Ret, asm.LLVMGlobal(name), strings.Join(params, ", "))
+	}
+	if kuserCAS[sig.Name] {
+		if !c.linuxA32 {
+			return fmt.Errorf("%w: Linux kuser trampoline requires a Linux A32 target", asm.ErrProbeNeedsContext)
+		}
+		// The address of the trampoline can escape or be linked from another
+		// object. Preserve its register ABI for calls we could not inline.
+		c.emitNakedTransfer(header(sig.Name), "ldr pc, [pc, #-4]\\0A\\09.word 0xffff0fc0", "")
+		return nil
+	}
+	if c.needsEntryCPSR {
+		if err := c.emitEntryCPSRWrapper(header(sig.Name)); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(b, "define %s %s {\n", header(sig.Name), sig.Attrs)
+	}
 	if err := c.emitEntryAllocasAndArgInit(); err != nil {
 		return err
 	}
-	if err := c.lowerBlocks(); err != nil {
+	if err := c.lowerBlocks(blockDef, blockTouched, reachable); err != nil {
 		return err
 	}
 
@@ -80,7 +97,7 @@ func TranslateFuncWithKuserCAS(b *strings.Builder, fn asm.Func, sig asm.FuncSig,
 	return nil
 }
 
-func (c *armCtx) lowerBlocks() error {
+func (c *armCtx) lowerBlocks(blockFlagsDefIn, blockFlagsTouchedIn []armFlagMask, blockReachable []bool) error {
 	emitBr := func(target string) {
 		fmt.Fprintf(c.b, "  br label %%%s\n", armLLVMBlockName(target))
 	}
@@ -93,7 +110,6 @@ func (c *armCtx) lowerBlocks() error {
 		return nil
 	}
 
-	blockFlagsDefIn, blockFlagsTouchedIn, blockReachable := c.computeBlockFlagsDefIn()
 	for bi := 0; bi < len(c.blocks); bi++ {
 		blk := c.blocks[bi]
 		if !blockReachable[bi] {
@@ -103,7 +119,6 @@ func (c *armCtx) lowerBlocks() error {
 			}
 			continue
 		}
-		c.curBlockIdx = bi
 		c.flagsDef = blockFlagsDefIn[bi]
 		c.flagsTouched = blockFlagsTouchedIn[bi]
 		if bi != 0 {
@@ -158,12 +173,17 @@ func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr 
 		c.b.WriteString("  call void asm sideeffect \"udf #0\", \"~{memory}\"()\n")
 		c.b.WriteString("  unreachable\n")
 		return true, nil
+	case "DMB":
+		if setFlags || preInc || postInc || subOff {
+			return false, fmt.Errorf("unsupported DMB suffix %q", rawOp)
+		}
+		return false, c.emitConditionalEffect(cond, func() error { return c.emitDMB(ins) })
 	case "MOVM":
 		if ok, term, err := c.lowerMOVM(rawOp, ins); ok {
 			return term, err
 		}
 		return false, fmt.Errorf("arm: unsupported instruction %s", ins.Op)
-	case "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", string(asm.OpWORD), "DWORD", "NOP", "DMB", "#IFDEF", "#ELSE", "#ENDIF":
+	case "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", string(asm.OpWORD), "DWORD", "NOP", "#IFDEF", "#ELSE", "#ENDIF":
 		return false, nil
 	}
 	if ok, term, err := c.lowerDataWithFlags(baseOp, cond, postInc, setFlags, ins); ok {
@@ -189,27 +209,7 @@ func (c *armCtx) lowerInstr(bi int, ins asm.Instr, emitBr armEmitBr, emitCondBr 
 
 func (c *armCtx) lowerRET() error {
 	if len(c.fpResults) == 0 {
-		r0, err := c.loadReg(asm.Reg("R0"))
-		if err != nil {
-			return err
-		}
-		switch c.sig.Ret {
-		case asm.Void:
-			c.b.WriteString("  ret void\n")
-		case asm.I1, asm.I8, asm.I16:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i32 %s to %s\n", t, r0, c.sig.Ret)
-			fmt.Fprintf(c.b, "  ret %s %%%s\n", c.sig.Ret, t)
-		case asm.I32:
-			fmt.Fprintf(c.b, "  ret i32 %s\n", r0)
-		case asm.Ptr:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %s to ptr\n", t, r0)
-			fmt.Fprintf(c.b, "  ret ptr %%%s\n", t)
-		default:
-			return fmt.Errorf("arm: unsupported return type %s", c.sig.Ret)
-		}
-		return nil
+		return c.returnRegisters()
 	}
 	if len(c.fpResults) == 1 {
 		slot := c.fpResults[0]
@@ -272,6 +272,19 @@ func (c *armCtx) lowerRET() error {
 	return nil
 }
 
+// returnRegisters reads the direct AAPCS result after a tail transfer.
+func (c *armCtx) returnRegisters() error {
+	if c.sig.Ret == asm.Void {
+		c.b.WriteString("  ret void\n")
+		return nil
+	}
+	result, err := c.loadRetSlotFallback(asm.FrameSlot{Type: c.sig.Ret})
+	if err == nil {
+		fmt.Fprintf(c.b, "  ret %s %s\n", c.sig.Ret, result)
+	}
+	return err
+}
+
 func (c *armCtx) lowerRetZero() {
 	switch c.sig.Ret {
 	case asm.Void:
@@ -283,4 +296,20 @@ func (c *armCtx) lowerRetZero() {
 	default:
 		fmt.Fprintf(c.b, "  ret %s 0\n", c.sig.Ret)
 	}
+}
+
+func supportsA32(triple string) bool {
+	fields := strings.Split(strings.ToLower(triple), "-")
+	arch := fields[0]
+	if arch != "arm" && (!strings.HasPrefix(arch, "armv") || strings.Contains(arch[4:], "m") || strings.HasSuffix(arch, "eb")) {
+		return false
+	}
+	for _, field := range fields[1:] {
+		for _, prefix := range []string{"windows", "win32", "mingw", "cygwin"} {
+			if strings.HasPrefix(field, prefix) {
+				return false
+			}
+		}
+	}
+	return true
 }
